@@ -3831,6 +3831,18 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             )
         return self._approval_gate
 
+    def set_permission_mode(self, mode: Any) -> str:
+        """Swap the runtime permission mode (console ``/permissions``).
+
+        Returns the resolved mode string (default/acceptEdits/plan/bypass). The
+        gate re-reads its ``_mode`` on every tool call, so the change applies
+        from the next call — no gate rebuild needed."""
+        return self._permission_gate.set_mode(mode).value
+
+    def get_permission_mode(self) -> str:
+        """The permission gate's current mode string."""
+        return self._permission_gate.mode.value
+
     def set_approval_resolver(self, resolver: Any | None) -> None:
         """Wire the prompt-and-wait approval resolver (CMP-04).
 

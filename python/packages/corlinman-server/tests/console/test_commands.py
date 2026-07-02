@@ -159,3 +159,67 @@ def test_estimate_session_cost_known_vs_unknown() -> None:
     # A known model + tokens → a positive USD estimate.
     cost = _estimate_session_cost_usd("claude-sonnet-4-6", 1_000_000, 1_000_000)
     assert cost is not None and cost > 0
+
+
+class _PermBrain(_IdleBrain):
+    """Brain stub with the permission surface (embedded full-agent shape)."""
+
+    def __init__(self) -> None:
+        self.mode = "default"
+
+    def get_permission_mode(self) -> str:
+        return self.mode
+
+    def set_permission_mode(self, mode: str) -> str:
+        self.mode = mode
+        return mode
+
+
+def _perm_app() -> StubApp:
+    app = StubApp()
+    app.session.brain = _PermBrain()
+    return app
+
+
+async def test_permissions_shows_current_mode() -> None:
+    app = _perm_app()
+    text = await dispatch(app, "/permissions") or ""
+    assert "permission mode: default" in text
+    assert "acceptEdits" in text and "plan" in text and "bypass" in text
+
+
+async def test_permissions_sets_mode_case_insensitive() -> None:
+    app = _perm_app()
+    text = await dispatch(app, "/permissions acceptedits") or ""
+    assert "permission mode: acceptEdits" in text
+    assert app.session.brain.mode == "acceptEdits"
+
+
+async def test_permissions_typo_does_not_change_mode() -> None:
+    """Safety: a typo must NOT coerce to default — from plan mode that would
+    silently re-enable mutations."""
+    app = _perm_app()
+    await dispatch(app, "/permissions plan")
+    text = await dispatch(app, "/permissions palm") or ""
+    assert "unknown mode" in text and "unchanged" in text
+    assert app.session.brain.mode == "plan"  # still plan
+
+
+async def test_permissions_bypass_warns() -> None:
+    app = _perm_app()
+    text = await dispatch(app, "/permissions bypass") or ""
+    assert "bypass" in text and "⚠" in text
+
+
+async def test_plan_toggles_and_exits() -> None:
+    app = _perm_app()
+    text = await dispatch(app, "/plan") or ""
+    assert "permission mode: plan" in text
+    text = await dispatch(app, "/plan off") or ""
+    assert "permission mode: default" in text
+
+
+async def test_permissions_unavailable_without_surface() -> None:
+    app = StubApp()  # _IdleBrain: no permission methods (attach-mode shape)
+    text = await dispatch(app, "/permissions") or ""
+    assert "unavailable" in text

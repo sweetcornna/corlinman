@@ -421,6 +421,14 @@ class PermissionGate:
     def mode(self) -> PermissionMode:
         return self._mode
 
+    def set_mode(self, mode: PermissionMode | str) -> PermissionMode:
+        """Swap the operating mode at runtime (normalizing via
+        :meth:`PermissionMode.coerce`) and return the resolved mode. The gate
+        re-reads ``_mode`` on every ``resolve``, so the change takes effect on
+        the next tool call. Used by the console ``/permissions`` command."""
+        self._mode = PermissionMode.coerce(mode)
+        return self._mode
+
     def _mode_override(self, tool: str) -> str | None:
         """Return a mode-driven action for ``tool``, or ``None`` to fall
         through to the rule list / default. Consulted only when no explicit

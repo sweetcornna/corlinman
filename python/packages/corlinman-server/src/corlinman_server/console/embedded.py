@@ -358,6 +358,31 @@ class EmbeddedBrain:
         self._service = ChatService(backend)
         self.descriptor = "embedded direct-provider (no tools — gRPC stack unavailable)"
 
+    # ── permission surface (console /permissions + interactive approval) ──
+
+    def set_permission_mode(self, mode: str) -> str | None:
+        """Swap the agent's runtime permission mode; returns the resolved mode
+        string, or ``None`` when the full agent path is not live (the
+        direct-provider fallback runs no tools, so there is no gate)."""
+        if self._servicer is None:
+            return None
+        return str(self._servicer.set_permission_mode(mode))
+
+    def get_permission_mode(self) -> str | None:
+        """Current permission mode string, or ``None`` without a live gate."""
+        if self._servicer is None:
+            return None
+        return str(self._servicer.get_permission_mode())
+
+    def set_approval_resolver(self, resolver: Any | None) -> bool:
+        """Wire the interactive ``ask``-approval resolver
+        (``async (tool, args, ctx) -> bool``) into the in-process servicer.
+        Returns ``False`` when unavailable (direct fallback)."""
+        if self._servicer is None:
+            return False
+        self._servicer.set_approval_resolver(resolver)
+        return True
+
     # ── Brain protocol ────────────────────────────────────────────────
 
     def run_turn(

@@ -242,6 +242,50 @@ async def _cmd_quit(app: Any, args: str) -> str | None:
     return None
 
 
+#: Recognized permission modes (mirrors ``PermissionMode``); validated here so
+#: a typo never coerces to ``default`` server-side — silently dropping from
+#: ``plan`` to ``default`` would re-enable mutations without the user noticing.
+_PERMISSION_MODES = ("default", "acceptEdits", "plan", "bypass")
+
+
+async def _cmd_permissions(app: Any, args: str) -> str:
+    brain = app.session.brain
+    get = getattr(brain, "get_permission_mode", None)
+    set_ = getattr(brain, "set_permission_mode", None)
+    if not callable(get) or not callable(set_):
+        return "permission control unavailable (attach mode)"
+    requested = args.strip()
+    if not requested:
+        current = get()
+        if current is None:
+            return "permission control unavailable (direct fallback — no tool gate)"
+        return (
+            f"permission mode: {current}\n"
+            f"modes: {' | '.join(_PERMISSION_MODES)}\n"
+            "usage: /permissions <mode>   (/plan toggles plan mode)"
+        )
+    matched = next(
+        (m for m in _PERMISSION_MODES if m.lower() == requested.lower()), None
+    )
+    if matched is None:
+        return (
+            f"unknown mode: {requested} — mode unchanged\n"
+            f"modes: {' | '.join(_PERMISSION_MODES)}"
+        )
+    resolved = set_(matched)
+    if resolved is None:
+        return "permission control unavailable (direct fallback — no tool gate)"
+    suffix = "  ⚠ all tool gating disabled" if resolved == "bypass" else ""
+    return f"permission mode: {resolved}{suffix}"
+
+
+async def _cmd_plan(app: Any, args: str) -> str:
+    """Enter/exit plan mode (mutating tools denied while planning)."""
+    if args.strip().lower() in ("off", "exit", "done"):
+        return await _cmd_permissions(app, "default")
+    return await _cmd_permissions(app, "plan")
+
+
 _INIT_PROMPT = (
     "Bootstrap a CORLINMAN.md project-memory file for this codebase.\n\n"
     "First, use your file tools (list, search, read) to inspect the project: "
@@ -281,6 +325,18 @@ _REGISTRY: tuple[SlashCommand, ...] = (
     ),
     SlashCommand("usage", "token usage for this console run", _cmd_usage),
     SlashCommand("cost", "estimated USD cost for this session", _cmd_cost),
+    SlashCommand(
+        "permissions",
+        "show or set the permission mode (default/acceptEdits/plan/bypass)",
+        _cmd_permissions,
+        usage="[mode]",
+    ),
+    SlashCommand(
+        "plan",
+        "enter plan mode — mutating tools denied; /plan off to exit",
+        _cmd_plan,
+        usage="[off]",
+    ),
     SlashCommand(
         "compact", "summarize older turns to shrink the context window", _cmd_compact
     ),

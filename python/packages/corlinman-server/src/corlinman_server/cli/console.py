@@ -130,6 +130,18 @@ def _load_config(data_dir: Path) -> dict[str, Any]:
     show_default=True,
     help="Exit the REPL after N completed turns (0 = unlimited).",
 )
+@click.option(
+    "--permission-mode",
+    type=click.Choice(
+        ["default", "acceptEdits", "plan", "bypass"], case_sensitive=False
+    ),
+    default=None,
+    help=(
+        "Initial permission mode for the embedded agent's tool gate "
+        "(switch later with /permissions). Overrides "
+        "$CORLINMAN_AGENT_PERMISSION_MODE."
+    ),
+)
 def console(
     prompt: tuple[str, ...],
     attach: str | None,
@@ -141,6 +153,7 @@ def console(
     tool_progress: str,
     output_format: str,
     max_turns: int,
+    permission_mode: str | None,
 ) -> None:
     """Interactive agent console (REPL) — the CLI face of the corlinman brain.
 
@@ -163,6 +176,19 @@ def console(
         os.environ.setdefault("CORLINMAN_DATA_DIR", str(resolved_data_dir))
     config = _load_config(resolved_data_dir)
     prompt_text = " ".join(prompt).strip() or None
+    if permission_mode:
+        # Zero-plumbing seam: the embedded servicer's PermissionGate.from_env
+        # reads this at construction (inside EmbeddedBrain.start), so the flag
+        # governs the gate without touching the request path. click's Choice
+        # is case-insensitive but preserves the user's casing — normalize to
+        # the canonical member so from_env sees the exact mode string.
+        canonical = {
+            "default": "default",
+            "acceptedits": "acceptEdits",
+            "plan": "plan",
+            "bypass": "bypass",
+        }[permission_mode.lower()]
+        os.environ["CORLINMAN_AGENT_PERMISSION_MODE"] = canonical
 
     try:
         code = asyncio.run(

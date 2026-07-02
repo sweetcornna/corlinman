@@ -196,3 +196,20 @@ def test_allow_path_passes_without_prompt() -> None:
     out = asyncio.run(gate.decide("read_file", args={"path": "a"}))
     assert out.verdict is ApprovalVerdict.ALLOW
     assert out.asked is False
+
+
+def test_set_mode_swaps_at_runtime_and_coerces() -> None:
+    """Dim 3: the console /permissions command swaps the gate mode at runtime;
+    set_mode normalizes via PermissionMode.coerce and takes effect on the next
+    resolve (the gate re-reads _mode per call)."""
+    gate = PermissionGate(mode=PermissionMode.DEFAULT)
+    assert gate.resolve("write_file", _CTX)[0] != DENY  # default: not plan-denied
+
+    assert gate.set_mode("plan") is PermissionMode.PLAN
+    assert gate.resolve("write_file", _CTX)[0] == DENY  # now plan-denied
+
+    assert gate.set_mode("acceptEdits") is PermissionMode.ACCEPT_EDITS
+    assert gate.resolve("edit_file", _CTX)[0] == ALLOW
+
+    # Unknown strings coerce to DEFAULT rather than raising.
+    assert gate.set_mode("no-such-mode") is PermissionMode.DEFAULT
