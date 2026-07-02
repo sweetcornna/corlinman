@@ -4,6 +4,26 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.22.7] — 2026-07-02 — Atomic file writes + per-tool tracing
+
+> Patch release. Config-compatible. ABSORB_MATRIX Dim 4 (atomic Write/Edit) +
+> Dim 12 (per-tool OTel span).
+
+### Fixed
+- **Atomic `Write` / `Edit`** — both the write and edit coding tools opened the
+  target with `O_TRUNC` and wrote in place, so a crash or partial write could
+  leave a **truncated/corrupt** file. Writes now stage into a unique sibling
+  temp file (`tempfile.mkstemp`), `fsync`, then `os.replace` onto the target
+  (atomic rename). The existing file's mode (e.g. an executable bit) is
+  preserved; a symlinked target is refused and `os.replace` never follows a
+  link, preserving the prior `O_NOFOLLOW` workspace-escape posture.
+
+### Added
+- **Per-tool OTel span** — each tool execution in the chat loop is now wrapped
+  in a `tool.execute` span (`tool.name` / `tool.plugin` / `tool.is_error`,
+  exceptions recorded), complementing the existing request-level spans. No-op
+  when no tracer is installed.
+
 ## [1.22.6] — 2026-07-02 — Console `/cost` (estimated session spend)
 
 > Patch release. Config-compatible. ABSORB_MATRIX Dim 12 — surfaces the
