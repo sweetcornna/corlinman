@@ -115,7 +115,7 @@ class PermissionMode(str, Enum):
 
 #: File-editing tools that :attr:`PermissionMode.ACCEPT_EDITS` auto-allows.
 _EDIT_TOOLS: frozenset[str] = frozenset(
-    {"write_file", "edit_file", "apply_patch", "revert_changes"}
+    {"write_file", "edit_file", "notebook_edit", "apply_patch", "revert_changes"}
 )
 
 #: The "mutating" tools — strict mode flips these to ``deny`` by default.
@@ -126,6 +126,7 @@ MUTATING_TOOLS: frozenset[str] = frozenset(
     {
         "write_file",
         "edit_file",
+        "notebook_edit",
         "apply_patch",
         "run_shell",
         "revert_changes",

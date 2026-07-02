@@ -117,6 +117,7 @@ def test_mode_plan_denies_mutating_allows_read() -> None:
     gate = PermissionGate(mode=PermissionMode.PLAN)
     assert gate.resolve("write_file", _CTX)[0] == DENY
     assert gate.resolve("run_shell", _CTX)[0] == DENY
+    assert gate.resolve("notebook_edit", _CTX)[0] == DENY  # mutates a file
     assert gate.resolve("read_file", _CTX)[0] == ALLOW
 
 
@@ -124,6 +125,7 @@ def test_mode_accept_edits_auto_allows_edit_tools() -> None:
     gate = PermissionGate(mode=PermissionMode.ACCEPT_EDITS)
     assert gate.resolve("write_file", _CTX)[0] == ALLOW
     assert gate.resolve("edit_file", _CTX)[0] == ALLOW
+    assert gate.resolve("notebook_edit", _CTX)[0] == ALLOW
 
 
 def test_mode_bypass_overrides_deny_rules() -> None:
