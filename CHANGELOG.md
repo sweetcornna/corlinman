@@ -4,6 +4,22 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.22.2] — 2026-07-02 — Jittered retry backoff (thundering-herd defence)
+
+> Patch release. Config-compatible. First Phase-2 absorb from
+> `audit/ABSORB_MATRIX_2026-07-02.md` (Dim 1, mechanism absorbed from
+> hermes-agent's jittered backoff — re-implemented, no code copied).
+
+### Changed
+- **Transient-retry backoff is now jittered** — when a provider 429/5xx has no
+  `retry-after` hint, the reasoning loop's exponential backoff
+  (`0.5·2^(n-1)` capped 16s) previously used a fixed value, so a fleet of
+  workers retrying the same overload resynchronised into a thundering herd.
+  Backoff now applies **equal jitter** (half fixed + a random half), spreading
+  retries across `[base/2, base]`. Provider `retry-after`/reset hints are still
+  honoured verbatim. Extracted as the testable `_retry_backoff_seconds` helper
+  (injectable RNG) in `reasoning_loop.py`.
+
 ## [1.22.1] — 2026-07-02 — Live multi-agent panel: accurate tool-call count
 
 > Patch release. Config-compatible. Fixes an inflated tool-call number on the
