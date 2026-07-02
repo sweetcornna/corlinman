@@ -398,7 +398,17 @@ async def _run_chat(
                 # executor might, and a failed feedback send must not
                 # tear the stream down, so this stays guarded.
                 try:
-                    result = await executor.execute(tc)
+                    # Per-tool OTel span (ABSORB_MATRIX Dim 12): the loop only
+                    # had request-level spans; this times each tool execution
+                    # and records exceptions. No-op without a tracer.
+                    with telemetry.span(
+                        "tool.execute",
+                        attributes={"tool.name": tc.tool, "tool.plugin": tc.plugin},
+                    ) as _tool_span:
+                        result = await executor.execute(tc)
+                        _tool_span.set_attribute(
+                            "tool.is_error", bool(getattr(result, "is_error", False))
+                        )
                     await tx.put(agent_pb2.ClientFrame(tool_result=result))
                 except Exception as exc:  # noqa: BLE001 — ack failure is non-fatal
                     log.debug(

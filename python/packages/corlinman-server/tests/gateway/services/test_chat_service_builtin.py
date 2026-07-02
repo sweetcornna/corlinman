@@ -171,3 +171,44 @@ async def test_run_chat_with_channel_request_missing_persona_id_streams_to_done(
 
     assert any(isinstance(ev, DoneEvent) for ev in events)
     assert not any(isinstance(ev, ErrorEvent) for ev in events)
+
+
+@pytest.mark.asyncio
+async def test_tool_execution_emits_per_tool_otel_span() -> None:
+    """A real (non-builtin) tool_call runs through the executor inside a
+    ``tool.execute`` OTel span with a ``tool.name`` attribute (Dim 12)."""
+    from corlinman_server import telemetry as telemetry_mod
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    provider = TracerProvider()
+    exporter = InMemorySpanExporter()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    telemetry_mod._PROVIDER = provider  # noqa: SLF001
+    try:
+        backend = _ScriptedBackend(
+            [
+                agent_pb2.ServerFrame(
+                    tool_call=agent_pb2.ToolCall(
+                        call_id="c1", plugin="calc", tool="calculator",
+                        args_json=b"{}", seq=1,
+                    )
+                ),
+                agent_pb2.ServerFrame(done=agent_pb2.Done(finish_reason="stop")),
+            ]
+        )
+        executor = _RecordingExecutor()
+        req = InternalChatRequest(model="x", messages=[])
+        _ = [ev async for ev in _run_chat(backend, executor, req, asyncio.Event())]
+
+        assert executor.calls, "executor must run for a non-builtin tool_call"
+        spans = exporter.get_finished_spans()
+        tool_spans = [s for s in spans if s.name == "tool.execute"]
+        assert tool_spans, f"expected a tool.execute span; got {[s.name for s in spans]}"
+        assert tool_spans[0].attributes.get("tool.name") == "calculator"
+    finally:
+        provider.shutdown()
+        telemetry_mod._PROVIDER = None  # noqa: SLF001
