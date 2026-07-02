@@ -223,3 +223,50 @@ async def test_permissions_unavailable_without_surface() -> None:
     app = StubApp()  # _IdleBrain: no permission methods (attach-mode shape)
     text = await dispatch(app, "/permissions") or ""
     assert "unavailable" in text
+
+
+class _FuzzyApp(StubApp):
+    """StubApp with the fuzzy session matcher (Dim 11)."""
+
+    def __init__(self, keys: list[str]) -> None:
+        super().__init__()
+        self._keys = keys
+        self.resumed: list[str] = []
+
+    async def match_session_keys(self, fragment: str) -> list[str]:
+        if fragment in self._keys:
+            return [fragment]
+        return [k for k in self._keys if fragment in k]
+
+    async def resume_session(self, key: str) -> int | None:
+        self.resumed.append(key)
+        self.session.reset(session_key=key)
+        return 1
+
+
+async def test_resume_fuzzy_unique_substring_resolves() -> None:
+    app = _FuzzyApp(["console:abc123", "tg:1:99"])
+    text = await dispatch(app, "/resume abc") or ""
+    assert app.resumed == ["console:abc123"]
+    assert "console:abc123" in text
+
+
+async def test_resume_fuzzy_ambiguous_lists_matches_without_resuming() -> None:
+    app = _FuzzyApp(["console:abc1", "console:abc2"])
+    text = await dispatch(app, "/resume abc") or ""
+    assert app.resumed == []  # did NOT guess
+    assert "ambiguous" in text and "console:abc1" in text and "console:abc2" in text
+
+
+async def test_resume_exact_key_wins_over_substring() -> None:
+    app = _FuzzyApp(["console:abc", "console:abcd"])
+    await dispatch(app, "/resume console:abc")
+    assert app.resumed == ["console:abc"]  # exact hit, not ambiguous
+
+
+async def test_resume_no_match_falls_through_to_named_session() -> None:
+    """Zero matches keep today's semantics: /resume can start a fresh named
+    session under the given key."""
+    app = _FuzzyApp(["console:xyz"])
+    await dispatch(app, "/resume brand-new-key")
+    assert app.resumed == ["brand-new-key"]

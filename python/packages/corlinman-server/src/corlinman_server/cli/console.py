@@ -131,6 +131,16 @@ def _load_config(data_dir: Path) -> dict[str, Any]:
     help="Exit the REPL after N completed turns (0 = unlimited).",
 )
 @click.option(
+    "-c",
+    "--continue",
+    "continue_latest",
+    is_flag=True,
+    help=(
+        "Resume the most recent session from the journal (like --session "
+        "with the newest key; an explicit --session wins)."
+    ),
+)
+@click.option(
     "--permission-mode",
     type=click.Choice(
         ["default", "acceptEdits", "plan", "bypass"], case_sensitive=False
@@ -153,6 +163,7 @@ def console(
     tool_progress: str,
     output_format: str,
     max_turns: int,
+    continue_latest: bool,
     permission_mode: str | None,
 ) -> None:
     """Interactive agent console (REPL) — the CLI face of the corlinman brain.
@@ -204,6 +215,7 @@ def console(
                 output_format=output_format,
                 max_turns=max_turns,
                 attach_token=attach_token,
+                continue_latest=continue_latest,
             )
         )
     except KeyboardInterrupt:

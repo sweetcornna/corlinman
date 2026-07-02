@@ -119,6 +119,18 @@ async def _cmd_resume(app: Any, args: str) -> str:
     key = args.strip()
     if not key:
         return "usage: /resume <session-key>  (see /sessions)"
+    # Fuzzy resolution (Dim 11): an exact key wins; a unique substring match
+    # resolves; multiple matches disambiguate instead of guessing. Zero
+    # matches fall through with the raw key — /resume can also start a fresh
+    # named session (today's semantics, preserved).
+    matcher = getattr(app, "match_session_keys", None)
+    if callable(matcher):
+        matches = await matcher(key)
+        if len(matches) == 1:
+            key = matches[0]
+        elif len(matches) > 1:
+            listing = "\n".join(f"  {k}" for k in matches[:10])
+            return f"ambiguous — {len(matches)} sessions match '{key}':\n{listing}"
     replayed = await app.resume_session(key)
     if replayed is None:
         return "resume is unavailable in attach mode"

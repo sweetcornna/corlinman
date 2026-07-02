@@ -269,6 +269,46 @@ class ConsoleApp:
             with contextlib.suppress(Exception):
                 await journal.close()
 
+    async def latest_session_key(self) -> str | None:
+        """Most-recent journal session key (``--continue``); ``None`` in
+        attach mode or with no journal. ``list_session_summaries`` is ordered
+        newest-first, so row 0 is the answer."""
+        if not self.embedded:
+            return None
+        journal = await self._open_journal()
+        if journal is None:
+            return None
+        try:
+            rows = await journal.list_session_summaries(limit=1)
+            key = str(getattr(rows[0], "session_key", "")) if rows else ""
+            return key or None
+        except Exception:  # noqa: BLE001 — best-effort convenience
+            return None
+        finally:
+            with contextlib.suppress(Exception):
+                await journal.close()
+
+    async def match_session_keys(self, fragment: str) -> list[str]:
+        """Session keys matching ``fragment`` for fuzzy ``/resume``: an exact
+        key wins alone; otherwise recency-ordered substring matches. Empty in
+        attach mode or without a journal."""
+        if not self.embedded:
+            return []
+        journal = await self._open_journal()
+        if journal is None:
+            return []
+        try:
+            rows = await journal.list_session_summaries(limit=50)
+            keys = [str(getattr(r, "session_key", "")) for r in rows]
+            if fragment in keys:
+                return [fragment]
+            return [k for k in keys if fragment in k]
+        except Exception:  # noqa: BLE001 — best-effort convenience
+            return []
+        finally:
+            with contextlib.suppress(Exception):
+                await journal.close()
+
     async def _open_journal(self) -> Any | None:
         try:
             from corlinman_server.agent_journal import AgentJournal  # noqa: PLC0415
@@ -556,6 +596,7 @@ async def run_console(
     output_format: str = "text",
     max_turns: int = 0,
     attach_token: str | None = None,
+    continue_latest: bool = False,
 ) -> int:
     """Build the app (embedded or attach brain) and run it.
 
@@ -655,6 +696,25 @@ async def run_console(
                 build_console_prompter(renderer)
             )
             wire(app.approval_resolver)
+
+    # ``--continue`` (Dim 11): resume the most recent journal session. An
+    # explicit ``--session`` wins (a named key beats the convenience flag).
+    if continue_latest and not session_key:
+        if embedded:
+            latest = await app.latest_session_key()
+            if latest:
+                session_key = latest
+            else:
+                console.print(
+                    "--continue: no prior sessions found — starting fresh",
+                    style="yellow",
+                )
+        else:
+            console.print(
+                "--continue is unavailable in attach mode (journal lives in "
+                "the remote gateway)",
+                style="yellow",
+            )
 
     if session_key:
         if embedded:
