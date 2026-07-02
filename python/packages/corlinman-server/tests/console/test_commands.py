@@ -130,3 +130,15 @@ async def test_status_mentions_brain_and_model() -> None:
     app = StubApp()
     text = await dispatch(app, "/status") or ""
     assert "stub brain" in text and "big" in text
+
+
+async def test_init_returns_turn_request_with_codebase_analysis_prompt() -> None:
+    """/init resolves to a TurnRequest (run through the brain), not printed text,
+    instructing the agent to analyze the repo and write CORLINMAN.md."""
+    from corlinman_server.console.commands import TurnRequest
+
+    app = StubApp()
+    reply = await dispatch(app, "/init")
+    assert isinstance(reply, TurnRequest)
+    assert "CORLINMAN.md" in reply.content
+    assert "build" in reply.content.lower() and "test" in reply.content.lower()

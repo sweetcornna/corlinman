@@ -19,9 +19,20 @@ from corlinman_server.console.compaction import Compactor
 from corlinman_server.console.render import TOOL_PROGRESS_MODES
 from corlinman_server.console.rewind import cmd_rewind as _cmd_rewind
 
-__all__ = ["SlashCommand", "dispatch", "registry"]
+__all__ = ["SlashCommand", "TurnRequest", "dispatch", "registry"]
 
-Handler = Callable[[Any, str], Awaitable[str | None]]
+
+@dataclass(frozen=True, slots=True)
+class TurnRequest:
+    """Sentinel return from :func:`dispatch` — a command that resolved to a
+    *prelude* (wizard-style shared command like ``/persona``, or ``/init``'s
+    codebase-analysis prompt) which the REPL must send through the brain as a
+    chat turn rather than print."""
+
+    content: str
+
+
+Handler = Callable[[Any, str], Awaitable[str | TurnRequest | None]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,6 +202,32 @@ async def _cmd_quit(app: Any, args: str) -> str | None:
     return None
 
 
+_INIT_PROMPT = (
+    "Bootstrap a CORLINMAN.md project-memory file for this codebase.\n\n"
+    "First, use your file tools (list, search, read) to inspect the project: "
+    "the directory layout, build/test/lint commands (check Makefile, "
+    "package.json, pyproject.toml, CONTRIBUTING.md), the high-level "
+    "architecture, and any project-specific conventions or gotchas.\n\n"
+    "Then write a concise, high-signal CORLINMAN.md at the repository root (the "
+    "directory containing .git, else the current directory). It is folded into "
+    "the system prompt of every future session, so keep it tight — cover: the "
+    "exact build/lint/test commands, the main components and how they fit "
+    "together, and the non-obvious rules a new contributor must know. If a "
+    "CORLINMAN.md already exists, read it first and improve it rather than "
+    "discarding good content. Finish with a one-line summary of what you "
+    "captured."
+)
+
+
+async def _cmd_init(app: Any, args: str) -> TurnRequest:
+    """Bootstrap CORLINMAN.md from a one-shot codebase-analysis turn (the
+    claude-code ``/init`` analog). Returns a :class:`TurnRequest` so the brain
+    runs it with its file tools; the CORLINMAN.md discovery/@include pipeline
+    then folds the result into every subsequent session's system prompt."""
+    _ = (app, args)
+    return TurnRequest(_INIT_PROMPT)
+
+
 _REGISTRY: tuple[SlashCommand, ...] = (
     SlashCommand("help", "show this list", _cmd_help, aliases=("h", "?")),
     SlashCommand("new", "start a fresh session (drops the window)", _cmd_new),
@@ -213,6 +250,9 @@ _REGISTRY: tuple[SlashCommand, ...] = (
         usage="[n|sha]",
     ),
     SlashCommand("memory", "list loaded CORLINMAN.md project-memory files", _cmd_memory),
+    SlashCommand(
+        "init", "analyze the codebase and write a CORLINMAN.md", _cmd_init
+    ),
     SlashCommand("status", "brain / model / session overview", _cmd_status),
     SlashCommand(
         "progress", "set tool progress display mode", _cmd_progress, usage="<mode>"
@@ -231,15 +271,6 @@ def _lookup(name: str) -> SlashCommand | None:
         if name == cmd.name or name in cmd.aliases:
             return cmd
     return None
-
-
-@dataclass(frozen=True, slots=True)
-class TurnRequest:
-    """Sentinel return from :func:`dispatch` — the command resolved to a
-    *prelude* (wizard-style shared command like ``/persona``) that must
-    be sent through the brain as a chat turn rather than printed."""
-
-    content: str
 
 
 async def _dispatch_shared(app: Any, line: str) -> str | TurnRequest | None:
