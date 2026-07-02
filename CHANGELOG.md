@@ -4,6 +4,28 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.22.3] — 2026-07-02 — MCP tool namespacing + server allow/deny policy
+
+> Patch release. Config-compatible. Hardens the v1.22.0 MCP tool-face
+> (ABSORB_MATRIX Dim 5) — closes a bare-name collision gap and adds a server
+> policy absorbed from claude-code's `allowedMcpServers`/`deniedMcpServers`.
+
+### Fixed
+- **Cross-server MCP tools no longer silently drop, and can't shadow builtins**
+  — discovered MCP tools were advertised by their bare name with first-wins
+  dedup, so a tool of the same name on two servers dropped the second, and an
+  MCP tool named like a builtin (`calculator`, `web_search`) shadowed it. Tools
+  are now advertised **namespaced as `{server}_{tool}`** (unique per server,
+  distinct from bare builtins); the `McpToolBridge` strips the `{server}_`
+  prefix back to the bare tool the server knows, guarded by `has_tool` so a real
+  on-disk `mcp` manifest advertising a bare name is untouched.
+
+### Added
+- **MCP server allow/deny policy** — `[mcp].deniedMcpServers` /
+  `allowedMcpServers` (deny wins; a non-empty allow-list is exclusive) filter
+  which connected servers' tools are advertised + routable, applied at boot in
+  `register_mcp_tools`.
+
 ## [1.22.2] — 2026-07-02 — Jittered retry backoff (thundering-herd defence)
 
 > Patch release. Config-compatible. First Phase-2 absorb from

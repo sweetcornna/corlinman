@@ -382,7 +382,7 @@ wheels = [
 
 [[package]]
 name = "corlinman"
-version = "1.22.2"
+version = "1.22.3"
 source = { virtual = "." }
 dependencies = [
     { name = "corlinman-agent" },
