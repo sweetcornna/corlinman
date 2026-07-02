@@ -1476,3 +1476,34 @@ def test_read_file_truncation_emits_next_offset_and_hint(tmp_path: Path) -> None
     assert "hint" in res
     # next_offset is the first line NOT fully shown.
     assert res["shown"][1] == res["next_offset"] - 1
+
+
+def test_write_preserves_existing_file_mode(tmp_path: Path) -> None:
+    """Atomic write (tmp→replace) must keep an existing file's mode — e.g. the
+    executable bit — not reset it to 0644 (ABSORB_MATRIX Dim 4)."""
+    import os as _os
+    import stat as _stat
+
+    target = tmp_path / "script.sh"
+    target.write_text("#!/bin/sh\necho old\n")
+    _os.chmod(target, 0o755)
+
+    res = json.loads(
+        dispatch_write_file(
+            args_json=_args(path="script.sh", content="#!/bin/sh\necho new\n"),
+            workspace=tmp_path,
+        )
+    )
+    assert res["action"] == "overwritten"
+    assert target.read_text() == "#!/bin/sh\necho new\n"
+    assert _stat.S_IMODE(target.stat().st_mode) == 0o755  # executable bit kept
+
+
+def test_write_leaves_no_staging_temp_file(tmp_path: Path) -> None:
+    """The atomic staging temp file is renamed onto the target, never left."""
+    dispatch_write_file(
+        args_json=_args(path="a.txt", content="hello"), workspace=tmp_path
+    )
+    leftovers = [p.name for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
+    assert leftovers == []
+    assert (tmp_path / "a.txt").read_text() == "hello"

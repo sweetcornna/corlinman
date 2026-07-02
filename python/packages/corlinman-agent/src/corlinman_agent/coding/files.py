@@ -12,10 +12,13 @@ Each ``dispatch_*`` returns a JSON envelope string for
 from __future__ import annotations
 
 import base64
+import contextlib
 import difflib
 import json
 import mimetypes
 import os
+import stat
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -664,31 +667,44 @@ def dispatch_write_file(
                 prior = path.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 prior = ""
-        # S3: open with ``O_NOFOLLOW`` so a leaf symlink that appeared
-        # between :func:`resolve_in_workspace` and the open (TOCTOU)
-        # is also refused at the syscall layer. The pre-check catches
-        # the static case; ``O_NOFOLLOW`` catches the race.
-        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _O_NOFOLLOW
-        try:
-            fd = os.open(path, flags, 0o644)
-        except OSError as exc:
-            # ELOOP from O_NOFOLLOW surfaces as OSError; treat as
-            # a workspace_escape so the model sees a consistent error.
-            msg = str(exc)
-            if "ELOOP" in msg or "Too many levels of symbolic links" in msg or getattr(exc, "errno", None) == 62:
-                return _err(
-                    {"path": raw.get("path"), "error": f"workspace_escape: O_NOFOLLOW refused: {exc}"}
-                )
+        # Atomic write (claude-code parity, ABSORB_MATRIX Dim 4): stage the
+        # bytes into a unique sibling temp file, fsync, then ``os.replace`` onto
+        # the target — a crash or partial write can never leave a truncated
+        # file. ``os.replace`` never follows a symlink at ``path``; we also
+        # refuse a symlinked target up front, preserving the O_NOFOLLOW
+        # workspace-escape posture of the old O_TRUNC path (a symlinked *parent*
+        # was already rejected by ``resolve_in_workspace`` above).
+        if path.is_symlink():
             return _err(
-                {"path": raw.get("path"), "error": f"write_failed: {exc}"}
+                {
+                    "path": raw.get("path"),
+                    "error": "workspace_escape: refusing to write through a symlink",
+                }
             )
+        # Preserve an existing file's mode (e.g. an executable bit); a new file
+        # gets 0644 like the old O_CREAT path.
+        mode = 0o644
+        if existed:
+            with contextlib.suppress(OSError):
+                mode = stat.S_IMODE(os.stat(path).st_mode)
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            tmp_fd, tmp_name = tempfile.mkstemp(
+                dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+            )
+        except OSError as exc:
+            return _err({"path": raw.get("path"), "error": f"write_failed: {exc}"})
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
                 fh.write(content)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.chmod(tmp_path, mode)
+            os.replace(tmp_path, path)
         except OSError as exc:
-            return _err(
-                {"path": raw.get("path"), "error": f"write_failed: {exc}"}
-            )
+            with contextlib.suppress(OSError):
+                tmp_path.unlink()
+            return _err({"path": raw.get("path"), "error": f"write_failed: {exc}"})
     except OSError as exc:
         return _err({"path": raw.get("path"), "error": f"write_failed: {exc}"})
     if state is not None:
@@ -1098,33 +1114,40 @@ def dispatch_edit_file(
     out_text = _apply_eol_bom(updated, eol, bom)
     snippet = _diff_snippet(before_text, updated, workspace_rel(ws, path))
 
+    # Atomic edit (ABSORB_MATRIX Dim 4): stage into a sibling temp file, fsync,
+    # then ``os.replace`` so a crash mid-write can't corrupt the file the agent
+    # just read. Symlink refusal + os.replace-not-following preserve the old
+    # O_NOFOLLOW workspace-escape posture; the existing file's mode is kept.
+    if path.is_symlink():
+        return _err(
+            {
+                "path": raw.get("path"),
+                "error": "workspace_escape: refusing to write through a symlink",
+            }
+        )
     try:
-        # S3: open with O_NOFOLLOW. The earlier resolve_in_workspace
-        # pre-check refused if any ancestor was a symlink at that
-        # point; O_NOFOLLOW catches a leaf symlink swapped in between
-        # the check and the open (TOCTOU). The path already exists
-        # here (we just read it above), so O_TRUNC + O_WRONLY is
-        # safe.
-        flags = os.O_WRONLY | os.O_TRUNC | _O_NOFOLLOW
-        try:
-            fd = os.open(path, flags)
-        except OSError as exc:
-            msg = str(exc)
-            if "ELOOP" in msg or "Too many levels of symbolic links" in msg or getattr(exc, "errno", None) == 62:
-                return _err(
-                    {"path": raw.get("path"), "error": f"workspace_escape: O_NOFOLLOW refused: {exc}"}
-                )
-            return _err({"path": raw.get("path"), "error": f"write_failed: {exc}"})
-        try:
-            # ``newline=""`` so Python does NOT translate our explicit EOL —
-            # ``out_text`` already carries the file's original line endings.
-            with os.fdopen(
-                fd, "w", encoding=encoding, newline=""
-            ) as fh:
-                fh.write(out_text)
-        except OSError as exc:
-            return _err({"path": raw.get("path"), "error": f"write_failed: {exc}"})
+        edit_mode = stat.S_IMODE(os.stat(path).st_mode)
+    except OSError:
+        edit_mode = 0o644
+    try:
+        tmp_fd, tmp_name = tempfile.mkstemp(
+            dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+        )
     except OSError as exc:
+        return _err({"path": raw.get("path"), "error": f"write_failed: {exc}"})
+    tmp_path = Path(tmp_name)
+    try:
+        # ``newline=""`` so Python does NOT translate our explicit EOL —
+        # ``out_text`` already carries the file's original line endings.
+        with os.fdopen(tmp_fd, "w", encoding=encoding, newline="") as fh:
+            fh.write(out_text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp_path, edit_mode)
+        os.replace(tmp_path, path)
+    except OSError as exc:
+        with contextlib.suppress(OSError):
+            tmp_path.unlink()
         return _err({"path": raw.get("path"), "error": f"write_failed: {exc}"})
     if state is not None:
         # Drop the stale cache entry but keep the path "seen" — the agent
