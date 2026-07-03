@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 from collections.abc import AsyncIterator
 from typing import Any
@@ -93,38 +94,46 @@ def _next_poll_interval(changed: bool, current: float) -> float:
     )
 
 
-def _sleep_slices(
-    poll: float, since_keepalive: float, heartbeat: float
-) -> list[tuple[float, bool]]:
-    """Split a poll-interval sleep into heartbeat-bounded slices.
+def _overview_change_signature(
+    store: Any, registry: Any
+) -> tuple[int | None, int | None]:
+    """Cheap O(1) change probe for the overview loop (Codex #113).
 
-    Returns ``(seconds, emit_keepalive_after)`` pairs whose seconds sum to
-    ``poll`` exactly, cut wherever the running ``since_keepalive`` clock
-    would cross ``heartbeat`` — so a backed-off interval (up to the 10s
-    cap) never delays the keepalive past the documented SSE rhythm, while
-    the caller's scan cadence still honours the full ``poll``. A slice
-    flagged ``True`` resets the caller's keepalive clock. Pure function;
-    extracted for testability (Codex #113).
+    Returns ``(registry_revision, store_file_mtime_ns)`` — a tuple the loop
+    compares against the signature captured at its last full scan to decide
+    whether anything changed WITHOUT paying for ``list_all()`` + a merge:
+
+    * ``registry.revision`` — a plain int the in-memory
+      :class:`LiveSubagentRegistry` bumps on every row mutation.
+    * the backing store file's ``st_mtime_ns`` — the store flushes to its
+      ``_persist_path`` after every mutation, so the mtime moves whenever a
+      background (durable) row changes.
+
+    Every component defensively degrades to ``None`` (registry absent or
+    missing the attribute, store unwired, no persist path, stat error)
+    rather than raising — the probe rides the SSE hot loop and must never
+    break it. A ``None`` component simply means "can't cheaply tell for this
+    source"; the loop's ``next_full_scan`` deadline still bounds staleness.
     """
-    slices: list[tuple[float, bool]] = []
-    remaining = poll
-    clock = since_keepalive
-    while remaining > 0:
-        to_heartbeat = heartbeat - clock
-        if to_heartbeat <= 0:
-            # Already at/past the rhythm on entry — emit immediately.
-            slices.append((0.0, True))
-            clock = 0.0
-            continue
-        if to_heartbeat <= remaining:
-            slices.append((to_heartbeat, True))
-            remaining -= to_heartbeat
-            clock = 0.0
-        else:
-            slices.append((remaining, False))
-            clock += remaining
-            remaining = 0.0
-    return slices
+    revision: int | None
+    try:
+        revision = int(registry.revision) if registry is not None else None
+    except Exception:  # noqa: BLE001 — probe must never raise
+        revision = None
+
+    mtime: int | None = None
+    # ``SubagentTaskStore`` persists to ``_persist_path`` (a ``Path``); look it
+    # up defensively so a store shape without one degrades to ``None`` instead
+    # of exploding the stream.
+    path = getattr(store, "_persist_path", None) if store is not None else None
+    if path is not None:
+        try:
+            mtime = os.stat(path).st_mtime_ns
+        except OSError:
+            # Missing file (nothing flushed yet) or any stat failure — treat as
+            # "unknown" rather than a spurious change.
+            mtime = None
+    return (revision, mtime)
 
 
 # ---------------------------------------------------------------------------
@@ -431,12 +440,17 @@ def router() -> APIRouter:
     async def stream_subagents_overview() -> Any:
         """Global feed of subagent state transitions.
 
-        Polls the store every heartbeat tick (default 10s) and emits a
-        ``subagent`` SSE frame for any row whose state changed since the
-        last tick. The route is intentionally store-driven (rather than
-        emitter-driven) so the overview panel always reflects the durable
-        snapshot — operator UIs prefer correctness over sub-second
-        latency for this panel.
+        Emits a ``subagent`` SSE frame for any row whose state changed. The
+        route is intentionally store-driven (rather than emitter-driven) so
+        the overview panel always reflects the durable snapshot — operator
+        UIs prefer correctness over sub-second latency for this panel.
+
+        The loop runs on three independent monotonic clocks (see the inline
+        comment on the loop for the full rationale + cost model): a
+        real-elapsed keepalive rhythm, a cheap per-tick change *probe*, and a
+        backed-off *full scan*. Idle cost is O(1) per probe tick; the
+        expensive ``list_all()`` + merge runs only at the backed-off cadence
+        or the instant the probe sees a change.
         """
         state = get_admin_state()
         store = _resolve_store(state)
@@ -478,60 +492,98 @@ def router() -> APIRouter:
                         row.activity,
                     )
 
-                # Poll faster than the keepalive so the panel feels live
-                # (Codex-Desktop-style): a child switching tools surfaces in
-                # ~2s instead of waiting a full 10s heartbeat. That liveness
-                # only matters while state is moving, though — so the cadence
-                # ADAPTS: a fully-unchanged tick backs the interval off ×1.5
-                # up to a 10s cap (see ``_next_poll_interval``), and the next
-                # change snaps it straight back to 2s. This keeps the idle
-                # cost (per-client ``list_all()`` + merge every tick) low
-                # without ever sacrificing liveness. The keepalive rides
-                # wall-clock elapsed time so idle proxies still see the same
-                # ~10s byte rhythm as the other SSE routes.
+                # ----------------------------------------------------------
+                # Three monotonic clocks (Codex #113). Everything is measured
+                # from ``time.monotonic()`` — REAL elapsed time — so time spent
+                # in ``_combined()`` / serialization / a blocked yield is
+                # counted, never merely the sleep we *asked* for.
+                #
+                #  1. HEARTBEAT (real-elapsed output silence). ``last_byte``
+                #     moves after EVERY yield — data frames AND keepalives — and
+                #     a keepalive fires the instant ``HEARTBEAT`` seconds of true
+                #     wall time elapse with no byte. So the first idle keepalive
+                #     lands on the ~10s rhythm idle proxies expect regardless of
+                #     scan/backoff cost (fixes finding (a)).
+                #  2. PROBE (cheap change signal at the base cadence). Each tick
+                #     reads ``_overview_change_signature`` — an int + one stat,
+                #     no ``list_all()``. When it differs from the signature
+                #     captured at the last full scan, a change happened: scan
+                #     immediately. So a change after an idle backoff surfaces
+                #     within one base tick (~2s) rather than waiting out the
+                #     whole backed-off interval up to 10s (fixes finding (b)).
+                #  3. FULL SCAN (expensive ``_combined()`` + merge). Runs when
+                #     the backed-off ``next_full_scan`` deadline arrives OR the
+                #     probe flagged a change; the existing ``_next_poll_interval``
+                #     backoff (base→cap on idle, snap-to-base on change) still
+                #     drives that deadline.
+                #
+                # Cost model: while idle the per-tick cost is O(1) — one
+                # ``stat`` + one int read every base interval (~2s); the full
+                # scan runs only at the backed-off cadence or the moment a real
+                # change is detected, never every tick per connected client.
+                # ----------------------------------------------------------
+                now = time.monotonic()
+                last_byte = now
                 _poll = _SUBAGENT_OVERVIEW_POLL_BASE_SECONDS
-                since_keepalive = 0.0
+                next_full_scan = now + _poll
+                last_scan_sig = _overview_change_signature(store, registry)
                 while True:
-                    # Sleep the poll interval in heartbeat-bounded slices:
-                    # a backed-off interval (up to 10s) must never push the
-                    # keepalive past the documented ~10s SSE rhythm, or
-                    # idle proxies drop the connection (Codex #113). The
-                    # scan cadence still honours the full ``_poll``.
-                    for slice_s, emit_keepalive in _sleep_slices(
-                        _poll, since_keepalive, _SUBAGENT_SSE_HEARTBEAT_SECONDS
-                    ):
-                        await asyncio.sleep(slice_s)
-                        since_keepalive += slice_s
-                        if emit_keepalive:
-                            yield b": keepalive\n\n"
-                            since_keepalive = 0.0
-                    seen_ids: set[str] = set()
-                    changed = False
-                    for row in await _combined():
-                        seen_ids.add(row.request_id)
-                        snapshot = (row.state, row.finished_at, row.activity)
-                        prev = last.get(row.request_id)
-                        if prev == snapshot:
-                            continue
-                        changed = True
-                        last[row.request_id] = snapshot
-                        payload = json.dumps(row.model_dump(), default=str)
-                        yield (
-                            f"id: live:{seq}\n"
-                            f"event: subagent\n"
-                            f"data: {payload}\n\n"
-                        ).encode()
-                        seq += 1
-                    # Reap stale ids (test fixture deletions) — a disappearing
-                    # row is also a state change for cadence purposes.
-                    stale_ids = [k for k in last if k not in seen_ids]
-                    for stale in stale_ids:
-                        last.pop(stale, None)
-                    if stale_ids:
-                        changed = True
-                    # Adapt the next interval: snap to base on any change,
-                    # else back off toward the idle cap.
-                    _poll = _next_poll_interval(changed, _poll)
+                    now = time.monotonic()
+                    # (1) keepalive on real-elapsed output silence.
+                    if now - last_byte >= _SUBAGENT_SSE_HEARTBEAT_SECONDS:
+                        yield b": keepalive\n\n"
+                        last_byte = now
+                    # (2)+(3) full scan on the backed-off deadline OR the moment
+                    # the cheap probe diverges from the last scan's signature.
+                    sig = _overview_change_signature(store, registry)
+                    if now >= next_full_scan or sig != last_scan_sig:
+                        seen_ids: set[str] = set()
+                        changed = False
+                        for row in await _combined():
+                            seen_ids.add(row.request_id)
+                            snapshot = (
+                                row.state,
+                                row.finished_at,
+                                row.activity,
+                            )
+                            prev = last.get(row.request_id)
+                            if prev == snapshot:
+                                continue
+                            changed = True
+                            last[row.request_id] = snapshot
+                            payload = json.dumps(row.model_dump(), default=str)
+                            yield (
+                                f"id: live:{seq}\n"
+                                f"event: subagent\n"
+                                f"data: {payload}\n\n"
+                            ).encode()
+                            seq += 1
+                            last_byte = time.monotonic()
+                        # Reap stale ids (test fixture deletions) — a
+                        # disappearing row is also a state change for cadence.
+                        stale_ids = [k for k in last if k not in seen_ids]
+                        for stale in stale_ids:
+                            last.pop(stale, None)
+                        if stale_ids:
+                            changed = True
+                        # Adapt the next interval: snap to base on any change,
+                        # else back off toward the idle cap (unchanged logic).
+                        _poll = _next_poll_interval(changed, _poll)
+                        # Anchor the signature to the value we scanned against
+                        # (captured BEFORE the scan) so any mutation that raced
+                        # the scan re-triggers next tick — never miss a change.
+                        last_scan_sig = sig
+                        next_full_scan = time.monotonic() + _poll
+                    # Sleep until whichever clock ticks next — the base interval
+                    # bound IS the probe cadence — floored so we never
+                    # busy-spin when a deadline is already due.
+                    now = time.monotonic()
+                    sleep_for = min(
+                        next_full_scan - now,
+                        _SUBAGENT_SSE_HEARTBEAT_SECONDS - (now - last_byte),
+                        _SUBAGENT_OVERVIEW_POLL_BASE_SECONDS,
+                    )
+                    await asyncio.sleep(max(sleep_for, 0.05))
             except asyncio.CancelledError:
                 raise
 
@@ -548,6 +600,7 @@ def router() -> APIRouter:
     return r
 
 
-# Suppress unused-import noise from the helpers above. (Time / TenantQuotaExceeded
-# are kept around for diagnostics + future audit-log integration in W3.1.)
-_ = (time, TenantQuotaExceeded)
+# Suppress unused-import noise. (``TenantQuotaExceeded`` is kept around for
+# future audit-log integration in W3.1; ``time`` is now used by the overview
+# loop's monotonic clocks.)
+_ = (TenantQuotaExceeded,)
