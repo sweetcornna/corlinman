@@ -1396,6 +1396,42 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             except Exception as exc:  # noqa: BLE001 — never block the chat
                 logger.warning("agent.chat.user_prompt_emit_failed", error=str(exc))
 
+        # Declarative ``UserPromptSubmit`` hooks. These cannot abort the
+        # turn: a deny/inject verdict from an awaited (async=false) hook
+        # becomes a system note prepended to the messages, so an operator
+        # guard can annotate a prompt without owning the turn lifecycle.
+        # Default-async groups return allow immediately and run detached.
+        if user_text:
+            _runner = self._resolve_hook_runner()
+            _run_event = getattr(_runner, "run_event_async", None)
+            if _run_event is not None:
+                try:
+                    _d = await _run_event(
+                        "user_prompt_submit",
+                        {"user_text": user_text, "model": start.model or ""},
+                        {
+                            "session_key": start.session_key or "",
+                            "user_id": _extract_user_id(start),
+                        },
+                    )
+                    _note = None
+                    if not bool(getattr(_d, "allow", True)):
+                        _note = (
+                            getattr(_d, "reason", None)
+                            or "a user_prompt_submit hook flagged this prompt"
+                        )
+                    _inject = getattr(_d, "inject_message", None)
+                    if isinstance(_inject, str) and _inject.strip():
+                        _note = f"{_note}\n{_inject}" if _note else _inject
+                    if _note:
+                        start.messages = _inject_memory_note(
+                            list(start.messages), f"[hook:user_prompt_submit] {_note}"
+                        )
+                except Exception as exc:  # noqa: BLE001 — never block the chat
+                    logger.warning(
+                        "agent.chat.user_prompt_hook_failed", error=str(exc)
+                    )
+
         # Claude-Code-style mid-turn supplement: if a turn is ALREADY
         # running for this session_key, inject the new user text into
         # the in-flight loop and return a short ``supplemented`` Done
@@ -1646,6 +1682,14 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             tool_result_timeout=30.0,
             event_emitter=self._event_emitter,
         )
+        # Activates the loop's Stop-hook veto/inject path (previously
+        # inert here — the loop supported it but was never handed a
+        # runner) and its post_compact hook emit. Dim 9 parity. Probed
+        # via ``getattr`` so duck-typed loop stand-ins (tests) that don't
+        # implement the setter keep working, same as ``pin_turn_id``.
+        _set_hook_runner = getattr(loop, "set_hook_runner", None)
+        if callable(_set_hook_runner):
+            _set_hook_runner(self._resolve_hook_runner())
         if journal_turn_id is not None:
             # One turn identity everywhere: the journal rows (turns /
             # turn_messages) carry ``begin_turn()``'s id while the loop's
@@ -2533,6 +2577,56 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         )
 
     async def _dispatch_builtin(
+        self,
+        event: ToolCallEvent,
+        start: AgentChatStart,
+        provider: CorlinmanProvider,
+        file_state: FileState | None = None,
+    ) -> str | list[dict[str, Any]]:
+        """Dispatch a builtin tool, then fire post-tool hooks with the result.
+
+        Thin wrapper so ``PostToolUse`` hooks (legacy ``post_{tool}`` shell
+        keys + declarative groups) see the actual result string — the inner
+        method has many exit paths and its ``finally`` only knows ok/timing.
+        Post-tool hooks are fire-and-forget by contract: they can never
+        block, mutate, or fail the call.
+        """
+        result = await self._dispatch_builtin_inner(event, start, provider, file_state)
+        await self._run_post_tool_hooks(event, start, result)
+        return result
+
+    async def _run_post_tool_hooks(
+        self,
+        event: ToolCallEvent,
+        start: AgentChatStart,
+        result: str | list[dict[str, Any]],
+    ) -> None:
+        runner = self._resolve_hook_runner()
+        post = getattr(runner, "run_post_tool_async", None)
+        if post is None:
+            return
+        try:
+            result_str = result if isinstance(result, str) else json.dumps(result)
+            # Cap the hook payload — tool results can be huge and every
+            # byte is another stdin write / HTTP body per configured hook.
+            if len(result_str) > 16_000:
+                result_str = result_str[:16_000] + "…[truncated for hook]"
+            await post(
+                event.tool,
+                self._parse_args_dict(event.args_json),
+                result_str,
+                {
+                    "session_key": getattr(start, "session_key", None),
+                    "tenant_id": getattr(start, "tenant_id", None),
+                    "user_id": _extract_user_id(start),
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 — post-hooks never affect the call
+            logger.warning(
+                "agent.tool.post_hook_error", tool=event.tool, error=str(exc)
+            )
+
+    async def _dispatch_builtin_inner(
         self,
         event: ToolCallEvent,
         start: AgentChatStart,

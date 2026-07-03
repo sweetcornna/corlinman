@@ -103,7 +103,16 @@ def _build_hook_runner() -> Any | None:
         else:
             default_hooks_dir = data_dir / "hooks"
             hooks_dir = default_hooks_dir if default_hooks_dir.is_dir() else None
-        runner = HookRunner(hooks_cfg, hooks_dir=hooks_dir)
+        # Inject the shared permission-rule grammar for declarative-hook
+        # ``if`` matchers (corlinman-hooks cannot depend on corlinman-agent).
+        _rule_matcher: Any = None
+        try:
+            from corlinman_agent.permission import match_hook_rule
+
+            _rule_matcher = match_hook_rule
+        except ImportError:  # pragma: no cover — agent pkg absent in minimal installs
+            pass
+        runner = HookRunner(hooks_cfg, hooks_dir=hooks_dir, rule_matcher=_rule_matcher)
         logger.info(
             "hooks.runner.ready",
             hooks_dir=str(hooks_dir) if hooks_dir else None,

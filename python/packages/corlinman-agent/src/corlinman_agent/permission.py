@@ -370,6 +370,30 @@ def extract_arg_candidates(
     return extract_primary_arg(tool, args)
 
 
+def match_hook_rule(rule: str, tool: str, args: dict[str, Any] | None = None) -> bool:
+    """Evaluate one permission-rule string against a tool call.
+
+    The declarative-hooks ``if`` matcher (``corlinman-hooks`` cannot import
+    this package, so the grammar is injected as this callable). Reuses the
+    exact ``tool(pattern)`` sugar and arg-candidate extraction the
+    permission gate uses — the rule grammar is designed once and shared,
+    per the parity-matrix contract.
+
+    ``rule`` examples: ``"run_shell(git push*)"``, ``"write_file(*.ts)"``,
+    ``"run_shell"`` (any args), ``"*"`` (any tool). Unparseable rules
+    return ``False`` (the hook group is skipped, never the tool call).
+    """
+    text = str(rule or "").strip()
+    if not text:
+        return False
+    try:
+        parsed = PermissionRule(tool=text, action="allow")
+    except ValueError:
+        return False
+    candidates = extract_arg_candidates(tool, args)
+    return parsed.applies_to_args(tool, PermissionContext(), candidates)
+
+
 class PermissionGate:
     """Decides whether a builtin tool call should run.
 

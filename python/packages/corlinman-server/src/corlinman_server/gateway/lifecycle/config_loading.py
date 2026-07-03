@@ -378,7 +378,25 @@ def _start_config_watcher(app: Any, state: Any, config_path: Path | None) -> Any
         future config-reactive components) react to a live edit. The
         watcher already swapped the snapshot before calling us; we only
         notify. Best-effort: a missing bus / emit failure is swallowed so
-        the reload itself never fails on the notification side."""
+        the reload itself never fails on the notification side.
+
+        A ``hooks``-section change additionally rebuilds the live
+        HookRunner (shell keys + declarative groups + re-discovery) —
+        historically the runner was boot-time-only, so a ``[hooks]`` edit
+        silently did nothing until restart."""
+        if section == "hooks":
+            runner = getattr(state, "hook_runner", None)
+            reload_fn = getattr(runner, "reload", None)
+            if callable(reload_fn):
+                try:
+                    summary = reload_fn(
+                        {"hooks": new if isinstance(new, dict) else {}}
+                    )
+                    logger.info("gateway.config_reload.hooks_reloaded", **summary)
+                except Exception as exc:  # noqa: BLE001 — reload is best-effort
+                    logger.warning(
+                        "gateway.config_reload.hooks_reload_failed", error=str(exc)
+                    )
         bus = getattr(app.state, "hook_bus", None)
         if bus is None:
             return

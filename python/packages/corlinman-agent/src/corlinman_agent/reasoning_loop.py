@@ -1435,6 +1435,17 @@ class ReasoningLoop:
         """
         self._pinned_turn_id = str(turn_id) if turn_id else ""
 
+    def set_hook_runner(self, runner: Any | None) -> None:
+        """Late-bind the hook runner (mirrors :meth:`pin_turn_id`'s pattern).
+
+        The servicer resolves its runner C2-first at Chat time, after the
+        loop is constructed; duck-typed loop stand-ins in tests simply
+        omit this method and the servicer's ``getattr`` probe skips them.
+        Activates the Stop-hook veto/inject path and the ``post_compact``
+        hook emit for this loop.
+        """
+        self._hook_runner = runner
+
     @property
     def session_key(self) -> str:
         """Session key carried by the in-flight turn (empty before
@@ -1759,6 +1770,27 @@ class ReasoningLoop:
             # re-seeds from scratch.
             if messages is not messages_before_compact:
                 self._invalidate_token_cache()
+                # Declarative/discovered ``post_compact`` hooks — advisory,
+                # fire-and-forget by default. Identity change is the "a
+                # compaction actually happened" signal (passthrough keeps
+                # the same list). Defensive: only new runners have
+                # ``run_event_async``; failures never touch the turn.
+                _runner = getattr(self, "_hook_runner", None)
+                _run_event = getattr(_runner, "run_event_async", None)
+                if _run_event is not None:
+                    try:
+                        await _run_event(
+                            "post_compact",
+                            {
+                                "messages_before": len(messages_before_compact),
+                                "messages_after": len(messages),
+                            },
+                            {"session_key": self._session_key},
+                        )
+                    except Exception as exc:  # noqa: BLE001 — hook must never break the loop
+                        logger.warning(
+                            "reasoning_loop.post_compact_hook_error", error=str(exc)
+                        )
             rounds += 1
             tool_calls_this_round: list[ToolCallEvent] = []
             finish_reason = "stop"
@@ -2508,7 +2540,10 @@ class ReasoningLoop:
         runner = getattr(self, "_hook_runner", None)
         if runner is None:
             return None
-        run_stop = getattr(runner, "run_stop", None)
+        # Prefer the async variant: it runs the legacy shell hook off-thread
+        # and gives declarative Stop groups the full executor set
+        # (prompt/agent kinds need an event loop; the sync form skips them).
+        run_stop = getattr(runner, "run_stop_async", None) or getattr(runner, "run_stop", None)
         if run_stop is None:
             return None
         ctx = {

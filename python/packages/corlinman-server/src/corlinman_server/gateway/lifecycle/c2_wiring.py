@@ -343,7 +343,17 @@ async def _wire_c2_handles(
         else:
             default_hooks_dir = data_dir / "hooks"
             hooks_dir = default_hooks_dir if default_hooks_dir.is_dir() else None
-        runner = HookRunner(hooks_cfg, hooks_dir=hooks_dir)
+        # Declarative-hook ``if`` matchers reuse the permission-rule
+        # grammar; corlinman-hooks cannot import corlinman-agent, so the
+        # grammar is injected here (design-once contract).
+        _rule_matcher: Any = None
+        try:
+            from corlinman_agent.permission import match_hook_rule
+
+            _rule_matcher = match_hook_rule
+        except ImportError:  # pragma: no cover — agent pkg absent in minimal installs
+            pass
+        runner = HookRunner(hooks_cfg, hooks_dir=hooks_dir, rule_matcher=_rule_matcher)
         state.hook_runner = runner
         app.state.corlinman_hook_runner = runner
         extras = getattr(state, "extras", None)
