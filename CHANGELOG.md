@@ -4,6 +4,40 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.24.3] — 2026-07-03 — Pre-merge audit fixes (stack #102–#107)
+
+> Patch release. 22 confirmed findings fixed from the pre-merge audit of the
+> stacked PRs (28/33 Codex inline comments verified live at tip + workflow
+> review); 6 architectural findings deferred to #108.
+
+### Fixed
+- **MCP (P1)**: synthesized `mcp` registry entries are now created AFTER the
+  plugin registry exists — advertised MCP tools were unroutable
+  (`plugin_not_found`) on every boot. Advertisement guards added: invalid
+  OpenAI-charset names, manifest-collision servers, and literal-shadowed
+  namespaced names are dropped consistently from both `tools_json` and entries.
+- **Console sessions**: `--continue` resumes true recency (pinned sessions no
+  longer hijack it); fuzzy `/resume` proves uniqueness beyond one 50-row page.
+- **`/rewind` (turn-keyed)**: ownership probe rejects foreign-session turn ids;
+  Postgres stub backend degrades instead of wiping the window and reporting
+  success; prior turns page to exhaustion (was: newest 50); numeric turn-id
+  tie-break; window swap is all-or-nothing on journal failure; degraded
+  rebuilds fall back to the label match; user text starting with `[turn:` can
+  no longer masquerade as a journal tag.
+- **Approval resolver**: "always" grants cleared on `/new`, `/clear`, and
+  permission-mode switches (a cached `run_shell` grant no longer bypasses
+  `/plan`); concurrent approval prompts serialized.
+- **Live subagents panel**: `rejected`/`depth_capped` children show as failed;
+  respawns after agent restart replace stale terminal rows; `/status` falls
+  back to the live registry for inline rows.
+- **Provider editor**: dirty drafts re-persist before alias binding; Add/Add-all
+  skips aliases already routed to another provider (with a warning) and is
+  gated on the enabled switch; the models probe trims pasted full-endpoint URLs.
+- **Compaction**: elision sentinel check requires the full generated shape
+  (adversarial tool output starting with the prefix can't bypass compaction);
+  duplicate synthesized tool-call ids resolve to their own round's shell.
+- **File tools**: new-file atomic writes respect the process umask again.
+
 ## [1.24.2] — 2026-07-03 — System-prompt flags + informative elision
 
 > Patch release. Config-compatible. ABSORB_MATRIX Dim 10 residual +
