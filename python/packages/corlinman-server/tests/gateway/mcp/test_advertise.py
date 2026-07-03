@@ -27,18 +27,14 @@ class _FakeTool:
     def __init__(self, name: str, description: str = "", input_schema: Any = None) -> None:
         self.name = name
         self.description = description
-        self.input_schema = (
-            input_schema if input_schema is not None else {"type": "object"}
-        )
+        self.input_schema = input_schema if input_schema is not None else {"type": "object"}
 
 
 _ECHO_SCHEMA = {"type": "object", "properties": {"msg": {"type": "string"}}}
 
 
 def test_discovered_openai_schemas_namespaced_shape() -> None:
-    schemas = discovered_openai_schemas(
-        {"srv": [_FakeTool("echo", "Echo back", _ECHO_SCHEMA)]}
-    )
+    schemas = discovered_openai_schemas({"srv": [_FakeTool("echo", "Echo back", _ECHO_SCHEMA)]})
     assert schemas == [
         {
             "type": "function",
@@ -95,6 +91,39 @@ def test_filter_servers_by_policy() -> None:
     assert set(filter_servers_by_policy(disc)) == {"a", "b", "c"}
 
 
+def test_invalid_charset_names_never_advertised_or_routed() -> None:
+    """Bug 2: an advertised name outside the OpenAI function-name charset
+    (``^[a-zA-Z0-9_-]+$``) fails every chat turn upstream — a tool (or server)
+    name with a dot/space/unicode must be skipped from BOTH the tools_json
+    advertisement AND the synthesized registry entries."""
+    discovered = {
+        "srv": [_FakeTool("bad.name"), _FakeTool("ok", "OK", _ECHO_SCHEMA)],
+        "my server": [_FakeTool("echo")],  # space in the server name
+    }
+    names = [s["function"]["name"] for s in json.loads(mcp_advertised_tools_json(discovered))]
+    assert names == ["srv_ok"]  # bad.name / "my server" tools dropped
+    entries = build_mcp_registry_entries(discovered)
+    assert [e.manifest.name for e in entries] == ["srv"]  # no all-invalid server entry
+    (entry,) = entries
+    assert [t.name for t in entry.manifest.capabilities.tools] == ["srv_ok"]
+
+
+def test_namespaced_name_colliding_with_literal_tool_skipped() -> None:
+    """Bug 4: on server ``srv`` exposing both ``echo`` and a literal
+    ``srv_echo``, the namespaced form of ``echo`` IS ``srv_echo`` — at
+    dispatch the bridge prefers the literal (``_strip_server_namespace``
+    refuses to strip), so advertising it would run the literal ``srv_echo``
+    against ``echo``'s schema. Skip the ambiguous name by construction: only
+    the literal survives, advertised as ``srv_srv_echo``."""
+    discovered = {"srv": [_FakeTool("echo", "Echo", _ECHO_SCHEMA), _FakeTool("srv_echo")]}
+    names = [s["function"]["name"] for s in json.loads(mcp_advertised_tools_json(discovered))]
+    assert names == ["srv_srv_echo"]  # the literal, namespaced
+    assert "srv_echo" not in names  # the ambiguous name never reaches the model
+    # The synthesized entry stays consistent with the advertisement.
+    (entry,) = build_mcp_registry_entries(discovered)
+    assert [t.name for t in entry.manifest.capabilities.tools] == ["srv_srv_echo"]
+
+
 def test_build_entries_skips_empty_and_existing() -> None:
     discovered = {
         "": [_FakeTool("x")],  # empty server name → skip
@@ -102,9 +131,7 @@ def test_build_entries_skips_empty_and_existing() -> None:
         "real_manifest": [_FakeTool("y")],  # collides with an on-disk manifest
         "fresh": [_FakeTool("z", "Z", _ECHO_SCHEMA)],
     }
-    entries = build_mcp_registry_entries(
-        discovered, existing_names=frozenset({"real_manifest"})
-    )
+    entries = build_mcp_registry_entries(discovered, existing_names=frozenset({"real_manifest"}))
     assert [e.manifest.name for e in entries] == ["fresh"]
     (entry,) = entries
     assert entry.manifest.plugin_type.value == "mcp"
@@ -174,6 +201,27 @@ async def test_register_mcp_tools_applies_deny_policy() -> None:
     assert registry.get("good") is not None and registry.get("blocked") is None
     names = [s["function"]["name"] for s in json.loads(tools_json)]
     assert names == ["good_echo"]  # blocked server's tools never advertised
+
+
+async def test_register_mcp_tools_colliding_server_not_advertised() -> None:
+    """Bug 3: a server whose name already exists in the registry is never
+    upserted (never clobber a real manifest) — advertising its tools anyway
+    would hand the model names with no routing entry (``plugin_not_found`` on
+    every call). The advertisement must honor the same skip."""
+    from corlinman_providers.plugins.registry import PluginRegistry
+    from corlinman_server.gateway.mcp.advertise import register_mcp_tools
+
+    registry = PluginRegistry.from_roots([])
+    # A pre-existing entry already occupies the name "taken".
+    for entry in build_mcp_registry_entries({"taken": [_FakeTool("real")]}):
+        await registry.upsert(entry)
+
+    added, tools_json = await register_mcp_tools(
+        registry, {"taken": [_FakeTool("ghost")], "fresh": [_FakeTool("echo")]}
+    )
+    assert added == 1  # only "fresh" got a routing entry…
+    names = [s["function"]["name"] for s in json.loads(tools_json)]
+    assert names == ["fresh_echo"]  # …so only its tools are advertised
 
 
 async def test_register_mcp_tools_none_registry_still_advertises() -> None:

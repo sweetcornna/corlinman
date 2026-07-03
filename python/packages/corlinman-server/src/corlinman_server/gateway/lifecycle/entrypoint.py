@@ -177,6 +177,61 @@ logger = structlog.get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# MCP tool-plane wiring
+# ---------------------------------------------------------------------------
+
+
+async def _wire_mcp_tool_plane(state: Any, mcp_manager: Any) -> None:
+    """Surface the connected MCP servers' tools to the agent tool plane.
+
+    Synthesizes one ``mcp``-kind registry entry per ready server (so the
+    tool executor routes a tool call to the MCP bridge — no new dispatch
+    code) and stashes the advertised ``tools_json`` the gateway injects
+    into ``ChatStart.tools_json``. Without this the tools are connected
+    but invisible to the model.
+
+    MUST run *after* ``_wire_plugin_hotload`` has published
+    ``state.plugin_registry`` — upserting before the live registry exists
+    hits ``register_mcp_tools``'s ``registry is None`` early-out and
+    silently drops every routing entry, leaving every advertised MCP tool
+    unroutable (``plugin_not_found``). Best-effort: never break boot.
+    """
+    try:
+        from corlinman_server.gateway.mcp.advertise import (
+            register_mcp_tools,
+        )
+
+        # Server allow/deny policy from ``[mcp]`` config (claude-code
+        # ``allowedMcpServers`` / ``deniedMcpServers``): deny wins; a
+        # non-empty allow-list is exclusive.
+        _mcp_cfg = state.config.get("mcp") if isinstance(state.config, dict) else None
+        _mcp_cfg = _mcp_cfg if isinstance(_mcp_cfg, dict) else {}
+        _denied = frozenset(
+            str(s) for s in (_mcp_cfg.get("deniedMcpServers") or _mcp_cfg.get("denied") or [])
+        )
+        _allowed_raw = _mcp_cfg.get("allowedMcpServers") or _mcp_cfg.get("allowed")
+        _allowed = (
+            frozenset(str(s) for s in _allowed_raw)
+            if isinstance(_allowed_raw, (list, tuple, set)) and _allowed_raw
+            else None
+        )
+        _mcp_added, _mcp_tools_json = await register_mcp_tools(
+            getattr(state, "plugin_registry", None),
+            mcp_manager.discovered_tools(),
+            allowed=_allowed,
+            denied=_denied,
+        )
+        state.extras["mcp_tools_json"] = _mcp_tools_json
+        logger.info(
+            "gateway.mcp.tools_wired",
+            entries=_mcp_added,
+            advertised=bool(_mcp_tools_json),
+        )
+    except Exception as exc:  # pragma: no cover — best-effort
+        logger.warning("gateway.mcp.tools_wire_failed", error=str(exc))
+
+
+# ---------------------------------------------------------------------------
 # FastAPI app factory
 # ---------------------------------------------------------------------------
 
@@ -257,9 +312,7 @@ def build_app(
         admin_a_state = getattr(app.state, "corlinman_admin_a_state", None)
         admin_b_state = getattr(app.state, "corlinman_admin_b_state", None)
         try:
-            seeded = await ensure_admin_credentials(
-                config_path=admin_config_path
-            )
+            seeded = await ensure_admin_credentials(config_path=admin_config_path)
         except Exception as exc:  # pragma: no cover — defensive
             logger.warning("gateway.admin_seed.failed", error=str(exc))
             seeded = None
@@ -298,9 +351,7 @@ def build_app(
             try:
                 from corlinman_server.tenancy import AdminDb
 
-                _admin_db = await AdminDb.open(
-                    resolved_data_dir / "tenants.sqlite"
-                )
+                _admin_db = await AdminDb.open(resolved_data_dir / "tenants.sqlite")
             except Exception as exc:  # pragma: no cover — defensive
                 logger.warning(
                     "gateway.admin_db.open_failed",
@@ -312,9 +363,7 @@ def build_app(
             if _admin_db is not None:
                 # Rebind onto the middleware state so the live AdminDb
                 # is what every ``/v1/*`` request gets verified against.
-                api_key_state = getattr(
-                    app.state, "api_key_auth", None
-                )
+                api_key_state = getattr(app.state, "api_key_auth", None)
                 if api_key_state is not None:
                     api_key_state.admin_db = _admin_db
                 if admin_a_state is not None:
@@ -339,16 +388,12 @@ def build_app(
                     seed_builtin_personas,
                 )
 
-                _ps = await PersonaStore.open(
-                    resolved_data_dir / "personas.sqlite"
-                )
+                _ps = await PersonaStore.open(resolved_data_dir / "personas.sqlite")
                 await seed_builtin_personas(_ps)
                 admin_a_state.persona_store = _ps
                 logger.info("gateway.persona_store.opened")
             except Exception as exc:  # pragma: no cover — best-effort
-                logger.warning(
-                    "gateway.persona_store.init_failed", error=str(exc)
-                )
+                logger.warning("gateway.persona_store.init_failed", error=str(exc))
 
             # W1 Persona Studio: companion asset store for emoji +
             # reference image packs. Filesystem layout lives under
@@ -382,9 +427,7 @@ def build_app(
         # The identity sweep task is scheduled later (once ``background``
         # exists) so the lifespan-exit ``finally`` cancels + awaits it.
         if resolved_data_dir is not None:
-            await _wire_c2_handles(
-                app, state, admin_a_state, resolved_data_dir, cfg
-            )
+            await _wire_c2_handles(app, state, admin_a_state, resolved_data_dir, cfg)
 
         # W1.3 — task-observability surface. Open the per-turn journal
         # the agent servicer also opens lazily on first chat, and
@@ -429,9 +472,7 @@ def build_app(
                 if admin_b_state is not None:
                     admin_b_state.journal = observability_journal
                     admin_b_state.event_emitter = observability_emitter
-                    admin_b_state.live_subagent_registry = (
-                        live_subagent_registry
-                    )
+                    admin_b_state.live_subagent_registry = live_subagent_registry
                     # Bridge the AppState log broadcaster onto the
                     # admin-B state under the field name the
                     # /admin/logs/stream route reads (``log_broadcast``,
@@ -439,9 +480,10 @@ def build_app(
                     # returns 503 ``logs_disabled`` even when the
                     # broadcaster was installed during _build_state.
                     bcaster = getattr(state, "log_broadcaster", None)
-                    if bcaster is not None and getattr(
-                        admin_b_state, "log_broadcast", None
-                    ) is None:
+                    if (
+                        bcaster is not None
+                        and getattr(admin_b_state, "log_broadcast", None) is None
+                    ):
                         try:
                             admin_b_state.log_broadcast = bcaster
                         except (AttributeError, TypeError):  # pragma: no cover
@@ -473,9 +515,7 @@ def build_app(
                     journal=str(resolved_data_dir / "agent_journal.sqlite"),
                 )
             except Exception as exc:  # pragma: no cover — best-effort
-                logger.warning(
-                    "gateway.observability.init_failed", error=str(exc)
-                )
+                logger.warning("gateway.observability.init_failed", error=str(exc))
 
         # W1.1: GitHub-releases update checker. Best-effort wire — a
         # missing system module / unwritable data dir logs at WARN and
@@ -533,13 +573,9 @@ def build_app(
                     # is present in the config we leave the default
                     # off so the operator's cron expression / timezone
                     # / action choice is the one the scheduler runs.
-                    _register_default_update_check_job(
-                        app, cfg, update_cfg.interval_hours
-                    )
+                    _register_default_update_check_job(app, cfg, update_cfg.interval_hours)
                 else:
-                    logger.info(
-                        "gateway.system.update_checker_disabled_by_config"
-                    )
+                    logger.info("gateway.system.update_checker_disabled_by_config")
             except Exception as exc:  # pragma: no cover — best-effort
                 logger.warning(
                     "gateway.system.update_checker_init_failed",
@@ -632,9 +668,7 @@ def build_app(
                     path=str(audit_log_path),
                 )
             except Exception as exc:  # pragma: no cover — best-effort
-                logger.warning(
-                    "gateway.system.audit_log_init_failed", error=str(exc)
-                )
+                logger.warning("gateway.system.audit_log_init_failed", error=str(exc))
                 audit_log = None
 
             mode_raw = os.environ.get("CORLINMAN_RUNTIME_MODE", "")
@@ -650,9 +684,7 @@ def build_app(
                     resolve_upgrader,
                 )
 
-                upgrade_state_store = UpgradeStateStore(
-                    resolved_data_dir / ".upgrade-state.json"
-                )
+                upgrade_state_store = UpgradeStateStore(resolved_data_dir / ".upgrade-state.json")
                 # NOTE: no upgrader __init__ accepts ``audit_log`` (the audit
                 # log is installed separately on app.state / admin_b_state
                 # above); passing it here raised a TypeError that silently
@@ -668,9 +700,7 @@ def build_app(
                     if admin_b_state is not None:
                         admin_b_state.upgrader = upgrader
                     app.state.corlinman_upgrader = upgrader
-                    logger.info(
-                        "gateway.system.upgrader_installed", mode=mode
-                    )
+                    logger.info("gateway.system.upgrader_installed", mode=mode)
                 else:
                     logger.info(
                         "gateway.system.upgrader_disabled_for_mode",
@@ -678,9 +708,7 @@ def build_app(
                     )
             except ImportError as exc:
                 # W1.1/W1.2 not landed yet — degrade cleanly.
-                logger.warning(
-                    "gateway.system.upgrader_module_missing", error=str(exc)
-                )
+                logger.warning("gateway.system.upgrader_module_missing", error=str(exc))
             except Exception as exc:  # pragma: no cover — best-effort
                 logger.warning(
                     "gateway.system.upgrader_init_failed",
@@ -714,9 +742,7 @@ def build_app(
                     default_persist_path,
                 )
 
-                subagent_store = SubagentTaskStore(
-                    default_persist_path(resolved_data_dir)
-                )
+                subagent_store = SubagentTaskStore(default_persist_path(resolved_data_dir))
 
                 async def _unwired_run_child_factory(
                     req: SubagentRequest,
@@ -741,9 +767,7 @@ def build_app(
                 # upgrades + credential rotations. The audit log is
                 # `app.state.corlinman_audit_log` when wiring succeeded
                 # earlier in this same block; otherwise None (best-effort).
-                _audit_log = getattr(
-                    app.state, "corlinman_audit_log", None
-                )
+                _audit_log = getattr(app.state, "corlinman_audit_log", None)
                 # Thread the operator-configured per-tenant ceiling from
                 # ``[subagent] max_concurrent_per_tenant`` into the
                 # dispatcher. Previously the dispatcher was built without
@@ -753,9 +777,7 @@ def build_app(
                 # positive int; anything else (missing / 0 / non-numeric /
                 # bool) leaves the dispatcher on its default.
                 _subagent_cfg = _extract_section(cfg, "subagent")
-                _max_concurrent = _extract_section(
-                    _subagent_cfg, "max_concurrent_per_tenant"
-                )
+                _max_concurrent = _extract_section(_subagent_cfg, "max_concurrent_per_tenant")
                 _dispatcher_kwargs: dict[str, Any] = {
                     "store": subagent_store,
                     "run_child_factory": _unwired_run_child_factory,
@@ -767,24 +789,16 @@ def build_app(
                     and not isinstance(_max_concurrent, bool)
                     and _max_concurrent > 0
                 ):
-                    _dispatcher_kwargs["max_concurrent_per_tenant"] = (
-                        _max_concurrent
-                    )
-                subagent_dispatcher = AsyncSubagentDispatcher(
-                    **_dispatcher_kwargs
-                )
+                    _dispatcher_kwargs["max_concurrent_per_tenant"] = _max_concurrent
+                subagent_dispatcher = AsyncSubagentDispatcher(**_dispatcher_kwargs)
                 if admin_b_state is not None:
                     admin_b_state.subagent_store = subagent_store
                     admin_b_state.subagent_dispatcher = subagent_dispatcher
                 app.state.corlinman_subagent_store = subagent_store
-                app.state.corlinman_subagent_dispatcher = (
-                    subagent_dispatcher
-                )
+                app.state.corlinman_subagent_dispatcher = subagent_dispatcher
                 logger.info(
                     "gateway.subagent.dispatcher_installed",
-                    persist=str(
-                        default_persist_path(resolved_data_dir)
-                    ),
+                    persist=str(default_persist_path(resolved_data_dir)),
                 )
             except Exception as exc:  # pragma: no cover — best-effort
                 logger.warning(
@@ -848,10 +862,7 @@ def build_app(
                 app.state.corlinman_marketplace_source = marketplace_source
 
                 clawhub_client: Any
-                if (
-                    _mp_cfg.default_source == "clawhub"
-                    and _mp_cfg.clawhub_enabled
-                ):
+                if _mp_cfg.default_source == "clawhub" and _mp_cfg.clawhub_enabled:
                     clawhub_client = ClawHubClient()
                 else:
                     clawhub_client = SkillHubSourceAdapter(marketplace_source)
@@ -917,9 +928,7 @@ def build_app(
                 # background-review fork can resolve a per-profile
                 # SkillRegistry view at correction time.
                 admin_a_state.signals_repo = signals_repo
-                factory = getattr(
-                    admin_b_state, "skill_registry_factory", None
-                )
+                factory = getattr(admin_b_state, "skill_registry_factory", None)
                 if factory is None and admin_a_state is not None:
                     # Fallback factory mirrors the one wired in
                     # _mount_routes — covers cases where admin_b isn't
@@ -930,12 +939,7 @@ def build_app(
                         )
 
                         def _fallback_skill_registry(slug: str) -> Any:
-                            skills_dir = (
-                                resolved_data_dir
-                                / "profiles"
-                                / slug
-                                / "skills"
-                            )
+                            skills_dir = resolved_data_dir / "profiles" / slug / "skills"
                             skills_dir.mkdir(parents=True, exist_ok=True)
                             return SkillRegistry.load_from_dir(skills_dir)
 
@@ -1031,9 +1035,7 @@ def build_app(
                         McpServerStore,
                     )
 
-                    _mcp_store = McpServerStore(
-                        resolved_data_dir / "mcp_servers.sqlite"
-                    )
+                    _mcp_store = McpServerStore(resolved_data_dir / "mcp_servers.sqlite")
                     for _row in _mcp_store.list():
                         try:
                             _spec = McpServerSpec.from_mapping(
@@ -1048,53 +1050,11 @@ def build_app(
                                 error=str(exc),
                             )
                 except Exception as exc:  # pragma: no cover — best-effort
-                    logger.warning(
-                        "gateway.mcp.store_open_failed", error=str(exc)
-                    )
+                    logger.warning("gateway.mcp.store_open_failed", error=str(exc))
 
             await _mcp_manager.connect_all()
             state.extras["mcp_manager"] = _mcp_manager
             logger.info("gateway.mcp.manager_connected")
-
-            # Surface the connected servers' tools to the agent. Synthesize one
-            # ``mcp``-kind registry entry per ready server (so the tool executor
-            # routes a bare tool call to the MCP bridge — no new dispatch code)
-            # and stash the advertised ``tools_json`` the gateway injects into
-            # ``ChatStart.tools_json``. Without this the tools are connected but
-            # invisible to the model. Best-effort: never break boot.
-            try:
-                from corlinman_server.gateway.mcp.advertise import (
-                    register_mcp_tools,
-                )
-
-                # Server allow/deny policy from ``[mcp]`` config (claude-code
-                # ``allowedMcpServers`` / ``deniedMcpServers``): deny wins; a
-                # non-empty allow-list is exclusive.
-                _mcp_cfg = state.config.get("mcp") if isinstance(state.config, dict) else None
-                _mcp_cfg = _mcp_cfg if isinstance(_mcp_cfg, dict) else {}
-                _denied = frozenset(
-                    str(s) for s in (_mcp_cfg.get("deniedMcpServers") or _mcp_cfg.get("denied") or [])
-                )
-                _allowed_raw = _mcp_cfg.get("allowedMcpServers") or _mcp_cfg.get("allowed")
-                _allowed = (
-                    frozenset(str(s) for s in _allowed_raw)
-                    if isinstance(_allowed_raw, (list, tuple, set)) and _allowed_raw
-                    else None
-                )
-                _mcp_added, _mcp_tools_json = await register_mcp_tools(
-                    getattr(state, "plugin_registry", None),
-                    _mcp_manager.discovered_tools(),
-                    allowed=_allowed,
-                    denied=_denied,
-                )
-                state.extras["mcp_tools_json"] = _mcp_tools_json
-                logger.info(
-                    "gateway.mcp.tools_wired",
-                    entries=_mcp_added,
-                    advertised=bool(_mcp_tools_json),
-                )
-            except Exception as exc:  # pragma: no cover — best-effort
-                logger.warning("gateway.mcp.tools_wire_failed", error=str(exc))
 
             # Light up the marketplace admin routes: the McpAdapter is the
             # seam the EXISTING /admin/plugins/{name}/{enable,disable,
@@ -1107,17 +1067,13 @@ def build_app(
                         McpAdapter,
                     )
 
-                    admin_b_state.extras["mcp_adapter"] = McpAdapter(
-                        _mcp_manager, _mcp_store
-                    )
+                    admin_b_state.extras["mcp_adapter"] = McpAdapter(_mcp_manager, _mcp_store)
                     if resolved_data_dir is not None:
                         from corlinman_server.system.marketplace.plugin_store import (
                             PluginStore,
                         )
 
-                        _plugin_store = PluginStore(
-                            resolved_data_dir / "plugins.sqlite"
-                        )
+                        _plugin_store = PluginStore(resolved_data_dir / "plugins.sqlite")
                         admin_b_state.extras["plugin_store"] = _plugin_store
                         admin_b_state.extras["data_dir"] = resolved_data_dir
                         await _wire_plugin_hotload(
@@ -1128,9 +1084,14 @@ def build_app(
                         )
                     logger.info("gateway.marketplace.wired")
                 except Exception as exc:  # pragma: no cover — best-effort
-                    logger.warning(
-                        "gateway.marketplace.wire_failed", error=str(exc)
-                    )
+                    logger.warning("gateway.marketplace.wire_failed", error=str(exc))
+
+            # Surface the connected servers' tools to the agent — AFTER
+            # ``_wire_plugin_hotload`` above published the live
+            # ``state.plugin_registry``: upserting before it exists hit the
+            # ``registry is None`` early-out and dropped every synthesized
+            # routing entry (advertised tools then died ``plugin_not_found``).
+            await _wire_mcp_tool_plane(state, _mcp_manager)
         except Exception as exc:
             logger.warning("gateway.mcp.manager_failed", error=str(exc))
 
@@ -1146,9 +1107,7 @@ def build_app(
         try:
             _wire_status_links(cfg, resolved_data_dir)
         except Exception as exc:  # pragma: no cover — best-effort
-            logger.warning(
-                "gateway.channels.status_links_wire_failed", error=str(exc)
-            )
+            logger.warning("gateway.channels.status_links_wire_failed", error=str(exc))
 
         # Generic sibling-bootstrap seam (see docs/contracts/runtime-
         # wiring.md §2). Each sibling module *may* export
@@ -1162,7 +1121,7 @@ def build_app(
         # read them.
         sibling_names = (
             "corlinman_server.gateway.providers",  # P1 — provider_registry
-            "corlinman_server.gateway.services",   # P2/P3 — chat + channels
+            "corlinman_server.gateway.services",  # P2/P3 — chat + channels
             "corlinman_server.gateway.evolution",  # evolution observer
         )
         for dotted in sibling_names:
@@ -1223,27 +1182,19 @@ def build_app(
             # while the UI still toasted success).
             if admin_b_state is not None:
                 with suppress(AttributeError, TypeError):
-                    admin_b_state.extras["config_swap_fn"] = _make_config_swap_fn(
-                        app, state
-                    )
+                    admin_b_state.extras["config_swap_fn"] = _make_config_swap_fn(app, state)
                 with suppress(AttributeError, TypeError):
-                    admin_b_state.extras["chat_refresh_fn"] = _make_chat_refresh_fn(
-                        state
-                    )
+                    admin_b_state.extras["chat_refresh_fn"] = _make_chat_refresh_fn(state)
                 logger.debug(
                     "gateway.config_reload.swap_fn_wired",
                     path=str(config_path) if config_path else None,
                     watcher=_watcher_instance is not None,
                 )
         except Exception as exc:  # pragma: no cover — defensive
-            logger.warning(
-                "gateway.config_reload.watcher_start_failed", error=str(exc)
-            )
+            logger.warning("gateway.config_reload.watcher_start_failed", error=str(exc))
 
         if grpc_mod is not None:
-            serve = getattr(
-                grpc_mod, "serve_placeholder_in_background", None
-            )
+            serve = getattr(grpc_mod, "serve_placeholder_in_background", None)
             if serve is not None:
                 try:
                     result = serve(state, cancel)
@@ -1251,15 +1202,11 @@ def build_app(
                     # already-scheduled Task (its name implies so) or a
                     # bare coroutine — accept either without double-wrap.
                     task = (
-                        result
-                        if isinstance(result, asyncio.Task)
-                        else asyncio.create_task(result)
+                        result if isinstance(result, asyncio.Task) else asyncio.create_task(result)
                     )
                     background.append(task)
                 except Exception as exc:  # pragma: no cover — sibling-owned
-                    logger.warning(
-                        "gateway.grpc.bootstrap_failed", error=str(exc)
-                    )
+                    logger.warning("gateway.grpc.bootstrap_failed", error=str(exc))
 
         # W5.0: wire the user-correction HookBus listener. Today no
         # other component constructs a shared HookBus in the gateway
@@ -1303,9 +1250,7 @@ def build_app(
                 # rather than NameError. The applier's resolver
                 # failure paths already log + gate gracefully.
                 def _registry_for_profile(slug: str) -> Any:
-                    fn = getattr(
-                        admin_a_state, "skill_registry_factory", None
-                    )
+                    fn = getattr(admin_a_state, "skill_registry_factory", None)
                     if fn is None:
                         raise RuntimeError("skill_registry_factory not wired")
                     return fn(slug)
@@ -1339,12 +1284,8 @@ def build_app(
                     on_signal=_on_signal,
                 )
                 background.append(user_correction_task)
-                app.state._user_correction_applier = (
-                    user_correction_applier
-                )
-                logger.info(
-                    "gateway.evolution.user_correction_listener_registered"
-                )
+                app.state._user_correction_applier = user_correction_applier
+                logger.info("gateway.evolution.user_correction_listener_registered")
             except Exception as exc:  # pragma: no cover — defensive
                 logger.warning(
                     "gateway.evolution.user_correction_listener_failed",
@@ -1372,10 +1313,9 @@ def build_app(
             version_str = _pkg_version()
             homes_snapshot = home_channel_store.list_all_homes()
             if homes_snapshot:
+
                 async def _broadcast_restart() -> None:
-                    msg_body = (
-                        f"🔄 服务器刚刚重启完成（v{version_str}）"
-                    )
+                    msg_body = f"🔄 服务器刚刚重启完成（v{version_str}）"
                     for row in homes_snapshot:
                         # Best-effort log — the structlog feed is
                         # fan-out by /admin/logs/stream so the
@@ -1542,9 +1482,7 @@ def build_app(
             # AttributeError out of this ``finally`` and abort every
             # remaining teardown step below — leaking the C2 sqlite stores.
             _extras = getattr(state, "extras", None)
-            teardown_mcp_manager = (
-                _extras.get("mcp_manager") if isinstance(_extras, dict) else None
-            )
+            teardown_mcp_manager = _extras.get("mcp_manager") if isinstance(_extras, dict) else None
             if teardown_mcp_manager is not None:
                 with suppress(Exception):
                     await cast(Any, teardown_mcp_manager).aclose()
@@ -1571,18 +1509,14 @@ def build_app(
                 try:
                     await rag_store_handle.close()
                 except Exception as exc:  # pragma: no cover — defensive
-                    logger.warning(
-                        "gateway.rag.store_close_failed", error=str(exc)
-                    )
+                    logger.warning("gateway.rag.store_close_failed", error=str(exc))
                 app.state.corlinman_rag_store = None
             # D12 teardown: cancel + await any in-flight background subagent
             # dispatch tasks BEFORE closing the journal they emit into, so a
             # shutdown doesn't orphan child-driving tasks against a
             # tearing-down provider / journal. Idempotent + safe when the
             # dispatcher was never wired.
-            teardown_subagent_dispatcher = getattr(
-                app.state, "corlinman_subagent_dispatcher", None
-            )
+            teardown_subagent_dispatcher = getattr(app.state, "corlinman_subagent_dispatcher", None)
             if teardown_subagent_dispatcher is not None:
                 try:
                     await cast(Any, teardown_subagent_dispatcher).shutdown()
@@ -1619,9 +1553,7 @@ def build_app(
                         setattr(app.state, _attr, None)
             _mem_host = getattr(state, "memory_host", None)
             if _mem_host is not None:
-                _mem_close = getattr(_mem_host, "close", None) or getattr(
-                    _mem_host, "aclose", None
-                )
+                _mem_close = getattr(_mem_host, "close", None) or getattr(_mem_host, "aclose", None)
                 if _mem_close is not None:
                     try:
                         res = _mem_close()
@@ -1651,9 +1583,7 @@ def build_app(
 
             # W1.1 teardown: release the httpx client held by the
             # update checker. Safe when none was wired.
-            update_checker_handle = getattr(
-                app.state, "corlinman_update_checker", None
-            )
+            update_checker_handle = getattr(app.state, "corlinman_update_checker", None)
             if update_checker_handle is not None:
                 try:
                     await update_checker_handle.aclose()
@@ -1667,9 +1597,7 @@ def build_app(
             # W1.3 (skill hub) teardown: release the httpx client + any
             # TTL cache file handles held by the ClawHubClient. Safe when
             # none was wired (a degraded boot or W1.1 not landed yet).
-            clawhub_client_handle = getattr(
-                app.state, "corlinman_clawhub_client", None
-            )
+            clawhub_client_handle = getattr(app.state, "corlinman_clawhub_client", None)
             if clawhub_client_handle is not None:
                 try:
                     await clawhub_client_handle.aclose()
@@ -1685,9 +1613,7 @@ def build_app(
             # client. In GitHub mode the skills adapter above shares this
             # same object, so it may already be closed — aclose is
             # idempotent. Safe when none was wired.
-            marketplace_source_handle = getattr(
-                app.state, "corlinman_marketplace_source", None
-            )
+            marketplace_source_handle = getattr(app.state, "corlinman_marketplace_source", None)
             if marketplace_source_handle is not None:
                 try:
                     await marketplace_source_handle.aclose()
@@ -1702,9 +1628,7 @@ def build_app(
             # above so the WAL file is checkpointed and tests don't
             # leak file descriptors between cases. Idempotent —
             # ``AdminDb.close`` already suppresses its own errors.
-            admin_db_handle = getattr(
-                app.state, "corlinman_admin_db", None
-            )
+            admin_db_handle = getattr(app.state, "corlinman_admin_db", None)
             if admin_db_handle is not None:
                 with suppress(Exception):
                     await admin_db_handle.close()
@@ -1714,14 +1638,10 @@ def build_app(
                 # ``admin_db_not_configured`` 401 instead of crashing
                 # on a closed sqlite connection. Best-effort —
                 # post-teardown requests are unusual.
-                api_key_state = getattr(
-                    app.state, "api_key_auth", None
-                )
+                api_key_state = getattr(app.state, "api_key_auth", None)
                 if api_key_state is not None:
                     api_key_state.admin_db = None
-                admin_a_state_after = getattr(
-                    app.state, "corlinman_admin_a_state", None
-                )
+                admin_a_state_after = getattr(app.state, "corlinman_admin_a_state", None)
                 if admin_a_state_after is not None:
                     admin_a_state_after.admin_db = None
 
@@ -1744,9 +1664,7 @@ def build_app(
     # Mount every routes submodule. Each submodule exposes a different
     # composition surface (per the parallel-agent contracts); we wire them
     # individually here to keep entrypoint.py the single composition root.
-    admin_a_state, admin_b_state = _mount_routes(
-        app, state, admin_config_path=admin_config_path
-    )
+    admin_a_state, admin_b_state = _mount_routes(app, state, admin_config_path=admin_config_path)
     # Stash the admin state handles on ``app.state`` so the lifespan
     # closure (defined above ``_mount_routes``'s call) can populate the
     # seeded credentials once :func:`ensure_admin_credentials` runs, and
@@ -1761,9 +1679,7 @@ def build_app(
     # rather than hard-coded — ``ok`` once the Wave 1 attach points
     # (provider registry + chat service) are wired, ``degraded`` while
     # either slot is still unfilled. See docs/contracts/runtime-wiring.md.
-    _have_health = any(
-        getattr(r, "path", None) == "/health" for r in app.routes
-    )
+    _have_health = any(getattr(r, "path", None) == "/health" for r in app.routes)
     if not _have_health:
 
         @app.get("/health")
@@ -1818,9 +1734,7 @@ async def _serve(args: argparse.Namespace) -> int:
     # internally (it stays self-contained for the test surface); a startup
     # double-read of a small TOML is negligible.
     cfg = _load_config(config_path)
-    data_dir = (
-        Path(args.data_dir) if args.data_dir else _resolve_data_dir(None, cfg)
-    )
+    data_dir = Path(args.data_dir) if args.data_dir else _resolve_data_dir(None, cfg)
     host, port = _resolve_bind(args.host, args.port, cfg)
 
     app = build_app(config_path=config_path, data_dir=data_dir)

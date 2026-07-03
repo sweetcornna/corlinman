@@ -26,10 +26,19 @@ same name (see ``existing_names``).
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
+import structlog
+
+logger = structlog.get_logger(__name__)
+
 DiscoveredTools = dict[str, list[Any]]
+
+# OpenAI function names must match this charset; a dot/space/unicode in an
+# advertised name is rejected upstream and can fail every chat turn.
+_VALID_TOOL_NAME = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
 def namespaced_tool_name(server: str, tool_name: str) -> str:
@@ -42,6 +51,49 @@ def namespaced_tool_name(server: str, tool_name: str) -> str:
     ``has_tool`` in :class:`McpToolBridge`).
     """
     return f"{server}_{tool_name}"
+
+
+def _advertisable_tools(server: str, tools: list[Any] | None) -> list[tuple[str, Any]]:
+    """``(advertised_name, tool)`` pairs for one server's discovered tools.
+
+    The single place the advertisement guards live, so ``tools_json`` and the
+    synthesized registry entries can never drift apart:
+
+    * an empty tool name is dropped;
+    * an advertised (namespaced) name outside the OpenAI function-name
+      charset (:data:`_VALID_TOOL_NAME`) is dropped — it would fail every
+      chat turn upstream;
+    * a namespaced name that collides with another *literal* tool on the
+      same server is dropped — the dispatch bridge prefers the literal
+      (``_strip_server_namespace`` refuses to strip when the namespaced
+      form is real), so advertising the namespaced form would execute the
+      wrong tool against a mismatched schema.
+    """
+    literals = {str(getattr(t, "name", "") or "") for t in tools or []}
+    out: list[tuple[str, Any]] = []
+    for tool in tools or []:
+        bare = str(getattr(tool, "name", "") or "")
+        if not bare:
+            continue
+        name = namespaced_tool_name(server, bare)
+        if not _VALID_TOOL_NAME.fullmatch(name):
+            logger.warning(
+                "gateway.mcp.tool_name_invalid",
+                server=server,
+                tool=bare,
+                advertised=name,
+            )
+            continue
+        if name in literals:
+            logger.warning(
+                "gateway.mcp.tool_name_shadowed_by_literal",
+                server=server,
+                tool=bare,
+                advertised=name,
+            )
+            continue
+        out.append((name, tool))
+    return out
 
 
 def _tool_openai_schema(server: str, tool: Any) -> dict[str, Any]:
@@ -61,23 +113,26 @@ def _tool_openai_schema(server: str, tool: Any) -> dict[str, Any]:
     }
 
 
-def discovered_openai_schemas(discovered: DiscoveredTools | None) -> list[dict[str, Any]]:
+def discovered_openai_schemas(
+    discovered: DiscoveredTools | None,
+    *,
+    existing_names: frozenset[str] = frozenset(),
+) -> list[dict[str, Any]]:
     """OpenAI function schemas for every discovered MCP tool.
 
     Tool names are namespaced ``{server}_{tool}`` (see
     :func:`namespaced_tool_name`), so cross-server collisions cannot occur;
-    de-dup is retained only as a defensive guard.
+    de-dup is retained only as a defensive guard. ``existing_names`` mirrors
+    the :func:`build_mcp_registry_entries` skip: a server that gets no
+    synthesized routing entry must not be advertised either, or the model
+    sees names that die with ``plugin_not_found``.
     """
     seen: set[str] = set()
     out: list[dict[str, Any]] = []
     for server, tools in (discovered or {}).items():
-        if not server:
+        if not server or server in existing_names:
             continue
-        for tool in tools or []:
-            bare = str(getattr(tool, "name", "") or "")
-            if not bare:
-                continue
-            name = namespaced_tool_name(server, bare)
+        for name, tool in _advertisable_tools(server, tools):
             if name in seen:
                 continue
             seen.add(name)
@@ -85,9 +140,13 @@ def discovered_openai_schemas(discovered: DiscoveredTools | None) -> list[dict[s
     return out
 
 
-def mcp_advertised_tools_json(discovered: DiscoveredTools | None) -> bytes:
+def mcp_advertised_tools_json(
+    discovered: DiscoveredTools | None,
+    *,
+    existing_names: frozenset[str] = frozenset(),
+) -> bytes:
     """Serialize discovered MCP tools as a ``tools_json`` array (``b""`` if none)."""
-    schemas = discovered_openai_schemas(discovered)
+    schemas = discovered_openai_schemas(discovered, existing_names=existing_names)
     if not schemas:
         return b""
     return json.dumps(schemas).encode("utf-8")
@@ -121,17 +180,14 @@ def build_mcp_registry_entries(
         if not server or server in existing_names:
             continue
         manifest_tools: list[Any] = []
-        for tool in tools or []:
-            bare = str(getattr(tool, "name", "") or "")
-            if not bare:
-                continue
+        for name, tool in _advertisable_tools(server, tools):
             params = getattr(tool, "input_schema", None)
             manifest_tools.append(
                 Tool(
                     # Namespaced so it matches the advertised name the model
                     # calls; the bridge strips the ``{server}_`` prefix back to
                     # the bare tool for ``call_tool``.
-                    name=namespaced_tool_name(server, bare),
+                    name=name,
                     description=str(getattr(tool, "description", "") or ""),
                     parameters=params if isinstance(params, dict) else {"type": "object"},
                 )
@@ -202,10 +258,12 @@ async def register_mcp_tools(
     manifest of the same name.
     """
     discovered = filter_servers_by_policy(discovered, allowed=allowed, denied=denied)
-    tools_json = mcp_advertised_tools_json(discovered)
     if registry is None:
-        return 0, tools_json
+        return 0, mcp_advertised_tools_json(discovered)
+    # The advertisement honors the same existing-name skip as the entry
+    # synthesis: a server that gets no routing entry must not be advertised.
     existing = frozenset(e.manifest.name for e in registry.list())
+    tools_json = mcp_advertised_tools_json(discovered, existing_names=existing)
     entries = build_mcp_registry_entries(discovered, existing_names=existing)
     for entry in entries:
         await registry.upsert(entry)

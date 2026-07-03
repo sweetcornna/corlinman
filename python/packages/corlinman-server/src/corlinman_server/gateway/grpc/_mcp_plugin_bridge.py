@@ -103,6 +103,12 @@ def _strip_server_namespace(manager: Any, server: str, tool: str) -> str:
     but only when the bare form is a real tool on the server AND the namespaced
     form is not — so a real on-disk manifest advertising a literal
     ``{server}_x`` tool is left untouched. ``has_tool`` missing/raising → no-op.
+
+    Preferring the literal is safe by construction: the advertise side skips a
+    namespaced name that collides with a literal tool on the same server (see
+    ``advertise._advertisable_tools``), so an advertised name arriving here is
+    never ambiguous — when both ``x`` and a literal ``{server}_x`` exist, only
+    the literal was advertised and it correctly resolves to itself.
     """
     prefix = f"{server}_"
     if not tool.startswith(prefix):
@@ -110,7 +116,7 @@ def _strip_server_namespace(manager: Any, server: str, tool: str) -> str:
     has = getattr(manager, "has_tool", None)
     if not callable(has):
         return tool
-    bare = tool[len(prefix):]
+    bare = tool[len(prefix) :]
     try:
         if bare and has(server, bare) and not has(server, tool):
             return bare
