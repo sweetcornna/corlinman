@@ -25,6 +25,7 @@ same name (see ``existing_names``).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 from pathlib import Path
@@ -270,11 +271,47 @@ async def register_mcp_tools(
     return len(entries), tools_json
 
 
+#: Prefix of the synthetic ``manifest_path`` stamped on a synthesized
+#: ``mcp``-kind entry (``<mcp:{server}>``). Lets a refresh identify which
+#: registry entries this module owns vs a real on-disk manifest.
+_MCP_SYNTH_PREFIX = "<mcp:"
+
+
+async def prune_stale_mcp_entries(
+    registry: Any | None, live_servers: frozenset[str]
+) -> int:
+    """Remove synthesized ``mcp`` entries for servers no longer advertised.
+
+    ``register_mcp_tools`` only upserts — so a disabled/removed server (or
+    one that fell outside the allow/deny policy) leaves its synthesized
+    routing entry behind, and the model keeps seeing dead tools until
+    restart. A refresh calls this with the set of servers that ARE now
+    advertised; every synthesized entry (identified by its ``<mcp:...>``
+    manifest path) for a server outside that set is removed. Real on-disk
+    manifests (any other path) are never touched. Returns the count
+    removed. No-op-safe on a ``None`` registry.
+    """
+    if registry is None:
+        return 0
+    removed = 0
+    for entry in list(registry.list()):
+        path = str(getattr(entry, "manifest_path", "") or "")
+        if not path.startswith(_MCP_SYNTH_PREFIX):
+            continue
+        server = path[len(_MCP_SYNTH_PREFIX) : -1] if path.endswith(">") else path[len(_MCP_SYNTH_PREFIX) :]
+        if server not in live_servers:
+            with contextlib.suppress(Exception):
+                await registry.remove(entry.manifest.name)
+                removed += 1
+    return removed
+
+
 __all__ = [
     "build_mcp_registry_entries",
     "discovered_openai_schemas",
     "filter_servers_by_policy",
     "mcp_advertised_tools_json",
     "namespaced_tool_name",
+    "prune_stale_mcp_entries",
     "register_mcp_tools",
 ]

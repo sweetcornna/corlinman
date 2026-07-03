@@ -314,3 +314,32 @@ async def test_reconfigure_unknown_server_raises_keyerror(
             await adapter.reconfigure("ghost", {"command": "x"})
     finally:
         store.close()
+
+
+@pytest.mark.asyncio
+async def test_on_changed_fires_on_mutations(tmp_path: Path) -> None:
+    """Enable/disable fire the on_changed refresh hook so the gateway
+    re-advertises the tool plane without a restart (issue #108)."""
+    store = _store(tmp_path)
+    try:
+        fired: list[str] = []
+        spec = _FakeSpec(name="cfg-fs", command="fs", enabled=False)
+        adapter = McpAdapter(
+            _FakeManager([spec]), store, on_changed=lambda: fired.append("x")
+        )
+        await adapter.enable_one("cfg-fs")
+        await adapter.disable_one("cfg-fs")
+        assert fired == ["x", "x"]
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_on_changed_absent_is_safe(tmp_path: Path) -> None:
+    """No on_changed wired → mutations still work (no crash)."""
+    store = _store(tmp_path)
+    try:
+        adapter = McpAdapter(_FakeManager([_FakeSpec(name="s", enabled=False)]), store)
+        assert await adapter.enable_one("s") is True
+    finally:
+        store.close()

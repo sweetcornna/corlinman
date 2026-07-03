@@ -32,7 +32,9 @@ method tolerates ``None`` gracefully rather than raising.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -59,9 +61,26 @@ class McpAdapter:
         self,
         manager: McpClientManager | None = None,
         store: McpServerStore | None = None,
+        *,
+        on_changed: Callable[[], Any] | None = None,
     ) -> None:
         self._manager = manager
         self._store = store
+        # Fired after a mutation that changes the live tool set so the
+        # gateway re-advertises the tool plane (issue #108: hot-plug left
+        # advertised schemas stale until restart). Same refresh entrypoint
+        # the tools/list_changed listener uses.
+        self._on_changed = on_changed
+
+    async def _fire_changed(self) -> None:
+        if self._on_changed is None:
+            return
+        try:
+            result = self._on_changed()
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception as exc:  # noqa: BLE001 — refresh never breaks a mutation
+            log.warning("mcp_adapter.on_changed_failed", error=str(exc))
 
     # -- lifecycle toggles served via the /admin/plugins seam -----------
 
@@ -75,12 +94,14 @@ class McpAdapter:
         """
         existed = await self._manager_call("enable_one", name)
         self._persist_enabled(name, True)
+        await self._fire_changed()
         return existed
 
     async def disable_one(self, name: str) -> bool:
         """Drop the named server's live peer *and* persist ``enabled=0``."""
         existed = await self._manager_call("disable_one", name)
         self._persist_enabled(name, False)
+        await self._fire_changed()
         return existed
 
     async def restart_one(self, name: str) -> bool:
@@ -90,7 +111,9 @@ class McpAdapter:
         runtime operation, not a state change. Tolerates a ``None``
         manager.
         """
-        return await self._manager_call("restart_one", name)
+        existed = await self._manager_call("restart_one", name)
+        await self._fire_changed()
+        return existed
 
     # -- marketplace operations ----------------------------------------
 
@@ -170,6 +193,7 @@ class McpAdapter:
                     name=name,
                     error=str(exc),
                 )
+        await self._fire_changed()
         log.info("mcp_adapter.removed", name=name, deleted=deleted)
         return deleted
 
@@ -263,6 +287,7 @@ class McpAdapter:
                     name=name,
                     error=str(exc),
                 )
+        await self._fire_changed()
         log.info(
             "mcp_adapter.reconfigured",
             name=name,
