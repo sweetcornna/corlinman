@@ -54,9 +54,12 @@ def _require_read_before_edit() -> bool:
     produced out-of-band. Read at call time so tests/operators can flip
     it via the environment.
     """
-    return os.environ.get(
-        "CORLINMAN_REQUIRE_READ_BEFORE_EDIT", "1"
-    ).strip().lower() not in {"0", "false", "no", ""}
+    return os.environ.get("CORLINMAN_REQUIRE_READ_BEFORE_EDIT", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "",
+    }
 
 
 logger = structlog.get_logger(__name__)
@@ -74,9 +77,7 @@ _LIST_SKIP = {".git", "__pycache__", "node_modules", ".venv", ".mypy_cache"}
 #: Reading these as UTF-8 text would produce garbage; instead the tool
 #: encodes them as base64 and returns a multimodal content-block list so
 #: vision models can see the image inline in the tool-result turn.
-IMAGE_EXTENSIONS: frozenset[str] = frozenset(
-    {".png", ".jpg", ".jpeg", ".gif", ".webp"}
-)
+IMAGE_EXTENSIONS: frozenset[str] = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp"})
 
 #: Explicit MIME overrides for the most common image formats; falls back
 #: to :func:`mimetypes.guess_type` for anything not in this table.
@@ -246,9 +247,7 @@ def list_files_tool_schema() -> dict[str, Any]:
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": (
-                            "Workspace-relative directory (default '.')."
-                        ),
+                        "description": ("Workspace-relative directory (default '.')."),
                     },
                 },
                 "required": [],
@@ -294,9 +293,7 @@ def _parse_pages(spec: Any, total: int) -> list[int]:
     return list(range(lo - 1, hi))
 
 
-def _read_pdf(
-    path: Path, rel: str, pages_spec: Any
-) -> str | list[dict[str, Any]]:
+def _read_pdf(path: Path, rel: str, pages_spec: Any) -> str | list[dict[str, Any]]:
     """Extract per-page text from a PDF via an OPTIONAL parser.
 
     Tries ``pypdf`` then ``pdfminer.six``; honours a ``pages`` selection
@@ -457,17 +454,11 @@ def _read_notebook(path: Path, rel: str) -> str:
                     tb = out.get("traceback", [])
                     if isinstance(tb, list):
                         rendered = "\n".join(str(t) for t in tb)
-                    rendered = (
-                        f"{out.get('ename', 'Error')}: "
-                        f"{out.get('evalue', '')}\n{rendered}"
-                    )
+                    rendered = f"{out.get('ename', 'Error')}: {out.get('evalue', '')}\n{rendered}"
                 rendered = rendered.strip()
                 if rendered:
                     if len(rendered) > _NOTEBOOK_OUTPUT_CHARS:
-                        rendered = (
-                            rendered[:_NOTEBOOK_OUTPUT_CHARS]
-                            + "\n... [output truncated]"
-                        )
+                        rendered = rendered[:_NOTEBOOK_OUTPUT_CHARS] + "\n... [output truncated]"
                     parts.append(f"  [out] {rendered}")
         blocks.append("\n".join(parts))
 
@@ -581,9 +572,7 @@ def dispatch_read_file(
     lines = text.splitlines()
     total = len(lines)
     chunk = lines[offset - 1 : offset - 1 + limit]
-    numbered = "\n".join(
-        f"{offset + i}\t{ln}" for i, ln in enumerate(chunk)
-    )
+    numbered = "\n".join(f"{offset + i}\t{ln}" for i, ln in enumerate(chunk))
     truncated = len(numbered) > MAX_READ_CHARS
     result: dict[str, Any] = {
         "path": workspace_rel(ws, path),
@@ -652,9 +641,7 @@ def dispatch_write_file(
     if not isinstance(content, str):
         return _err({"error": "args_invalid: 'content' must be a string"})
     if len(content.encode("utf-8")) > MAX_WRITE_BYTES:
-        return _err(
-            {"error": f"content_too_large: cap is {MAX_WRITE_BYTES} bytes"}
-        )
+        return _err({"error": f"content_too_large: cap is {MAX_WRITE_BYTES} bytes"})
 
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -683,11 +670,19 @@ def dispatch_write_file(
                 }
             )
         # Preserve an existing file's mode (e.g. an executable bit); a new file
-        # gets 0644 like the old O_CREAT path.
-        mode = 0o644
+        # gets 0644 MASKED BY THE PROCESS UMASK like the old O_CREAT path —
+        # mkstemp creates 0600 and a bare chmod(0o644) would silently widen a
+        # restrictive umask (0o077) back to world-readable. os.umask has no
+        # getter, so read it with the set/restore idiom (momentary, and tool
+        # dispatch is not concurrent within one process).
         if existed:
+            mode = 0o644
             with contextlib.suppress(OSError):
                 mode = stat.S_IMODE(os.stat(path).st_mode)
+        else:
+            current_umask = os.umask(0)
+            os.umask(current_umask)
+            mode = 0o644 & ~current_umask
         try:
             tmp_fd, tmp_name = tempfile.mkstemp(
                 dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
@@ -924,9 +919,7 @@ def _line_span_offsets(text: str) -> list[tuple[int, int]]:
     return spans
 
 
-def _fuzzy_line_matches(
-    text: str, old: str, transform
-) -> list[tuple[int, int]]:
+def _fuzzy_line_matches(text: str, old: str, transform) -> list[tuple[int, int]]:
     """Find line-aligned matches of ``old`` in ``text`` under ``transform``.
 
     ``transform`` is applied per-line on both sides before comparing.
@@ -1094,9 +1087,7 @@ def dispatch_edit_file(
     old = raw.get("old_string")
     new = raw.get("new_string")
     if not isinstance(old, str) or not isinstance(new, str):
-        return _err(
-            {"error": "args_invalid: old_string/new_string must be strings"}
-        )
+        return _err({"error": "args_invalid: old_string/new_string must be strings"})
     if old == new:
         return _err({"error": "args_invalid: old_string equals new_string"})
     if not path.is_file():
@@ -1106,11 +1097,7 @@ def dispatch_edit_file(
     # observed this turn is a blind mutation of unseen bytes. Only enforced
     # when a FileState is threaded (the production path); state=None callers
     # (most unit tests, ad-hoc tooling) are unaffected.
-    if (
-        state is not None
-        and _require_read_before_edit()
-        and not state.was_seen(path)
-    ):
+    if state is not None and _require_read_before_edit() and not state.was_seen(path):
         return _err(
             {
                 "path": raw.get("path"),
@@ -1122,9 +1109,7 @@ def dispatch_edit_file(
         )
 
     if state is not None and state.is_stale(path):
-        return _err(
-            {"path": raw.get("path"), "error": "file_changed_since_read"}
-        )
+        return _err({"path": raw.get("path"), "error": "file_changed_since_read"})
 
     try:
         raw_bytes = path.read_bytes()
@@ -1179,11 +1164,7 @@ def dispatch_edit_file(
                     ),
                 }
             )
-        updated = (
-            text.replace(old_lf, new_lf)
-            if replace_all
-            else text.replace(old_lf, new_lf, 1)
-        )
+        updated = text.replace(old_lf, new_lf) if replace_all else text.replace(old_lf, new_lf, 1)
         replacements = exact_count if replace_all else 1
         tier = "exact"
 
@@ -1337,9 +1318,7 @@ def dispatch_edit_file(
     return json.dumps(payload, ensure_ascii=False)
 
 
-def dispatch_list_files(
-    *, args_json: bytes | str, workspace: Path | None = None
-) -> str:
+def dispatch_list_files(*, args_json: bytes | str, workspace: Path | None = None) -> str:
     """List a workspace directory. JSON envelope; never raises."""
     try:
         raw = decode_args(args_json)
