@@ -125,11 +125,13 @@ legacy flat keys keep their old table —两套并存, documented):
   claude-code "other codes show error, don't block").
 - timeout — kill, fail-open, log (unchanged posture).
 
-`prompt`/`agent` evaluator wiring: servicer passes closures using the
-existing small-fast-model routing (console PR #88 substrate) and
-`subagent_spawn` inline path. Console `embedded.py` wires the same. Gateway
-`c2_wiring.py` wires `prompt_evaluator` only if a provider registry is
-available at that point; else leaves unwired (fail-open, logged).
+`prompt`/`agent` evaluator wiring — FINAL STATE AS BUILT: the injection
+seam ships and is contract-tested (wired + unwired paths), but no boot
+site wires a production evaluator yet — an LLM judge / verifier-subagent
+closure needs provider-handle plumbing that is its own slice. Until
+then both kinds fail open with a one-shot log. The `if` rule matcher IS
+wired everywhere (`corlinman_agent.permission.match_hook_rule` at
+`c2_wiring.py` + `main.py`; console/grpc builders reuse `main`'s).
 
 ## 4. Wiring changes (each small, each tested)
 
@@ -149,12 +151,14 @@ available at that point; else leaves unwired (fail-open, logged).
    (`agent_servicer.py:1389`), add declarative run (async groups only —
    cannot block; a `"block"` verdict here maps to inject_message prepended
    as system note, not turn abort — v1 documented behavior).
-5. **Session/Compact events**: emit sites where paths exist —
-   `SessionReset` in the `/new`-epoch path, `Pre/PostCompact` around the
-   compaction call in `reasoning_loop.py` (bus emit + declarative async
-   run). `SessionStart/End` only if a ≤10-line seam exists at session
-   create/teardown; otherwise leave documented as unwired (config accepted,
-   noted in `/hooks` output as "no live emitter").
+5. **Session/Compact events** — FINAL STATE AS BUILT: `post_compact` is
+   wired in `reasoning_loop.py` (the compaction identity-change signal);
+   `pre_compact` needs a seam inside `_compact_history` (it decides
+   internally whether it will compact) and `session_start/end/reset` had
+   no ≤10-line seam — all three are accepted in config but dormant,
+   surfaced as "no live emitter yet" by `/hooks` and `live_events` on
+   `GET /admin/hooks` (`corlinman_server/hooks_live.py` is the single
+   source). Follow-up slice when a use-case lands.
 6. **Reload**: `HookRunner.reload(config, hooks_dir)` re-parses shell keys +
    declarative + re-discovers; called from (a) `/hooks reload`, (b) a
    ConfigWatcher callback on `hooks`-section diff (watcher already opt-in;

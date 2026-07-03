@@ -4,6 +4,37 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.25.0] — 2026-07-03 — Declarative hooks + /hooks (claude-code parity Dim 9)
+
+> Operators can now define lifecycle hooks in config — no code. A
+> `[hooks.declarative]` sub-table maps events (claude-code names like
+> `PreToolUse` or snake_case) to matcher groups of hook definitions,
+> layered over the existing `HookRunner` (legacy flat `[hooks]` keys are
+> untouched and keep their historical exit-code contract).
+
+### Added
+- **Declarative hook settings**: per-event matcher groups (`matcher` =
+  tool-name pattern `exact | A|B | prefix*`; optional `if` = the shared
+  permission-rule grammar, e.g. `run_shell(git:*)`) with four hook kinds:
+  `command` (stdin JSON; exit 0 = allow w/ optional JSON verdict on
+  stdout, exit 2 = block w/ stderr reason, other = fail-open), `http`
+  (POST payload, 2xx JSON verdict), `prompt` / `agent` (injected
+  evaluators; fail open until wired). Config mistakes become warnings —
+  never a boot failure; everything fails open except an explicit block.
+- **`/hooks` console command**: view all three layers (shell / discovered
+  / declarative) with per-event live-emitter status and config warnings;
+  `test <event> [tool] [json]` dry-runs the real fold; `reload` rebuilds
+  the runner from the current config without a restart.
+- **New live hook sites**: post-tool hooks now fire with the actual
+  result (previously zero callers), the loop's Stop veto/inject path is
+  active in the servicer-driven flow (previously inert), declarative
+  `user_prompt_submit` verdicts land as system notes, and `post_compact`
+  fires after a real compaction.
+- **Hooks hot-reload**: a `[hooks]` config change now rebuilds the
+  runner via the ConfigWatcher (was boot-time-only).
+- **`GET /admin/hooks`**: `discovered` / `declarative` / `warnings` /
+  `live_events` fields (backwards compatible).
+
 ## [1.24.3] — 2026-07-03 — Pre-merge audit fixes (stack #102–#107)
 
 > Patch release. 22 confirmed findings fixed from the pre-merge audit of the
