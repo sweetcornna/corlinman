@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
 import structlog
@@ -28,8 +28,18 @@ from .types import (
     JSONRPC_VERSION,
     JsonRpcRequest,
     JsonValue,
+    classify_inbound,
     error_codes,
 )
+
+#: Handler for a server-initiated request. Receives ``(method, params)``
+#: and returns ``(result, error)`` — exactly one non-None (a ``result``
+#: dict on success, or a ``{"code","message","data"?}`` error object).
+ServerRequestHandler = Callable[
+    [str, "dict[str, Any]"], Awaitable["tuple[Any, dict[str, Any] | None]"]
+]
+#: Handler for a server-initiated notification (id-less, no reply).
+NotificationHandler = Callable[[str, "dict[str, Any]"], Awaitable[None]]
 
 log = structlog.get_logger(__name__)
 
@@ -126,6 +136,14 @@ class McpClient:
         self._pending: dict[str, asyncio.Future[Any]] = {}
         self._next_id: int = 0
         self._closed: bool = False
+        # Server->client handlers (set by the manager after connect). When
+        # unset, a server request is answered METHOD_NOT_FOUND (so a
+        # compliant server never hangs) and a notification is dropped.
+        self.on_server_request: ServerRequestHandler | None = None
+        self.on_notification: NotificationHandler | None = None
+        # Strong refs to fire-and-forget inbound-handler tasks so they
+        # aren't GC'd mid-flight; self-removed on completion.
+        self._inbound_tasks: set[asyncio.Task[Any]] = set()
         # Spawn the two worker tasks.
         self._writer_task: asyncio.Task = asyncio.create_task(self._writer_loop())
         self._reader_task: asyncio.Task = asyncio.create_task(self._reader_loop())
@@ -250,11 +268,75 @@ class McpClient:
         except Exception as e:
             raise McpClientDisconnected("writer task closed") from e
 
+    # ------------------------------------------------------------------
+    # Server -> client inbound handling (sampling requests, notifications)
+    # ------------------------------------------------------------------
+
+    def _spawn_inbound(self, coro: Awaitable[None]) -> None:
+        task = asyncio.ensure_future(coro)
+        self._inbound_tasks.add(task)
+        task.add_done_callback(self._inbound_tasks.discard)
+
+    async def _enqueue(self, frame: dict[str, Any]) -> None:
+        try:
+            await self._tx_queue.put(json.dumps(frame, ensure_ascii=False))
+        except Exception as err:  # noqa: BLE001 — reply is best-effort
+            log.warning("mcp client: reply enqueue failed", err=str(err))
+
+    async def _dispatch_server_request(self, frame: dict[str, Any]) -> None:
+        rid = frame.get("id")
+        method = str(frame.get("method") or "")
+        params = frame.get("params")
+        if not isinstance(params, dict):
+            params = {}
+        handler = self.on_server_request
+        if handler is None:
+            await self._enqueue(
+                {
+                    "jsonrpc": JSONRPC_VERSION,
+                    "id": rid,
+                    "error": {
+                        "code": error_codes.METHOD_NOT_FOUND,
+                        "message": f"method not supported by client: {method}",
+                    },
+                }
+            )
+            return
+        try:
+            result, error = await handler(method, params)
+        except Exception as err:  # noqa: BLE001 — never let a handler wedge the reader
+            log.warning("mcp client: server-request handler error", method=method, err=str(err))
+            result, error = None, {
+                "code": error_codes.INTERNAL_ERROR,
+                "message": f"handler error: {err}",
+            }
+        reply: dict[str, Any] = {"jsonrpc": JSONRPC_VERSION, "id": rid}
+        if error is not None:
+            reply["error"] = error
+        else:
+            reply["result"] = result
+        await self._enqueue(reply)
+
+    async def _dispatch_notification(self, frame: dict[str, Any]) -> None:
+        handler = self.on_notification
+        if handler is None:
+            return
+        method = str(frame.get("method") or "")
+        params = frame.get("params")
+        if not isinstance(params, dict):
+            params = {}
+        try:
+            await handler(method, params)
+        except Exception as err:  # noqa: BLE001 — notifications never break the reader
+            log.warning("mcp client: notification handler error", method=method, err=str(err))
+
     async def close(self) -> None:
         """Terminate the child process and stop the worker tasks."""
         if self._closed:
             return
         self._closed = True
+        for task in list(self._inbound_tasks):
+            task.cancel()
         # Signal writer to exit.
         try:
             await self._tx_queue.put(None)
@@ -353,8 +435,16 @@ class McpClient:
                         line=decoded,
                     )
                     continue
-                # Need an id to demux.
                 if not isinstance(parsed, dict):
+                    continue
+                # Server-initiated frames (request/notification) are
+                # routed to the handlers; responses demux by id as before.
+                kind = classify_inbound(parsed)
+                if kind == "request":
+                    self._spawn_inbound(self._dispatch_server_request(parsed))
+                    continue
+                if kind == "notification":
+                    self._spawn_inbound(self._dispatch_notification(parsed))
                     continue
                 rid = parsed.get("id")
                 key = _id_key(rid)

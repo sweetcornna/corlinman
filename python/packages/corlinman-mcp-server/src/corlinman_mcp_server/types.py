@@ -72,6 +72,24 @@ class error_codes:  # noqa: N801 — namespace mirror of Rust `pub mod error_cod
     # corlinman MCP extensions.
     TOOL_NOT_ALLOWED: int = -32001
     SESSION_NOT_INITIALIZED: int = -32002
+    RATE_LIMITED: int = -32000
+    SAMPLING_UNAVAILABLE: int = -32003
+    SAMPLING_MODEL_NOT_ALLOWED: int = -32004
+
+
+def classify_inbound(frame: dict[str, Any]) -> str:
+    """Classify an inbound JSON-RPC frame as a request/notification/response.
+
+    Client-side receive classification (JSON-RPC 2.0 §4/§5): a frame with
+    a ``method`` is server-initiated — a **request** when it also carries a
+    non-null ``id`` (expects a reply), a **notification** otherwise
+    (id-less, no reply). A frame with no ``method`` is a **response** to a
+    request the client issued (demuxed by ``id``). Shared by the stdio and
+    websocket reader loops so they never diverge on this classification.
+    """
+    if "method" in frame and frame.get("method"):
+        return "request" if frame.get("id") is not None else "notification"
+    return "response"
 
 
 # ---------------------------------------------------------------------
