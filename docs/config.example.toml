@@ -592,6 +592,44 @@ dir = "skills"
 autoload = true
 
 # ---------------------------------------------------------------------------
+# [mcp] — external MCP servers corlinman connects to as a CLIENT.
+#
+# Servers themselves are usually managed via the marketplace (persisted in
+# mcp_servers.sqlite) or an [mcp.servers] table. This block holds the
+# client-behaviour policy:
+#
+#   allowedMcpServers / deniedMcpServers — server allow/deny by name
+#     (deny wins; a non-empty allow-list is exclusive). claude-code parity.
+#   list_changed_debounce_ms — when a server pushes
+#     notifications/tools/list_changed, its tools are re-listed and the
+#     tool plane re-advertised after this debounce (coalesces bursts;
+#     default 1500). The same refresh runs on an admin hot-plug, so an
+#     enable/disable/reconfigure no longer needs a restart.
+#
+# [mcp.sampling] — respond to a server's sampling/createMessage request
+# (the server asks corlinman to run an LLM completion on its behalf).
+# Secure by default: the capability is advertised only when a completer is
+# wired AND mode != "off".
+#   mode = "off" (default) | "auto" | "ask"
+#     off  = never advertise / always reject; auto = allow within the
+#     whitelist + rate limit; ask = route through the approval gate
+#     (denied until an interactive resolver is wired).
+#   allowed_models — model aliases sampling may run (empty = none).
+#   rate_limit_per_min — per-server request cap (token bucket; default 10).
+#   max_tokens_cap — clamp the server's requested maxTokens (default 2048).
+# ---------------------------------------------------------------------------
+# [mcp]
+# allowedMcpServers = []
+# deniedMcpServers = []
+# list_changed_debounce_ms = 1500
+#
+# [mcp.sampling]
+# mode = "off"
+# allowed_models = ["claude-haiku-4-5"]
+# rate_limit_per_min = 10
+# max_tokens_cap = 2048
+
+# ---------------------------------------------------------------------------
 # [marketplace] — hot-pluggable Skills / MCP / Plugin marketplace.
 #
 # The gateway browses + installs three kinds of extension (skills, MCP

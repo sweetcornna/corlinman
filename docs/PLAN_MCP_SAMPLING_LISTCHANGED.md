@@ -164,6 +164,18 @@ new/edited gateway module for `refresh_mcp_advertisement` +
 
 ## 5. Gateway wiring
 
+**FINAL STATE AS BUILT:** the sampling responder, `on_tools_changed`
+listener→refresh, `McpAdapter.on_changed`→refresh (closes #108), and
+`[mcp.sampling]`/`list_changed_debounce_ms` config parsing all shipped.
+The `sampling_completer` (which runs the actual LLM completion) is the
+one deferred piece — no provider resolver is stashed on `state`, so
+wiring a completer needs provider-handle plumbing that is its own slice.
+Until injected via `state.extras["mcp_sampling_completer"]`, the
+responder never advertises the capability and rejects requests
+(secure-off default), so the seam is tested but production-dormant —
+mirroring the Dim 9 prompt/agent-evaluator deferral.
+
+
 - Build `refresh_mcp_advertisement` closure over `state`; set
   `manager.on_tools_changed` and `adapter.on_changed` to it.
 - Build the `sampling_completer` from the provider resolver (reuse the
