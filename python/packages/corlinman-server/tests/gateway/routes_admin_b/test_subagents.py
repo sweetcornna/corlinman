@@ -253,6 +253,50 @@ async def test_status_returns_known_row(
     assert body["state"] == "queued"
 
 
+def test_status_falls_back_to_registry_row(client: TestClient, admin_state: AdminState) -> None:
+    """Registry-only inline rows are pollable via /status — the store
+    missing them (here: unwired entirely) must not 404/503 when the live
+    registry holds the row. Shape matches the list route's registry
+    projection."""
+    _wire_inline_registry(admin_state, child="sess-A::child::0")
+
+    resp = client.get("/admin/subagents/sess-A::child::0/status")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["request_id"] == "sess-A::child::0"
+    assert body["source"] == "inline"
+    assert body["state"] == "running"
+    assert body["depth"] == 1
+    assert body["subagent_type"] == "inline-worker"
+
+
+@pytest.mark.asyncio
+async def test_status_store_miss_falls_back_to_registry(
+    client: TestClient, admin_state: AdminState, tmp_path: Path
+) -> None:
+    """With the store wired but missing the id, the registry row answers."""
+    _wire_dispatcher(admin_state, tmp_path)
+    _wire_inline_registry(admin_state, child="sess-A::child::0")
+
+    resp = client.get("/admin/subagents/sess-A::child::0/status")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["source"] == "inline"
+
+
+@pytest.mark.asyncio
+async def test_status_prefers_store_row_on_collision(
+    client: TestClient, admin_state: AdminState, tmp_path: Path
+) -> None:
+    """A durable store hit still wins over a same-id registry row."""
+    store, _ = _wire_dispatcher(admin_state, tmp_path)
+    await store.begin(_make_req(request_id="sess-A::child::0"))
+    _wire_inline_registry(admin_state, child="sess-A::child::0")
+
+    resp = client.get("/admin/subagents/sess-A::child::0/status")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["source"] == "background"
+
+
 @pytest.mark.asyncio
 async def test_kill_unknown_returns_404(
     client: TestClient, admin_state: AdminState, tmp_path: Path

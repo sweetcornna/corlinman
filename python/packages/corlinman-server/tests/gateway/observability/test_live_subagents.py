@@ -165,6 +165,92 @@ def test_completed_error_and_timeout_states() -> None:
     assert by_id["t1"].state == "timeout"
 
 
+def test_completed_rejected_and_depth_capped_map_to_failed() -> None:
+    """``rejected`` (e.g. a tool_allowlist escalation rejection after spawn)
+    and ``depth_capped`` are failures — they must not fall through to the
+    green ``succeeded`` default."""
+    reg = LiveSubagentRegistry()
+    reg.observe(_spawn("r1"))
+    reg.observe(
+        _env(
+            "p",
+            SubagentCompleted(
+                child_session_key="r1",
+                finish_reason="rejected",
+                tool_calls_made=0,
+                elapsed_ms=5,
+                summary="",
+            ),
+        )
+    )
+    reg.observe(_spawn("d1"))
+    reg.observe(
+        _env(
+            "p",
+            SubagentCompleted(
+                child_session_key="d1",
+                finish_reason="depth_capped",
+                tool_calls_made=0,
+                elapsed_ms=5,
+                summary="",
+            ),
+        )
+    )
+    by_id = {r.request_id: r for r in reg.list_all()}
+    assert by_id["r1"].state == "failed"
+    assert by_id["d1"].state == "failed"
+
+
+def test_respawn_after_terminal_replaces_stale_row() -> None:
+    """After an agent-process restart the same child key (parent::child::0)
+    is legitimately reused. The fresh ``SubagentSpawned`` must replace the
+    stale terminal row (and reset the per-child tool-call dedup set), not be
+    dropped by the replay guard — otherwise the panel shows the old terminal
+    row forever."""
+    reg = LiveSubagentRegistry()
+    reg.observe(_spawn("c1", ts=1000))
+
+    def _running_env() -> EventEnvelope:
+        inner = _env(
+            "c1",
+            ToolStateRunning(
+                tool_call_id="tc1", tool_name="web_search", args_json="{}", started_at_ms=1100
+            ),
+        )
+        return _env("p", SubagentEvent(child_session_key="c1", envelope=inner))
+
+    reg.observe(_running_env())
+    reg.observe(
+        _env(
+            "p",
+            SubagentCompleted(
+                child_session_key="c1",
+                finish_reason="completed",
+                tool_calls_made=1,
+                elapsed_ms=10,
+                summary="done",
+            ),
+            ts=2000,
+        )
+    )
+    assert reg.list_all()[0].state == "succeeded"
+
+    # New incarnation under the same key → row is running again, fresh.
+    reg.observe(_spawn("c1", ts=3000))
+    rows = reg.list_active()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.state == "running"
+    assert row.started_at == 3000
+    assert row.finished_at is None
+    assert row.tool_calls_made == 0
+
+    # The dedup set was reset too: the same tool_call_id counts again for
+    # the fresh incarnation.
+    reg.observe(_running_env())
+    assert reg.list_active()[0].tool_calls_made == 1
+
+
 def test_terminal_rows_are_capped() -> None:
     reg = LiveSubagentRegistry(terminal_cap=2)
     for i in range(5):

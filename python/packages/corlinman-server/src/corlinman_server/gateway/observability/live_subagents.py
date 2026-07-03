@@ -105,7 +105,7 @@ def _map_finish_reason(reason: str | None, error: str | None) -> str:
         return "timeout"
     if r in ("killed", "cancelled", "canceled", "aborted"):
         return "killed"
-    if error or r in ("error", "failed", "failure"):
+    if error or r in ("error", "failed", "failure", "rejected", "depth_capped"):
         return "failed"
     return "succeeded"
 
@@ -241,10 +241,17 @@ class LiveSubagentRegistry:
         if not child_key:
             return
         # Idempotent: a re-observed spawn (poll re-delivery) must not reset a
-        # row that has already advanced to a terminal/active state with more
-        # info. Only (re)create when absent.
-        if child_key in self._rows:
-            return
+        # row that has already advanced to an active state with more info —
+        # but only while the row is live. A TERMINAL row under the same key is
+        # a previous incarnation (an agent-process restart reuses child keys
+        # like ``parent::child::0``), so a fresh spawn replaces it instead of
+        # being dropped.
+        existing = self._rows.get(child_key)
+        if existing is not None:
+            if existing.state not in _TERMINAL_STATES:
+                return
+            self._rows.pop(child_key, None)
+            self._counted_tool_calls.pop(child_key, None)
         self._rows[child_key] = LiveSubagentRow(
             request_id=child_key,
             parent_session_key=parent_key,

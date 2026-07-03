@@ -38,6 +38,7 @@ from corlinman_server.gateway.routes_admin_b.infra._subagents_lib import (
     SubagentListResponse,
     SubagentStatusResponse,
     _error,
+    _live_row_to_response,
     _merged_rows,
     _resolve_actor,
     _resolve_dispatcher,
@@ -115,20 +116,30 @@ def router() -> APIRouter:
     ) -> SubagentStatusResponse | JSONResponse:
         state = get_admin_state()
         store = _resolve_store(state)
-        if store is None:
+        registry = _resolve_live_registry(state)
+        if store is None and registry is None:
             return _error(
                 503,
                 "subagent_dispatcher_unavailable",
                 "background subagent dispatch is not wired on this gateway",
             )
-        status = await store.get(request_id)
-        if status is None:
-            return _error(
-                404,
-                "subagent_request_not_found",
-                f"no subagent request with id {request_id!r}",
-            )
-        return _status_to_response(status)
+        if store is not None:
+            status = await store.get(request_id)
+            if status is not None:
+                return _status_to_response(status)
+        # Store miss (or store unwired) — fall back to the in-memory inline
+        # registry so registry-only rows the LIST route already merges are
+        # pollable by id too. Same projection as ``_merged_rows``.
+        if registry is not None:
+            for row in registry.list_all():
+                resp = _live_row_to_response(row)
+                if resp.request_id == request_id:
+                    return resp
+        return _error(
+            404,
+            "subagent_request_not_found",
+            f"no subagent request with id {request_id!r}",
+        )
 
     # ------------------------------------------------------------------
     # POST /admin/subagents/{id}/kill
