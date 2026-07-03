@@ -168,6 +168,47 @@ async def test_user_prompt_submit_inject_becomes_system_note() -> None:
 
 
 @pytest.mark.asyncio
+async def test_user_prompt_submit_note_reaches_midturn_supplement() -> None:
+    """When a turn is already in flight, the hook note rides along with the
+    injected supplement text instead of being dropped with the early
+    return (Codex #109)."""
+    inject = {"decision": "allow", "inject_message": "obey the style guide"}
+    cmd = f"""echo '{json.dumps(inject)}'"""
+    runner = HookRunner(
+        {
+            "hooks": {
+                "declarative": {
+                    "UserPromptSubmit": [
+                        {"hooks": [{"kind": "command", "command": cmd, "async": False}]}
+                    ]
+                }
+            }
+        }
+    )
+
+    class _FakeActiveLoop:
+        def __init__(self) -> None:
+            self.injected: list[str] = []
+
+        def inject_user_message(self, text: str) -> None:
+            self.injected.append(text)
+
+    fake_loop = _FakeActiveLoop()
+    provider = _CapturingProvider()
+    servicer = CorlinmanAgentServicer(
+        provider_resolver=lambda _model: provider,
+        hook_runner=runner,
+    )
+    servicer._active_loops["sess-supp"] = fake_loop  # a turn is "running"
+    await _drive_chat(servicer, user_text="also add tests", session_key="sess-supp")
+    assert len(fake_loop.injected) == 1
+    assert "also add tests" in fake_loop.injected[0]
+    assert "hook:user_prompt_submit" in fake_loop.injected[0]
+    assert "obey the style guide" in fake_loop.injected[0]
+    assert not provider.calls  # supplement path — no fresh turn started
+
+
+@pytest.mark.asyncio
 async def test_servicer_loop_carries_hook_runner_to_stop_hook() -> None:
     class _StopRecorder:
         def __init__(self) -> None:

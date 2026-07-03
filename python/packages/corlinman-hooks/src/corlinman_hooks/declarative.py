@@ -394,29 +394,31 @@ class DeclarativeEngine:
             payload.update(extra)
         return payload
 
-    def _matching_groups(self, event: str, tool: str, args: dict[str, Any]) -> list[MatcherGroup]:
-        groups = self._config.groups.get(event)
-        if not groups:
-            return []
-        matched: list[MatcherGroup] = []
-        for group in groups:
-            if not match_tool(group.matcher, tool):
-                continue
-            if group.if_rule is not None:
-                if self._rule_matcher is None:
-                    self._warn_once(f"if:{event}", "hook 'if' rule set but no rule matcher wired; group skipped")
-                    continue
-                try:
-                    if not self._rule_matcher(group.if_rule, tool, args):
-                        continue
-                except Exception as exc:  # noqa: BLE001 — a bad rule must not brick dispatch
-                    _log.warning(
-                        "hook.declarative.if_rule_error",
-                        extra={"rule": group.if_rule, "error": str(exc)},
-                    )
-                    continue
-            matched.append(group)
-        return matched
+    def _group_matches(self, group: MatcherGroup, tool: str, args: dict[str, Any]) -> bool:
+        """Evaluate one group's ``matcher`` + ``if`` rule against a call.
+
+        Called per group INSIDE the fold loop, against the args as
+        mutated so far — an earlier hook's ``mutated_args`` must be what
+        a later group's ``if`` rule gates on, or a rewrite could bypass
+        the configured policy (Codex #109).
+        """
+        if not match_tool(group.matcher, tool):
+            return False
+        if group.if_rule is not None:
+            if self._rule_matcher is None:
+                self._warn_once(
+                    f"if:{group.event}", "hook 'if' rule set but no rule matcher wired; group skipped"
+                )
+                return False
+            try:
+                return bool(self._rule_matcher(group.if_rule, tool, args))
+            except Exception as exc:  # noqa: BLE001 — a bad rule must not brick dispatch
+                _log.warning(
+                    "hook.declarative.if_rule_error",
+                    extra={"rule": group.if_rule, "error": str(exc)},
+                )
+                return False
+        return True
 
     def _warn_once(self, key: str, message: str) -> None:
         if key not in self._warned_unwired:
@@ -434,7 +436,9 @@ class DeclarativeEngine:
         """Run every matching declarative hook for ``event`` and fold."""
         result = HookDecision.allow_all()
         current_args = args
-        for group in self._matching_groups(event, tool, args):
+        for group in self._config.groups.get(event, []):
+            if not self._group_matches(group, tool, current_args):
+                continue
             for hook in group.hooks:
                 payload = self._payload(event, tool, current_args, ctx, extra)
                 if hook.fire_async:
@@ -464,7 +468,9 @@ class DeclarativeEngine:
         """
         result = HookDecision.allow_all()
         current_args = args
-        for group in self._matching_groups(event, tool, args):
+        for group in self._config.groups.get(event, []):
+            if not self._group_matches(group, tool, current_args):
+                continue
             for hook in group.hooks:
                 if hook.kind in ("prompt", "agent"):
                     self._warn_once(f"sync:{hook.kind}", f"{hook.kind} hook skipped in sync context")

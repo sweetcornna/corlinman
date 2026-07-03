@@ -560,6 +560,53 @@ async def test_runner_event_async_sync_hook_verdict_returned():
     assert "prompt-note" in (decision.reason or "")
 
 
+@pytest.mark.asyncio
+async def test_if_rule_reevaluated_against_mutated_args():
+    """A later group's ``if`` rule must gate on the EFFECTIVE args after an
+    earlier hook's mutation (Codex #109) — not the original call args."""
+
+    def rule_matcher(rule, tool, args):
+        return "danger" in str(args.get("cmd", ""))
+
+    section = {
+        "PreToolUse": [
+            # Group 1 rewrites the dangerous command to a safe one.
+            {"hooks": [{"kind": "command", "command": """echo '{"mutated_args": {"cmd": "safe"}}'"""}]},
+            # Group 2 blocks — but its if-rule matches only "danger" args,
+            # which no longer exist after group 1's rewrite.
+            {"if": "any-danger", "hooks": [{"kind": "command", "command": "exit 2"}]},
+        ]
+    }
+    eng = _engine(section, rule_matcher=rule_matcher)
+    decision = await eng.run("pre_tool", "run_shell", {"cmd": "danger --now"}, {})
+    assert decision.allow is True
+    assert decision.mutated_args == {"cmd": "safe"}
+
+    # Inverse: mutation INTO a matching value must trigger the later group.
+    section2 = {
+        "PreToolUse": [
+            {"hooks": [{"kind": "command", "command": """echo '{"mutated_args": {"cmd": "danger"}}'"""}]},
+            {"if": "any-danger", "hooks": [{"kind": "command", "command": "echo caught >&2; exit 2"}]},
+        ]
+    }
+    eng2 = _engine(section2, rule_matcher=rule_matcher)
+    blocked = await eng2.run("pre_tool", "run_shell", {"cmd": "innocent"}, {})
+    assert blocked.allow is False
+
+
+@pytest.mark.asyncio
+async def test_runner_post_tool_async_runs_discovered_handlers():
+    """HOOK.yaml handlers registered for post_tool fire on the async path
+    (Codex #109 — they were advertised but never invoked)."""
+    runner = HookRunner({})
+    seen: list[dict] = []
+    runner.register_handler("post_tool", lambda ev, payload: seen.append(payload))
+    await runner.run_post_tool_async("run_shell", {"cmd": "ls"}, '{"ok": true}')
+    assert len(seen) == 1
+    assert seen[0]["tool"] == "run_shell"
+    assert seen[0]["result"] == '{"ok": true}'
+
+
 def test_runner_reload_swaps_declarative_config():
     runner = HookRunner(_runner_config({"PreToolUse": [{"hooks": [{"kind": "command", "command": "exit 2"}]}]}))
     ok, _ = runner.run_pre_tool("run_shell", {})

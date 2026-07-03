@@ -383,16 +383,22 @@ def _hooks_reload(runner: Any) -> str:
     import os
     from pathlib import Path
 
-    cfg: dict[str, Any] = {}
     path = os.environ.get("CORLINMAN_PY_CONFIG")
-    if path:
-        try:
-            data = _json.loads(Path(path).read_text(encoding="utf-8"))
-            section = data.get("hooks") if isinstance(data, dict) else None
-            if isinstance(section, dict):
-                cfg = {"hooks": section}
-        except Exception as exc:  # noqa: BLE001 — reload must report, not crash
-            return f"hooks reload failed reading config: {exc}"
+    if not path:
+        # Without a config source a reload would rebuild from ``{}`` and
+        # silently wipe every live hook (Codex #109) — refuse instead.
+        return (
+            "hooks reload unavailable: CORLINMAN_PY_CONFIG is not set "
+            "(no config source to reload from)"
+        )
+    cfg: dict[str, Any] = {}
+    try:
+        data = _json.loads(Path(path).read_text(encoding="utf-8"))
+        section = data.get("hooks") if isinstance(data, dict) else None
+        if isinstance(section, dict):
+            cfg = {"hooks": section}
+    except Exception as exc:  # noqa: BLE001 — reload must report, not crash
+        return f"hooks reload failed reading config: {exc}"
     try:
         summary = runner.reload(cfg)
     except Exception as exc:  # noqa: BLE001

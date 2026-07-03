@@ -701,6 +701,19 @@ class HookRunner:
                 ensure_ascii=False,
             )
             self._declarative.track(self._shell_fire_and_forget(cmd, payload))
+        # Discovered in-process post handlers (HOOK.yaml ``events:
+        # [post_tool]``) — previously advertised but never invoked
+        # (Codex #109). Verdicts are ignored per the post-tool contract;
+        # ``_run_handlers`` isolates a raising handler.
+        if self._handlers.get(f"post_{tool_name}") or self._handlers.get("post_tool"):
+            handler_payload = {
+                "tool": tool_name,
+                "args": args,
+                "result": result_json,
+                "ctx": ctx or {},
+            }
+            self._run_handlers(f"post_{tool_name}", handler_payload)
+            self._run_handlers("post_tool", handler_payload)
         if self._declarative.has("post_tool"):
             await self._declarative.run(
                 "post_tool", tool_name, args, ctx, extra={"tool_result": result_json}

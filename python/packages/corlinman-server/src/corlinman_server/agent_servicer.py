@@ -1398,9 +1398,12 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
 
         # Declarative ``UserPromptSubmit`` hooks. These cannot abort the
         # turn: a deny/inject verdict from an awaited (async=false) hook
-        # becomes a system note prepended to the messages, so an operator
-        # guard can annotate a prompt without owning the turn lifecycle.
+        # becomes a note the model sees — prepended to the messages on a
+        # fresh turn, or appended to the injected supplement text when a
+        # turn is already running (Codex #109: the supplement branch
+        # returns early, so a start.messages write would be dropped).
         # Default-async groups return allow immediately and run detached.
+        _hook_note: str | None = None
         if user_text:
             _runner = self._resolve_hook_runner()
             _run_event = getattr(_runner, "run_event_async", None)
@@ -1424,9 +1427,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     if isinstance(_inject, str) and _inject.strip():
                         _note = f"{_note}\n{_inject}" if _note else _inject
                     if _note:
-                        start.messages = _inject_memory_note(
-                            list(start.messages), f"[hook:user_prompt_submit] {_note}"
-                        )
+                        _hook_note = f"[hook:user_prompt_submit] {_note}"
                 except Exception as exc:  # noqa: BLE001 — never block the chat
                     logger.warning(
                         "agent.chat.user_prompt_hook_failed", error=str(exc)
@@ -1442,7 +1443,11 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         if start.session_key and user_text:
             active_loop = self._active_loops.get(start.session_key)
             if active_loop is not None:
-                active_loop.inject_user_message(user_text)
+                active_loop.inject_user_message(
+                    user_text
+                    if _hook_note is None
+                    else f"{user_text}\n\n{_hook_note}"
+                )
                 # T4.1: journal the supplement onto the existing turn
                 # so a resume sees the full conversation. Best-effort.
                 journal = await self._get_journal()
@@ -1492,6 +1497,11 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     done=agent_pb2.Done(finish_reason="supplemented")
                 )
                 return
+
+        # Fresh turn (no in-flight loop absorbed the prompt): the hook
+        # note lands as a system note ahead of context assembly.
+        if _hook_note is not None:
+            start.messages = _inject_memory_note(list(start.messages), _hook_note)
 
         # T4.2: per-session async lock — same-session RPCs serialize so
         # the todo store / cost meter / workspace snapshot can't race.

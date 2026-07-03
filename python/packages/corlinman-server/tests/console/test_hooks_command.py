@@ -129,6 +129,19 @@ async def test_hooks_reload_reports_summary(monkeypatch: pytest.MonkeyPatch, tmp
     assert ok is True  # the deny group is gone after reload
 
 
+async def test_hooks_reload_refuses_without_config_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No CORLINMAN_PY_CONFIG → refuse instead of wiping live hooks (Codex #109)."""
+    runner = _runner_with(
+        {"PreToolUse": [{"hooks": [{"kind": "command", "command": "exit 2"}]}]}
+    )
+    monkeypatch.delenv("CORLINMAN_PY_CONFIG", raising=False)
+    app = StubApp(_HookBrain(runner))
+    text = await dispatch(app, "/hooks reload") or ""
+    assert "unavailable" in text
+    ok, _ = runner.run_pre_tool("run_shell", {})
+    assert ok is False  # the deny group survived the refused reload
+
+
 async def test_hooks_appears_in_help() -> None:
     app = StubApp(_HookBrain(_runner_with({})))
     text = await dispatch(app, "/help") or ""
