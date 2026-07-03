@@ -1521,6 +1521,54 @@ async def test_servicer_dispatches_calculator_in_process() -> None:
 
 
 @pytest.mark.asyncio
+async def test_servicer_dispatches_shell_task_tools_in_process() -> None:
+    """Dim 4: the two ``shell_task_*`` tools are registered in
+    ``BUILTIN_TOOLS`` and flow through ``_dispatch_builtin``.
+
+    We exercise the dispatch-branch wiring with an unknown task_id so no
+    background process is spawned — a cheap smoke of the seam that keeps
+    ``run_shell``/``shell_task_output``/``shell_task_kill`` reachable."""
+    from corlinman_agent.reasoning_loop import ChatStart, ToolCallEvent
+    from corlinman_server.agent_servicer import (
+        BUILTIN_TOOLS,
+        CorlinmanAgentServicer,
+    )
+
+    assert {"shell_task_output", "shell_task_kill"} <= BUILTIN_TOOLS
+
+    servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: _FakeProvider([]))
+    start = ChatStart(model="m", messages=[], tools=[], session_key="s")
+
+    out = json.loads(
+        await servicer._dispatch_builtin(
+            ToolCallEvent(
+                call_id="c1",
+                plugin="builtin",
+                tool="shell_task_output",
+                args_json=b'{"task_id": "nope"}',
+            ),
+            start,
+            _FakeProvider([]),
+        )
+    )
+    assert out["error"] == "task_not_found"
+
+    kill = json.loads(
+        await servicer._dispatch_builtin(
+            ToolCallEvent(
+                call_id="c2",
+                plugin="builtin",
+                tool="shell_task_kill",
+                args_json=b'{"task_id": "nope"}',
+            ),
+            start,
+            _FakeProvider([]),
+        )
+    )
+    assert kill["error"] == "task_not_found"
+
+
+@pytest.mark.asyncio
 async def test_servicer_web_search_degrades_without_network(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

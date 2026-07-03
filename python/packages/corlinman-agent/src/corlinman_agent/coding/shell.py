@@ -195,6 +195,38 @@ def _preexec_apply_rlimits() -> None:
     # New session — so killpg(getpgid(pid)) reaps the whole process tree.
     cast(Any, os).setsid()
 
+
+def kill_process_group(proc: asyncio.subprocess.Process) -> None:
+    """Kill the spawned shell AND every command it forked.
+
+    ``proc.kill()`` only delivers SIGKILL to the immediate child (the
+    shell wrapper). If the shell ran ``sleep 9999 &`` or even ``sleep
+    9999`` synchronously, the sleep survives the wrapper's death unless
+    we signal the whole process group. ``setsid`` in the preexec_fn makes
+    the child its own session leader, so ``killpg(getpgid(pid),
+    SIGKILL)`` reaps the whole tree.
+
+    Shared by the foreground timeout path (:func:`dispatch_run_shell`)
+    and the background task registry (:mod:`.shell_tasks`).
+    """
+    if sys.platform == "win32":
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        return
+    try:
+        pgid = os.getpgid(proc.pid)
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        # Already gone, or — for tests where preexec_fn was bypassed —
+        # the child isn't a session leader. Fall back to single-process kill.
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+
+
 #: Splits a command line into top-level segments on shell operators so a
 #: denied pattern hidden after ``;`` / ``|`` / ``&&`` is still caught.
 _SEGMENT_SPLIT = re.compile(r"[;&|]+|\bthen\b|\bdo\b")
@@ -287,7 +319,11 @@ def run_shell_tool_schema() -> dict[str, Any]:
             "description": (
                 "Run a shell command. The working directory is the agent "
                 "workspace. Returns combined stdout+stderr and the exit "
-                "code. Use for builds, tests, git, file inspection, etc."
+                "code. Use for builds, tests, git, file inspection, etc. "
+                "Set run_in_background=true for a long-running command "
+                "(dev server, watcher, slow build): it returns immediately "
+                "with a task_id you then poll with shell_task_output and "
+                "terminate with shell_task_kill."
             ),
             "parameters": {
                 "type": "object",
@@ -300,7 +336,19 @@ def run_shell_tool_schema() -> dict[str, Any]:
                         "type": "integer",
                         "description": (
                             f"Timeout in seconds (default {_DEFAULT_TIMEOUT}, "
-                            f"max {_MAX_TIMEOUT})."
+                            f"max {_MAX_TIMEOUT}). Ignored when "
+                            "run_in_background is true."
+                        ),
+                    },
+                    "run_in_background": {
+                        "type": "boolean",
+                        "description": (
+                            "Run the command detached and return "
+                            "immediately with a task_id instead of "
+                            "blocking. Output spills to a workspace log "
+                            "file; poll it with shell_task_output(task_id, "
+                            "offset). The foreground timeout does not apply "
+                            "— a max-lifetime watchdog governs instead."
                         ),
                     },
                 },
@@ -312,9 +360,17 @@ def run_shell_tool_schema() -> dict[str, Any]:
 
 
 async def dispatch_run_shell(
-    *, args_json: bytes | str, workspace: Path | None = None
+    *,
+    args_json: bytes | str,
+    workspace: Path | None = None,
+    session_key: str = "",
 ) -> str:
-    """Execute a shell command in the workspace. JSON envelope; never raises."""
+    """Execute a shell command in the workspace. JSON envelope; never raises.
+
+    ``session_key`` tags a background task (``run_in_background=true``) so
+    the registry can key/observe it per session; it is unused on the
+    foreground path.
+    """
     try:
         raw = decode_args(args_json)
     except CodingArgsInvalidError as exc:
@@ -326,6 +382,8 @@ async def dispatch_run_shell(
     command = command.strip()
     # Screen the whole line *and* every operator-split segment, so a
     # denied pattern smuggled after ';' / '|' / '&&' is still caught.
+    # This runs BEFORE any spawn — including the background path — so a
+    # destructive command is refused whether it is foreground or detached.
     for segment in [command, *_SEGMENT_SPLIT.split(command)]:
         if _DENY.search(segment):
             logger.warning("run_shell.refused", command=command[:200])
@@ -335,6 +393,36 @@ async def dispatch_run_shell(
                     "error": "command_refused: destructive pattern",
                 }
             )
+
+    # Background path: spawn detached, register in the shell-task registry,
+    # and return a task_id immediately. The safety guards above have
+    # already run. Import lazily so :mod:`.shell_tasks` (which imports from
+    # this module) doesn't create an import cycle.
+    if bool(raw.get("run_in_background")):
+        from corlinman_agent.coding.shell_tasks import (
+            ShellTaskQuotaExceeded,
+            get_registry,
+        )
+
+        try:
+            task = await get_registry().spawn(
+                command=command,
+                session_key=session_key,
+                workspace=workspace,
+            )
+        except ShellTaskQuotaExceeded as exc:
+            return json.dumps({"command": command, "error": f"shell_tasks_busy: {exc}"})
+        except OSError as exc:
+            return json.dumps({"command": command, "error": f"spawn_failed: {exc}"})
+        return json.dumps(
+            {
+                "task_id": task.task_id,
+                "status": "running",
+                "log_path": task.log_path,
+                "note": "poll with shell_task_output(task_id, offset)",
+            },
+            ensure_ascii=False,
+        )
 
     timeout = raw.get("timeout", _DEFAULT_TIMEOUT)
     try:
@@ -361,37 +449,10 @@ async def dispatch_run_shell(
     except OSError as exc:
         return json.dumps({"command": command, "error": f"spawn_failed: {exc}"})
 
-    def _kill_process_group() -> None:
-        """Kill the spawned shell AND every command it forked.
-
-        ``proc.kill()`` only delivers SIGKILL to the immediate child
-        (the shell wrapper). If the shell ran ``sleep 9999 &`` or even
-        ``sleep 9999`` synchronously, the sleep survives the wrapper's
-        death unless we signal the whole process group. ``setsid`` in
-        the preexec_fn makes the child its own session leader, so
-        ``killpg(getpgid(pid), SIGKILL)`` reaps the whole tree.
-        """
-        if sys.platform == "win32":
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-            return
-        try:
-            pgid = os.getpgid(proc.pid)
-            os.killpg(pgid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            # Already gone, or — for tests where preexec_fn was bypassed —
-            # the child isn't a session leader. Fall back to single-process kill.
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-
     try:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except TimeoutError:
-        _kill_process_group()
+        kill_process_group(proc)
         try:
             await proc.wait()
         except ProcessLookupError:  # pragma: no cover — race

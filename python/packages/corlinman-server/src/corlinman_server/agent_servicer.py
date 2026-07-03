@@ -44,6 +44,8 @@ from corlinman_agent.coding import (
     REVERT_CHANGES_TOOL,
     RUN_SHELL_TOOL,
     SEARCH_FILES_TOOL,
+    SHELL_TASK_KILL_TOOL,
+    SHELL_TASK_OUTPUT_TOOL,
     TODO_WRITE_TOOL,
     WRITE_FILE_TOOL,
     FileState,
@@ -58,6 +60,8 @@ from corlinman_agent.coding import (
     dispatch_revert_changes,
     dispatch_run_shell,
     dispatch_search_files,
+    dispatch_shell_task_kill,
+    dispatch_shell_task_output,
     dispatch_todo_write,
     dispatch_write_file,
     render_todo_block,
@@ -3237,7 +3241,19 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             if event.tool == SEARCH_FILES_TOOL:
                 return dispatch_search_files(args_json=event.args_json)
             if event.tool == RUN_SHELL_TOOL:
-                return await dispatch_run_shell(args_json=event.args_json)
+                # Thread session_key so a ``run_in_background=true`` call can
+                # tag its background task per session (mirrors execute_code).
+                # The foreground path ignores it — behaviour is unchanged.
+                return await dispatch_run_shell(
+                    args_json=event.args_json,
+                    session_key=start.session_key,
+                )
+            if event.tool == SHELL_TASK_OUTPUT_TOOL:
+                # Poll a background shell task's streamed output (Dim 4).
+                return dispatch_shell_task_output(args_json=event.args_json)
+            if event.tool == SHELL_TASK_KILL_TOOL:
+                # Terminate a background shell task's process group (Dim 4).
+                return await dispatch_shell_task_kill(args_json=event.args_json)
             if event.tool == EXECUTE_CODE_TOOL:
                 # Disabled by default — dispatch_execute_code returns an
                 # ``execute_code_disabled`` envelope unless
