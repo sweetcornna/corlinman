@@ -530,6 +530,25 @@ def _env_positive_float(name: str, default: float) -> float:
     return value if value > 0 else default
 
 
+def _env_positive_int(name: str, default: int, *, floor: int = 1) -> int:
+    """Parse an int env knob, clamped up to ``floor``; bad/absent → ``default``.
+
+    Integer sibling of :func:`_env_positive_float` for the summary
+    cooldown / breaker knobs. A missing or non-integer value falls back to
+    ``default`` (itself already ≥ ``floor`` by construction); a valid but
+    too-small value is floored so a misconfigured ``0`` can't disable the
+    mechanism outright.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return max(floor, value)
+
+
 _CONTEXT_OUTPUT_RESERVE_FRACTION = _env_positive_float("CORLINMAN_CONTEXT_RESERVE_FRACTION", 0.15)
 _CONTEXT_OUTPUT_RESERVE_CAP = int(_env_positive_float("CORLINMAN_CONTEXT_RESERVE_CAP", 48_000))
 # When set, reserve a FIXED number of tokens (claude-code ``AUTOCOMPACT_BUFFER``
@@ -656,6 +675,33 @@ _COMPACT_ELIDE_THRESHOLD: float = 0.60
 # a dense ~400-word paragraph (the prompt below caps the summary at
 # 400 words so the actual emission is comfortably below this ceiling).
 _COMPACT_SUMMARY_MAX_TOKENS = 1_500
+
+
+# ABSORB_MATRIX Dim 2 (d)/(e) — summary-LLM cooldown / anti-thrash + a
+# consecutive-failure circuit breaker, mirroring the console compactor's
+# breaker (``corlinman_server...console.compaction.Compactor``) at
+# reasoning-loop scope. Read at import so they pin per process; each is
+# floored at 1 so a misconfigured ``0`` can't disable the cooldown or trip
+# the breaker on the very first attempt.
+#
+# ``_COMPACT_SUMMARY_COOLDOWN_ROUNDS`` — how many rounds the slow
+# summarization path is skipped after a failure (or a low-savings streak).
+# ``_COMPACT_SUMMARY_BREAKER_LIMIT`` — consecutive summary failures before
+# the slow path is disabled for the rest of the turn.
+_COMPACT_SUMMARY_COOLDOWN_ROUNDS = _env_positive_int(
+    "CORLINMAN_COMPACT_SUMMARY_COOLDOWN_ROUNDS", 5, floor=1
+)
+_COMPACT_SUMMARY_BREAKER_LIMIT = _env_positive_int(
+    "CORLINMAN_COMPACT_SUMMARY_BREAKER_LIMIT", 3, floor=1
+)
+
+# A summary that shrinks the estimate by less than this fraction is barely
+# worth its sub-call cost; a run of
+# ``_COMPACT_SUMMARY_LOW_SAVINGS_STREAK_LIMIT`` such successes trips the
+# same cooldown a failure would (hermes anti-thrash semantics — don't keep
+# paying for marginal gains).
+_COMPACT_SUMMARY_LOW_SAVINGS_FRACTION = 0.10
+_COMPACT_SUMMARY_LOW_SAVINGS_STREAK_LIMIT = 2
 
 
 # Prompt that drives the summarization sub-call. Kept verbatim from
@@ -814,6 +860,8 @@ async def _compact_history(
     model: str | None = None,
     fast_path_only: bool = False,
     prev_estimate: int | None = None,
+    summary_allowed: bool = True,
+    outcome: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Return a possibly-compacted copy of ``messages`` capped at ``budget`` tokens.
 
@@ -855,6 +903,19 @@ async def _compact_history(
     ``_estimate_tokens(messages)`` walk is skipped; the value is used
     as-is for the budget check. Pass ``None`` (the default) to retain
     the original behaviour — compute it here.
+
+    ``summary_allowed`` gates ONLY the slow-path LLM sub-call
+    (ABSORB_MATRIX Dim 2 (d)/(e)): the caller — :class:`ReasoningLoop` —
+    passes ``False`` while the summarizer is in cooldown or the failure
+    breaker has tripped. The cheap elide fast path is NEVER gated, so a
+    turn under pressure still shrinks even when summarization is parked.
+
+    ``outcome`` — optional dict the caller supplies to observe the slow
+    path. When a dict is passed and the summary sub-call is reached it is
+    populated with ``summary_attempted`` (bool), ``summary_failed`` (bool)
+    and ``summary_saved_fraction`` (``(before-after)/before`` when a
+    summary was actually produced, else ``0.0``). Untouched when the slow
+    path never fires.
     """
     before = prev_estimate if prev_estimate is not None else _estimate_tokens(messages)
     elide_threshold = int(budget * _COMPACT_ELIDE_THRESHOLD)
@@ -877,9 +938,16 @@ async def _compact_history(
 
     # Slow path — summarization. Only fire when context is genuinely
     # under pressure (>= threshold * budget) AND we have a provider to
-    # call AND the caller hasn't forced fast-only.
+    # call AND the caller hasn't forced fast-only AND the caller-side
+    # cooldown / breaker (``summary_allowed``) permits it.
     summary_threshold = int(budget * _COMPACT_SUMMARY_THRESHOLD)
-    if not fast_path_only and provider is not None and model and before >= summary_threshold:
+    if (
+        not fast_path_only
+        and summary_allowed
+        and provider is not None
+        and model
+        and before >= summary_threshold
+    ):
         # Saved-token feedback (ABSORB_MATRIX Dim 2 b — claude-code's
         # microcompact feeds saved tokens back into the auto-compact
         # threshold): measure what the cheap elide pass alone saves
@@ -901,6 +969,10 @@ async def _compact_history(
                 budget=budget,
             )
             return elided
+        # From here the LLM sub-call IS attempted — record it for the
+        # caller's cooldown / breaker bookkeeping (Dim 2 (d)/(e)).
+        if outcome is not None:
+            outcome["summary_attempted"] = True
         try:
             summarized = await _summarize_old_messages(
                 messages=messages,
@@ -918,6 +990,11 @@ async def _compact_history(
             summarized = None
         if summarized is not None:
             after = _estimate_tokens(summarized)
+            if outcome is not None:
+                outcome["summary_failed"] = False
+                outcome["summary_saved_fraction"] = (
+                    (before - after) / before if before > 0 else 0.0
+                )
             logger.info(
                 "agent.context.summarized",
                 before=before,
@@ -927,7 +1004,12 @@ async def _compact_history(
             )
             return summarized
         # Degraded: reuse the already-measured elide result rather than
-        # running the pass a second time.
+        # running the pass a second time. A raised sub-call OR an empty
+        # summary both count as a failure toward the breaker (parity with
+        # the console compactor's "summarizer returned no text").
+        if outcome is not None:
+            outcome["summary_failed"] = True
+            outcome["summary_saved_fraction"] = 0.0
         logger.info(
             "agent.context.compacted",
             before=before,
@@ -1359,6 +1441,22 @@ class ReasoningLoop:
         # check. Reset per ``run()``.
         self._auto_continue_count = 0
         self._auto_continue_last_len = 0
+        # ABSORB_MATRIX Dim 2 (d)/(e): per-turn summary-LLM cooldown +
+        # circuit breaker. A ReasoningLoop instance is per-turn, so
+        # "in-loop" means across the rounds of one turn — these reset
+        # naturally per construction and are re-zeroed in ``run()`` too
+        # (mirroring ``_auto_continue_count``) for reused instances.
+        # ``_summary_failures`` counts consecutive slow-path failures; at
+        # ``_COMPACT_SUMMARY_BREAKER_LIMIT`` the summarizer is disabled for
+        # the rest of the turn (``_summary_disabled``).
+        # ``_summary_cooldown_until_round`` is the earliest round the slow
+        # path may fire again. ``_summary_low_savings_streak`` counts
+        # consecutive successes that barely shrank the window; a run of
+        # them also trips the cooldown (anti-thrash).
+        self._summary_failures = 0
+        self._summary_disabled = False
+        self._summary_cooldown_until_round = 0
+        self._summary_low_savings_streak = 0
         # WP9: accumulated session cost in USD across all turns.
         self._session_cost_usd: float = 0.0
         # Per-turn correlation id + monotonic sequence counter. Reset at
@@ -1668,6 +1766,12 @@ class ReasoningLoop:
         # Reset per-turn auto-continue accounting (gated; see __init__).
         self._auto_continue_count = 0
         self._auto_continue_last_len = 0
+        # Reset per-turn summary-LLM cooldown / breaker accounting (Dim 2
+        # (d)/(e); see __init__).
+        self._summary_failures = 0
+        self._summary_disabled = False
+        self._summary_cooldown_until_round = 0
+        self._summary_low_savings_streak = 0
         # W1.1: emit a TurnStart envelope. ``user_text_preview`` /
         # ``system_message_preview`` are cheap excerpts (first 200 chars)
         # so the SSE consumer can render a turn header without pulling
@@ -1755,13 +1859,26 @@ class ReasoningLoop:
             # tail (the tool messages just appended) needs re-walking.
             prev_estimate = self.messages_total_token_estimate(messages)
             messages_before_compact = messages
+            # ABSORB_MATRIX Dim 2 (d)/(e): gate ONLY the heavyweight
+            # summary sub-call behind the per-turn cooldown / breaker. The
+            # cheap elide fast path inside ``_compact_history`` is never
+            # gated, so a turn under pressure still shrinks while the
+            # summarizer is parked. ``compact_outcome`` is filled in by the
+            # sub-call so the breaker state machine can advance below.
+            summary_allowed = (not self._summary_disabled) and (
+                rounds >= self._summary_cooldown_until_round
+            )
+            compact_outcome: dict[str, Any] = {}
             messages = await _compact_history(
                 messages,
                 budget=context_budget,
                 provider=self._provider,
                 model=start.model,
                 prev_estimate=prev_estimate,
+                summary_allowed=summary_allowed,
+                outcome=compact_outcome,
             )
+            self._update_summary_breaker_state(rounds, compact_outcome)
             # Identity check: ``_compact_history`` returns the SAME
             # list when no compaction was needed (passthrough below
             # the elide threshold). If it returned a fresh list, our
@@ -2515,6 +2632,56 @@ class ReasoningLoop:
             # Neither completed → timeout; caller isn't wired.
             return None
         return [got[c.call_id] for c in calls]
+
+    def _update_summary_breaker_state(self, rounds: int, outcome: dict[str, Any]) -> None:
+        """Advance the per-turn summary cooldown / circuit-breaker state.
+
+        ABSORB_MATRIX Dim 2 (d)/(e): mirrors the console compactor's
+        breaker (``corlinman_server...console.compaction.Compactor``) at
+        reasoning-loop scope, driven by the ``outcome`` dict
+        :func:`_compact_history` fills in for the round.
+
+        * A FAILED summary sub-call increments the consecutive-failure
+          count and parks the slow path for
+          ``_COMPACT_SUMMARY_COOLDOWN_ROUNDS`` rounds; at
+          ``_COMPACT_SUMMARY_BREAKER_LIMIT`` failures it is disabled for
+          the rest of the turn (one warning log).
+        * A SUCCESSFUL summary re-arms the failure count. A run of
+          low-savings successes (each shrinking the window by less than
+          ``_COMPACT_SUMMARY_LOW_SAVINGS_FRACTION``) trips the same
+          cooldown so we don't thrash the provider on marginal gains.
+
+        Fully defensive — any bookkeeping bug is swallowed so this can
+        never break the round loop (matching the hook call sites).
+        """
+        try:
+            if not outcome.get("summary_attempted"):
+                return
+            if outcome.get("summary_failed"):
+                self._summary_failures += 1
+                self._summary_cooldown_until_round = rounds + _COMPACT_SUMMARY_COOLDOWN_ROUNDS
+                if self._summary_failures >= _COMPACT_SUMMARY_BREAKER_LIMIT and (
+                    not self._summary_disabled
+                ):
+                    self._summary_disabled = True
+                    logger.warning(
+                        "reasoning_loop.summary_breaker_tripped",
+                        failures=self._summary_failures,
+                        limit=_COMPACT_SUMMARY_BREAKER_LIMIT,
+                    )
+                return
+            # Success — re-arm the failure streak.
+            self._summary_failures = 0
+            saved = float(outcome.get("summary_saved_fraction", 0.0))
+            if saved < _COMPACT_SUMMARY_LOW_SAVINGS_FRACTION:
+                self._summary_low_savings_streak += 1
+            else:
+                self._summary_low_savings_streak = 0
+            if self._summary_low_savings_streak >= _COMPACT_SUMMARY_LOW_SAVINGS_STREAK_LIMIT:
+                self._summary_cooldown_until_round = rounds + _COMPACT_SUMMARY_COOLDOWN_ROUNDS
+                self._summary_low_savings_streak = 0
+        except Exception as exc:  # noqa: BLE001 — bookkeeping must never break the loop
+            logger.warning("reasoning_loop.summary_breaker_state_error", error=str(exc))
 
     async def _maybe_emit_post_compact(
         self, messages_before: int, messages_after: int
