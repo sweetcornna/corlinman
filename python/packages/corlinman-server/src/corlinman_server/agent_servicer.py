@@ -3250,10 +3250,20 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 )
             if event.tool == SHELL_TASK_OUTPUT_TOOL:
                 # Poll a background shell task's streamed output (Dim 4).
-                return dispatch_shell_task_output(args_json=event.args_json)
+                # Thread session_key so a leaked task_id can't read another
+                # session's task (mirrors the run_shell spawn path).
+                return dispatch_shell_task_output(
+                    args_json=event.args_json,
+                    session_key=start.session_key,
+                )
             if event.tool == SHELL_TASK_KILL_TOOL:
                 # Terminate a background shell task's process group (Dim 4).
-                return await dispatch_shell_task_kill(args_json=event.args_json)
+                # Ownership-gated by session_key — a cross-session kill on a
+                # leaked task_id resolves to task_not_found.
+                return await dispatch_shell_task_kill(
+                    args_json=event.args_json,
+                    session_key=start.session_key,
+                )
             if event.tool == EXECUTE_CODE_TOOL:
                 # Disabled by default — dispatch_execute_code returns an
                 # ``execute_code_disabled`` envelope unless

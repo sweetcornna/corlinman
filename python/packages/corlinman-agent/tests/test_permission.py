@@ -9,6 +9,7 @@ from corlinman_agent.permission import (
     LOG,
     PermissionContext,
     PermissionGate,
+    PermissionMode,
     PermissionRule,
     RuleMatch,
 )
@@ -62,6 +63,15 @@ def test_strict_mode_explicit_allow_overrides() -> None:
     )
     assert g.decide("run_shell") == ALLOW  # explicit allow wins over strict
     assert g.decide("write_file") == DENY  # other mutators still denied
+
+
+def test_plan_mode_denies_shell_task_kill_allows_output() -> None:
+    """Codex #112: ``shell_task_kill`` mutates (terminates a live process
+    group) so plan/strict mode must deny it; ``shell_task_output`` is
+    read-only and stays allowed."""
+    g = PermissionGate(mode=PermissionMode.PLAN)
+    assert g.decide("shell_task_kill") == DENY
+    assert g.decide("shell_task_output") == ALLOW  # read-only, no blast radius
 
 
 def test_log_decision_is_observer_only() -> None:

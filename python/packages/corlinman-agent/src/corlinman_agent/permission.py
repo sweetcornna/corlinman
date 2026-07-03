@@ -142,6 +142,10 @@ MUTATING_TOOLS: frozenset[str] = frozenset(
         # effects with real blast radius, so strict mode must opt in.
         "send_attachment",
         "text_to_speech",
+        # ``shell_task_kill`` terminates a running background shell process
+        # group — a real side effect, so plan/strict mode must deny it.
+        # (``shell_task_output`` is read-only and stays allowed.)
+        "shell_task_kill",
     }
 )
 

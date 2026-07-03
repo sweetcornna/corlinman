@@ -227,6 +227,100 @@ async def test_kill_unknown_task_returns_none(
 
 
 # ---------------------------------------------------------------------------
+# Codex #112 (1): per-session ownership on read/kill
+# ---------------------------------------------------------------------------
+
+
+async def test_read_hides_task_from_other_session(
+    registry: ShellTaskRegistry, tmp_path: Path
+) -> None:
+    """A task recorded under one session is invisible (``None`` — behaves as
+    task_not_found, no existence leak) to a different session; the owning
+    session still reads it."""
+    task = await registry.spawn(
+        command="sleep 5", session_key="owner", workspace=tmp_path
+    )
+    # Owner sees it.
+    assert registry.read(task.task_id, 0, expected_session_key="owner") is not None
+    # Cross-session caller is denied without leaking existence.
+    assert registry.read(task.task_id, 0, expected_session_key="intruder") is None
+
+
+async def test_kill_hides_task_from_other_session(
+    registry: ShellTaskRegistry, tmp_path: Path
+) -> None:
+    """A cross-session kill returns ``None`` and leaves the task running;
+    only the owning session can terminate it."""
+    task = await registry.spawn(
+        command="sleep 5", session_key="owner", workspace=tmp_path
+    )
+    # Cross-session kill is a no-op that mimics task_not_found.
+    assert await registry.kill(task.task_id, expected_session_key="intruder") is None
+    snap = registry.read(task.task_id, 0)
+    assert snap is not None
+    assert snap[2] == "running", "cross-session kill must not touch the task"
+    # Owner kill works.
+    killed = await registry.kill(task.task_id, expected_session_key="owner")
+    assert killed is not None
+    assert killed.status == "killed"
+
+
+async def test_empty_session_task_accessible_from_any_caller(
+    registry: ShellTaskRegistry, tmp_path: Path
+) -> None:
+    """A task recorded with an empty session_key (direct library callers)
+    stays accessible to any caller, even one supplying a session key."""
+    task = await registry.spawn(
+        command="sleep 5", session_key="", workspace=tmp_path
+    )
+    assert registry.read(task.task_id, 0, expected_session_key="whoever") is not None
+    killed = await registry.kill(task.task_id, expected_session_key="whoever")
+    assert killed is not None
+    assert killed.status == "killed"
+
+
+async def test_dispatchers_enforce_session_ownership(
+    singleton_reset: None, tmp_path: Path
+) -> None:
+    """The output/kill dispatchers thread the caller's session key so a
+    leaked task_id from another session resolves to task_not_found."""
+    res = json.loads(
+        await dispatch_run_shell(
+            args_json=_args(command="sleep 5", run_in_background=True),
+            workspace=tmp_path,
+            session_key="owner",
+        )
+    )
+    tid = res["task_id"]
+    # Cross-session poll + kill both hide the task.
+    cross_out = json.loads(
+        dispatch_shell_task_output(
+            args_json=_args(task_id=tid), session_key="intruder"
+        )
+    )
+    assert cross_out["error"] == "task_not_found"
+    cross_kill = json.loads(
+        await dispatch_shell_task_kill(
+            args_json=_args(task_id=tid), session_key="intruder"
+        )
+    )
+    assert cross_kill["error"] == "task_not_found"
+    # Owner poll + kill succeed.
+    owner_out = json.loads(
+        dispatch_shell_task_output(
+            args_json=_args(task_id=tid), session_key="owner"
+        )
+    )
+    assert owner_out["task_id"] == tid
+    owner_kill = json.loads(
+        await dispatch_shell_task_kill(
+            args_json=_args(task_id=tid), session_key="owner"
+        )
+    )
+    assert owner_kill["status"] == "killed"
+
+
+# ---------------------------------------------------------------------------
 # MAX_CONCURRENT cap + terminal-retention eviction + lifetime watchdog
 # ---------------------------------------------------------------------------
 
@@ -318,6 +412,89 @@ async def test_lifetime_watchdog_expires_overrunning_task(
     assert r is not None, "watchdog never fired"
     assert r[2] == "expired"
     assert r[3] is None
+
+
+# ---------------------------------------------------------------------------
+# Codex #112 (2): background log-size cap
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX setsid / killpg only apply on POSIX",
+)
+async def test_log_cap_kills_and_stamps_log_capped(
+    registry: ShellTaskRegistry,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A task whose output floods past the size cap is killed, stamped
+    ``log_capped``, and its log file stays bounded."""
+    monkeypatch.setenv("CORLINMAN_SHELL_TASK_MAX_LOG_BYTES", "4096")  # env floor
+    # Flood stdout, then sleep so the pump trips the cap while the child is
+    # still alive (fork-free single exec, like the offset test).
+    task = await registry.spawn(
+        command=(
+            "python3 -c \"import sys, time; "
+            "sys.stdout.write('x' * 500000); sys.stdout.flush(); "
+            "time.sleep(30)\""
+        ),
+        session_key="s",
+        workspace=tmp_path,
+    )
+
+    def _capped() -> Any:
+        r = registry.read(task.task_id, 0)
+        return r if (r and r[2] == "log_capped") else None
+
+    r = await _poll(_capped, timeout=8.0)
+    assert r is not None, "log cap never tripped"
+    assert r[2] == "log_capped"
+    assert r[3] is None
+    # Log bounded: cap + at most one pump chunk of slack + the marker line.
+    log_abs = task._log_abs
+    assert log_abs is not None
+    size = log_abs.stat().st_size
+    assert size <= 4096 + shell_tasks._PUMP_CHUNK_BYTES + 128, (
+        f"log grew unbounded: {size} bytes"
+    )
+    # Process actually dead — reaped before the terminal stamp.
+    assert task._proc is not None
+    assert task._proc.returncode is not None
+
+
+# ---------------------------------------------------------------------------
+# Codex #112 (3): kill the child when spill setup fails
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX setsid / killpg only apply on POSIX",
+)
+async def test_spill_setup_failure_kills_child(
+    registry: ShellTaskRegistry, tmp_path: Path
+) -> None:
+    """If the pump can't open the spill file (``.corlinman`` is a FILE, so
+    a path *under* it is unopenable) the task ends ``failed`` AND the child
+    is reaped — never left running outside the concurrency cap."""
+    # Occupy the spill directory path with a regular file.
+    (tmp_path / ".corlinman").write_text("not a dir")
+    task = await registry.spawn(
+        command="python3 -c 'import time; time.sleep(30)'",
+        session_key="s",
+        workspace=tmp_path,
+    )
+
+    def _failed() -> bool:
+        return task.status == "failed"
+
+    ok = await _poll(_failed)
+    assert ok, f"pump never stamped failed (status={task.status})"
+    assert task.status == "failed"
+    # The child must be dead, not orphaned outside the cap.
+    assert task._proc is not None
+    assert task._proc.returncode is not None
 
 
 # ---------------------------------------------------------------------------

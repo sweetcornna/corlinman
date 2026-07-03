@@ -15,7 +15,9 @@ matching claude-code's ``BashOutput`` tool).
 ``run`` → one of ``completed`` (exit 0) / ``failed`` (non-zero exit or a
 pump error) / ``killed`` (explicit :meth:`ShellTaskRegistry.kill` or a
 process-wide :meth:`~ShellTaskRegistry.shutdown`) / ``expired`` (the
-max-lifetime watchdog reaped an overrunning task).
+max-lifetime watchdog reaped an overrunning task) / ``log_capped`` (the
+child flooded the spill file past ``CORLINMAN_SHELL_TASK_MAX_LOG_BYTES``,
+so the pump capped the log and killed the process group).
 
 ## Registry
 
@@ -24,9 +26,12 @@ max-lifetime watchdog reaped an overrunning task).
 (``CORLINMAN_SHELL_TASKS_MAX``, default 8), retains a bounded window of
 terminal records (:data:`_TERMINAL_CAP`, oldest evicted), and runs a
 per-task max-lifetime watchdog
-(``CORLINMAN_SHELL_TASK_MAX_LIFETIME_S``, default 1800s). All env-tunable
-knobs are read *live* at spawn time so an operator (or a test) can adjust
-them without restarting the process.
+(``CORLINMAN_SHELL_TASK_MAX_LIFETIME_S``, default 1800s) and a per-task
+spill-file size cap (``CORLINMAN_SHELL_TASK_MAX_LOG_BYTES``, default 16
+MiB — the child's ``RLIMIT_FSIZE`` does NOT bound this, because the
+*parent* pump writes the file). All env-tunable knobs are read *live* at
+spawn time so an operator (or a test) can adjust them without restarting
+the process.
 
 ## Security caveat
 
@@ -82,10 +87,22 @@ _TERMINAL_CAP: int = 64
 #: Bytes read from the child pipe per pump iteration before flushing to the
 #: spill file. 64 KiB balances syscall count against poll latency.
 _PUMP_CHUNK_BYTES: int = 65536
+#: Default cap on the bytes the pump appends to a task's spill file before it
+#: stamps ``log_capped`` and kills the child. The child's ``RLIMIT_FSIZE``
+#: does NOT bound this — the *parent* pump writes the file — so an unbounded
+#: chatty child would otherwise fill the disk. Overridable per-spawn via
+#: ``CORLINMAN_SHELL_TASK_MAX_LOG_BYTES``.
+_DEFAULT_MAX_LOG_BYTES: int = 16_777_216  # 16 MiB
+#: Floor for the log cap so a misconfigured tiny value still leaves room for
+#: at least a pump chunk + the marker line.
+_MIN_MAX_LOG_BYTES: int = 4096
+#: Appended to the spill file when a task trips the size cap, so a poller sees
+#: WHY the stream stopped. Encoded once (bytes) since the pump writes binary.
+_LOG_CAP_MARKER: bytes = "[log cap reached — task killed]\n".encode()
 
 #: Terminal states — a task in one of these never transitions again.
 _TERMINAL_STATES: frozenset[str] = frozenset(
-    {"completed", "failed", "killed", "expired"}
+    {"completed", "failed", "killed", "expired", "log_capped"}
 )
 
 
@@ -113,6 +130,18 @@ def _env_max_lifetime_s() -> float:
         except ValueError:
             pass
     return _DEFAULT_MAX_LIFETIME_S
+
+
+def _env_max_log_bytes() -> int:
+    raw = os.environ.get("CORLINMAN_SHELL_TASK_MAX_LOG_BYTES")
+    if raw:
+        try:
+            # Floor so a misconfigured tiny cap still leaves room for a pump
+            # chunk + the marker line rather than truncating to nothing.
+            return max(_MIN_MAX_LOG_BYTES, int(raw))
+        except ValueError:
+            pass
+    return _DEFAULT_MAX_LOG_BYTES
 
 
 class ShellTaskQuotaExceeded(Exception):
@@ -215,6 +244,7 @@ class ShellTaskRegistry:
             spawn_kwargs["preexec_fn"] = _preexec_apply_rlimits
 
         max_lifetime = _env_max_lifetime_s()
+        max_log_bytes = _env_max_log_bytes()
         async with self._lock:
             ceiling = _env_max_concurrent()
             active = sum(1 for t in self._tasks.values() if t.status == "running")
@@ -247,7 +277,7 @@ class ShellTaskRegistry:
             )
             self._tasks[task_id] = task
             task._pump = asyncio.create_task(
-                self._pump(task, max_lifetime),
+                self._pump(task, max_lifetime, max_log_bytes),
                 name=f"shell_task.pump:{task_id}",
             )
         logger.info(
@@ -262,7 +292,9 @@ class ShellTaskRegistry:
     # Pump — stream combined output + stamp the terminal state
     # ------------------------------------------------------------------
 
-    async def _pump(self, task: ShellTask, max_lifetime_s: float) -> None:
+    async def _pump(
+        self, task: ShellTask, max_lifetime_s: float, max_log_bytes: int
+    ) -> None:
         """Stream the child's output to the spill file, then stamp terminal.
 
         Wrapped in :func:`asyncio.wait_for` so an overrunning task is
@@ -271,7 +303,9 @@ class ShellTaskRegistry:
         ``Task exception was never retrieved``.
         """
         try:
-            await asyncio.wait_for(self._pump_body(task), timeout=max_lifetime_s)
+            await asyncio.wait_for(
+                self._pump_body(task, max_log_bytes), timeout=max_lifetime_s
+            )
         except TimeoutError:
             # Lifetime watchdog fired — kill the whole group and stamp expired.
             proc = task._proc
@@ -292,6 +326,17 @@ class ShellTaskRegistry:
             raise
         except Exception as exc:  # noqa: BLE001 — pump must never raise upward
             logger.exception("shell_task.pump_failed", task_id=task.task_id)
+            # The failure may have been in *setup* (e.g. opening the spill
+            # file) with the child still alive — reap it before stamping so
+            # a live process can't outlive the concurrency cap, which would
+            # also make a later ``kill`` no-op (the row is already terminal).
+            proc = task._proc
+            if proc is not None:
+                try:
+                    kill_process_group(proc)
+                    await proc.wait()
+                except Exception:  # noqa: BLE001 — best-effort reap
+                    pass
             async with self._lock:
                 if task.status == "running":
                     task.status = "failed"
@@ -299,19 +344,51 @@ class ShellTaskRegistry:
                     self._retire(task)
             _ = exc
 
-    async def _pump_body(self, task: ShellTask) -> None:
+    async def _pump_body(self, task: ShellTask, max_log_bytes: int) -> None:
         """Append the child's combined output to the spill file, flush per
-        chunk, then record the exit code once it terminates."""
+        chunk, then record the exit code once it terminates.
+
+        If the child floods past ``max_log_bytes`` the pump appends a marker
+        line, kills the process group, and stamps ``log_capped`` — the
+        parent writes the file, so the child's ``RLIMIT_FSIZE`` can't bound
+        it and an unbounded stream would otherwise fill the disk."""
         proc = task._proc
         if proc is None or proc.stdout is None or task._log_abs is None:
             return
+        written = 0
+        capped = False
         with open(task._log_abs, "ab") as fh:
             while True:
                 chunk = await proc.stdout.read(_PUMP_CHUNK_BYTES)
                 if not chunk:
                     break
                 fh.write(chunk)
+                written += len(chunk)
                 fh.flush()
+                if written >= max_log_bytes:
+                    fh.write(_LOG_CAP_MARKER)
+                    fh.flush()
+                    capped = True
+                    break
+        if capped:
+            # Log cap tripped — reap the whole group and stamp log_capped.
+            kill_process_group(proc)
+            try:
+                await proc.wait()
+            except ProcessLookupError:  # pragma: no cover — race
+                pass
+            async with self._lock:
+                if task.status == "running":
+                    task.status = "log_capped"
+                    task.exit_code = None
+                    self._retire(task)
+            logger.info(
+                "shell_task.log_capped",
+                task_id=task.task_id,
+                bytes_written=written,
+                cap=max_log_bytes,
+            )
+            return
         rc = await proc.wait()
         async with self._lock:
             # A kill / watchdog may have already stamped a terminal state;
@@ -340,7 +417,7 @@ class ShellTaskRegistry:
     # ------------------------------------------------------------------
 
     def read(
-        self, task_id: str, offset: int
+        self, task_id: str, offset: int, expected_session_key: str = ""
     ) -> tuple[str, int, str, int | None] | None:
         """Read the spill file from ``offset`` for ``task_id``.
 
@@ -349,9 +426,22 @@ class ShellTaskRegistry:
         a byte offset; the returned ``new_offset`` is where the next poll
         should resume. A partial multi-byte tail is decoded with
         ``errors="replace"`` so a boundary split never raises.
+
+        ``expected_session_key`` gates ownership: when it is non-empty AND
+        the task recorded a non-empty session_key AND they differ, this
+        returns ``None`` — behaving exactly as an unknown task so a leaked
+        task_id can't leak another session's output (or even its existence).
+        Tasks recorded with an empty session_key (direct library callers)
+        stay readable by any caller.
         """
         task = self._tasks.get(task_id)
         if task is None:
+            return None
+        if (
+            expected_session_key
+            and task.session_key
+            and task.session_key != expected_session_key
+        ):
             return None
         text = ""
         new_offset = max(0, offset)
@@ -373,17 +463,31 @@ class ShellTaskRegistry:
     # Kill
     # ------------------------------------------------------------------
 
-    async def kill(self, task_id: str) -> ShellTask | None:
+    async def kill(
+        self, task_id: str, expected_session_key: str = ""
+    ) -> ShellTask | None:
         """Terminate a running task's process group and stamp ``killed``.
 
         Returns the task snapshot (``killed`` for a live task, or its
         existing terminal state if it already finished), or ``None`` when
         the task id is unknown — the caller maps ``None`` to
         ``task_not_found``.
+
+        ``expected_session_key`` gates ownership identically to
+        :meth:`read`: a non-empty mismatch against the task's recorded
+        (non-empty) session_key returns ``None`` so a leaked task_id can't
+        kill another session's process. Empty-session tasks stay killable
+        by any caller.
         """
         async with self._lock:
             task = self._tasks.get(task_id)
             if task is None:
+                return None
+            if (
+                expected_session_key
+                and task.session_key
+                and task.session_key != expected_session_key
+            ):
                 return None
             if task.status in _TERMINAL_STATES:
                 return task
@@ -551,8 +655,13 @@ def shell_task_kill_tool_schema() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def dispatch_shell_task_output(*, args_json: bytes | str) -> str:
-    """Read a background task's streamed output. JSON envelope; never raises."""
+def dispatch_shell_task_output(
+    *, args_json: bytes | str, session_key: str = ""
+) -> str:
+    """Read a background task's streamed output. JSON envelope; never raises.
+
+    ``session_key`` scopes ownership — a task spawned by another session is
+    reported as ``task_not_found`` (see :meth:`ShellTaskRegistry.read`)."""
     try:
         raw = decode_args(args_json)
     except CodingArgsInvalidError as exc:
@@ -570,7 +679,7 @@ def dispatch_shell_task_output(*, args_json: bytes | str) -> str:
         offset = 0
 
     reg = get_registry()
-    result = reg.read(task_id, offset)
+    result = reg.read(task_id, offset, expected_session_key=session_key)
     if result is None:
         return json.dumps({"error": "task_not_found", "task_id": task_id})
     text, new_offset, status, exit_code = result
@@ -587,8 +696,13 @@ def dispatch_shell_task_output(*, args_json: bytes | str) -> str:
     return json.dumps(envelope, ensure_ascii=False)
 
 
-async def dispatch_shell_task_kill(*, args_json: bytes | str) -> str:
-    """Terminate a background task. JSON envelope; never raises."""
+async def dispatch_shell_task_kill(
+    *, args_json: bytes | str, session_key: str = ""
+) -> str:
+    """Terminate a background task. JSON envelope; never raises.
+
+    ``session_key`` scopes ownership — a task spawned by another session is
+    reported as ``task_not_found`` (see :meth:`ShellTaskRegistry.kill`)."""
     try:
         raw = decode_args(args_json)
     except CodingArgsInvalidError as exc:
@@ -600,7 +714,7 @@ async def dispatch_shell_task_kill(*, args_json: bytes | str) -> str:
     task_id = task_id.strip()
 
     try:
-        task = await get_registry().kill(task_id)
+        task = await get_registry().kill(task_id, expected_session_key=session_key)
     except Exception as exc:  # noqa: BLE001 — dispatcher must never raise
         logger.exception("shell_task_kill.unexpected", task_id=task_id)
         return json.dumps({"error": f"kill_failed: {exc}", "task_id": task_id})
