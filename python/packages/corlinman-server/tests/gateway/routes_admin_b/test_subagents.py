@@ -426,3 +426,40 @@ async def test_live_overview_emits_initial_snapshot(
         await streaming.body_iterator.aclose()
     _ = StarletteRequest  # silence unused-import for linters
     _ = scope
+
+
+# ---------------------------------------------------------------------------
+# adaptive overview poll cadence (#108 item 4)
+# ---------------------------------------------------------------------------
+
+
+def test_next_poll_interval_backs_off_when_unchanged_up_to_cap() -> None:
+    """A run of unchanged ticks grows the interval by ×1.5 up to the 10s
+    cap and never past it."""
+    base = subagent_routes._SUBAGENT_OVERVIEW_POLL_BASE_SECONDS
+    cap = subagent_routes._SUBAGENT_OVERVIEW_POLL_MAX_SECONDS
+    assert base == 2.0
+    assert cap == 10.0
+
+    interval = base
+    seen = [interval]
+    for _ in range(20):
+        interval = subagent_routes._next_poll_interval(False, interval)
+        seen.append(interval)
+        # Monotonically non-decreasing and never above the cap.
+        assert interval <= cap
+        assert interval >= seen[-2]
+    # 2 → 3 → 4.5 → 6.75 → 10 (capped) …
+    assert seen[1] == pytest.approx(3.0)
+    assert seen[2] == pytest.approx(4.5)
+    assert seen[-1] == pytest.approx(cap)
+
+
+def test_next_poll_interval_resets_to_base_on_change() -> None:
+    """Any change snaps the interval straight back to the base for liveness,
+    regardless of how far it had backed off."""
+    base = subagent_routes._SUBAGENT_OVERVIEW_POLL_BASE_SECONDS
+    cap = subagent_routes._SUBAGENT_OVERVIEW_POLL_MAX_SECONDS
+    assert subagent_routes._next_poll_interval(True, cap) == base
+    assert subagent_routes._next_poll_interval(True, base) == base
+    assert subagent_routes._next_poll_interval(True, 4.5) == base

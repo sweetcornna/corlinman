@@ -59,6 +59,41 @@ __all__ = ["router"]
 
 
 # ---------------------------------------------------------------------------
+# Adaptive overview-poll cadence
+# ---------------------------------------------------------------------------
+
+#: The ``/admin/subagents/events/live`` overview poll starts fast for
+#: liveness, then backs off while nothing is moving. Base = the snappy
+#: cadence a *changing* panel wants; max = the slow idle cadence (same as
+#: the SSE heartbeat, so a fully-idle stream settles into the heartbeat
+#: rhythm); factor = the per-idle-tick multiplier.
+_SUBAGENT_OVERVIEW_POLL_BASE_SECONDS = 2.0
+_SUBAGENT_OVERVIEW_POLL_MAX_SECONDS = 10.0
+_SUBAGENT_OVERVIEW_POLL_BACKOFF = 1.5
+
+
+def _next_poll_interval(changed: bool, current: float) -> float:
+    """Next overview-poll interval given whether this tick saw a change.
+
+    Liveness only matters while the panel is *moving*: a child switching
+    tools should surface in ~2s. But an idle panel that re-runs
+    ``store.list_all()`` + merge every 2s for every connected client is
+    pure overhead. So each fully-unchanged tick multiplies the interval by
+    :data:`_SUBAGENT_OVERVIEW_POLL_BACKOFF` up to the
+    :data:`_SUBAGENT_OVERVIEW_POLL_MAX_SECONDS` ceiling, and the very next
+    change resets straight to :data:`_SUBAGENT_OVERVIEW_POLL_BASE_SECONDS`
+    — so we back off the idle cost without ever trading away liveness when
+    something actually happens. Pure function; extracted for testability.
+    """
+    if changed:
+        return _SUBAGENT_OVERVIEW_POLL_BASE_SECONDS
+    return min(
+        current * _SUBAGENT_OVERVIEW_POLL_BACKOFF,
+        _SUBAGENT_OVERVIEW_POLL_MAX_SECONDS,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Router
 # ---------------------------------------------------------------------------
 
@@ -411,24 +446,32 @@ def router() -> APIRouter:
 
                 # Poll faster than the keepalive so the panel feels live
                 # (Codex-Desktop-style): a child switching tools surfaces in
-                # ~2s instead of waiting a full 10s heartbeat. The keepalive
-                # comment still rides the slower cadence so idle proxies see
-                # the same byte rhythm as the other SSE routes.
-                _poll = 2.0
-                ticks = 0
+                # ~2s instead of waiting a full 10s heartbeat. That liveness
+                # only matters while state is moving, though — so the cadence
+                # ADAPTS: a fully-unchanged tick backs the interval off ×1.5
+                # up to a 10s cap (see ``_next_poll_interval``), and the next
+                # change snaps it straight back to 2s. This keeps the idle
+                # cost (per-client ``list_all()`` + merge every tick) low
+                # without ever sacrificing liveness. The keepalive rides
+                # wall-clock elapsed time so idle proxies still see the same
+                # ~10s byte rhythm as the other SSE routes.
+                _poll = _SUBAGENT_OVERVIEW_POLL_BASE_SECONDS
+                since_keepalive = 0.0
                 while True:
                     await asyncio.sleep(_poll)
-                    ticks += 1
-                    if ticks * _poll >= _SUBAGENT_SSE_HEARTBEAT_SECONDS:
+                    since_keepalive += _poll
+                    if since_keepalive >= _SUBAGENT_SSE_HEARTBEAT_SECONDS:
                         yield b": keepalive\n\n"
-                        ticks = 0
+                        since_keepalive = 0.0
                     seen_ids: set[str] = set()
+                    changed = False
                     for row in await _combined():
                         seen_ids.add(row.request_id)
                         snapshot = (row.state, row.finished_at, row.activity)
                         prev = last.get(row.request_id)
                         if prev == snapshot:
                             continue
+                        changed = True
                         last[row.request_id] = snapshot
                         payload = json.dumps(row.model_dump(), default=str)
                         yield (
@@ -437,9 +480,16 @@ def router() -> APIRouter:
                             f"data: {payload}\n\n"
                         ).encode()
                         seq += 1
-                    # Reap stale ids (test fixture deletions).
-                    for stale in [k for k in last if k not in seen_ids]:
+                    # Reap stale ids (test fixture deletions) — a disappearing
+                    # row is also a state change for cadence purposes.
+                    stale_ids = [k for k in last if k not in seen_ids]
+                    for stale in stale_ids:
                         last.pop(stale, None)
+                    if stale_ids:
+                        changed = True
+                    # Adapt the next interval: snap to base on any change,
+                    # else back off toward the idle cap.
+                    _poll = _next_poll_interval(changed, _poll)
             except asyncio.CancelledError:
                 raise
 

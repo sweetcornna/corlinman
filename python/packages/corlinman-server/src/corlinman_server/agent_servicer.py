@@ -240,6 +240,7 @@ from corlinman_agent.subagent.blackboard import (
 from corlinman_agent.tool_aliases import (
     canonicalize_tool_name,
     canonicalize_tool_names,
+    warn_alias_collisions,
 )
 from corlinman_agent.variables import VariableCascade
 from corlinman_agent.web import (
@@ -4271,13 +4272,21 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # moment a scoped skill (deep-research / web_search / note-taking)
         # was pulled. See ``corlinman_agent.tool_aliases``.
         union: set[str] = set()
+        raw_allowed: list[str] = []
         any_restriction = False
         for allowed in bucket.values():
             if allowed:
                 any_restriction = True
+                raw_allowed.extend(allowed)
                 union.update(canonicalize_tool_names(allowed))
         if not any_restriction:
             return None
+        # Surface — but never reject — two spellings of one tool across the
+        # active skills' allowed-tools (e.g. ``web.search`` + ``web_search``):
+        # the canonical fold above still matches the wire tool (behaviour
+        # unchanged), but the ambiguity is worth one structured warning for
+        # the operator. See ``corlinman_agent.tool_aliases`` (#108 item 3).
+        warn_alias_collisions(raw_allowed, gate="skill_allowed_tools")
         # Control tools always pass — never let an active skill strand the
         # model with no way to load another skill or stop the turn.
         if tool in (SKILL_TOOL, SUBAGENT_STOP_TOOL):
@@ -4829,6 +4838,34 @@ def _build_default_context_assembler() -> ContextAssembler | None:
         return None
 
 
+def _py_config_path() -> Path:
+    """Path of the Rust→Python config-handshake JSON drop.
+
+    ``$CORLINMAN_PY_CONFIG`` when set, else ``<data_dir>/py-config.json``.
+    Shared by :func:`_read_public_url_from_py_config` and the public-URL
+    cache signature so both key off the exact same file.
+    """
+    raw = os.environ.get("CORLINMAN_PY_CONFIG")
+    return Path(raw) if raw else _resolve_data_dir() / "py-config.json"
+
+
+def _learned_origin_path() -> Path:
+    """Path of the gateway-learned ``public_origin`` file.
+
+    Mirrors the source :func:`_read_learned_public_origin` reads, exposed so
+    the public-URL cache signature can ``stat()`` it. The filename constant
+    is imported from :mod:`~corlinman_server.gateway.origin_learn` (with a
+    literal fallback) to stay in lock-step with the writer.
+    """
+    try:
+        from corlinman_server.gateway.origin_learn import (  # noqa: PLC0415
+            REMEMBERED_ORIGIN_FILENAME,
+        )
+    except ImportError:
+        return _resolve_data_dir() / "public_origin"
+    return _resolve_data_dir() / REMEMBERED_ORIGIN_FILENAME
+
+
 def _read_public_url_from_py_config() -> str:
     """Best-effort read of ``[server].public_url`` for the status-card tool.
 
@@ -4849,13 +4886,8 @@ def _read_public_url_from_py_config() -> str:
     deployment the env lookup already wins; this drop read is the
     belt-and-braces path for out-of-process / sidecar consumers.
     """
-    raw = os.environ.get("CORLINMAN_PY_CONFIG")
-    if raw:
-        path = Path(raw)
-    else:
-        path = _resolve_data_dir() / "py-config.json"
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(_py_config_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return ""
     if not isinstance(data, Mapping):
@@ -4886,6 +4918,41 @@ def _read_learned_public_origin() -> str:
     return load_remembered_origin(_resolve_data_dir())
 
 
+# Module-level cache for :func:`_resolve_public_base_url`. That function is
+# called once per media-bearing tool result (see ``_register_tool_media``);
+# with the env unset it otherwise re-reads BOTH backing files on every call.
+# The cache stores ``(signature, resolved_url)`` where ``signature`` is a
+# cheap ``stat()`` token of the two files — a hit skips the two disk reads.
+_PublicUrlSignature = tuple[object, object]
+_public_url_cache: tuple[_PublicUrlSignature, str] | None = None
+
+
+def _stat_signature(path: Path) -> object:
+    """Cheap change-token for ``path`` used to key the public-URL cache.
+
+    ``(mtime_ns, size)`` when the file is present (a mtime or size change
+    invalidates), a stable ``None`` when it is absent (so the common
+    no-config case caches cleanly, and appear/disappear flips the token), or
+    a fresh never-equal sentinel on a transient ``stat()`` error so we
+    re-read rather than trust a possibly-stale value.
+    """
+    try:
+        st = path.stat()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return object()
+    return (st.st_mtime_ns, st.st_size)
+
+
+def _public_url_cache_signature() -> _PublicUrlSignature:
+    """``stat()`` signature of the two files feeding the public-URL fallback."""
+    return (
+        _stat_signature(_py_config_path()),
+        _stat_signature(_learned_origin_path()),
+    )
+
+
 def _resolve_public_base_url() -> str:
     """Resolve the gateway's public base URL (no trailing slash), or ``""``.
 
@@ -4895,16 +4962,34 @@ def _resolve_public_base_url() -> str:
     ``<data_dir>/public_origin``. Used to turn a relative ``/v1/files/{id}``
     media url into an absolute, clickable download link so a server-deployed
     agent hands the user a real link instead of a host-less path.
+
+    The env short-circuit is unchanged. On an env miss the two disk reads are
+    served from a ``stat()``-keyed cache (see ``_public_url_cache``) so the
+    per-tool-result hot path doesn't re-read both files every call; the cache
+    invalidates the moment either file's mtime/size changes or it appears or
+    disappears.
     """
+    env_base = os.environ.get("CORLINMAN_PUBLIC_URL", "").strip().rstrip("/")
+    if env_base:
+        return env_base
+
+    global _public_url_cache
+    signature = _public_url_cache_signature()
+    cached = _public_url_cache
+    if cached is not None and cached[0] == signature:
+        return cached[1]
+
+    resolved = ""
     for candidate in (
-        os.environ.get("CORLINMAN_PUBLIC_URL", ""),
         _read_public_url_from_py_config(),
         _read_learned_public_origin(),
     ):
         base = (candidate or "").strip().rstrip("/")
         if base:
-            return base
-    return ""
+            resolved = base
+            break
+    _public_url_cache = (signature, resolved)
+    return resolved
 
 
 def _resolve_data_dir() -> Path:

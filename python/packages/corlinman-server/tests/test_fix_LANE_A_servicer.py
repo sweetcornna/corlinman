@@ -116,6 +116,35 @@ async def test_skill_dotted_allowed_tools_match_wire_tool_names() -> None:
 
 
 @pytest.mark.asyncio
+async def test_skill_allowed_tools_collision_warns_without_changing_outcome() -> None:
+    """Two spellings of one tool across active skills (#108 item 3): the gate
+    logs ONE ``tool_aliases.collision`` warning but the allow/deny outcome is
+    unchanged — the folded wire tool still passes, an out-of-scope tool is
+    still blocked."""
+    import structlog
+    from corlinman_agent import tool_aliases
+
+    servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: _FakeProvider([]))
+    # One skill lists the dotted spelling, another the wire spelling — both
+    # fold onto ``web_search``.
+    servicer._record_active_skill("t::sess", "skill-a", ["web.search"])
+    servicer._record_active_skill("t::sess", "skill-b", ["web_search"])
+
+    tool_aliases._warned_collisions.clear()
+    with structlog.testing.capture_logs() as captured:
+        # web_search allowed (behaviour unchanged despite the two spellings).
+        assert servicer._skill_allowed_tools_block("web_search", "t::sess") is None
+        # An out-of-scope tool is still blocked.
+        assert servicer._skill_allowed_tools_block("run_shell", "t::sess") is not None
+
+    events = [e for e in captured if e.get("event") == "tool_aliases.collision"]
+    assert len(events) == 1, f"expected exactly one collision warning; got {events}"
+    assert events[0]["gate"] == "skill_allowed_tools"
+    assert events[0]["canonical"] == "web_search"
+    assert events[0]["sources"] == ["web.search", "web_search"]
+
+
+@pytest.mark.asyncio
 async def test_sec01_active_skills_cleared_at_turn_end() -> None:
     """The per-session active-skill entry is cleared at turn/session end so
     it cannot narrow a later turn forever."""
