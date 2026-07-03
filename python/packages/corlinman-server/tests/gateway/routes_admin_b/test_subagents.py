@@ -463,3 +463,38 @@ def test_next_poll_interval_resets_to_base_on_change() -> None:
     assert subagent_routes._next_poll_interval(True, cap) == base
     assert subagent_routes._next_poll_interval(True, base) == base
     assert subagent_routes._next_poll_interval(True, 4.5) == base
+
+
+def test_sleep_slices_short_poll_no_heartbeat_crossing() -> None:
+    """A 2s sleep with 0s on the keepalive clock is one plain slice."""
+    assert subagent_routes._sleep_slices(2.0, 0.0, 10.0) == [(2.0, False)]
+
+
+def test_sleep_slices_cuts_at_heartbeat_boundary() -> None:
+    """A backed-off 10s sleep entered with 6.75s already on the clock must
+    cut at the 10s rhythm (3.25s in), emit, then sleep the rest — the
+    keepalive is never delayed past the heartbeat (Codex #113)."""
+    slices = subagent_routes._sleep_slices(10.0, 6.75, 10.0)
+    assert slices == [(3.25, True), (6.75, False)]
+    assert sum(s for s, _ in slices) == 10.0
+
+
+def test_sleep_slices_multiple_crossings() -> None:
+    """A sleep spanning >1 heartbeat period emits at every crossing."""
+    slices = subagent_routes._sleep_slices(25.0, 0.0, 10.0)
+    assert slices == [(10.0, True), (10.0, True), (5.0, False)]
+
+
+def test_sleep_slices_entry_at_rhythm_emits_immediately() -> None:
+    """Entering exactly at (or past) the rhythm emits before sleeping."""
+    slices = subagent_routes._sleep_slices(2.0, 10.0, 10.0)
+    assert slices[0] == (0.0, True)
+    assert sum(s for s, _ in slices) == 2.0
+
+
+def test_sleep_slices_total_always_equals_poll() -> None:
+    """Scan cadence is preserved: slice seconds always sum to poll."""
+    for poll in (2.0, 3.0, 4.5, 6.75, 10.0):
+        for since in (0.0, 1.0, 5.0, 9.9):
+            slices = subagent_routes._sleep_slices(poll, since, 10.0)
+            assert abs(sum(s for s, _ in slices) - poll) < 1e-9

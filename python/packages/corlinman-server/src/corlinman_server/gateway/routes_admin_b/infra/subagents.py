@@ -93,6 +93,40 @@ def _next_poll_interval(changed: bool, current: float) -> float:
     )
 
 
+def _sleep_slices(
+    poll: float, since_keepalive: float, heartbeat: float
+) -> list[tuple[float, bool]]:
+    """Split a poll-interval sleep into heartbeat-bounded slices.
+
+    Returns ``(seconds, emit_keepalive_after)`` pairs whose seconds sum to
+    ``poll`` exactly, cut wherever the running ``since_keepalive`` clock
+    would cross ``heartbeat`` — so a backed-off interval (up to the 10s
+    cap) never delays the keepalive past the documented SSE rhythm, while
+    the caller's scan cadence still honours the full ``poll``. A slice
+    flagged ``True`` resets the caller's keepalive clock. Pure function;
+    extracted for testability (Codex #113).
+    """
+    slices: list[tuple[float, bool]] = []
+    remaining = poll
+    clock = since_keepalive
+    while remaining > 0:
+        to_heartbeat = heartbeat - clock
+        if to_heartbeat <= 0:
+            # Already at/past the rhythm on entry — emit immediately.
+            slices.append((0.0, True))
+            clock = 0.0
+            continue
+        if to_heartbeat <= remaining:
+            slices.append((to_heartbeat, True))
+            remaining -= to_heartbeat
+            clock = 0.0
+        else:
+            slices.append((remaining, False))
+            clock += remaining
+            remaining = 0.0
+    return slices
+
+
 # ---------------------------------------------------------------------------
 # Router
 # ---------------------------------------------------------------------------
@@ -458,11 +492,19 @@ def router() -> APIRouter:
                 _poll = _SUBAGENT_OVERVIEW_POLL_BASE_SECONDS
                 since_keepalive = 0.0
                 while True:
-                    await asyncio.sleep(_poll)
-                    since_keepalive += _poll
-                    if since_keepalive >= _SUBAGENT_SSE_HEARTBEAT_SECONDS:
-                        yield b": keepalive\n\n"
-                        since_keepalive = 0.0
+                    # Sleep the poll interval in heartbeat-bounded slices:
+                    # a backed-off interval (up to 10s) must never push the
+                    # keepalive past the documented ~10s SSE rhythm, or
+                    # idle proxies drop the connection (Codex #113). The
+                    # scan cadence still honours the full ``_poll``.
+                    for slice_s, emit_keepalive in _sleep_slices(
+                        _poll, since_keepalive, _SUBAGENT_SSE_HEARTBEAT_SECONDS
+                    ):
+                        await asyncio.sleep(slice_s)
+                        since_keepalive += slice_s
+                        if emit_keepalive:
+                            yield b": keepalive\n\n"
+                            since_keepalive = 0.0
                     seen_ids: set[str] = set()
                     changed = False
                     for row in await _combined():
