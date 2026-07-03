@@ -683,6 +683,28 @@ def test_runner_reload_swaps_declarative_config():
     assert summary["declarative_groups"] == 0
 
 
+def test_runner_reload_retains_late_discovered_dir(tmp_path: Path):
+    """A runner built without hooks_dir, then populated via discover(),
+    re-discovers on reload instead of dropping the handlers (Codex #109
+    round 5)."""
+    hook_dir = tmp_path / "hooks"
+    one = hook_dir / "guard"
+    one.mkdir(parents=True)
+    (one / "HOOK.yaml").write_text("events: [pre_tool]\nhandler: handler.py:run\n")
+    (one / "handler.py").write_text(
+        "def run(event, payload):\n    return {'allow': False, 'reason': 'discovered guard'}\n"
+    )
+    runner = HookRunner({})  # no hooks_dir at construction
+    runner.discover(hook_dir)
+    ok, msg = runner.run_pre_tool("run_shell", {})
+    assert ok is False and msg == "discovered guard"
+    # A reload with a valid (empty) hooks section must NOT drop the
+    # discovered handler — the dir is remembered and re-scanned.
+    runner.reload({"hooks": {}})
+    ok2, msg2 = runner.run_pre_tool("run_shell", {})
+    assert ok2 is False and msg2 == "discovered guard"
+
+
 def test_runner_reload_swaps_shell_hooks():
     runner = HookRunner({"hooks": {"pre_tool": "exit 1"}})
     ok, _ = runner.run_pre_tool("run_shell", {})

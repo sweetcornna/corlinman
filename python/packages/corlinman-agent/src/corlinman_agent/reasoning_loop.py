@@ -1770,27 +1770,11 @@ class ReasoningLoop:
             # re-seeds from scratch.
             if messages is not messages_before_compact:
                 self._invalidate_token_cache()
-                # Declarative/discovered ``post_compact`` hooks — advisory,
-                # fire-and-forget by default. Identity change is the "a
-                # compaction actually happened" signal (passthrough keeps
-                # the same list). Defensive: only new runners have
-                # ``run_event_async``; failures never touch the turn.
-                _runner = getattr(self, "_hook_runner", None)
-                _run_event = getattr(_runner, "run_event_async", None)
-                if _run_event is not None:
-                    try:
-                        await _run_event(
-                            "post_compact",
-                            {
-                                "messages_before": len(messages_before_compact),
-                                "messages_after": len(messages),
-                            },
-                            {"session_key": self._session_key},
-                        )
-                    except Exception as exc:  # noqa: BLE001 — hook must never break the loop
-                        logger.warning(
-                            "reasoning_loop.post_compact_hook_error", error=str(exc)
-                        )
+                # Identity change is the "a compaction actually happened"
+                # signal (passthrough keeps the same list).
+                await self._maybe_emit_post_compact(
+                    len(messages_before_compact), len(messages)
+                )
             rounds += 1
             tool_calls_this_round: list[ToolCallEvent] = []
             finish_reason = "stop"
@@ -1913,6 +1897,7 @@ class ReasoningLoop:
                             model=effective_model,
                         )
                         context_budget = tighter_budget
+                        _msgs_before_overflow = messages
                         messages = await _compact_history(
                             messages,
                             budget=context_budget,
@@ -1921,6 +1906,13 @@ class ReasoningLoop:
                             fast_path_only=True,
                         )
                         self._invalidate_token_cache()
+                        # A context-overflow shrink is a real compaction —
+                        # fire post_compact here too, not only on the
+                        # normal budget path (Codex #109).
+                        if messages is not _msgs_before_overflow:
+                            await self._maybe_emit_post_compact(
+                                len(_msgs_before_overflow), len(messages)
+                            )
                         tool_calls_this_round = []
                         _streaming_started = False
                         continue  # retry with smaller context
@@ -2523,6 +2515,31 @@ class ReasoningLoop:
             # Neither completed → timeout; caller isn't wired.
             return None
         return [got[c.call_id] for c in calls]
+
+    async def _maybe_emit_post_compact(
+        self, messages_before: int, messages_after: int
+    ) -> None:
+        """Fire ``post_compact`` hooks after a real compaction.
+
+        Called from BOTH compaction paths — the normal pre-call budget
+        check and the context-overflow shrink-and-retry (Codex #109: the
+        overflow path silently skipped this). Advisory and
+        fire-and-forget: a runner without ``run_event_async`` (legacy
+        stand-ins) or any hook error is swallowed so a broken hook can
+        never wedge the turn.
+        """
+        runner = getattr(self, "_hook_runner", None)
+        run_event = getattr(runner, "run_event_async", None)
+        if run_event is None:
+            return
+        try:
+            await run_event(
+                "post_compact",
+                {"messages_before": messages_before, "messages_after": messages_after},
+                {"session_key": self._session_key},
+            )
+        except Exception as exc:  # noqa: BLE001 — hook must never break the loop
+            logger.warning("reasoning_loop.post_compact_hook_error", error=str(exc))
 
     async def _maybe_run_stop_hook(self, finish_reason: str) -> str | None:
         """C3: invoke the Stop hook at turn-end, if a hook runner is wired.

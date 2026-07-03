@@ -209,6 +209,55 @@ async def test_user_prompt_submit_note_reaches_midturn_supplement() -> None:
 
 
 @pytest.mark.asyncio
+async def test_pre_tool_gate_blocks_external_tool() -> None:
+    """A PreToolUse hook with matcher="*" blocks an external plugin/MCP
+    tool — the frame is never yielded and the model gets a blocked result
+    (Codex #109 round 5). Exercised through the real gate helper."""
+    runner = HookRunner(
+        {
+            "hooks": {
+                "declarative": {
+                    "PreToolUse": [
+                        {"hooks": [{"kind": "command", "command": "echo ext-no >&2; exit 2"}]}
+                    ]
+                }
+            }
+        }
+    )
+    servicer = CorlinmanAgentServicer(hook_runner=runner)
+    allow, reason, mutated = await servicer._run_pre_tool_hook_gate(
+        _tool_event(tool="mcp__server__fetch", args={"url": "http://x"}), _start()
+    )
+    assert allow is False
+    assert "ext-no" in reason
+    assert mutated is None
+
+
+@pytest.mark.asyncio
+async def test_pre_tool_gate_mutates_external_tool_args() -> None:
+    mutated_args = {"url": "http://safe"}
+    cmd = f"""echo '{json.dumps({"decision": "allow", "mutated_args": mutated_args})}'"""
+    runner = HookRunner(
+        {"hooks": {"declarative": {"PreToolUse": [{"hooks": [{"kind": "command", "command": cmd}]}]}}}
+    )
+    servicer = CorlinmanAgentServicer(hook_runner=runner)
+    allow, _reason, mutated = await servicer._run_pre_tool_hook_gate(
+        _tool_event(tool="mcp__server__fetch", args={"url": "http://x"}), _start()
+    )
+    assert allow is True
+    assert mutated == mutated_args
+
+
+@pytest.mark.asyncio
+async def test_pre_tool_gate_allows_without_runner() -> None:
+    servicer = CorlinmanAgentServicer()  # no hook runner
+    allow, reason, mutated = await servicer._run_pre_tool_hook_gate(
+        _tool_event(), _start()
+    )
+    assert allow is True and reason == "" and mutated is None
+
+
+@pytest.mark.asyncio
 async def test_pump_inbound_fires_post_tool_callback() -> None:
     """External tool_result frames trigger the post-hook callback after
     feeding the loop; a raising callback is swallowed (Codex #109 r4)."""

@@ -325,6 +325,11 @@ class HookRunner:
         fallback parses the flat ``key: value`` manifest shape.
         """
         root = Path(hooks_dir)
+        # Remember the last discovered directory so :meth:`reload` can
+        # re-derive these handlers even when the runner was built without
+        # a ``hooks_dir`` and populated via a later ``discover()`` call
+        # (Codex #109: a reload otherwise dropped them permanently).
+        self._hooks_dir = root
         if not root.is_dir():
             return 0
         registered = 0

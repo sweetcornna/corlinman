@@ -2018,6 +2018,48 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                                     error=str(exc),
                                 )
                         continue
+                    # PreToolUse hook gate for EXTERNAL plugin/MCP tools —
+                    # the blocking gate used to live only in the builtin
+                    # dispatch path, so a PreToolUse hook with matcher="*"
+                    # could stop builtins but not a mutating MCP/plugin
+                    # call (Codex #109). Run it here before yielding the
+                    # ToolCall frame chat_service executes.
+                    _ext_allow, _ext_reason, _ext_mutated = (
+                        await self._run_pre_tool_hook_gate(event, start)
+                    )
+                    if not _ext_allow:
+                        logger.info(
+                            "agent.tool.hook_blocked",
+                            tool=event.tool,
+                            call_id=event.call_id,
+                            message=_ext_reason,
+                            external=True,
+                        )
+                        # Feed the block back as this tool's result so the
+                        # model reads it and continues; never yield the
+                        # external frame, so chat_service never executes it.
+                        loop.feed_tool_result(
+                            ToolResult(
+                                call_id=event.call_id,
+                                content=json.dumps(
+                                    {
+                                        "error": f"blocked by hook: {_ext_reason}",
+                                        "tool": event.tool,
+                                    }
+                                ),
+                                is_error=True,
+                            )
+                        )
+                        continue
+                    if _ext_mutated is not None:
+                        try:
+                            event.args_json = json.dumps(_ext_mutated).encode("utf-8")
+                        except (TypeError, ValueError) as exc:
+                            logger.warning(
+                                "agent.tool.hook_mutated_args_invalid",
+                                tool=event.tool,
+                                error=str(exc),
+                            )
                     # Correlate for PostToolUse hooks — the external
                     # result returns through ``_pump_inbound`` carrying
                     # only a call_id (Codex #109: plugin/MCP tools were
@@ -2688,6 +2730,60 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         except Exception as exc:  # noqa: BLE001 — post-hooks never affect the call
             logger.warning("agent.tool.post_hook_error", tool=tool, error=str(exc))
 
+    async def _run_pre_tool_hook_gate(
+        self, event: ToolCallEvent, start: AgentChatStart
+    ) -> tuple[bool, str, dict[str, Any] | None]:
+        """Run the PreToolUse hook gate (legacy shell + discovered + declarative).
+
+        Returns ``(allow, reason, mutated_args)``. Shared by the builtin
+        dispatch path and the external plugin/MCP branch so a declarative
+        or shell ``PreToolUse`` hook with ``matcher = "*"`` gates EVERY
+        tool call, not just builtins (Codex #109 — external MCP/plugin
+        tools previously bypassed the blocking gate). Defensive on every
+        axis: no runner, a legacy ``(allow, reason)`` tuple / bare bool
+        return, or any exception all degrade to "allow" so a broken hook
+        never wedges dispatch.
+        """
+        runner = self._resolve_hook_runner()
+        pre = getattr(runner, "run_pre_tool_async", None)
+        if pre is None:
+            return True, "", None
+        try:
+            args_dict = self._parse_args_dict(event.args_json)
+            ctx = {
+                "session_key": getattr(start, "session_key", None),
+                "tenant_id": getattr(start, "tenant_id", None),
+                "user_id": _extract_user_id(start),
+            }
+            decision = await pre(event.tool, args_dict, ctx)
+            reason_legacy = ""
+            if hasattr(decision, "allow"):
+                allow = bool(decision.allow)
+            elif isinstance(decision, (tuple, list)) and decision:
+                allow = bool(decision[0])
+                if len(decision) > 1 and isinstance(decision[1], str):
+                    reason_legacy = decision[1]
+                decision = None
+            else:
+                allow = bool(decision)
+                decision = None
+            if not allow:
+                reason = (
+                    getattr(decision, "reason", None)
+                    if decision is not None
+                    else reason_legacy
+                ) or "hook blocked"
+                return False, reason, None
+            mutated = (
+                getattr(decision, "mutated_args", None) if decision is not None else None
+            )
+            return True, "", mutated if isinstance(mutated, dict) else None
+        except Exception as exc:  # noqa: BLE001 — hook failure must not break dispatch
+            logger.warning(
+                "agent.tool.hook_runner_error", tool=event.tool, error=str(exc)
+            )
+            return True, "", None
+
     async def _dispatch_builtin_inner(
         self,
         event: ToolCallEvent,
@@ -2842,86 +2938,30 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 }
             )
 
-        # C3 PreToolDispatch hook gate: run ``pre_{tool}`` / ``pre_tool``.
-        # The runner is resolved C2-first (``app_state.hook_runner`` set by
-        # wire-B in the lifespan) and falls back to the constructor-injected
-        # one. A blocking decision (``allow=False``) short-circuits with a
-        # ``tool_not_allowed`` envelope; ``mutated_args`` rewrites the call.
-        # The async variant keeps the event loop unblocked on subprocess I/O.
-        _hook_runner = self._resolve_hook_runner()
-        if _hook_runner is not None:
+        # C3 PreToolDispatch hook gate (shared with the external-tool
+        # branch via :meth:`_run_pre_tool_hook_gate`). A blocking decision
+        # (``allow=False``) short-circuits with a ``blocked by hook``
+        # envelope; ``mutated_args`` rewrites the call before dispatch.
+        _allow, _reason, _mutated = await self._run_pre_tool_hook_gate(event, start)
+        if not _allow:
+            logger.info(
+                "agent.tool.hook_blocked",
+                tool=event.tool,
+                call_id=event.call_id,
+                message=_reason,
+            )
+            self._emit_tool_called(
+                event, start, ok=False, duration_ms=0, error_code="hook_blocked"
+            )
+            return json.dumps(
+                {"error": f"blocked by hook: {_reason}", "tool": event.tool}
+            )
+        if _mutated is not None:
             try:
-                _args_dict: dict[str, Any] = {}
-                try:
-                    _raw = event.args_json.decode("utf-8", "replace")
-                    _args_dict = json.loads(_raw) if _raw.strip() else {}
-                    if not isinstance(_args_dict, dict):
-                        _args_dict = {}
-                except (json.JSONDecodeError, ValueError):
-                    pass
-                _hook_ctx = {
-                    "session_key": getattr(start, "session_key", None),
-                    "tenant_id": getattr(start, "tenant_id", None),
-                    "user_id": _extract_user_id(start),
-                }
-                _decision = await _hook_runner.run_pre_tool_async(
-                    event.tool, _args_dict, _hook_ctx
-                )
-                # ``run_pre_tool_async`` returns a HookDecision; it is also
-                # tuple-unpackable as (allow, reason) for back-compat. Read
-                # the rich fields defensively so a runner that still returns
-                # a bare tuple / bool degrades cleanly.
-                _reason_legacy: str = ""
-                if hasattr(_decision, "allow"):
-                    _allow = bool(_decision.allow)
-                elif isinstance(_decision, (tuple, list)) and _decision:
-                    # Legacy ``(allow, reason)`` tuple shape.
-                    _allow = bool(_decision[0])
-                    if len(_decision) > 1 and isinstance(_decision[1], str):
-                        _reason_legacy = _decision[1]
-                    _decision = None
-                else:
-                    # Bare bool / unexpected shape — treat truthy as allow.
-                    _allow = bool(_decision)
-                    _decision = None
-                if not _allow:
-                    _reason = (
-                        getattr(_decision, "reason", None)
-                        if _decision is not None
-                        else _reason_legacy
-                    ) or "hook blocked"
-                    logger.info(
-                        "agent.tool.hook_blocked",
-                        tool=event.tool,
-                        call_id=event.call_id,
-                        message=_reason,
-                    )
-                    self._emit_tool_called(
-                        event, start, ok=False, duration_ms=0,
-                        error_code="hook_blocked"
-                    )
-                    return json.dumps(
-                        {"error": f"blocked by hook: {_reason}", "tool": event.tool}
-                    )
-                # Honour an arg rewrite — re-encode the mutated args back
-                # onto the event so the downstream dispatch reads them.
-                _mutated = (
-                    getattr(_decision, "mutated_args", None)
-                    if _decision is not None
-                    else None
-                )
-                if isinstance(_mutated, dict):
-                    try:
-                        event.args_json = json.dumps(_mutated).encode("utf-8")
-                    except (TypeError, ValueError) as exc:
-                        logger.warning(
-                            "agent.tool.hook_mutated_args_invalid",
-                            tool=event.tool,
-                            error=str(exc),
-                        )
-            except Exception as exc:  # noqa: BLE001 — hook failure must not break dispatch
+                event.args_json = json.dumps(_mutated).encode("utf-8")
+            except (TypeError, ValueError) as exc:
                 logger.warning(
-                    "agent.tool.hook_runner_error",
+                    "agent.tool.hook_mutated_args_invalid",
                     tool=event.tool,
                     error=str(exc),
                 )
