@@ -602,9 +602,44 @@ async def test_runner_post_tool_async_runs_discovered_handlers():
     seen: list[dict] = []
     runner.register_handler("post_tool", lambda ev, payload: seen.append(payload))
     await runner.run_post_tool_async("run_shell", {"cmd": "ls"}, '{"ok": true}')
+    await runner.drain()
     assert len(seen) == 1
     assert seen[0]["tool"] == "run_shell"
     assert seen[0]["result"] == '{"ok": true}'
+
+
+@pytest.mark.asyncio
+async def test_runner_post_tool_async_returns_before_slow_handler():
+    """A slow discovered post handler must not delay the tool result —
+    handlers run off the dispatch path (Codex #109 round 2)."""
+    import time as _time
+
+    runner = HookRunner({})
+    runner.register_handler("post_tool", lambda ev, payload: _time.sleep(0.5))
+    started = _time.perf_counter()
+    await runner.run_post_tool_async("run_shell", {}, "{}")
+    elapsed = _time.perf_counter() - started
+    assert elapsed < 0.3, f"dispatch path blocked for {elapsed:.2f}s by a post handler"
+    await runner.drain()
+
+
+def test_runner_reload_preserves_programmatic_handlers():
+    """reload() rebuilds discovered handlers but must keep handlers added
+    via the public register_handler API (Codex #109 round 2)."""
+    runner = HookRunner({})
+    denials: list[str] = []
+
+    def guard(event: str, payload: dict) -> dict:
+        denials.append(event)
+        return {"allow": False, "reason": "manual guard"}
+
+    runner.register_handler("pre_tool", guard)
+    ok, msg = runner.run_pre_tool("run_shell", {})
+    assert ok is False and msg == "manual guard"
+    runner.reload({"hooks": {}})
+    ok2, msg2 = runner.run_pre_tool("run_shell", {})
+    assert ok2 is False and msg2 == "manual guard"
+    assert len(denials) == 2
 
 
 def test_runner_reload_swaps_declarative_config():

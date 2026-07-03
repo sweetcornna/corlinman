@@ -26,6 +26,16 @@ def test_arg_pattern_rule_gates_on_command_basename():
     assert match_hook_rule("run_shell(git:*)", "run_shell", {"command": "ls -la"}) is False
 
 
+def test_claude_style_command_prefix_pattern_matches_raw_command():
+    # Codex #109 round 2: the documented claude-code spelling
+    # ``run_shell(git push*)`` must fire on the raw command string too —
+    # hook if-rules accept BOTH the ``basename:*`` form and the natural
+    # command-prefix form.
+    assert match_hook_rule("run_shell(git push*)", "run_shell", {"command": "git push --force"}) is True
+    assert match_hook_rule("run_shell(git push*)", "run_shell", {"command": "git pull"}) is False
+    assert match_hook_rule("run_shell(rm *)", "run_shell", {"command": "rm -rf /tmp/x"}) is True
+
+
 def test_arg_pattern_catches_compound_commands():
     rule = "run_shell(rm:*)"
     assert match_hook_rule(rule, "run_shell", {"command": "cd /tmp && rm -rf x"}) is True

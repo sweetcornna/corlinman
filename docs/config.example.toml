@@ -541,7 +541,9 @@ file_rolling = true
 # PreCompact, PostCompact, Notification) or snake_case. Per group:
 #   matcher — tool-name pattern: exact | "A|B" | "prefix*" | "*" (default)
 #   if      — optional permission-rule refinement, same grammar as
-#             [agent.permissions] rules, e.g. "run_shell(git:*)"
+#             [agent.permissions] rules. For run_shell both spellings
+#             work: the natural command prefix "run_shell(git push*)"
+#             and the gate's basename form "run_shell(git:*)"
 #   hooks   — list of { kind, ... , timeout, async } definitions:
 #     kind = "command"  stdin gets JSON {event, tool_name, tool_input, ...}.
 #                       Exit 0 = allow (stdout may return a JSON verdict:
@@ -563,7 +565,7 @@ file_rolling = true
 # Example — block force-pushes and audit every tool call:
 #   [[hooks.declarative.PreToolUse]]
 #   matcher = "run_shell"
-#   if = "run_shell(git:git push --force*)"
+#   if = "run_shell(git push --force*)"
 #   hooks = [ { kind = "command", command = "exit 2" } ]
 #
 #   [[hooks.declarative.PostToolUse]]

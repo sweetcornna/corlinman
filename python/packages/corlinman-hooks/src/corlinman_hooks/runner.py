@@ -187,8 +187,13 @@ class HookRunner:
         self._agent_evaluator = agent_evaluator
         self._http_post = http_post
         self._hooks_dir: Path | None = Path(hooks_dir) if hooks_dir is not None else None
-        # event name -> list of in-process handlers discovered from disk.
+        # event name -> list of in-process handlers. ``_handlers`` is the
+        # merged runtime map every dispatch path reads; ``_manual_handlers``
+        # tracks the subset added via the public :meth:`register_handler`
+        # API so :meth:`reload` can rebuild discovery without dropping
+        # plugin-contributed hooks.
         self._handlers: dict[str, list[_Handler]] = {}
+        self._manual_handlers: dict[str, list[_Handler]] = {}
         self._configure(config or {})
         if hooks_dir is not None:
             self.discover(hooks_dir)
@@ -222,7 +227,10 @@ class HookRunner:
         historically boot-time-only). Returns a summary dict for display.
         """
         self._configure(config or {})
-        self._handlers = {}
+        # Rebuild from the manually-registered layer, NOT from empty —
+        # plugin-contributed handlers survive a config reload; only
+        # file-discovered ones are re-derived from disk.
+        self._handlers = {ev: list(hs) for ev, hs in self._manual_handlers.items()}
         target_dir = Path(hooks_dir) if hooks_dir is not None else self._hooks_dir
         if target_dir is not None:
             self._hooks_dir = target_dir
@@ -284,9 +292,15 @@ class HookRunner:
     def register_handler(self, event: str, handler: _Handler) -> None:
         """Register an in-process ``handler`` against ``event``.
 
-        Used by :meth:`discover` and available for programmatic
-        registration (tests, plugin-contributed hooks).
+        Public programmatic registration (tests, plugin-contributed
+        hooks). Handlers added here survive :meth:`reload`; discovery
+        uses :meth:`_register_discovered` so its handlers are re-derived
+        from disk instead.
         """
+        self._manual_handlers.setdefault(event, []).append(handler)
+        self._handlers.setdefault(event, []).append(handler)
+
+    def _register_discovered(self, event: str, handler: _Handler) -> None:
         self._handlers.setdefault(event, []).append(handler)
 
     def discover(self, hooks_dir: str | Path) -> int:
@@ -340,7 +354,7 @@ class HookRunner:
             if handler is None:
                 continue
             for ev in events:
-                self.register_handler(ev, handler)
+                self._register_discovered(ev, handler)
                 registered += 1
         if registered:
             _log.info("hook.discover.registered", extra={"dir": str(root), "count": registered})
@@ -701,10 +715,12 @@ class HookRunner:
                 ensure_ascii=False,
             )
             self._declarative.track(self._shell_fire_and_forget(cmd, payload))
-        # Discovered in-process post handlers (HOOK.yaml ``events:
-        # [post_tool]``) — previously advertised but never invoked
-        # (Codex #109). Verdicts are ignored per the post-tool contract;
-        # ``_run_handlers`` isolates a raising handler.
+        # Discovered/programmatic in-process post handlers — previously
+        # advertised but never invoked (Codex #109). They run off-thread
+        # in a tracked background task so a slow handler can never delay
+        # the tool result (the servicer awaits this method on the
+        # dispatch path). Verdicts are ignored per the post-tool
+        # contract; ``_run_handlers`` isolates a raising handler.
         if self._handlers.get(f"post_{tool_name}") or self._handlers.get("post_tool"):
             handler_payload = {
                 "tool": tool_name,
@@ -712,8 +728,16 @@ class HookRunner:
                 "result": result_json,
                 "ctx": ctx or {},
             }
-            self._run_handlers(f"post_{tool_name}", handler_payload)
-            self._run_handlers("post_tool", handler_payload)
+
+            async def _run_post_handlers() -> None:
+                await asyncio.to_thread(
+                    self._run_handlers, f"post_{tool_name}", handler_payload
+                )
+                await asyncio.to_thread(
+                    self._run_handlers, "post_tool", handler_payload
+                )
+
+            self._declarative.track(_run_post_handlers())
         if self._declarative.has("post_tool"):
             await self._declarative.run(
                 "post_tool", tool_name, args, ctx, extra={"tool_result": result_json}
