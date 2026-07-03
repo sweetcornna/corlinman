@@ -495,6 +495,14 @@ async def test_spill_setup_failure_kills_child(
     # The child must be dead, not orphaned outside the cap.
     assert task._proc is not None
     assert task._proc.returncode is not None
+    # And polling the unreadable spill must honour the never-raise
+    # envelope contract: read() returns (no output, real status) instead
+    # of leaking NotADirectoryError up through the tool dispatcher.
+    result = registry.read(task.task_id, 0)
+    assert result is not None
+    text, _new_offset, status, _exit = result
+    assert text == ""
+    assert status == "failed"
 
 
 # ---------------------------------------------------------------------------

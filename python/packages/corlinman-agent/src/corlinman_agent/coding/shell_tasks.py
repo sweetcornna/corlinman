@@ -453,9 +453,13 @@ class ShellTaskRegistry:
                     data = fh.read()
                 text = data.decode("utf-8", errors="replace")
                 new_offset += len(data)
-            except FileNotFoundError:
-                # Spill not created yet (spawn pre-creates it, so this is a
-                # rare race) — no output available at this offset.
+            except OSError:
+                # Spill unreadable: not created yet (rare spawn race), or
+                # the .corlinman dir was replaced / permissions changed
+                # (NotADirectoryError / PermissionError are OSError too).
+                # Surface no output rather than raising — the returned
+                # status still tells the caller the task's real state,
+                # honouring the tools' never-raise envelope contract.
                 pass
         return (text, new_offset, task.status, task.exit_code)
 
