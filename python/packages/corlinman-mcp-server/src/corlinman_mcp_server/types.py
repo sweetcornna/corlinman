@@ -81,14 +81,15 @@ def classify_inbound(frame: dict[str, Any]) -> str:
     """Classify an inbound JSON-RPC frame as a request/notification/response.
 
     Client-side receive classification (JSON-RPC 2.0 §4/§5): a frame with
-    a ``method`` is server-initiated — a **request** when it also carries a
-    non-null ``id`` (expects a reply), a **notification** otherwise
-    (id-less, no reply). A frame with no ``method`` is a **response** to a
-    request the client issued (demuxed by ``id``). Shared by the stdio and
-    websocket reader loops so they never diverge on this classification.
+    a ``method`` is server-initiated — a **request** when the ``id`` member
+    is PRESENT (even an explicit ``"id": null``, which §4 permits and which
+    still expects a reply), a **notification** when ``id`` is absent
+    entirely. A frame with no ``method`` is a **response** to a request the
+    client issued (demuxed by ``id``). Shared by the stdio and websocket
+    reader loops so they never diverge on this classification.
     """
     if "method" in frame and frame.get("method"):
-        return "request" if frame.get("id") is not None else "notification"
+        return "request" if "id" in frame else "notification"
     return "response"
 
 

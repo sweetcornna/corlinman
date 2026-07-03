@@ -27,7 +27,11 @@ from corlinman_mcp_server.types import classify_inbound, error_codes
     [
         ({"jsonrpc": "2.0", "id": 1, "method": "sampling/createMessage"}, "request"),
         ({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"}, "notification"),
-        ({"jsonrpc": "2.0", "id": None, "method": "notifications/x"}, "notification"),
+        # Explicit "id": null with a method is a REQUEST per JSON-RPC §4
+        # (id present, even null, expects a reply) — not a notification.
+        ({"jsonrpc": "2.0", "id": None, "method": "sampling/createMessage"}, "request"),
+        # A true notification omits the id member entirely.
+        ({"jsonrpc": "2.0", "method": "notifications/x"}, "notification"),
         ({"jsonrpc": "2.0", "id": 7, "result": {"ok": True}}, "response"),
         ({"jsonrpc": "2.0", "id": 7, "error": {"code": -1, "message": "x"}}, "response"),
         ({"jsonrpc": "2.0", "id": "abc", "method": ""}, "response"),  # empty method → not a request

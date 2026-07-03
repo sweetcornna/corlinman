@@ -197,25 +197,22 @@ async def _wire_mcp_tool_plane(state: Any, mcp_manager: Any) -> None:
     unroutable (``plugin_not_found``). Best-effort: never break boot.
     """
     try:
-        from corlinman_server.gateway.mcp.advertise import (
-            filter_servers_by_policy,
-            register_mcp_tools,
-        )
+        from corlinman_server.gateway.mcp.advertise import register_mcp_tools
 
         discovered = mcp_manager.discovered_tools()
         _allowed, _denied = _mcp_server_policy(state)
-        _mcp_added, _mcp_tools_json = await register_mcp_tools(
+        _mcp_added, _mcp_tools_json, _advertised = await register_mcp_tools(
             getattr(state, "plugin_registry", None),
             discovered,
             allowed=_allowed,
             denied=_denied,
         )
         state.extras["mcp_tools_json"] = _mcp_tools_json
-        # Record the set of servers currently advertised so a later
-        # refresh can prune entries for servers that disappear.
-        state.extras["mcp_advertised_servers"] = frozenset(
-            filter_servers_by_policy(discovered, allowed=_allowed, denied=_denied)
-        )
+        # The servers that ACTUALLY produced an entry this call — not
+        # merely policy-allowed. A server whose tools became empty/invalid
+        # produced none, so it falls out of this set and the prune diff
+        # removes its stale route (Codex #110).
+        state.extras["mcp_advertised_servers"] = _advertised
         logger.info(
             "gateway.mcp.tools_wired",
             entries=_mcp_added,
@@ -266,16 +263,18 @@ async def refresh_mcp_advertisement(state: Any) -> None:
         try:
             from corlinman_server.gateway.mcp.advertise import prune_stale_mcp_entries
 
-            before = state.extras.get("mcp_advertised_servers", frozenset())
             await _wire_mcp_tool_plane(state, mcp_manager)
             after = state.extras.get("mcp_advertised_servers", frozenset())
-            # Prune synthesized entries for servers no longer advertised.
-            gone = before - after
-            if gone:
-                removed = await prune_stale_mcp_entries(
-                    getattr(state, "plugin_registry", None), after
-                )
-                logger.info("gateway.mcp.refresh_pruned", removed=removed, gone=sorted(gone))
+            # Reconcile the registry to the freshly-advertised set: remove
+            # every synthesized entry whose server is not in ``after``
+            # (``register_mcp_tools`` only upserts, so a dropped-out server
+            # leaves a dead route otherwise). Always runs — the registry
+            # is kept in lockstep with ``after`` on every refresh.
+            removed = await prune_stale_mcp_entries(
+                getattr(state, "plugin_registry", None), after
+            )
+            if removed:
+                logger.info("gateway.mcp.refresh_pruned", removed=removed)
             # Rebuild the live ChatService so it re-reads the new snapshot.
             refresh_fn = state.extras.get("chat_refresh_fn")
             if callable(refresh_fn):
@@ -1267,7 +1266,14 @@ def build_app(
                 with suppress(AttributeError, TypeError):
                     admin_b_state.extras["config_swap_fn"] = _make_config_swap_fn(app, state)
                 with suppress(AttributeError, TypeError):
-                    admin_b_state.extras["chat_refresh_fn"] = _make_chat_refresh_fn(state)
+                    _chat_refresh = _make_chat_refresh_fn(state)
+                    admin_b_state.extras["chat_refresh_fn"] = _chat_refresh
+                    # Mirror onto the main AppState too: refresh_mcp_advertisement
+                    # (fired from the MCP list_changed listener + admin hot-plug)
+                    # only holds ``state`` and must rebuild the live ChatService
+                    # after re-advertising (Codex #110 — it read the wrong state).
+                    if isinstance(getattr(state, "extras", None), dict):
+                        state.extras["chat_refresh_fn"] = _chat_refresh
                 logger.debug(
                     "gateway.config_reload.swap_fn_wired",
                     path=str(config_path) if config_path else None,

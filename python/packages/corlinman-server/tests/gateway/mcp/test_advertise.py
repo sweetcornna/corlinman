@@ -179,10 +179,11 @@ async def test_register_mcp_tools_upserts_and_advertises() -> None:
     from corlinman_server.gateway.mcp.advertise import register_mcp_tools
 
     registry = PluginRegistry.from_roots([])
-    added, tools_json = await register_mcp_tools(
+    added, tools_json, advertised = await register_mcp_tools(
         registry, {"srv": [_FakeTool("echo", "e", _ECHO_SCHEMA)]}
     )
     assert added == 1
+    assert advertised == frozenset({"srv"})
     assert registry.get("srv") is not None
     assert json.loads(tools_json)[0]["function"]["name"] == "srv_echo"
 
@@ -192,34 +193,61 @@ async def test_register_mcp_tools_applies_deny_policy() -> None:
     from corlinman_server.gateway.mcp.advertise import register_mcp_tools
 
     registry = PluginRegistry.from_roots([])
-    added, tools_json = await register_mcp_tools(
+    added, tools_json, advertised = await register_mcp_tools(
         registry,
         {"good": [_FakeTool("echo")], "blocked": [_FakeTool("rm")]},
         denied=frozenset({"blocked"}),
     )
     assert added == 1
+    assert advertised == frozenset({"good"})
     assert registry.get("good") is not None and registry.get("blocked") is None
     names = [s["function"]["name"] for s in json.loads(tools_json)]
     assert names == ["good_echo"]  # blocked server's tools never advertised
 
 
 async def test_register_mcp_tools_colliding_server_not_advertised() -> None:
-    """Bug 3: a server whose name already exists in the registry is never
-    upserted (never clobber a real manifest) — advertising its tools anyway
-    would hand the model names with no routing entry (``plugin_not_found`` on
-    every call). The advertisement must honor the same skip."""
-    from corlinman_providers.plugins.registry import PluginRegistry
+    """Bug 3: a server whose name collides with a REAL on-disk manifest is
+    never upserted (never clobber it) — advertising its tools anyway would
+    hand the model names with no routing entry (``plugin_not_found`` on
+    every call). The advertisement must honor the same skip. (A prior
+    *synthesized* entry of the same name does NOT block — those are ours to
+    rebuild on a refresh; Codex #110.)"""
+    from pathlib import Path
+
+    from corlinman_providers.plugins.discovery import Origin
+    from corlinman_providers.plugins.manifest import (
+        Capabilities,
+        EntryPoint,
+        PluginManifest,
+        PluginType,
+        Tool,
+    )
+    from corlinman_providers.plugins.registry import PluginEntry, PluginRegistry
     from corlinman_server.gateway.mcp.advertise import register_mcp_tools
 
     registry = PluginRegistry.from_roots([])
-    # A pre-existing entry already occupies the name "taken".
-    for entry in build_mcp_registry_entries({"taken": [_FakeTool("real")]}):
-        await registry.upsert(entry)
+    # A REAL on-disk manifest already occupies the name "taken".
+    await registry.upsert(
+        PluginEntry(
+            manifest=PluginManifest(
+                manifest_version=3,
+                name="taken",
+                version="1.0.0",
+                description="real",
+                plugin_type=PluginType.SYNC,
+                entry_point=EntryPoint(command="python"),
+                capabilities=Capabilities(tools=[Tool(name="real", description="", parameters={"type": "object"})]),
+            ),
+            origin=Origin.CONFIG,
+            manifest_path=Path("/real/taken/manifest.toml"),
+        )
+    )
 
-    added, tools_json = await register_mcp_tools(
+    added, tools_json, advertised = await register_mcp_tools(
         registry, {"taken": [_FakeTool("ghost")], "fresh": [_FakeTool("echo")]}
     )
     assert added == 1  # only "fresh" got a routing entry…
+    assert advertised == frozenset({"fresh"})
     names = [s["function"]["name"] for s in json.loads(tools_json)]
     assert names == ["fresh_echo"]  # …so only its tools are advertised
 
@@ -227,10 +255,11 @@ async def test_register_mcp_tools_colliding_server_not_advertised() -> None:
 async def test_register_mcp_tools_none_registry_still_advertises() -> None:
     from corlinman_server.gateway.mcp.advertise import register_mcp_tools
 
-    added, tools_json = await register_mcp_tools(
+    added, tools_json, advertised = await register_mcp_tools(
         None, {"srv": [_FakeTool("echo", "e", _ECHO_SCHEMA)]}
     )
     assert added == 0  # nothing upserted…
+    assert advertised == frozenset({"srv"})
     assert json.loads(tools_json)[0]["function"]["name"] == "srv_echo"  # …still advertised
 
 

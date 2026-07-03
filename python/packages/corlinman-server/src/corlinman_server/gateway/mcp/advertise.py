@@ -247,28 +247,50 @@ async def register_mcp_tools(
     *,
     allowed: frozenset[str] | None = None,
     denied: frozenset[str] = frozenset(),
-) -> tuple[int, bytes]:
-    """Wire discovered MCP tools into the agent tool plane at gateway boot.
+) -> tuple[int, bytes, frozenset[str]]:
+    """Wire discovered MCP tools into the agent tool plane.
 
     Applies the server allow/deny policy, then upserts one synthesized
     ``mcp``-kind entry per surviving ready server into ``registry`` (execution
-    routing) and returns ``(entries_added, advertised_tools_json)`` — the second
-    being the ``tools_json`` bytes the gateway injects into
-    ``ChatStart.tools_json`` (advertisement). No-op-safe on a ``None`` registry
-    (advertisement bytes are still returned). Never clobbers a real on-disk
-    manifest of the same name.
+    routing) and returns ``(entries_added, advertised_tools_json,
+    advertised_servers)``:
+
+    * ``advertised_tools_json`` — the ``tools_json`` bytes the gateway injects
+      into ``ChatStart.tools_json``;
+    * ``advertised_servers`` — the set of server names that ACTUALLY produced a
+      routing entry this call (a server whose tool list is empty/all-invalid or
+      whose name collides with a real manifest produces none). This is the
+      ground truth a refresh diffs against to prune servers that dropped out
+      (Codex #110) — it must NOT be inferred from the full registry, which
+      still holds not-yet-pruned stale entries from a prior advertise.
+
+    No-op-safe on a ``None`` registry (bytes still returned). Never clobbers a
+    real on-disk manifest of the same name.
     """
     discovered = filter_servers_by_policy(discovered, allowed=allowed, denied=denied)
     if registry is None:
-        return 0, mcp_advertised_tools_json(discovered)
-    # The advertisement honors the same existing-name skip as the entry
-    # synthesis: a server that gets no routing entry must not be advertised.
-    existing = frozenset(e.manifest.name for e in registry.list())
+        return 0, mcp_advertised_tools_json(discovered), frozenset(discovered)
+    # The existing-name skip must block only REAL on-disk manifests, not
+    # our own synthesized ``<mcp:...>`` entries — otherwise a re-advertise
+    # (list_changed / hot-plug) sees the boot-time synthetic entries as
+    # collisions and skips rebuilding them, dropping a live server's tools
+    # from the model-facing schema (Codex #110).
+    existing = frozenset(
+        e.manifest.name
+        for e in registry.list()
+        if not _is_synthetic_mcp_entry(e)
+    )
     tools_json = mcp_advertised_tools_json(discovered, existing_names=existing)
     entries = build_mcp_registry_entries(discovered, existing_names=existing)
     for entry in entries:
         await registry.upsert(entry)
-    return len(entries), tools_json
+    advertised = frozenset(e.manifest.name for e in entries)
+    return len(entries), tools_json, advertised
+
+
+def _is_synthetic_mcp_entry(entry: Any) -> bool:
+    """Whether ``entry`` is one this module synthesized (``<mcp:...>`` path)."""
+    return str(getattr(entry, "manifest_path", "") or "").startswith(_MCP_SYNTH_PREFIX)
 
 
 #: Prefix of the synthetic ``manifest_path`` stamped on a synthesized
