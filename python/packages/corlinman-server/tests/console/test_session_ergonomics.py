@@ -85,6 +85,11 @@ class _TurnJournal(_FakeJournal):
         super().__init__([])
         self.cursor_seen: list[str] = []
 
+    async def get_session_turn_ids(self, session_key: str, limit: int = 50) -> list[int]:
+        # The rebuild target (30) is one of this session's turns — the
+        # ownership probe must pass for the happy-path test.
+        return [30, 20, 10]
+
     async def list_session_turns(
         self, session_key: str, *, limit: int = 50, before_turn_id: str | None = None
     ) -> list[dict[str, Any]]:
@@ -120,3 +125,158 @@ async def test_replay_window_before_rebuilds_oldest_first() -> None:
 async def test_replay_window_before_none_paths() -> None:
     assert await _app(None).replay_window_before(5) is None  # no journal
     assert await _app(_TurnJournal(), embedded=False).replay_window_before(5) is None
+
+
+class _RichJournal(_FakeJournal):
+    """Fake journal with recency metadata + turn rows for the Codex-fix tests."""
+
+    def __init__(
+        self,
+        rows: list[Any] | None = None,
+        *,
+        turn_ids: list[int] | None = None,
+        turn_pages: list[list[dict[str, Any]]] | None = None,
+        fail_on_turn: Any = None,
+    ) -> None:
+        super().__init__([])
+        self.rows = rows or []
+        self.turn_ids = turn_ids or []
+        self.turn_pages = list(turn_pages or [])
+        self.fail_on_turn = fail_on_turn
+        self.cursor_seen: list[str] = []
+        self.limits_seen: list[int] = []
+
+    async def list_session_summaries(self, limit: int = 20) -> list[Any]:
+        self.limits_seen.append(limit)
+        return self.rows[:limit]
+
+    async def get_session_turn_ids(self, session_key: str, limit: int = 50) -> list[int]:
+        return self.turn_ids[:limit]
+
+    async def list_session_turns(
+        self, session_key: str, *, limit: int = 50, before_turn_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        self.cursor_seen.append(str(before_turn_id))
+        return self.turn_pages.pop(0) if self.turn_pages else []
+
+    async def _load_messages(self, turn_id: Any) -> list[dict[str, Any]]:
+        if self.fail_on_turn is not None and turn_id == self.fail_on_turn:
+            raise RuntimeError("simulated journal read failure")
+        return [
+            {"role": "user", "content": f"u{turn_id}"},
+            {"role": "assistant", "content": f"a{turn_id}"},
+        ]
+
+
+def _summary(key: str, last_seen: int, *, pinned: bool = False) -> Any:
+    return SimpleNamespace(session_key=key, last_seen_at_ms=last_seen, pinned=pinned)
+
+
+async def test_latest_session_key_ignores_pinned_ordering() -> None:
+    """--continue must resume TRUE recency, not the pinned-first sort
+    (Codex PR#105): the backend lists pinned sessions ahead of newer
+    unpinned ones, so row 0 is wrong whenever any pin exists."""
+    journal = _RichJournal(
+        rows=[
+            _summary("console:pinned-old", 100, pinned=True),
+            _summary("console:fresh", 200),
+        ]
+    )
+    app = _app(journal)
+    assert await app.latest_session_key() == "console:fresh"
+
+
+async def test_match_session_keys_pages_beyond_first_page() -> None:
+    """A fragment match hiding beyond the first 50 rows must still count
+    toward uniqueness (Codex PR#105) — otherwise /resume 'proves'
+    uniqueness on one page and resumes the wrong session."""
+    keys = [f"console:filler-{i:03d}" for i in range(49)]
+    keys.insert(3, "console:proj-a")
+    keys.append("console:proj-b")  # row 51 — outside the first page
+    journal = _RichJournal(rows=[_summary(k, 1000 - i) for i, k in enumerate(keys)])
+    app = _app(journal)
+    matches = await app.match_session_keys("proj-")
+    assert matches == ["console:proj-a", "console:proj-b"]  # ambiguous, both seen
+
+
+async def test_replay_window_before_keeps_window_on_failure() -> None:
+    """A journal read failure mid-replay must leave the window UNTOUCHED
+    (Codex PR#105) — the old code cleared it first, then reported
+    'window unchanged'."""
+    journal = _RichJournal(
+        turn_ids=[20, 10],
+        turn_pages=[
+            [
+                {"turn_id": 20, "started_at_ms": 2000},
+                {"turn_id": 10, "started_at_ms": 1000},
+            ]
+        ],
+        fail_on_turn=20,
+    )
+    app = _app(journal)
+    app.session.window.extend([{"role": "user", "content": "precious"}])
+    assert await app.replay_window_before(30) is None
+    assert [m["content"] for m in app.session.window] == ["precious"]
+
+
+async def test_replay_window_before_rejects_foreign_turn_id() -> None:
+    """A checkpoint turn id that does not belong to THIS session must
+    degrade (None), not truncate the window to an unrelated cutoff
+    (Codex PR#105 — checkpoints are global across sessions)."""
+    journal = _RichJournal(
+        turn_ids=[10, 20],
+        turn_pages=[[{"turn_id": 10, "started_at_ms": 1000}]],
+    )
+    app = _app(journal)
+    app.session.window.extend([{"role": "user", "content": "precious"}])
+    assert await app.replay_window_before(999) is None
+    assert [m["content"] for m in app.session.window] == ["precious"]
+
+
+async def test_replay_window_before_stub_backend_degrades() -> None:
+    """A backend whose list_session_turns is a stub (returns []) while the
+    session demonstrably has turns must degrade (None), not clear the
+    window and report success (Codex PR#105 — Postgres stub)."""
+    journal = _RichJournal(turn_ids=[10], turn_pages=[[]])
+    app = _app(journal)
+    app.session.window.extend([{"role": "user", "content": "precious"}])
+    assert await app.replay_window_before(10) is None
+    assert [m["content"] for m in app.session.window] == ["precious"]
+
+
+async def test_replay_window_before_pages_past_first_page() -> None:
+    """>50 prior turns must ALL replay (Codex PR#105) — the rebuild pages
+    with the before_turn_id cursor until exhausted."""
+    page1 = [
+        {"turn_id": 100 - i, "started_at_ms": (100 - i) * 10} for i in range(50)
+    ]  # newest-first 100..51
+    page2 = [{"turn_id": 50, "started_at_ms": 500}, {"turn_id": 49, "started_at_ms": 490}]
+    journal = _RichJournal(
+        turn_ids=[101],
+        turn_pages=[page1, page2],
+    )
+    app = _app(journal)
+    replayed = await app.replay_window_before(101)
+    assert replayed == 52 * 2
+    # Cursor walked: original target, then the oldest row of the full
+    # page; the short second page ends the walk.
+    assert journal.cursor_seen == ["101", "51"]
+    assert app.session.window[0]["content"] == "u49"
+    assert app.session.window[-1]["content"] == "a100"
+
+
+async def test_replay_window_before_numeric_tiebreak() -> None:
+    """Same-millisecond turns tie-break NUMERICALLY (Codex PR#105) — a
+    string sort would order turn 10 before turn 9."""
+    journal = _RichJournal(
+        turn_ids=[11],
+        turn_pages=[
+            [
+                {"turn_id": 10, "started_at_ms": 1000},
+                {"turn_id": 9, "started_at_ms": 1000},
+            ]
+        ],
+    )
+    app = _app(journal)
+    assert await app.replay_window_before(11) == 4
+    assert [m["content"] for m in app.session.window] == ["u9", "a9", "u10", "a10"]

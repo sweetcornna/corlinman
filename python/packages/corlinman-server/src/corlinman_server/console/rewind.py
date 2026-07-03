@@ -292,8 +292,7 @@ def rewind_to(
             files_restored=True,
             message=(
                 f"workspace reset to checkpoint {chosen.sha} ({chosen.label}) "
-                "— uncommitted edits made after the snapshot were discarded"
-                + window_note
+                "— uncommitted edits made after the snapshot were discarded" + window_note
             ),
         )
 
@@ -374,11 +373,7 @@ async def cmd_rewind(app: Any, args: str) -> str:
         idx, _err = _resolve_target(arg, checkpoints)
         chosen = checkpoints[idx] if idx is not None else None
         rebuild = getattr(app, "replay_window_before", None)
-        turn_keyed = (
-            chosen is not None
-            and chosen.turn_id is not None
-            and callable(rebuild)
-        )
+        turn_keyed = chosen is not None and chosen.turn_id is not None and callable(rebuild)
         result = rewind_to(
             arg,
             session=getattr(app, "session", None),
@@ -387,7 +382,20 @@ async def cmd_rewind(app: Any, args: str) -> str:
         if result.ok and turn_keyed and chosen is not None and rebuild is not None:
             replayed = await rebuild(chosen.turn_id)
             if replayed is None:
-                note = "conversation window unchanged (journal unavailable)"
+                # Journal rebuild degraded (unavailable / stub backend /
+                # foreign turn id). The window is guaranteed untouched, so
+                # the legacy label match is still a safe best-effort.
+                session = getattr(app, "session", None)
+                truncated = False
+                if session is not None:
+                    truncated, dropped, _reason = _truncate_window(session, chosen.label)
+                if truncated:
+                    note = (
+                        f"journal rebuild unavailable — label match dropped "
+                        f"{dropped} window message(s)"
+                    )
+                else:
+                    note = "conversation window unchanged (journal unavailable)"
             else:
                 note = (
                     f"conversation window rebuilt from the journal: "

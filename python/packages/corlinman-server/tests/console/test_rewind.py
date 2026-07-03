@@ -351,3 +351,53 @@ async def test_cmd_rewind_legacy_checkpoint_falls_back_to_label_match(
     )
     text = await _dispatch_text(app, "/rewind 2")
     assert "dropped 2 message(s)" in text  # label match did the truncation
+
+
+async def test_cmd_rewind_turn_keyed_failure_falls_back_to_label_match(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the journal rebuild degrades (None), the label-match fallback
+    still truncates the window (Codex #105 / workflow finding) — the old
+    behavior left the window untouched with skip_window already applied."""
+    ws = tmp_path / "ws"
+    snapshot(ws, "two", turn_id=42)
+    monkeypatch.setenv("CORLINMAN_AGENT_WORKSPACE", str(ws))
+
+    class _DegradedApp(_StubApp):
+        async def replay_window_before(self, turn_id: int) -> None:
+            return None  # journal unavailable / foreign turn / stub backend
+
+    app = _DegradedApp()
+    app.session.window.extend(
+        [
+            {"role": "user", "content": "one"},
+            {"role": "assistant", "content": "r1"},
+            {"role": "user", "content": "two"},
+            {"role": "assistant", "content": "r2"},
+        ]
+    )
+    text = await _dispatch_text(app, "/rewind 1")
+    # Label "two" uniquely matches the second user message → truncated there.
+    assert [m["content"] for m in app.session.window] == ["one", "r1"]
+    assert "label match" in text
+
+
+def test_user_text_starting_with_turn_tag_is_not_parsed_as_tag(tmp_path: Path) -> None:
+    """User text beginning with ``[turn:99]`` must not masquerade as a
+    journal tag on an UNTAGGED snapshot (Codex #105) — the sanitiser
+    neutralizes the prefix at write time."""
+    ws = tmp_path / "ws"
+    snapshot(ws, "[turn:99] tricky prompt")  # untagged legacy-style snapshot
+    cps = list_checkpoints(ws)
+    assert cps[0].turn_id is None
+    assert "tricky prompt" in cps[0].label
+
+
+def test_tagged_snapshot_with_turn_like_user_text_keeps_real_tag(tmp_path: Path) -> None:
+    """A tagged snapshot whose USER text also starts with a fake tag parses
+    the REAL tag and keeps the neutralized user text as the label."""
+    ws = tmp_path / "ws"
+    snapshot(ws, "[turn:99] tricky prompt", turn_id=7)
+    cps = list_checkpoints(ws)
+    assert cps[0].turn_id == 7
+    assert "tricky prompt" in cps[0].label

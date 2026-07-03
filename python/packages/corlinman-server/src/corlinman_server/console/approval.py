@@ -16,6 +16,7 @@ broken prompt surface (mirrors the gate's own fail-closed posture).
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -47,22 +48,44 @@ class ConsoleApprovalResolver:
         self._prompter = prompter
         #: Tool names the user answered "always" for — session-scoped by
         #: design (a durable grant belongs in the permission rule list, not an
-        #: interactive cache).
+        #: interactive cache). Cleared by :meth:`reset` on session/mode
+        #: boundaries so a grant can never outlive the context it was
+        #: given in (Codex #104).
         self.always_allow: set[str] = set()
+        #: One prompt at a time: concurrent tool calls (e.g. a subagent
+        #: fan-out) each awaiting approval would otherwise spawn competing
+        #: prompt_toolkit sessions on the same terminal (Codex #104).
+        self._prompt_lock = asyncio.Lock()
+
+    def reset(self) -> None:
+        """Drop every cached "always" grant.
+
+        Called when the session boundary moves (``/new``, ``/clear``) or
+        the permission mode switches (``/permissions``, ``/plan``) — a
+        grant given under one session/mode must not silently carry into
+        the next (most sharply: a cached ``run_shell`` kept mutating the
+        workspace after entering plan mode).
+        """
+        self.always_allow.clear()
 
     async def __call__(self, tool: str, args: Any, ctx: Any) -> bool:
         _ = ctx
         if tool in self.always_allow:
             return True
-        desc = f"{tool} {_args_preview(args)}"
-        try:
-            answer = (await self._prompter(desc)).strip().lower()
-        except Exception:  # noqa: BLE001 — prompt failure → deny (fail-closed)
-            return False
-        if answer in ("a", "always"):
-            self.always_allow.add(tool)
-            return True
-        return answer in ("y", "yes")
+        async with self._prompt_lock:
+            # Re-check inside the lock: a concurrent call for the same tool
+            # may have just answered "always" while we waited.
+            if tool in self.always_allow:
+                return True
+            desc = f"{tool} {_args_preview(args)}"
+            try:
+                answer = (await self._prompter(desc)).strip().lower()
+            except Exception:  # noqa: BLE001 — prompt failure → deny (fail-closed)
+                return False
+            if answer in ("a", "always"):
+                self.always_allow.add(tool)
+                return True
+            return answer in ("y", "yes")
 
 
 def build_console_prompter(
@@ -94,9 +117,7 @@ def build_console_prompter(
         stop = getattr(renderer, "_stop_live", None)
         if callable(stop):
             stop()
-        renderer.console.print(
-            f"⚠ approval needed — {desc}", style="bold yellow", highlight=False
-        )
+        renderer.console.print(f"⚠ approval needed — {desc}", style="bold yellow", highlight=False)
         return await read("allow? [y]es / [a]lways this session / [N]o › ")
 
     return _prompt

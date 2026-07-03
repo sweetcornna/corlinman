@@ -298,26 +298,81 @@ class ConsoleApp:
             with contextlib.suppress(Exception):
                 await journal.close()
 
+    #: How many recent turn ids the ownership probe inspects. A checkpoint
+    #: turn older than this many turns degrades to the label-match fallback
+    #: (conservative) rather than risking a wrong-session rebuild.
+    _OWNERSHIP_PROBE_LIMIT = 500
+
     async def replay_window_before(self, turn_id: int) -> int | None:
         """Rebuild the window from journal turns STRICTLY BEFORE ``turn_id``
         — the turn-keyed ``/rewind`` truncation (the checkpoint was taken at
         the start of that turn, so the window must show everything before
-        it). Returns the replayed message count; ``None`` in attach mode or
-        without a journal (the caller reports "window unchanged")."""
+        it). Returns the replayed message count; ``None`` in attach mode,
+        without a journal, or on ANY doubt about the rebuild (the caller
+        falls back to the label match / reports "window unchanged").
+
+        Safety contract (Codex #105 hardening):
+
+        * the target turn must belong to THIS session — workspace
+          checkpoints are global across console/web/channel surfaces, so a
+          foreign turn id must degrade instead of truncating to an
+          unrelated cutoff;
+        * a backend that lists no turns while the session demonstrably has
+          them (e.g. the Postgres ``list_session_turns`` stub) degrades
+          instead of wiping the window and reporting success;
+        * the rebuild is staged into a LOCAL list and only swapped in
+          after every journal read succeeded — a mid-replay failure leaves
+          the current window untouched;
+        * prior turns are paged to exhaustion (not just the newest 50) and
+          ordered with a NUMERIC turn-id tie-break for same-millisecond
+          starts.
+        """
         if not self.embedded:
             return None
         journal = await self._open_journal()
         if journal is None:
             return None
         try:
-            rows = await journal.list_session_turns(
-                self.session.session_key, limit=50, before_turn_id=str(turn_id)
-            )
-            ordered = sorted(
-                (r for r in rows if r.get("turn_id") is not None),
-                key=lambda r: (r.get("started_at_ms") or 0, str(r.get("turn_id"))),
-            )
-            self.session.window.clear()
+            # Ownership probe: the checkpoint's turn must be one of this
+            # session's turns. Foreign (other-session) ids and unknown ids
+            # degrade to the caller's fallback.
+            own_ids = {
+                str(t)
+                for t in await journal.get_session_turn_ids(
+                    self.session.session_key, limit=self._OWNERSHIP_PROBE_LIMIT
+                )
+            }
+            if str(turn_id) not in own_ids:
+                return None
+
+            # Page prior turns to exhaustion via the before_turn_id cursor.
+            page_limit = 50
+            rows: list[dict[str, Any]] = []
+            cursor = str(turn_id)
+            while True:
+                page = await journal.list_session_turns(
+                    self.session.session_key, limit=page_limit, before_turn_id=cursor
+                )
+                page = [r for r in page if r.get("turn_id") is not None]
+                rows.extend(page)
+                if len(page) < page_limit:
+                    break
+                # Rows are newest-first; the oldest row anchors the next page.
+                cursor = str(min(page, key=lambda r: r.get("started_at_ms") or 0)["turn_id"])
+            if not rows and own_ids:
+                # The session has turns but the listing returned none — a
+                # stubbed/degraded backend (e.g. Postgres list_session_turns),
+                # not a genuine empty history. Don't wipe the window.
+                return None
+
+            def _turn_sort_key(r: dict[str, Any]) -> tuple[int, int, str]:
+                raw = str(r.get("turn_id"))
+                if raw.isdigit():
+                    return (r.get("started_at_ms") or 0, int(raw), "")
+                return (r.get("started_at_ms") or 0, 1 << 62, raw)
+
+            ordered = sorted(rows, key=_turn_sort_key)
+            rebuilt: list[dict[str, str]] = []
             replayed = 0
             for row in ordered:
                 messages = await journal._load_messages(row["turn_id"])  # noqa: SLF001 — stable shim
@@ -325,8 +380,11 @@ class ConsoleApp:
                     role = str(msg.get("role", ""))
                     content = str(msg.get("content", "") or "")
                     if role in ("user", "assistant") and content.strip():
-                        self.session.window.append({"role": role, "content": content})
+                        rebuilt.append({"role": role, "content": content})
                         replayed += 1
+            # All reads succeeded — only now replace the live window.
+            self.session.window.clear()
+            self.session.window.extend(rebuilt)
             return replayed
         except Exception:  # noqa: BLE001 — window rebuild is best-effort
             return None
@@ -336,16 +394,21 @@ class ConsoleApp:
 
     async def latest_session_key(self) -> str | None:
         """Most-recent journal session key (``--continue``); ``None`` in
-        attach mode or with no journal. ``list_session_summaries`` is ordered
-        newest-first, so row 0 is the answer."""
+        attach mode or with no journal. ``list_session_summaries`` sorts
+        PINNED sessions ahead of recency, so row 0 lies whenever any pin
+        exists (Codex #105) — pick the true max ``last_seen_at_ms`` across
+        a generous page instead."""
         if not self.embedded:
             return None
         journal = await self._open_journal()
         if journal is None:
             return None
         try:
-            rows = await journal.list_session_summaries(limit=1)
-            key = str(getattr(rows[0], "session_key", "")) if rows else ""
+            rows = await journal.list_session_summaries(limit=50)
+            if not rows:
+                return None
+            newest = max(rows, key=lambda r: getattr(r, "last_seen_at_ms", 0) or 0)
+            key = str(getattr(newest, "session_key", ""))
             return key or None
         except Exception:  # noqa: BLE001 — best-effort convenience
             return None
@@ -353,18 +416,33 @@ class ConsoleApp:
             with contextlib.suppress(Exception):
                 await journal.close()
 
+    #: Progressive page sizes for fuzzy /resume uniqueness proof. The last
+    #: value is the hard cap — beyond ~1000 sessions the match is resolved
+    #: on the newest 1000 (documented residual, keeps the probe bounded).
+    _MATCH_PAGE_LIMITS = (50, 250, 1000)
+
     async def match_session_keys(self, fragment: str) -> list[str]:
         """Session keys matching ``fragment`` for fuzzy ``/resume``: an exact
         key wins alone; otherwise recency-ordered substring matches. Empty in
-        attach mode or without a journal."""
+        attach mode or without a journal.
+
+        Uniqueness must be PROVED, not assumed from one page (Codex #105):
+        the summaries query is re-issued with growing limits until the
+        listing is exhausted (a short page) or the cap is reached, so a
+        second match beyond the first 50 rows still forces disambiguation.
+        """
         if not self.embedded:
             return []
         journal = await self._open_journal()
         if journal is None:
             return []
         try:
-            rows = await journal.list_session_summaries(limit=50)
-            keys = [str(getattr(r, "session_key", "")) for r in rows]
+            keys: list[str] = []
+            for limit in self._MATCH_PAGE_LIMITS:
+                rows = await journal.list_session_summaries(limit=limit)
+                keys = [str(getattr(r, "session_key", "")) for r in rows]
+                if len(rows) < limit:
+                    break  # listing exhausted — uniqueness is proven
             if fragment in keys:
                 return [fragment]
             return [k for k in keys if fragment in k]

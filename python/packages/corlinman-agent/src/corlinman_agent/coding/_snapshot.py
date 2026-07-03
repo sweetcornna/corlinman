@@ -164,10 +164,19 @@ def _sanitise_label(label: str) -> str:
 
     Commit subjects don't get newlines (git would treat the rest as
     body), and overly-long labels clutter ``git log``.
+
+    A leading ``[turn:`` is neutralized to ``(turn:`` so user text can
+    never masquerade as the ``[turn:<id>]`` journal tag /rewind parses
+    out of the subject (an untagged snapshot whose label parsed as a
+    tag would rebuild the window from an unrelated turn id). Applied in
+    the sanitiser — not the subject builder — so the window label-match
+    (which re-sanitises user text) stays byte-consistent.
     """
     if not isinstance(label, str):
         label = str(label)
     first_line = label.replace("\r", " ").split("\n", 1)[0].strip()
+    if first_line.startswith("[turn:"):
+        first_line = "(turn:" + first_line[len("[turn:") :]
     if not first_line:
         first_line = "turn"
     if len(first_line) > _MAX_LABEL_CHARS:
@@ -192,9 +201,7 @@ def ensure_repo(workspace: Path) -> bool:
         return True
     init = _run_git(workspace, "init", "--quiet")
     if init.returncode != 0:
-        logger.warning(
-            "agent.snapshot.git_init_failed", stderr=init.stderr.strip()
-        )
+        logger.warning("agent.snapshot.git_init_failed", stderr=init.stderr.strip())
         return False
     # Local repo config — never touch the user's global config.
     _run_git(workspace, "config", "user.email", _USER_EMAIL)
@@ -204,9 +211,7 @@ def ensure_repo(workspace: Path) -> bool:
     # already be empty.
     add = _run_git(workspace, "add", "-A")
     if add.returncode != 0:
-        logger.warning(
-            "agent.snapshot.git_add_failed", stderr=add.stderr.strip()
-        )
+        logger.warning("agent.snapshot.git_add_failed", stderr=add.stderr.strip())
         return False
     commit = _run_git(
         workspace,
@@ -251,9 +256,7 @@ def snapshot(workspace: Path, label: str, *, turn_id: int | None = None) -> str 
     safe_label = _sanitise_label(label)
     add = _run_git(workspace, "add", "-A")
     if add.returncode != 0:
-        logger.warning(
-            "agent.snapshot.git_add_failed", stderr=add.stderr.strip()
-        )
+        logger.warning("agent.snapshot.git_add_failed", stderr=add.stderr.strip())
         return None
     subject = (
         f"snapshot: [turn:{int(turn_id)}] {safe_label}"
@@ -316,13 +319,9 @@ def revert_last(workspace: Path) -> dict[str, str]:
         return {"error": "no_snapshots"}
     # Two commits' SHAs + the parent's subject. ``%h`` gives the short
     # SHA, ``%s`` the subject line.
-    log = _run_git(
-        workspace, "log", "--max-count=2", "--pretty=format:%h%x09%s"
-    )
+    log = _run_git(workspace, "log", "--max-count=2", "--pretty=format:%h%x09%s")
     if log.returncode != 0:
-        logger.warning(
-            "agent.snapshot.git_log_failed", stderr=log.stderr.strip()
-        )
+        logger.warning("agent.snapshot.git_log_failed", stderr=log.stderr.strip())
         return {"error": "git_log_failed"}
     rows = [r for r in log.stdout.splitlines() if r.strip()]
     if len(rows) < 2:
@@ -331,9 +330,7 @@ def revert_last(workspace: Path) -> dict[str, str]:
     parent_sha, parent_label = rows[1].split("\t", 1)
     reset = _run_git(workspace, "reset", "--hard", "--quiet", parent_sha)
     if reset.returncode != 0:
-        logger.warning(
-            "agent.snapshot.git_reset_failed", stderr=reset.stderr.strip()
-        )
+        logger.warning("agent.snapshot.git_reset_failed", stderr=reset.stderr.strip())
         return {"error": "git_reset_failed"}
     logger.info(
         "agent.snapshot.reverted",
@@ -369,9 +366,7 @@ def list_snapshots(workspace: Path, limit: int = 10) -> list[dict[str, str]]:
         "--pretty=format:%h%x09%s",
     )
     if log.returncode != 0:
-        logger.warning(
-            "agent.snapshot.git_log_failed", stderr=log.stderr.strip()
-        )
+        logger.warning("agent.snapshot.git_log_failed", stderr=log.stderr.strip())
         return []
     out: list[dict[str, str]] = []
     for row in log.stdout.splitlines():

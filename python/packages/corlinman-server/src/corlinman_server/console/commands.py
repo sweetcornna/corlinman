@@ -48,17 +48,33 @@ async def _cmd_help(app: Any, args: str) -> str:
     _ = (app, args)
     lines = ["commands:"]
     for cmd in registry():
-        names = "/" + cmd.name + (
-            " (" + ", ".join("/" + a for a in cmd.aliases) + ")" if cmd.aliases else ""
+        names = (
+            "/"
+            + cmd.name
+            + (" (" + ", ".join("/" + a for a in cmd.aliases) + ")" if cmd.aliases else "")
         )
         usage = f" {cmd.usage}" if cmd.usage else ""
         lines.append(f"  {names}{usage} — {cmd.description}")
     return "\n".join(lines)
 
 
+def _reset_approval_cache(app: Any) -> None:
+    """Drop cached "always" approval grants on a session/mode boundary.
+
+    The interactive resolver's cache is presented as "always THIS
+    session" — /new, /clear, and permission-mode switches all move that
+    boundary, so the grants must not carry across (Codex #104).
+    """
+    resolver = getattr(app, "approval_resolver", None)
+    reset = getattr(resolver, "reset", None)
+    if callable(reset):
+        reset()
+
+
 async def _cmd_new(app: Any, args: str) -> str:
     _ = args
     app.session.reset()
+    _reset_approval_cache(app)
     return f"new session: {app.session.session_key}"
 
 
@@ -66,6 +82,7 @@ async def _cmd_clear(app: Any, args: str) -> str:
     _ = args
     app.renderer.console.clear()
     app.session.reset()
+    _reset_approval_cache(app)
     return f"cleared — new session: {app.session.session_key}"
 
 
@@ -147,7 +164,9 @@ async def _cmd_usage(app: Any, args: str) -> str:
     )
 
 
-def _estimate_session_cost_usd(model: str, prompt_tokens: int, completion_tokens: int) -> float | None:
+def _estimate_session_cost_usd(
+    model: str, prompt_tokens: int, completion_tokens: int
+) -> float | None:
     """Estimated USD cost for the session's tokens, or ``None`` if the pricing
     estimator is unavailable / the model is unknown. Reuses the agent loop's
     per-model coefficients (ABSORB_MATRIX Dim 12: cost is computed deep but was
@@ -169,9 +188,7 @@ def _estimate_session_cost_usd(model: str, prompt_tokens: int, completion_tokens
 async def _cmd_cost(app: Any, args: str) -> str:
     _ = args
     s = app.session.stats
-    cost = _estimate_session_cost_usd(
-        app.session.model, s.prompt_tokens, s.completion_tokens
-    )
+    cost = _estimate_session_cost_usd(app.session.model, s.prompt_tokens, s.completion_tokens)
     cost_line = (
         f"${cost:.4f} (estimated)"
         if cost is not None
@@ -281,17 +298,17 @@ async def _cmd_permissions(app: Any, args: str) -> str:
         if always:
             lines.append(f"always-allowed this session: {', '.join(always)}")
         return "\n".join(lines)
-    matched = next(
-        (m for m in _PERMISSION_MODES if m.lower() == requested.lower()), None
-    )
+    matched = next((m for m in _PERMISSION_MODES if m.lower() == requested.lower()), None)
     if matched is None:
-        return (
-            f"unknown mode: {requested} — mode unchanged\n"
-            f"modes: {' | '.join(_PERMISSION_MODES)}"
-        )
+        return f"unknown mode: {requested} — mode unchanged\nmodes: {' | '.join(_PERMISSION_MODES)}"
     resolved = set_(matched)
     if resolved is None:
         return "permission control unavailable (direct fallback — no tool gate)"
+    # A mode switch invalidates interactive "always" grants — most sharply,
+    # a cached run_shell grant must not keep mutating in plan mode (the
+    # gate resolves explicit ask rules BEFORE the mode override, so the
+    # resolver cache would otherwise bypass /plan entirely).
+    _reset_approval_cache(app)
     suffix = "  ⚠ all tool gating disabled" if resolved == "bypass" else ""
     return f"permission mode: {resolved}{suffix}"
 
@@ -337,9 +354,7 @@ _REGISTRY: tuple[SlashCommand, ...] = (
     SlashCommand("models", "list configured model aliases", _cmd_models),
     SlashCommand("session", "show the current session key", _cmd_session),
     SlashCommand("sessions", "list recent sessions (embedded mode)", _cmd_sessions),
-    SlashCommand(
-        "resume", "switch to a session and replay its turns", _cmd_resume, usage="<key>"
-    ),
+    SlashCommand("resume", "switch to a session and replay its turns", _cmd_resume, usage="<key>"),
     SlashCommand("usage", "token usage for this console run", _cmd_usage),
     SlashCommand("cost", "estimated USD cost for this session", _cmd_cost),
     SlashCommand(
@@ -354,9 +369,7 @@ _REGISTRY: tuple[SlashCommand, ...] = (
         _cmd_plan,
         usage="[off]",
     ),
-    SlashCommand(
-        "compact", "summarize older turns to shrink the context window", _cmd_compact
-    ),
+    SlashCommand("compact", "summarize older turns to shrink the context window", _cmd_compact),
     SlashCommand(
         "rewind",
         "list workspace checkpoints or restore one",
@@ -364,13 +377,9 @@ _REGISTRY: tuple[SlashCommand, ...] = (
         usage="[n|sha]",
     ),
     SlashCommand("memory", "list loaded CORLINMAN.md project-memory files", _cmd_memory),
-    SlashCommand(
-        "init", "analyze the codebase and write a CORLINMAN.md", _cmd_init
-    ),
+    SlashCommand("init", "analyze the codebase and write a CORLINMAN.md", _cmd_init),
     SlashCommand("status", "brain / model / session overview", _cmd_status),
-    SlashCommand(
-        "progress", "set tool progress display mode", _cmd_progress, usage="<mode>"
-    ),
+    SlashCommand("progress", "set tool progress display mode", _cmd_progress, usage="<mode>"),
     SlashCommand("verbose", "toggle verbose tool progress", _cmd_verbose),
     SlashCommand("quit", "exit the console", _cmd_quit, aliases=("exit", "q")),
 )

@@ -142,3 +142,113 @@ def test_permissions_command_lists_always_allowed(monkeypatch: Any) -> None:
 
     text = asyncio.run(dispatch(app, "/permissions")) or ""
     assert "always-allowed this session: run_shell" in text
+
+
+async def test_reset_clears_always_cache() -> None:
+    """resolver.reset() drops the always grants (Codex #104 — the cache
+    must not outlive the session it was granted in)."""
+    prompter = _ScriptedPrompter("a", "n")
+    resolver = ConsoleApprovalResolver(prompter)
+    assert await resolver("run_shell", {}, None) is True
+    resolver.reset()
+    assert resolver.always_allow == set()
+    assert await resolver("run_shell", {}, None) is False  # asked again
+
+
+async def test_new_and_clear_reset_always_cache() -> None:
+    """/new and /clear start a fresh session — always grants must not leak
+    across the boundary (Codex #104)."""
+    import io as _io
+
+    from corlinman_server.console.brain import BrainSession
+    from corlinman_server.console.commands import dispatch
+    from rich.console import Console as _Console
+
+    class _IdleBrain:
+        descriptor = "stub"
+
+        async def aclose(self) -> None:  # pragma: no cover
+            pass
+
+    class _App:
+        def __init__(self) -> None:
+            self.session = BrainSession(brain=_IdleBrain(), model="m")
+            self.approval_resolver = ConsoleApprovalResolver(_ScriptedPrompter("a"))
+            self.renderer = type("R", (), {"console": _Console(file=_io.StringIO())})()
+
+    app = _App()
+    await app.approval_resolver("run_shell", {}, None)
+    assert app.approval_resolver.always_allow == {"run_shell"}
+    await dispatch(app, "/new")
+    assert app.approval_resolver.always_allow == set()
+
+    app2 = _App()
+    await app2.approval_resolver("run_shell", {}, None)
+    await dispatch(app2, "/clear")
+    assert app2.approval_resolver.always_allow == set()
+
+
+async def test_permission_mode_switch_resets_always_cache() -> None:
+    """Switching permission modes (notably into /plan) clears the always
+    cache (Codex #104) — a cached run_shell grant must not keep mutating
+    the workspace in plan mode."""
+    import io as _io
+
+    from corlinman_server.console.brain import BrainSession
+    from corlinman_server.console.commands import dispatch
+    from rich.console import Console as _Console
+
+    class _GatedBrain:
+        descriptor = "stub"
+
+        def __init__(self) -> None:
+            self.mode = "default"
+
+        def get_permission_mode(self) -> str:
+            return self.mode
+
+        def set_permission_mode(self, mode: str) -> str:
+            self.mode = mode
+            return mode
+
+        async def aclose(self) -> None:  # pragma: no cover
+            pass
+
+    class _App:
+        def __init__(self) -> None:
+            self.session = BrainSession(brain=_GatedBrain(), model="m")
+            self.approval_resolver = ConsoleApprovalResolver(_ScriptedPrompter("a"))
+            self.renderer = type("R", (), {"console": _Console(file=_io.StringIO())})()
+
+    app = _App()
+    await app.approval_resolver("run_shell", {}, None)
+    assert app.approval_resolver.always_allow == {"run_shell"}
+    out = await dispatch(app, "/plan")
+    assert isinstance(out, str) and "plan" in out
+    assert app.approval_resolver.always_allow == set()
+
+
+async def test_concurrent_approvals_are_serialized() -> None:
+    """Two overlapping approval calls must never prompt concurrently
+    (Codex #104 — competing prompt_toolkit sessions corrupt the
+    terminal)."""
+    import asyncio
+
+    in_flight = 0
+    max_in_flight = 0
+
+    async def _slow_prompter(desc: str) -> str:
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        await asyncio.sleep(0.02)
+        in_flight -= 1
+        return "y"
+
+    resolver = ConsoleApprovalResolver(_slow_prompter)
+    results = await asyncio.gather(
+        resolver("run_shell", {"command": "a"}, None),
+        resolver("write_file", {"path": "b"}, None),
+    )
+    assert results == [True, True]
+    assert max_in_flight == 1
