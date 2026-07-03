@@ -222,6 +222,7 @@ async def serve_agent(
     subagent_config: dict[str, Any] | None = None,
     data_dir: Path | None = None,
     py_config_path: Path | str | None = None,
+    hook_runner: Any | None = None,
 ) -> None:
     """Bind a ``grpc.aio`` server hosting the ``Agent`` service and serve
     until ``shutdown`` fires.
@@ -276,16 +277,20 @@ async def serve_agent(
     # into the journal + live SSE subscribers. ``None`` keeps the
     # legacy yield-only path active for the test smoke / degraded boot.
     #
-    # BUG-01: build + pass a pre-tool HookRunner so the co-hosted agent's
-    # blocking PreToolDispatch gate is live (mirrors main._serve). Best-
-    # effort — a build failure degrades to no runner, identical to before.
-    hook_runner: Any | None = None
-    try:
-        from corlinman_server.main import _build_hook_runner
+    # BUG-01: pass a pre-tool HookRunner so the co-hosted agent's
+    # blocking PreToolDispatch gate is live (mirrors main._serve).
+    # Prefer the caller-supplied runner (the gateway passes
+    # ``state.hook_runner`` so the ConfigWatcher's in-place reload
+    # reaches the servicer — Codex #109: building a private runner here
+    # left the live gate stale while /admin/hooks showed the reload).
+    # Best-effort fallback build for standalone callers with no state.
+    if hook_runner is None:
+        try:
+            from corlinman_server.main import _build_hook_runner
 
-        hook_runner = _build_hook_runner()
-    except Exception as exc:  # noqa: BLE001 — no hooks degrades fine
-        log.warning("gateway.grpc.agent.hook_runner_failed", error=str(exc))
+            hook_runner = _build_hook_runner()
+        except Exception as exc:  # noqa: BLE001 — no hooks degrades fine
+            log.warning("gateway.grpc.agent.hook_runner_failed", error=str(exc))
     provider_resolver: Any | None = None
     aliases: dict[str, Any] = {}
     if os.environ.get("CORLINMAN_TEST_MOCK_PROVIDER") is None:
@@ -403,6 +408,14 @@ def serve_agent_in_background(
         extras = getattr(state, "extras", None)
         if isinstance(extras, dict):
             subagent_dispatcher = extras.get("subagent_dispatcher")
+    # Share the gateway's HookRunner (wired by _wire_c2_handles well
+    # before any grpc spawn) so the ConfigWatcher's in-place reload of
+    # ``[hooks]`` reaches the co-hosted servicer's live gate too.
+    hook_runner = getattr(state, "hook_runner", None)
+    if hook_runner is None:
+        extras = getattr(state, "extras", None)
+        if isinstance(extras, dict):
+            hook_runner = extras.get("hook_runner")
     cfg = getattr(state, "config", None) or {}
     subagent_config = cfg.get("subagent") if isinstance(cfg, dict) else None
     task = asyncio.create_task(
@@ -414,6 +427,7 @@ def serve_agent_in_background(
             subagent_config=subagent_config,
             data_dir=getattr(state, "data_dir", None),
             py_config_path=getattr(state, "py_config_path", None),
+            hook_runner=hook_runner,
         ),
         name="gateway.grpc.agent_server",
     )

@@ -738,9 +738,16 @@ class HookRunner:
                 )
 
             self._declarative.track(_run_post_handlers())
+        # Declarative post groups are detached too — even an operator-set
+        # ``async = false`` hook must not delay the tool result, because
+        # the servicer awaits this method on the dispatch path (Codex
+        # #109). Awaited-vs-detached only changes whether the VERDICT is
+        # read, and post-tool verdicts are discarded by contract anyway.
         if self._declarative.has("post_tool"):
-            await self._declarative.run(
-                "post_tool", tool_name, args, ctx, extra={"tool_result": result_json}
+            self._declarative.track(
+                self._declarative.run(
+                    "post_tool", tool_name, args, ctx, extra={"tool_result": result_json}
+                )
             )
 
     async def run_event_async(

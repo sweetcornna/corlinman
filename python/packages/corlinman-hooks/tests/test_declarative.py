@@ -609,6 +609,37 @@ async def test_runner_post_tool_async_runs_discovered_handlers():
 
 
 @pytest.mark.asyncio
+async def test_runner_post_tool_async_returns_before_slow_declarative_hook(tmp_path: Path):
+    """Even an ``async = false`` declarative PostToolUse hook must not
+    delay the dispatch path — post-tool work is always detached
+    (Codex #109 round 3)."""
+    import time as _time
+
+    marker = tmp_path / "slow_post_ran"
+    decl = {
+        "PostToolUse": [
+            {
+                "hooks": [
+                    {
+                        "kind": "command",
+                        "command": f"sleep 0.5; touch {marker}",
+                        "async": False,
+                        "timeout": 5,
+                    }
+                ]
+            }
+        ]
+    }
+    runner = HookRunner(_runner_config(decl))
+    started = _time.perf_counter()
+    await runner.run_post_tool_async("run_shell", {}, "{}")
+    elapsed = _time.perf_counter() - started
+    assert elapsed < 0.3, f"dispatch path blocked for {elapsed:.2f}s by a declarative post hook"
+    await runner.drain()
+    assert marker.exists()
+
+
+@pytest.mark.asyncio
 async def test_runner_post_tool_async_returns_before_slow_handler():
     """A slow discovered post handler must not delay the tool result —
     handlers run off the dispatch path (Codex #109 round 2)."""
