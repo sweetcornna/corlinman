@@ -94,6 +94,13 @@ from corlinman_mcp_server.errors import (
 )
 from corlinman_mcp_server.prompts import PromptsAdapter
 from corlinman_mcp_server.resources import ResourcesAdapter
+from corlinman_mcp_server.sampling import (
+    Completer,
+    SamplingConfig,
+    SamplingRequest,
+    SamplingResponder,
+    SamplingResult,
+)
 from corlinman_mcp_server.session import (
     INITIALIZE_METHOD,
     INITIALIZED_NOTIFICATION,
@@ -170,6 +177,7 @@ __all__ = [
     "CapabilityAdapter",
     "ClientCapabilities",
     "CollectingProgressBridge",
+    "Completer",
     "FrameHandler",
     "Implementation",
     "InitializeParams",
@@ -244,6 +252,10 @@ __all__ = [
     "ResourcesListResult",
     "ResourcesReadParams",
     "ResourcesReadResult",
+    "SamplingConfig",
+    "SamplingRequest",
+    "SamplingResponder",
+    "SamplingResult",
     "ServerCapabilities",
     "ServerInfo",
     "SessionContext",

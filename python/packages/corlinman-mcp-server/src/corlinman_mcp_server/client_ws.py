@@ -32,9 +32,17 @@ from .client import (
     McpClientServerError,
     McpClientSpawnError,
     McpClientWriteError,
+    NotificationHandler,
+    ServerRequestHandler,
     _id_key,
 )
-from .types import JSONRPC_VERSION, JsonRpcRequest, JsonValue, error_codes
+from .types import (
+    JSONRPC_VERSION,
+    JsonRpcRequest,
+    JsonValue,
+    classify_inbound,
+    error_codes,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -60,6 +68,12 @@ class McpWebSocketClient:
         self._pending: dict[str, asyncio.Future[Any]] = {}
         self._next_id: int = 0
         self._closed: bool = False
+        # Server->client handlers (set by the manager after connect); see
+        # McpClient for the contract. Unset → METHOD_NOT_FOUND reply /
+        # dropped notification.
+        self.on_server_request: ServerRequestHandler | None = None
+        self.on_notification: NotificationHandler | None = None
+        self._inbound_tasks: set[asyncio.Task[Any]] = set()
         self._reader_task: asyncio.Task = asyncio.create_task(self._reader_loop())
 
     # ------------------------------------------------------------------
@@ -178,12 +192,76 @@ McpClientServerError`.
         if self._closed:
             return
         self._closed = True
+        for task in list(self._inbound_tasks):
+            task.cancel()
         with contextlib.suppress(Exception):
             await self._conn.close()
         self._reader_task.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await self._reader_task
         self._fail_pending("client closed")
+
+    # ------------------------------------------------------------------
+    # Server -> client inbound handling (shared shape with McpClient)
+    # ------------------------------------------------------------------
+
+    def _spawn_inbound(self, coro: Any) -> None:
+        task = asyncio.ensure_future(coro)
+        self._inbound_tasks.add(task)
+        task.add_done_callback(self._inbound_tasks.discard)
+
+    async def _send_frame(self, frame: dict[str, Any]) -> None:
+        try:
+            await self._conn.send(json.dumps(frame, ensure_ascii=False))
+        except Exception as err:  # noqa: BLE001 — reply is best-effort
+            log.warning("mcp ws client: reply send failed", err=str(err))
+
+    async def _dispatch_server_request(self, frame: dict[str, Any]) -> None:
+        rid = frame.get("id")
+        method = str(frame.get("method") or "")
+        params = frame.get("params")
+        if not isinstance(params, dict):
+            params = {}
+        handler = self.on_server_request
+        if handler is None:
+            await self._send_frame(
+                {
+                    "jsonrpc": JSONRPC_VERSION,
+                    "id": rid,
+                    "error": {
+                        "code": error_codes.METHOD_NOT_FOUND,
+                        "message": f"method not supported by client: {method}",
+                    },
+                }
+            )
+            return
+        try:
+            result, error = await handler(method, params)
+        except Exception as err:  # noqa: BLE001
+            log.warning("mcp ws client: server-request handler error", method=method, err=str(err))
+            result, error = None, {
+                "code": error_codes.INTERNAL_ERROR,
+                "message": f"handler error: {err}",
+            }
+        reply: dict[str, Any] = {"jsonrpc": JSONRPC_VERSION, "id": rid}
+        if error is not None:
+            reply["error"] = error
+        else:
+            reply["result"] = result
+        await self._send_frame(reply)
+
+    async def _dispatch_notification(self, frame: dict[str, Any]) -> None:
+        handler = self.on_notification
+        if handler is None:
+            return
+        method = str(frame.get("method") or "")
+        params = frame.get("params")
+        if not isinstance(params, dict):
+            params = {}
+        try:
+            await handler(method, params)
+        except Exception as err:  # noqa: BLE001
+            log.warning("mcp ws client: notification handler error", method=method, err=str(err))
 
     async def __aenter__(self) -> McpWebSocketClient:
         return self
@@ -210,6 +288,13 @@ McpClientServerError`.
                     log.warning("mcp ws client: parse failed", err=str(err))
                     continue
                 if not isinstance(parsed, dict):
+                    continue
+                kind = classify_inbound(parsed)
+                if kind == "request":
+                    self._spawn_inbound(self._dispatch_server_request(parsed))
+                    continue
+                if kind == "notification":
+                    self._spawn_inbound(self._dispatch_notification(parsed))
                     continue
                 key = _id_key(parsed.get("id"))
                 fut = self._pending.pop(key, None)

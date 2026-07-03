@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -43,10 +44,13 @@ import structlog
 
 from .client import McpClient, McpClientError
 from .client_ws import McpWebSocketClient
+from .sampling import SamplingResponder
 from .session import INITIALIZE_METHOD, INITIALIZED_NOTIFICATION
 from .types import (
     MCP_PROTOCOL_VERSION,
+    TOOLS_LIST_CHANGED_NOTIFICATION,
     ToolDescriptor,
+    error_codes,
 )
 
 log = structlog.get_logger(__name__)
@@ -84,6 +88,11 @@ class McpClientPeer(Protocol):
     async def notify(self, method: str, params: Any = None) -> None: ...
 
     async def close(self) -> None: ...
+
+    #: Server->client handlers the manager binds after connect. Present on
+    #: both concrete transports (default ``None``).
+    on_server_request: Any
+    on_notification: Any
 
 
 # ---------------------------------------------------------------------
@@ -251,17 +260,38 @@ class McpClientManager:
     tool calls through.
     """
 
-    def __init__(self, specs: list[McpServerSpec] | None = None) -> None:
+    def __init__(
+        self,
+        specs: list[McpServerSpec] | None = None,
+        *,
+        sampling_responder: SamplingResponder | None = None,
+    ) -> None:
         self._servers: dict[str, McpManagedServer] = {}
         for spec in specs or []:
             self._servers[spec.name] = McpManagedServer(spec=spec)
         self._connected: bool = False
+        # Optional server->client sampling responder (Dim 5). When None or
+        # not advertising, servers are told the client can't sample.
+        self._sampling = sampling_responder
+        # Optional callback fired (debounced) when a server pushes
+        # ``notifications/tools/list_changed`` and its tools are re-listed
+        # — the gateway sets this to re-advertise the tool plane.
+        self.on_tools_changed: Callable[[], Any] | None = None
+        # Per-server debounce tasks for list_changed coalescing.
+        self._list_changed_debounce_ms: int = 1500
+        self._list_changed_tasks: dict[str, asyncio.Task[Any]] = {}
+        # Servers whose relist has passed the cancelable sleep (in flight).
+        self._list_changed_committed: set[str] = set()
+        # Servers that got another notification mid-relist → run once more.
+        self._list_changed_redo: set[str] = set()
 
     @classmethod
-    def from_config(cls, config: Any) -> McpClientManager:
+    def from_config(
+        cls, config: Any, *, sampling_responder: SamplingResponder | None = None
+    ) -> McpClientManager:
         """Build a manager from a gateway config object. Never raises —
         a config with no MCP section yields an empty (idle) manager."""
-        return cls(load_server_specs(config))
+        return cls(load_server_specs(config), sampling_responder=sampling_responder)
 
     # -- Accessors --
 
@@ -359,6 +389,9 @@ class McpClientManager:
             return
 
         managed.peer = peer
+        # Bind the server->client handlers before the handshake so a fast
+        # server can push notifications immediately after initialize.
+        self._bind_peer_handlers(peer, spec.name)
         try:
             await asyncio.wait_for(
                 self._handshake(peer),
@@ -390,6 +423,75 @@ class McpClientManager:
             transport=spec.transport,
             tools=len(tools),
         )
+
+    # -- tools/list_changed (server-pushed) --
+
+    def _schedule_list_changed_refresh(self, server_name: str) -> None:
+        """Debounce a server's ``tools/list_changed`` burst into one refresh.
+
+        Only the pre-refresh debounce SLEEP is cancelable — a burst of
+        notifications during the window collapses to one refresh. Once the
+        relist has started (past the sleep, ``committed``), a new
+        notification does NOT cancel the in-flight ``peer.call()`` (which
+        would orphan a pending JSON-RPC id, Codex #110); it instead queues
+        exactly one follow-up refresh to run after the current one lands.
+        """
+        existing = self._list_changed_tasks.get(server_name)
+        if existing is not None and not existing.done():
+            if server_name in self._list_changed_committed:
+                # Relist already in flight — request one follow-up.
+                self._list_changed_redo.add(server_name)
+                return
+            existing.cancel()  # still in the debounce sleep — safe to cancel
+        self._list_changed_tasks[server_name] = asyncio.ensure_future(
+            self._debounced_relist(server_name)
+        )
+
+    async def _debounced_relist(self, server_name: str) -> None:
+        try:
+            await asyncio.sleep(self._list_changed_debounce_ms / 1000.0)
+        except asyncio.CancelledError:
+            return
+        # Past the cancel point: a concurrent notification must not abort
+        # the in-flight relist below.
+        self._list_changed_committed.add(server_name)
+        try:
+            await self._run_relist(server_name)
+        finally:
+            self._list_changed_committed.discard(server_name)
+            self._list_changed_tasks.pop(server_name, None)
+            # A notification arrived while we were relisting → run once more.
+            if server_name in self._list_changed_redo:
+                self._list_changed_redo.discard(server_name)
+                self._schedule_list_changed_refresh(server_name)
+
+    async def _run_relist(self, server_name: str) -> None:
+        managed = self._servers.get(server_name)
+        if managed is None or not managed.is_ready or managed.peer is None:
+            return
+        try:
+            # Bound the relist by the server's handshake timeout — a stalled
+            # server must not hang the debounce task forever (Codex #110).
+            tools = await asyncio.wait_for(
+                self._list_tools(managed.peer),
+                timeout=managed.spec.handshake_timeout_s,
+            )
+            managed.tools = tools
+            log.info("mcp.client.tools_relisted", server=server_name, tools=len(tools))
+        except TimeoutError:
+            log.warning("mcp.client.relist_timeout", server=server_name)
+            return
+        except Exception as exc:  # noqa: BLE001 — re-list failure is non-fatal
+            log.warning("mcp.client.relist_failed", server=server_name, error=str(exc))
+            return
+        cb = self.on_tools_changed
+        if cb is not None:
+            try:
+                result = cb()
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception as exc:  # noqa: BLE001 — callback never breaks the manager
+                log.warning("mcp.client.on_tools_changed_failed", error=str(exc))
 
     # -- Runtime hot-plug --
 
@@ -479,6 +581,15 @@ class McpClientManager:
         """Close ``managed``'s live peer (suppressing any close error) and
         clear its connection state — leaving ``status``/``error`` for the
         caller to set."""
+        # Cancel any pending list_changed debounce for this server so a
+        # torn-down server can't fire a stale re-list, and clear its
+        # coalescing state.
+        name = managed.spec.name
+        task = self._list_changed_tasks.pop(name, None)
+        if task is not None and not task.done():
+            task.cancel()
+        self._list_changed_committed.discard(name)
+        self._list_changed_redo.discard(name)
         peer = managed.peer
         if peer is not None:
             with contextlib.suppress(Exception):
@@ -536,13 +647,40 @@ class McpClientManager:
             return await McpClient.connect_with_process(process)
         return await McpClient.connect_stdio(spec.command, spec.args)
 
+    def _bind_peer_handlers(self, peer: McpClientPeer, server_name: str) -> None:
+        """Wire the server->client request/notification handlers for a peer."""
+        if self._sampling is not None and self._sampling.config.enabled:
+            async def _on_request(method: str, params: dict[str, Any]) -> tuple[Any, dict[str, Any] | None]:
+                if method == "sampling/createMessage":
+                    return await self._sampling.handle(server_name, params)  # type: ignore[union-attr]
+                return None, {
+                    "code": error_codes.METHOD_NOT_FOUND,
+                    "message": f"unsupported server request: {method}",
+                }
+
+            peer.on_server_request = _on_request
+
+        async def _on_notification(method: str, params: dict[str, Any]) -> None:
+            if method == TOOLS_LIST_CHANGED_NOTIFICATION:
+                self._schedule_list_changed_refresh(server_name)
+
+        peer.on_notification = _on_notification
+
     async def _handshake(self, peer: McpClientPeer) -> None:
-        """Run the MCP ``initialize`` handshake against ``peer``."""
+        """Run the MCP ``initialize`` handshake against ``peer``.
+
+        Advertises the ``sampling`` capability only when a responder is
+        wired and enabled (so a server is told the client can sample only
+        when it actually can — otherwise the current empty ``{}``).
+        """
+        capabilities: dict[str, Any] = {}
+        if self._sampling is not None and self._sampling.advertises_capability:
+            capabilities["sampling"] = {}
         await peer.call(
             INITIALIZE_METHOD,
             {
                 "protocolVersion": MCP_PROTOCOL_VERSION,
-                "capabilities": {},
+                "capabilities": capabilities,
                 "clientInfo": {
                     "name": _CLIENT_NAME,
                     "version": _CLIENT_VERSION,
