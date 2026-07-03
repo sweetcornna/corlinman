@@ -337,6 +337,150 @@ _INIT_PROMPT = (
 )
 
 
+def _hooks_runner(app: Any) -> Any | None:
+    brain = app.session.brain
+    get_runner = getattr(brain, "get_hook_runner", None)
+    return get_runner() if callable(get_runner) else None
+
+
+def _render_hooks_view(runner: Any) -> str:
+    from corlinman_server.hooks_live import LIVE_HOOK_EVENTS
+
+    lines: list[str] = []
+    registered = dict(getattr(runner, "registered", {}) or {})
+    lines.append("shell hooks (legacy [hooks] keys):")
+    lines.extend(f"  {event}: {cmd}" for event, cmd in sorted(registered.items()))
+    if not registered:
+        lines.append("  (none)")
+    discovered = dict(getattr(runner, "discovered_events", {}) or {})
+    lines.append("discovered HOOK.yaml handlers:")
+    lines.extend(f"  {event}: {n} handler(s)" for event, n in sorted(discovered.items()))
+    if not discovered:
+        lines.append("  (none)")
+    groups = list(getattr(runner, "declarative_groups", []) or [])
+    lines.append("declarative groups ([hooks.declarative]):")
+    for g in groups:
+        event = str(g.get("event", "?"))
+        live = "live" if event in LIVE_HOOK_EVENTS else "no live emitter yet"
+        if_part = f" if={g['if']}" if g.get("if") else ""
+        lines.append(
+            f"  {event} matcher={g.get('matcher', '*')}{if_part} "
+            f"hooks={','.join(g.get('kinds', []))} — {live}"
+        )
+    if not groups:
+        lines.append("  (none)")
+    warnings = list(getattr(runner, "declarative_warnings", []) or [])
+    if warnings:
+        lines.append("config warnings:")
+        lines.extend(f"  ⚠ {w}" for w in warnings)
+    lines.append("usage: /hooks [test <event> [tool] [json-args] | reload]")
+    return "\n".join(lines)
+
+
+def _hooks_reload(runner: Any) -> str:
+    """Re-read the ``[hooks]`` section from the py-config drop and rebuild."""
+    import json as _json
+    import os
+    from pathlib import Path
+
+    cfg: dict[str, Any] = {}
+    path = os.environ.get("CORLINMAN_PY_CONFIG")
+    if path:
+        try:
+            data = _json.loads(Path(path).read_text(encoding="utf-8"))
+            section = data.get("hooks") if isinstance(data, dict) else None
+            if isinstance(section, dict):
+                cfg = {"hooks": section}
+        except Exception as exc:  # noqa: BLE001 — reload must report, not crash
+            return f"hooks reload failed reading config: {exc}"
+    try:
+        summary = runner.reload(cfg)
+    except Exception as exc:  # noqa: BLE001
+        return f"hooks reload failed: {exc}"
+    return (
+        "hooks reloaded: "
+        f"{summary.get('shell_hooks', 0)} shell, "
+        f"{summary.get('declarative_groups', 0)} declarative group(s), "
+        f"{summary.get('discovered_handlers', 0)} discovered handler(s), "
+        f"{summary.get('declarative_warnings', 0)} warning(s)"
+    )
+
+
+async def _hooks_test(app: Any, runner: Any, rest: str) -> str:
+    """Dry-run the full hook fold for one event with a synthetic payload.
+
+    'Dry' means no agent state is touched — but configured hooks DO
+    execute (that is the point of testing them), so a hook with side
+    effects will run them.
+    """
+    import json as _json
+    import time as _time
+
+    from corlinman_hooks.declarative import canonical_event
+
+    parts = rest.strip().split(None, 1)
+    if not parts:
+        return "usage: /hooks test <event> [tool] [json-args]"
+    event = canonical_event(parts[0])
+    if event is None:
+        return f"unknown event: {parts[0]}"
+    tool = ""
+    args_dict: dict[str, Any] = {}
+    tail = parts[1].strip() if len(parts) > 1 else ""
+    if tail and not tail.startswith("{"):
+        tool, _, tail = tail.partition(" ")
+        tail = tail.strip()
+    if tail:
+        try:
+            parsed = _json.loads(tail)
+            if isinstance(parsed, dict):
+                args_dict = parsed
+        except _json.JSONDecodeError as exc:
+            return f"bad json-args: {exc}"
+    ctx = {"session_key": str(getattr(app.session, "key", "") or "console-test")}
+    started = _time.perf_counter()
+    try:
+        if event == "pre_tool":
+            decision = await runner.run_pre_tool_async(tool or "run_shell", args_dict, ctx)
+        elif event == "stop":
+            decision = await runner.run_stop_async({**ctx, **args_dict})
+        else:
+            payload = dict(args_dict)
+            if tool:
+                payload["tool_name"] = tool
+            decision = await runner.run_event_async(event, payload, ctx)
+    except Exception as exc:  # noqa: BLE001 — a test run reports, never crashes
+        return f"hook test errored: {exc}"
+    elapsed_ms = int((_time.perf_counter() - started) * 1000)
+    lines = [
+        f"event: {event}" + (f"  tool: {tool}" if tool else ""),
+        f"allow: {bool(getattr(decision, 'allow', True))}   ({elapsed_ms}ms)",
+    ]
+    for attr in ("reason", "mutated_args", "inject_message"):
+        value = getattr(decision, attr, None)
+        if value:
+            lines.append(f"{attr}: {value}")
+    if bool(getattr(decision, "stop", False)):
+        lines.append("stop: True")
+    return "\n".join(lines)
+
+
+async def _cmd_hooks(app: Any, args: str) -> str:
+    """View, test, or reload lifecycle hooks (claude-code ``/hooks`` analog)."""
+    runner = _hooks_runner(app)
+    if runner is None:
+        return "hooks unavailable (attach mode or direct fallback)"
+    head, _, rest = args.strip().partition(" ")
+    sub = head.strip().lower()
+    if sub in ("", "list", "show", "view"):
+        return _render_hooks_view(runner)
+    if sub == "reload":
+        return _hooks_reload(runner)
+    if sub == "test":
+        return await _hooks_test(app, runner, rest)
+    return "usage: /hooks [test <event> [tool] [json-args] | reload]"
+
+
 async def _cmd_init(app: Any, args: str) -> TurnRequest:
     """Bootstrap CORLINMAN.md from a one-shot codebase-analysis turn (the
     claude-code ``/init`` analog). Returns a :class:`TurnRequest` so the brain
@@ -368,6 +512,12 @@ _REGISTRY: tuple[SlashCommand, ...] = (
         "enter plan mode — mutating tools denied; /plan off to exit",
         _cmd_plan,
         usage="[off]",
+    ),
+    SlashCommand(
+        "hooks",
+        "list, test, or reload lifecycle hooks",
+        _cmd_hooks,
+        usage="[test <event> [tool] [json] | reload]",
     ),
     SlashCommand("compact", "summarize older turns to shrink the context window", _cmd_compact),
     SlashCommand(

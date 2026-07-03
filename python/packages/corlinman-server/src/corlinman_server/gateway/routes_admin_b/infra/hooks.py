@@ -52,6 +52,20 @@ class HooksResponse(BaseModel):
     """Mapping of ``event_key → shell_command``.
     Empty when no runner is configured or no hooks are registered."""
 
+    discovered: dict[str, int] = {}
+    """``event → handler count`` for file-discovered HOOK.yaml hooks."""
+
+    declarative: list[dict[str, Any]] = []
+    """Declarative matcher-group summaries (``[hooks.declarative]``):
+    event / matcher / if / kinds / async per group."""
+
+    warnings: list[str] = []
+    """Parse warnings collected from the declarative config block."""
+
+    live_events: list[str] = []
+    """Events that currently have a production emit site — a declarative
+    group on any other event is accepted but will not fire yet."""
+
 
 # ---------------------------------------------------------------------------
 # Router
@@ -77,30 +91,34 @@ def router() -> APIRouter:
         state = get_admin_state()
         hook_runner = state.extras.get("hook_runner") if state.extras else None
 
-        _SUPPORTED = ["pre_tool", "post_tool", "notification"]
+        from corlinman_server.hooks_live import LIVE_HOOK_EVENTS
 
         if hook_runner is None:
             return HooksResponse(
                 status="hook_runner_unavailable",
-                supported_events=_SUPPORTED,
+                supported_events=[],
                 registered={},
+                live_events=sorted(LIVE_HOOK_EVENTS),
             )
 
-        # ``HookRunner.registered`` and ``supported_events()`` are both
-        # pure / no-I/O so no await is needed.
-        try:
-            registered = hook_runner.registered
-        except Exception:  # noqa: BLE001 — degrade cleanly
-            registered = {}
-        try:
-            supported = list(hook_runner.supported_events())
-        except Exception:  # noqa: BLE001
-            supported = _SUPPORTED
+        # ``HookRunner``'s introspection surface is pure / no-I/O so no
+        # await is needed. Every read degrades independently — a partial
+        # answer beats a 500 on an ops page.
+        def _read(attr: str, default: Any) -> Any:
+            try:
+                value = getattr(hook_runner, attr)
+                return value() if callable(value) else value
+            except Exception:  # noqa: BLE001 — degrade cleanly
+                return default
 
         return HooksResponse(
             status="ok",
-            supported_events=supported,
-            registered=registered,
+            supported_events=list(_read("supported_events", [])),
+            registered=dict(_read("registered", {})),
+            discovered=dict(_read("discovered_events", {})),
+            declarative=list(_read("declarative_groups", [])),
+            warnings=list(_read("declarative_warnings", [])),
+            live_events=sorted(LIVE_HOOK_EVENTS),
         )
 
     return rt

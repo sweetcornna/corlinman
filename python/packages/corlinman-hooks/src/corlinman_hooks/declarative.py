@@ -145,9 +145,19 @@ class DeclarativeConfig:
     warnings: list[str] = field(default_factory=list)
 
 
-def _canonical_event(name: str) -> str | None:
+def canonical_event(name: str) -> str | None:
+    """Normalize a config/user event spelling to the runner's snake_case key.
+
+    Accepts claude-code names (``PreToolUse``) and snake_case
+    (``pre_tool``); returns ``None`` for unknown events. Public — the
+    ``/hooks test`` console command canonicalizes user input with this.
+    """
     normalized = "".join(ch for ch in str(name).lower() if ch.isalnum())
     return _EVENT_ALIASES.get(normalized)
+
+
+# Backwards-compatible private alias (internal call sites predate the rename).
+_canonical_event = canonical_event
 
 
 def match_tool(pattern: str, tool: str) -> bool:
