@@ -560,7 +560,9 @@ file_rolling = true
 # async = false (awaited, verdict counts); observation events default to
 # async = true (fire-and-forget, can never add latency). Use `/hooks` in
 # the console to view, test, and reload; edits to [hooks] hot-reload when
-# the config watcher is enabled.
+# the config watcher is enabled. PostToolUse hooks receive the FULL tool
+# result by default; set env CORLINMAN_HOOK_RESULT_MAX_BYTES>0 for an
+# explicit cap. PreToolUse gates every tool call — builtin AND MCP/plugin.
 #
 # Example — block force-pushes and audit every tool call:
 #   [[hooks.declarative.PreToolUse]]

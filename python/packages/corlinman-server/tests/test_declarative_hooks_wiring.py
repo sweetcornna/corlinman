@@ -209,6 +209,129 @@ async def test_user_prompt_submit_note_reaches_midturn_supplement() -> None:
 
 
 @pytest.mark.asyncio
+async def test_supplement_hook_note_is_journaled() -> None:
+    """The hook note injected into a mid-turn supplement is persisted to
+    the journal too, so a resume replays the same guidance (Codex #109
+    round 6 — the journal previously stored only the bare user text)."""
+    inject = {"decision": "allow", "inject_message": "obey the style guide"}
+    cmd = f"""echo '{json.dumps(inject)}'"""
+    runner = HookRunner(
+        {
+            "hooks": {
+                "declarative": {
+                    "UserPromptSubmit": [
+                        {"hooks": [{"kind": "command", "command": cmd, "async": False}]}
+                    ]
+                }
+            }
+        }
+    )
+
+    class _FakeActiveLoop:
+        def inject_user_message(self, text: str) -> None:
+            pass
+
+    class _FakeTurn:
+        turn_id = "turn-1"
+
+    class _FakeJournal:
+        def __init__(self) -> None:
+            self.appended: list[tuple[str, str, str]] = []
+
+        async def find_resumable_turn(self, session_key, user_text, user_id=None):
+            return _FakeTurn()
+
+        async def append_message(self, turn_id, role, content, **_kw):
+            self.appended.append((turn_id, role, content))
+
+    journal = _FakeJournal()
+    provider = _CapturingProvider()
+    servicer = CorlinmanAgentServicer(
+        provider_resolver=lambda _model: provider,
+        hook_runner=runner,
+    )
+    servicer._active_loops["sess-jrnl"] = _FakeActiveLoop()
+    servicer._journal = journal  # type: ignore[assignment]
+    servicer._journal_init_done = True
+    await _drive_chat(servicer, user_text="also add tests", session_key="sess-jrnl")
+    assert journal.appended, "supplement was never journaled"
+    _tid, role, content = journal.appended[0]
+    assert role == "user"
+    assert "also add tests" in content
+    assert "hook:user_prompt_submit" in content
+    assert "obey the style guide" in content
+
+
+@pytest.mark.asyncio
+async def test_external_block_fires_post_hooks() -> None:
+    """A PreToolUse block on an external tool still fires PostToolUse with
+    the block result — matching the builtin path (Codex #109 round 6)."""
+    calls: list[tuple[str, str]] = []
+
+    class _Runner:
+        async def run_pre_tool_async(self, tool, args, ctx=None) -> HookDecision:
+            return HookDecision.deny("external no")
+
+        async def run_post_tool_async(self, tool, args, result, ctx=None) -> None:
+            calls.append((tool, result))
+
+    servicer = CorlinmanAgentServicer(hook_runner=_Runner())
+    _allow, reason, _mutated = await servicer._run_pre_tool_hook_gate(
+        _tool_event(tool="mcp__srv__fetch"), _start()
+    )
+    assert _allow is False
+    # Simulate the external-block branch calling the post hook with the
+    # block result (the same call the loop makes inline).
+    blocked = json.dumps({"error": f"blocked by hook: {reason}", "tool": "mcp__srv__fetch"})
+    await servicer._run_post_tool_hooks("mcp__srv__fetch", {}, _start(), blocked)
+    assert len(calls) == 1
+    assert calls[0][0] == "mcp__srv__fetch"
+    assert "blocked by hook" in calls[0][1]
+
+
+@pytest.mark.asyncio
+async def test_post_hooks_receive_full_result_by_default() -> None:
+    """Large tool results reach post hooks untruncated by default — audit
+    hooks see the whole output (Codex #109 round 6)."""
+    seen: list[str] = []
+
+    class _Runner:
+        async def run_pre_tool_async(self, tool, args, ctx=None) -> HookDecision:
+            return HookDecision.allow_all()
+
+        async def run_post_tool_async(self, tool, args, result, ctx=None) -> None:
+            seen.append(result)
+
+    servicer = CorlinmanAgentServicer(hook_runner=_Runner())
+    big = "x" * 50_000
+    await servicer._run_post_tool_hooks("read_file", {}, _start(), big)
+    assert len(seen) == 1
+    assert seen[0] == big  # no truncation, no sentinel
+    assert "truncated for hook" not in seen[0]
+
+
+@pytest.mark.asyncio
+async def test_post_hooks_respect_explicit_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An operator-set CORLINMAN_HOOK_RESULT_MAX_BYTES caps the payload —
+    explicit, opt-in truncation."""
+    monkeypatch.setenv("CORLINMAN_HOOK_RESULT_MAX_BYTES", "1000")
+    seen: list[str] = []
+
+    class _Runner:
+        async def run_pre_tool_async(self, tool, args, ctx=None) -> HookDecision:
+            return HookDecision.allow_all()
+
+        async def run_post_tool_async(self, tool, args, result, ctx=None) -> None:
+            seen.append(result)
+
+    servicer = CorlinmanAgentServicer(hook_runner=_Runner())
+    await servicer._run_post_tool_hooks("read_file", {}, _start(), "y" * 50_000)
+    assert len(seen) == 1
+    assert seen[0].endswith("…[truncated for hook]")
+    assert len(seen[0]) < 1100
+
+
+@pytest.mark.asyncio
 async def test_pre_tool_gate_blocks_external_tool() -> None:
     """A PreToolUse hook with matcher="*" blocks an external plugin/MCP
     tool — the frame is never yielded and the model gets a blocked result

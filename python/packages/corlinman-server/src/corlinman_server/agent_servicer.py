@@ -934,6 +934,23 @@ def _calculator_timeout_secs() -> float:
     return v if v > 0 else _DEFAULT_CALCULATOR_TIMEOUT_S
 
 
+def _hook_result_max_bytes() -> int:
+    """Max bytes of a tool result passed to PostToolUse hooks.
+
+    ``0`` (the default / unset) means NO truncation — audit hooks see the
+    full result. A positive value opts into an explicit cap (a resource
+    guard for operators who process huge tool outputs in a hook).
+    """
+    raw = os.environ.get("CORLINMAN_HOOK_RESULT_MAX_BYTES")
+    if not raw:
+        return 0
+    try:
+        n = int(raw)
+    except ValueError:
+        return 0
+    return max(0, n)
+
+
 class _SessionLockCache:
     """LRU-bounded ``session_key`` → :class:`asyncio.Lock` map.
 
@@ -1443,11 +1460,16 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         if start.session_key and user_text:
             active_loop = self._active_loops.get(start.session_key)
             if active_loop is not None:
-                active_loop.inject_user_message(
+                # The hook note rides along with the supplement text into
+                # BOTH the live loop and the journal, so a resume after a
+                # restart replays the same guidance the live model saw
+                # (Codex #109: the journal previously dropped the note).
+                _supplement_text = (
                     user_text
                     if _hook_note is None
                     else f"{user_text}\n\n{_hook_note}"
                 )
+                active_loop.inject_user_message(_supplement_text)
                 # T4.1: journal the supplement onto the existing turn
                 # so a resume sees the full conversation. Best-effort.
                 journal = await self._get_journal()
@@ -1462,7 +1484,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                             await journal.append_message(
                                 active_turn.turn_id,
                                 role="user",
-                                content=f"[追加] {user_text}",
+                                content=f"[追加] {_supplement_text}",
                             )
                     except Exception as exc:  # noqa: BLE001 — degrade
                         logger.warning(
@@ -2038,17 +2060,29 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                         # Feed the block back as this tool's result so the
                         # model reads it and continues; never yield the
                         # external frame, so chat_service never executes it.
+                        _blocked_result = json.dumps(
+                            {
+                                "error": f"blocked by hook: {_ext_reason}",
+                                "tool": event.tool,
+                            }
+                        )
                         loop.feed_tool_result(
                             ToolResult(
                                 call_id=event.call_id,
-                                content=json.dumps(
-                                    {
-                                        "error": f"blocked by hook: {_ext_reason}",
-                                        "tool": event.tool,
-                                    }
-                                ),
+                                content=_blocked_result,
                                 is_error=True,
                             )
+                        )
+                        # Fire PostToolUse with the block result — a
+                        # builtin blocked by the same hook flows through
+                        # the post-hook wrapper, so an external block must
+                        # too (Codex #109: matcher="*" audit hooks record
+                        # every blocked attempt, builtin or external).
+                        await self._run_post_tool_hooks(
+                            event.tool,
+                            self._parse_args_dict(event.args_json),
+                            start,
+                            _blocked_result,
                         )
                         continue
                     if _ext_mutated is not None:
@@ -2713,10 +2747,17 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             return
         try:
             result_str = result if isinstance(result, str) else json.dumps(result)
-            # Cap the hook payload — tool results can be huge and every
-            # byte is another stdin write / HTTP body per configured hook.
-            if len(result_str) > 16_000:
-                result_str = result_str[:16_000] + "…[truncated for hook]"
+            # Post hooks receive the FULL result by default so audit /
+            # archive / validation hooks see exactly what the model and
+            # journal see (Codex #109 — a silent 16 KB cap corrupted
+            # large run_shell / read_file / external results). Post hooks
+            # are detached (fire-and-forget, off the dispatch path), so a
+            # large payload can't delay the turn. Operators who still want
+            # a bound can set CORLINMAN_HOOK_RESULT_MAX_BYTES>0 — an
+            # EXPLICIT, opt-in truncation rather than a silent one.
+            _cap = _hook_result_max_bytes()
+            if _cap > 0 and len(result_str) > _cap:
+                result_str = result_str[:_cap] + "…[truncated for hook]"
             await post(
                 tool,
                 args,
