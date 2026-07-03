@@ -280,6 +280,10 @@ class McpClientManager:
         # Per-server debounce tasks for list_changed coalescing.
         self._list_changed_debounce_ms: int = 1500
         self._list_changed_tasks: dict[str, asyncio.Task[Any]] = {}
+        # Servers whose relist has passed the cancelable sleep (in flight).
+        self._list_changed_committed: set[str] = set()
+        # Servers that got another notification mid-relist → run once more.
+        self._list_changed_redo: set[str] = set()
 
     @classmethod
     def from_config(
@@ -425,13 +429,20 @@ class McpClientManager:
     def _schedule_list_changed_refresh(self, server_name: str) -> None:
         """Debounce a server's ``tools/list_changed`` burst into one refresh.
 
-        A new notification during the window resets the timer; when it
-        fires, the server's tools are re-listed and ``on_tools_changed``
-        is invoked so the gateway re-advertises the tool plane.
+        Only the pre-refresh debounce SLEEP is cancelable — a burst of
+        notifications during the window collapses to one refresh. Once the
+        relist has started (past the sleep, ``committed``), a new
+        notification does NOT cancel the in-flight ``peer.call()`` (which
+        would orphan a pending JSON-RPC id, Codex #110); it instead queues
+        exactly one follow-up refresh to run after the current one lands.
         """
         existing = self._list_changed_tasks.get(server_name)
         if existing is not None and not existing.done():
-            existing.cancel()
+            if server_name in self._list_changed_committed:
+                # Relist already in flight — request one follow-up.
+                self._list_changed_redo.add(server_name)
+                return
+            existing.cancel()  # still in the debounce sleep — safe to cancel
         self._list_changed_tasks[server_name] = asyncio.ensure_future(
             self._debounced_relist(server_name)
         )
@@ -441,13 +452,35 @@ class McpClientManager:
             await asyncio.sleep(self._list_changed_debounce_ms / 1000.0)
         except asyncio.CancelledError:
             return
+        # Past the cancel point: a concurrent notification must not abort
+        # the in-flight relist below.
+        self._list_changed_committed.add(server_name)
+        try:
+            await self._run_relist(server_name)
+        finally:
+            self._list_changed_committed.discard(server_name)
+            self._list_changed_tasks.pop(server_name, None)
+            # A notification arrived while we were relisting → run once more.
+            if server_name in self._list_changed_redo:
+                self._list_changed_redo.discard(server_name)
+                self._schedule_list_changed_refresh(server_name)
+
+    async def _run_relist(self, server_name: str) -> None:
         managed = self._servers.get(server_name)
         if managed is None or not managed.is_ready or managed.peer is None:
             return
         try:
-            tools = await self._list_tools(managed.peer)
+            # Bound the relist by the server's handshake timeout — a stalled
+            # server must not hang the debounce task forever (Codex #110).
+            tools = await asyncio.wait_for(
+                self._list_tools(managed.peer),
+                timeout=managed.spec.handshake_timeout_s,
+            )
             managed.tools = tools
             log.info("mcp.client.tools_relisted", server=server_name, tools=len(tools))
+        except TimeoutError:
+            log.warning("mcp.client.relist_timeout", server=server_name)
+            return
         except Exception as exc:  # noqa: BLE001 — re-list failure is non-fatal
             log.warning("mcp.client.relist_failed", server=server_name, error=str(exc))
             return
@@ -549,10 +582,14 @@ class McpClientManager:
         clear its connection state — leaving ``status``/``error`` for the
         caller to set."""
         # Cancel any pending list_changed debounce for this server so a
-        # torn-down server can't fire a stale re-list.
-        task = self._list_changed_tasks.pop(managed.spec.name, None)
+        # torn-down server can't fire a stale re-list, and clear its
+        # coalescing state.
+        name = managed.spec.name
+        task = self._list_changed_tasks.pop(name, None)
         if task is not None and not task.done():
             task.cancel()
+        self._list_changed_committed.discard(name)
+        self._list_changed_redo.discard(name)
         peer = managed.peer
         if peer is not None:
             with contextlib.suppress(Exception):

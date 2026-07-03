@@ -168,6 +168,12 @@ class McpAdapter:
                     name=name,
                     error=str(exc),
                 )
+        # add_server(replace=True) tears down any live server of the same
+        # name; if that server was ready, its tools just vanished — refresh
+        # so the stale synthetic entry + advertised snapshot are pruned
+        # (Codex #110). The new spec is registered disabled, so it adds no
+        # tools of its own until a later enable_one() (which also refreshes).
+        await self._fire_changed()
         log.info(
             "mcp_adapter.installed",
             name=name,

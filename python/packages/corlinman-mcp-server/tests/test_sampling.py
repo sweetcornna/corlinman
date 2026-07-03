@@ -75,6 +75,8 @@ def test_advertises_only_when_enabled_and_wired():
     assert SamplingResponder(_cfg(), _completer).advertises_capability is True
     assert SamplingResponder(_cfg(mode="off"), _completer).advertises_capability is False
     assert SamplingResponder(_cfg(), None).advertises_capability is False
+    # An empty allow-list rejects every request → don't advertise (Codex #110).
+    assert SamplingResponder(_cfg(allowed_models=[]), _completer).advertises_capability is False
 
 
 # ---------------------------------------------------------------------------

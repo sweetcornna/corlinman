@@ -119,6 +119,107 @@ async def test_notification_handler_recognizes_list_changed(relist_manager: McpC
 
 
 @pytest.mark.asyncio
+async def test_notification_during_relist_queues_followup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A notification arriving WHILE a relist is in flight must not cancel
+    it — it queues exactly one follow-up refresh (Codex #110)."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+    relist_calls = [0]
+
+    class _SlowPeer:
+        on_server_request = None
+        on_notification = None
+
+        async def call(self, method: str, params: Any = None) -> Any:
+            if method == "initialize":
+                return {"protocolVersion": "2024-11-05", "capabilities": {}}
+            if method == "tools/list":
+                relist_calls[0] += 1
+                if relist_calls[0] >= 2:  # the second (relist) call blocks
+                    started.set()
+                    await release.wait()
+                return {"tools": [{"name": "echo", "description": "", "inputSchema": {"type": "object"}}]}
+            raise AssertionError(method)
+
+        async def notify(self, *a, **k):
+            return None
+
+        async def close(self):
+            return None
+
+    peer = _SlowPeer()
+
+    async def _fake_connect(self, spec):
+        return peer
+
+    monkeypatch.setattr(McpClientManager, "_connect_peer", _fake_connect)
+    mgr = McpClientManager([])
+    mgr._list_changed_debounce_ms = 5
+    await mgr.connect_all()
+    fired: list[int] = []
+    mgr.on_tools_changed = lambda: fired.append(1)
+    await mgr.add_server(_spec(), replace=True)
+
+    # First notification → debounced relist starts and blocks in tools/list.
+    mgr._schedule_list_changed_refresh("srv")
+    await asyncio.wait_for(started.wait(), timeout=1)
+    assert "srv" in mgr._list_changed_committed  # past the cancel point
+
+    # Second notification mid-relist → must NOT cancel; queues a follow-up.
+    mgr._schedule_list_changed_refresh("srv")
+    assert "srv" in mgr._list_changed_redo
+
+    release.set()  # let the in-flight relist finish → follow-up runs
+    await asyncio.sleep(0.1)
+    assert fired  # at least the first refresh landed (not aborted)
+
+
+@pytest.mark.asyncio
+async def test_relist_bounded_by_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A server that stalls on the follow-up tools/list must not hang the
+    debounce task forever (Codex #110)."""
+
+    class _StallPeer:
+        on_server_request = None
+        on_notification = None
+
+        async def call(self, method: str, params: Any = None) -> Any:
+            if method == "initialize":
+                return {"protocolVersion": "2024-11-05", "capabilities": {}}
+            if method == "tools/list":
+                if getattr(self, "_listed", False):
+                    await asyncio.sleep(30)  # stall the relist
+                self._listed = True
+                return {"tools": [{"name": "echo", "description": "", "inputSchema": {"type": "object"}}]}
+            raise AssertionError(method)
+
+        async def notify(self, *a, **k):
+            return None
+
+        async def close(self):
+            return None
+
+    peer = _StallPeer()
+
+    async def _fake_connect(self, spec):
+        return peer
+
+    monkeypatch.setattr(McpClientManager, "_connect_peer", _fake_connect)
+    mgr = McpClientManager([])
+    mgr._list_changed_debounce_ms = 5
+    await mgr.connect_all()
+    fired: list[int] = []
+    mgr.on_tools_changed = lambda: fired.append(1)
+    await mgr.add_server(_spec(), replace=True)
+    mgr.server("srv").spec.handshake_timeout_s = 0.1  # tight bound
+
+    mgr._schedule_list_changed_refresh("srv")
+    await asyncio.sleep(0.3)  # > timeout — the relist gives up, task clears
+    assert "srv" not in mgr._list_changed_tasks
+    assert fired == []  # timed-out relist never fired the callback
+
+
+@pytest.mark.asyncio
 async def test_teardown_cancels_pending_debounce(relist_manager: McpClientManager) -> None:
     fired: list[bool] = []
     relist_manager.on_tools_changed = lambda: fired.append(True)

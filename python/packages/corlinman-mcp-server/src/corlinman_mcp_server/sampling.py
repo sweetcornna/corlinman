@@ -188,9 +188,18 @@ class SamplingResponder:
 
     @property
     def advertises_capability(self) -> bool:
-        """Whether the client should send ``capabilities.sampling`` — only
-        when a mode is enabled AND a completer is wired."""
-        return self._config.enabled and self._completer is not None
+        """Whether the client should send ``capabilities.sampling``.
+
+        Requires a completer wired, an enabled mode, AND a non-empty
+        ``allowed_models`` — an empty allow-list rejects every request with
+        ``SAMPLING_MODEL_NOT_ALLOWED``, so advertising the capability then
+        would tell a server sampling works when no request can ever
+        succeed (Codex #110)."""
+        return (
+            self._config.enabled
+            and self._completer is not None
+            and bool(self._config.allowed_models)
+        )
 
     def _resolve_model(self, params: dict[str, Any]) -> str | None:
         allowed = self._config.allowed_models

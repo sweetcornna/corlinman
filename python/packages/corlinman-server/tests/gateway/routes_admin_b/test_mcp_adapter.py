@@ -335,6 +335,26 @@ async def test_on_changed_fires_on_mutations(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_install_fires_on_changed(tmp_path: Path) -> None:
+    """install() replaces any live server of the same name (tearing down
+    its tools), so it must refresh so the stale advertisement is pruned
+    (Codex #110)."""
+    store = _store(tmp_path)
+    try:
+        fired: list[str] = []
+        adapter = McpAdapter(
+            _FakeManager([]), store, on_changed=lambda: fired.append("x")
+        )
+        await adapter.install(
+            {"name": "new-srv", "transport": "stdio", "command": "fs"},
+            source="github",
+        )
+        assert fired == ["x"]
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
 async def test_on_changed_absent_is_safe(tmp_path: Path) -> None:
     """No on_changed wired → mutations still work (no crash)."""
     store = _store(tmp_path)
