@@ -2201,6 +2201,64 @@ async def test_summary_low_savings_streak_trips_cooldown(monkeypatch: pytest.Mon
 
 
 @pytest.mark.asyncio
+async def test_summary_failure_resets_low_savings_streak(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed attempt between two low-savings successes breaks the streak
+    (Codex #111): anti-thrash fires only on TRULY consecutive low-savings
+    successes, not ones separated by a failure + its cooldown.
+    """
+    from corlinman_agent import reasoning_loop as rl_mod
+
+    monkeypatch.setattr(rl_mod, "_COMPACT_SUMMARY_COOLDOWN_ROUNDS", 2)
+    monkeypatch.setattr(rl_mod, "_COMPACT_SUMMARY_BREAKER_LIMIT", 99)
+
+    # Scripted per-attempt outcomes: low-savings success, then failure,
+    # then low-savings success — the third must NOT trip the streak
+    # cooldown (streak restarted at 1 after the failure).
+    script = [
+        {"summary_failed": False, "summary_saved_fraction": 0.02},
+        {"summary_failed": True, "summary_saved_fraction": 0.0},
+        {"summary_failed": False, "summary_saved_fraction": 0.02},
+    ]
+    attempts: list[int] = []
+    allowed_seen: list[bool] = []
+
+    async def _fake_compact(
+        msgs: list[dict[str, Any]],
+        *,
+        budget: int,
+        provider: Any = None,
+        model: str | None = None,
+        fast_path_only: bool = False,
+        prev_estimate: int | None = None,
+        summary_allowed: bool = True,
+        outcome: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        allowed_seen.append(summary_allowed)
+        if outcome is not None and summary_allowed and script:
+            step = script.pop(0)
+            attempts.append(1)
+            outcome["summary_attempted"] = True
+            outcome["summary_failed"] = step["summary_failed"]
+            outcome["summary_saved_fraction"] = step["summary_saved_fraction"]
+        return msgs
+
+    monkeypatch.setattr(rl_mod, "_compact_history", _fake_compact)
+
+    prov = _MultiRoundProvider([_tool_round(f"c{i}") for i in range(6)])
+    loop = ReasoningLoop(prov, tool_result_timeout=1.0)
+    start = ChatStart(model="x", messages=[{"role": "user", "content": "go"}])
+    await asyncio.wait_for(_drive(loop, start, tool_content="ok"), timeout=3.0)
+
+    # r=0 low-savings success (streak→1); r=1 failure (cooldown_until=1+2=3,
+    # streak RESET to 0); r=2 suppressed (2<3); r=3 attempt: low-savings
+    # success → streak→1 only — NO cooldown, so r=4 stays allowed.
+    # (Without the reset, r=3 would read streak=2, trip, and suppress r=4.)
+    assert allowed_seen[:5] == [True, True, False, True, True]
+    assert loop._summary_low_savings_streak == 1
+    assert len(attempts) == 3
+
+
+@pytest.mark.asyncio
 async def test_summary_allowed_false_gates_only_llm_call() -> None:
     """``summary_allowed=False`` suppresses the LLM sub-call only — the
     cheap elide path still runs (Dim 2 (d): elide is never gated).

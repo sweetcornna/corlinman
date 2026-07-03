@@ -2660,6 +2660,10 @@ class ReasoningLoop:
             if outcome.get("summary_failed"):
                 self._summary_failures += 1
                 self._summary_cooldown_until_round = rounds + _COMPACT_SUMMARY_COOLDOWN_ROUNDS
+                # A failure breaks the low-savings SUCCESS streak too —
+                # anti-thrash must only fire on truly consecutive
+                # low-savings successes (Codex #111).
+                self._summary_low_savings_streak = 0
                 if self._summary_failures >= _COMPACT_SUMMARY_BREAKER_LIMIT and (
                     not self._summary_disabled
                 ):
