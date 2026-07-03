@@ -391,14 +391,21 @@ def _hooks_reload(runner: Any) -> str:
             "hooks reload unavailable: CORLINMAN_PY_CONFIG is not set "
             "(no config source to reload from)"
         )
-    cfg: dict[str, Any] = {}
     try:
         data = _json.loads(Path(path).read_text(encoding="utf-8"))
-        section = data.get("hooks") if isinstance(data, dict) else None
-        if isinstance(section, dict):
-            cfg = {"hooks": section}
     except Exception as exc:  # noqa: BLE001 — reload must report, not crash
         return f"hooks reload failed reading config: {exc}"
+    section = data.get("hooks") if isinstance(data, dict) else None
+    if not isinstance(section, dict):
+        # The standard gateway py-config drop may omit the hooks section
+        # entirely — reloading from it would rebuild from {} and wipe the
+        # live hooks (Codex #109). Only an EXPLICIT (possibly empty)
+        # hooks table is an authoritative reload source.
+        return (
+            "hooks reload unavailable: the config source has no hooks "
+            f"section — refusing to clear live hooks ({path})"
+        )
+    cfg: dict[str, Any] = {"hooks": section}
     try:
         summary = runner.reload(cfg)
     except Exception as exc:  # noqa: BLE001

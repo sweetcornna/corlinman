@@ -209,6 +209,39 @@ async def test_user_prompt_submit_note_reaches_midturn_supplement() -> None:
 
 
 @pytest.mark.asyncio
+async def test_pump_inbound_fires_post_tool_callback() -> None:
+    """External tool_result frames trigger the post-hook callback after
+    feeding the loop; a raising callback is swallowed (Codex #109 r4)."""
+    from corlinman_grpc import agent_pb2 as pb
+    from corlinman_server.agent_servicer import _pump_inbound
+
+    class _LoopStub:
+        def __init__(self) -> None:
+            self.fed: list[Any] = []
+
+        def feed_tool_result(self, tr: Any) -> None:
+            self.fed.append(tr)
+
+    async def frames():
+        yield pb.ClientFrame(
+            tool_result=pb.ToolResult(
+                call_id="ext-1", result_json=b'{"ok": true}', is_error=False
+            )
+        )
+
+    seen: list[tuple[str, str, bool]] = []
+
+    async def on_result(call_id: str, content: str, is_error: bool) -> None:
+        seen.append((call_id, content, is_error))
+        raise RuntimeError("hook blew up — must be swallowed")
+
+    loop_stub = _LoopStub()
+    await _pump_inbound(frames(), loop_stub, on_tool_result=on_result)  # type: ignore[arg-type]
+    assert [tr.call_id for tr in loop_stub.fed] == ["ext-1"]
+    assert seen == [("ext-1", '{"ok": true}', False)]
+
+
+@pytest.mark.asyncio
 async def test_servicer_loop_carries_hook_runner_to_stop_hook() -> None:
     class _StopRecorder:
         def __init__(self) -> None:

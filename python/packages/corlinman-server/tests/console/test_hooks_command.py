@@ -142,6 +142,24 @@ async def test_hooks_reload_refuses_without_config_source(monkeypatch: pytest.Mo
     assert ok is False  # the deny group survived the refused reload
 
 
+async def test_hooks_reload_refuses_when_config_omits_hooks_section(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """A py-config drop WITHOUT a hooks key is not an authoritative reload
+    source — refuse instead of wiping live hooks (Codex #109 round 4)."""
+    runner = _runner_with(
+        {"PreToolUse": [{"hooks": [{"kind": "command", "command": "exit 2"}]}]}
+    )
+    drop = tmp_path / "py-config.json"
+    drop.write_text(json.dumps({"providers": {}}), encoding="utf-8")  # no "hooks"
+    monkeypatch.setenv("CORLINMAN_PY_CONFIG", str(drop))
+    app = StubApp(_HookBrain(runner))
+    text = await dispatch(app, "/hooks reload") or ""
+    assert "unavailable" in text
+    ok, _ = runner.run_pre_tool("run_shell", {})
+    assert ok is False  # deny group survived
+
+
 async def test_hooks_appears_in_help() -> None:
     app = StubApp(_HookBrain(_runner_with({})))
     text = await dispatch(app, "/help") or ""

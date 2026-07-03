@@ -1712,8 +1712,25 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             if callable(_pin):
                 _pin(str(journal_turn_id))
 
+        # PostToolUse hooks for EXTERNAL (plugin/MCP) tools: their results
+        # come back as client tool_result frames carrying only a call_id,
+        # so the emit site records ``call_id → (tool, args)`` here and the
+        # pump fires the hooks through this callback (Codex #109).
+        pending_external_tools: dict[str, tuple[str, dict[str, Any]]] = {}
+
+        async def _on_external_tool_result(
+            call_id: str, content: str, is_error: bool
+        ) -> None:
+            _ = is_error
+            info = pending_external_tools.pop(call_id, None)
+            if info is None:
+                return
+            await self._run_post_tool_hooks(info[0], info[1], start, content)
+
         inbound_task = asyncio.create_task(
-            _pump_inbound(request_iterator, loop),
+            _pump_inbound(
+                request_iterator, loop, on_tool_result=_on_external_tool_result
+            ),
             name="agent.chat.pump_inbound",
         )
 
@@ -1823,8 +1840,12 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                             tool_call_id=event.call_id,
                             tool_name=event.tool,
                             args_json=event.args_json,
+                            # Inner (no post hooks) — this path fires them
+                            # itself AFTER _register_tool_media so hooks
+                            # audit the URL-bearing result the model sees
+                            # (Codex #109), not the pre-rewrite local path.
                             invoke=functools.partial(
-                                self._dispatch_builtin,
+                                self._dispatch_builtin_inner,
                                 event,
                                 start,
                                 provider,
@@ -1891,6 +1912,15 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                                     )
                                 )
                                 seq += 1
+                        # PostToolUse hooks — fired here with the FINAL
+                        # result (post media-rewrite) rather than inside
+                        # the dispatch wrapper (Codex #109).
+                        await self._run_post_tool_hooks(
+                            event.tool,
+                            self._parse_args_dict(event.args_json),
+                            start,
+                            result_json,
+                        )
                         # Detect error envelope so the channel UI can
                         # render ❌ instead of ✅. Cheap parse — bail on
                         # malformed JSON (counts as success then).
@@ -1988,6 +2018,15 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                                     error=str(exc),
                                 )
                         continue
+                    # Correlate for PostToolUse hooks — the external
+                    # result returns through ``_pump_inbound`` carrying
+                    # only a call_id (Codex #109: plugin/MCP tools were
+                    # invisible to post hooks despite the matcher="*"
+                    # audit contract).
+                    pending_external_tools[event.call_id] = (
+                        event.tool,
+                        self._parse_args_dict(event.args_json),
+                    )
                     yield agent_pb2.ServerFrame(
                         tool_call=agent_pb2.ToolCall(
                             call_id=event.call_id,
@@ -2602,15 +2641,30 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         block, mutate, or fail the call.
         """
         result = await self._dispatch_builtin_inner(event, start, provider, file_state)
-        await self._run_post_tool_hooks(event, start, result)
+        await self._run_post_tool_hooks(
+            event.tool, self._parse_args_dict(event.args_json), start, result
+        )
         return result
 
     async def _run_post_tool_hooks(
         self,
-        event: ToolCallEvent,
+        tool: str,
+        args: dict[str, Any],
         start: AgentChatStart,
         result: str | list[dict[str, Any]],
     ) -> None:
+        """Fire PostToolUse hooks with a tool's FINAL result.
+
+        Three call sites (Codex #109 — post hooks must audit every tool
+        call with the result the model actually sees):
+
+        * the main Chat loop, AFTER ``_register_tool_media`` rewrote
+          local paths into URLs;
+        * the ``_dispatch_builtin`` wrapper (child-executor path — no
+          media rewrite there);
+        * the external plugin/MCP result path, via the ``_pump_inbound``
+          callback correlated through ``pending_external_tools``.
+        """
         runner = self._resolve_hook_runner()
         post = getattr(runner, "run_post_tool_async", None)
         if post is None:
@@ -2622,8 +2676,8 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             if len(result_str) > 16_000:
                 result_str = result_str[:16_000] + "…[truncated for hook]"
             await post(
-                event.tool,
-                self._parse_args_dict(event.args_json),
+                tool,
+                args,
                 result_str,
                 {
                     "session_key": getattr(start, "session_key", None),
@@ -2632,9 +2686,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 },
             )
         except Exception as exc:  # noqa: BLE001 — post-hooks never affect the call
-            logger.warning(
-                "agent.tool.post_hook_error", tool=event.tool, error=str(exc)
-            )
+            logger.warning("agent.tool.post_hook_error", tool=tool, error=str(exc))
 
     async def _dispatch_builtin_inner(
         self,
@@ -5213,10 +5265,16 @@ async def _expect_start(
 async def _pump_inbound(
     iterator: AsyncIterator[agent_pb2.ClientFrame],
     loop: ReasoningLoop,
+    *,
+    on_tool_result: Callable[[str, str, bool], Awaitable[None]] | None = None,
 ) -> None:
     """Forward post-ChatStart :class:`ClientFrame` messages to the loop.
 
-    * ``tool_result`` → :meth:`ReasoningLoop.feed_tool_result`
+    * ``tool_result`` → :meth:`ReasoningLoop.feed_tool_result`, then the
+      optional ``on_tool_result(call_id, content, is_error)`` callback
+      (PostToolUse hooks for external tools — fed AFTER the loop so a
+      slow hook path never delays the model's next round; failures are
+      logged and swallowed)
     * ``cancel`` → :meth:`ReasoningLoop.cancel` and return
     * ``approval`` → logged only (S5 wires this into an approval gate)
     * duplicate ``start`` / unknown kinds → ignored
@@ -5233,6 +5291,15 @@ async def _pump_inbound(
                     is_error=tr.is_error,
                 )
             )
+            if on_tool_result is not None:
+                try:
+                    await on_tool_result(tr.call_id, content, tr.is_error)
+                except Exception as exc:  # noqa: BLE001 — hooks never break the pump
+                    logger.warning(
+                        "agent.chat.post_tool_hook_error",
+                        call_id=tr.call_id,
+                        error=str(exc),
+                    )
             logger.debug(
                 "agent.chat.tool_result_in",
                 call_id=tr.call_id,
