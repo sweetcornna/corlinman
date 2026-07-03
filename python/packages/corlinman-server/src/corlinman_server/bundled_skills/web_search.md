@@ -1,24 +1,25 @@
 ---
 name: web_search
-description: Search the public web using the Brave Search API and fetch individual pages for follow-up reading.
+description: Search the public web (keyless DuckDuckGo by default; Brave/SerpApi optional) and fetch individual pages for follow-up reading.
 metadata:
   openclaw:
     emoji: "🔍"
     requires:
       bins: []
       anyBins: []
-      config:
-        - "providers.brave.api_key"
+      config: []
       env: []
     install: |
-      1. Create a Brave Search API key at https://brave.com/search/api/ (free tier covers
-         ~2k queries/month).
-      2. Store the key in the config:
+      Works out of the box — `web.search` defaults to the keyless DuckDuckGo
+      backend, so no API key is required.
 
-             corlinman config set providers.brave.api_key '{ env = "BRAVE_API_KEY" }'
-
-      3. Export `BRAVE_API_KEY` in the environment that runs the gateway.
-      4. Restart the gateway (or `corlinman reload` if hot reload is wired for your deployment).
+      Optional higher-volume / higher-quality backends:
+      - Brave: create a key at https://brave.com/search/api/ (free tier ~2k
+        queries/mo), then
+            corlinman config set providers.brave.api_key '{ env = "BRAVE_API_KEY" }'
+        export `BRAVE_API_KEY`, and restart the gateway.
+      - SerpApi: set `CORLINMAN_WEB_SEARCH_API_KEY` (or pick a backend with
+        `CORLINMAN_WEB_SEARCH_BACKEND`).
 allowed-tools:
   - web.search
   - web.fetch

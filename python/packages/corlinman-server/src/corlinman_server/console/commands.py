@@ -19,9 +19,20 @@ from corlinman_server.console.compaction import Compactor
 from corlinman_server.console.render import TOOL_PROGRESS_MODES
 from corlinman_server.console.rewind import cmd_rewind as _cmd_rewind
 
-__all__ = ["SlashCommand", "dispatch", "registry"]
+__all__ = ["SlashCommand", "TurnRequest", "dispatch", "registry"]
 
-Handler = Callable[[Any, str], Awaitable[str | None]]
+
+@dataclass(frozen=True, slots=True)
+class TurnRequest:
+    """Sentinel return from :func:`dispatch` — a command that resolved to a
+    *prelude* (wizard-style shared command like ``/persona``, or ``/init``'s
+    codebase-analysis prompt) which the REPL must send through the brain as a
+    chat turn rather than print."""
+
+    content: str
+
+
+Handler = Callable[[Any, str], Awaitable[str | TurnRequest | None]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,17 +48,33 @@ async def _cmd_help(app: Any, args: str) -> str:
     _ = (app, args)
     lines = ["commands:"]
     for cmd in registry():
-        names = "/" + cmd.name + (
-            " (" + ", ".join("/" + a for a in cmd.aliases) + ")" if cmd.aliases else ""
+        names = (
+            "/"
+            + cmd.name
+            + (" (" + ", ".join("/" + a for a in cmd.aliases) + ")" if cmd.aliases else "")
         )
         usage = f" {cmd.usage}" if cmd.usage else ""
         lines.append(f"  {names}{usage} — {cmd.description}")
     return "\n".join(lines)
 
 
+def _reset_approval_cache(app: Any) -> None:
+    """Drop cached "always" approval grants on a session/mode boundary.
+
+    The interactive resolver's cache is presented as "always THIS
+    session" — /new, /clear, and permission-mode switches all move that
+    boundary, so the grants must not carry across (Codex #104).
+    """
+    resolver = getattr(app, "approval_resolver", None)
+    reset = getattr(resolver, "reset", None)
+    if callable(reset):
+        reset()
+
+
 async def _cmd_new(app: Any, args: str) -> str:
     _ = args
     app.session.reset()
+    _reset_approval_cache(app)
     return f"new session: {app.session.session_key}"
 
 
@@ -55,6 +82,7 @@ async def _cmd_clear(app: Any, args: str) -> str:
     _ = args
     app.renderer.console.clear()
     app.session.reset()
+    _reset_approval_cache(app)
     return f"cleared — new session: {app.session.session_key}"
 
 
@@ -108,6 +136,18 @@ async def _cmd_resume(app: Any, args: str) -> str:
     key = args.strip()
     if not key:
         return "usage: /resume <session-key>  (see /sessions)"
+    # Fuzzy resolution (Dim 11): an exact key wins; a unique substring match
+    # resolves; multiple matches disambiguate instead of guessing. Zero
+    # matches fall through with the raw key — /resume can also start a fresh
+    # named session (today's semantics, preserved).
+    matcher = getattr(app, "match_session_keys", None)
+    if callable(matcher):
+        matches = await matcher(key)
+        if len(matches) == 1:
+            key = matches[0]
+        elif len(matches) > 1:
+            listing = "\n".join(f"  {k}" for k in matches[:10])
+            return f"ambiguous — {len(matches)} sessions match '{key}':\n{listing}"
     replayed = await app.resume_session(key)
     if replayed is None:
         return "resume is unavailable in attach mode"
@@ -121,6 +161,46 @@ async def _cmd_usage(app: Any, args: str) -> str:
     return (
         f"turns: {s.turns}  prompt: {s.prompt_tokens}  "
         f"completion: {s.completion_tokens}  total: {s.total_tokens} tokens"
+    )
+
+
+def _estimate_session_cost_usd(
+    model: str, prompt_tokens: int, completion_tokens: int
+) -> float | None:
+    """Estimated USD cost for the session's tokens, or ``None`` if the pricing
+    estimator is unavailable / the model is unknown. Reuses the agent loop's
+    per-model coefficients (ABSORB_MATRIX Dim 12: cost is computed deep but was
+    never surfaced in the console)."""
+    try:
+        from corlinman_agent.reasoning_loop import (  # noqa: PLC0415
+            _estimate_turn_cost_usd,
+        )
+    except ImportError:
+        return None
+    # TurnStats uses OpenAI-style names; the estimator wants input/output. The
+    # console does not track cache-token classes, so those are omitted (0).
+    cost = _estimate_turn_cost_usd(
+        model, {"input_tokens": prompt_tokens, "output_tokens": completion_tokens}
+    )
+    return cost if cost > 0 else None
+
+
+async def _cmd_cost(app: Any, args: str) -> str:
+    _ = args
+    s = app.session.stats
+    cost = _estimate_session_cost_usd(app.session.model, s.prompt_tokens, s.completion_tokens)
+    cost_line = (
+        f"${cost:.4f} (estimated)"
+        if cost is not None
+        else "unavailable (model not in the pricing table)"
+    )
+    return (
+        "session cost\n"
+        f"  model:  {app.session.model}\n"
+        f"  turns:  {s.turns}\n"
+        f"  tokens: {s.prompt_tokens} in + {s.completion_tokens} out "
+        f"= {s.total_tokens}\n"
+        f"  cost:   {cost_line}"
     )
 
 
@@ -191,6 +271,81 @@ async def _cmd_quit(app: Any, args: str) -> str | None:
     return None
 
 
+#: Recognized permission modes (mirrors ``PermissionMode``); validated here so
+#: a typo never coerces to ``default`` server-side — silently dropping from
+#: ``plan`` to ``default`` would re-enable mutations without the user noticing.
+_PERMISSION_MODES = ("default", "acceptEdits", "plan", "bypass")
+
+
+async def _cmd_permissions(app: Any, args: str) -> str:
+    brain = app.session.brain
+    get = getattr(brain, "get_permission_mode", None)
+    set_ = getattr(brain, "set_permission_mode", None)
+    if not callable(get) or not callable(set_):
+        return "permission control unavailable (attach mode)"
+    requested = args.strip()
+    if not requested:
+        current = get()
+        if current is None:
+            return "permission control unavailable (direct fallback — no tool gate)"
+        lines = [
+            f"permission mode: {current}",
+            f"modes: {' | '.join(_PERMISSION_MODES)}",
+            "usage: /permissions <mode>   (/plan toggles plan mode)",
+        ]
+        resolver = getattr(app, "approval_resolver", None)
+        always = sorted(getattr(resolver, "always_allow", ()) or ())
+        if always:
+            lines.append(f"always-allowed this session: {', '.join(always)}")
+        return "\n".join(lines)
+    matched = next((m for m in _PERMISSION_MODES if m.lower() == requested.lower()), None)
+    if matched is None:
+        return f"unknown mode: {requested} — mode unchanged\nmodes: {' | '.join(_PERMISSION_MODES)}"
+    resolved = set_(matched)
+    if resolved is None:
+        return "permission control unavailable (direct fallback — no tool gate)"
+    # A mode switch invalidates interactive "always" grants — most sharply,
+    # a cached run_shell grant must not keep mutating in plan mode (the
+    # gate resolves explicit ask rules BEFORE the mode override, so the
+    # resolver cache would otherwise bypass /plan entirely).
+    _reset_approval_cache(app)
+    suffix = "  ⚠ all tool gating disabled" if resolved == "bypass" else ""
+    return f"permission mode: {resolved}{suffix}"
+
+
+async def _cmd_plan(app: Any, args: str) -> str:
+    """Enter/exit plan mode (mutating tools denied while planning)."""
+    if args.strip().lower() in ("off", "exit", "done"):
+        return await _cmd_permissions(app, "default")
+    return await _cmd_permissions(app, "plan")
+
+
+_INIT_PROMPT = (
+    "Bootstrap a CORLINMAN.md project-memory file for this codebase.\n\n"
+    "First, use your file tools (list, search, read) to inspect the project: "
+    "the directory layout, build/test/lint commands (check Makefile, "
+    "package.json, pyproject.toml, CONTRIBUTING.md), the high-level "
+    "architecture, and any project-specific conventions or gotchas.\n\n"
+    "Then write a concise, high-signal CORLINMAN.md at the repository root (the "
+    "directory containing .git, else the current directory). It is folded into "
+    "the system prompt of every future session, so keep it tight — cover: the "
+    "exact build/lint/test commands, the main components and how they fit "
+    "together, and the non-obvious rules a new contributor must know. If a "
+    "CORLINMAN.md already exists, read it first and improve it rather than "
+    "discarding good content. Finish with a one-line summary of what you "
+    "captured."
+)
+
+
+async def _cmd_init(app: Any, args: str) -> TurnRequest:
+    """Bootstrap CORLINMAN.md from a one-shot codebase-analysis turn (the
+    claude-code ``/init`` analog). Returns a :class:`TurnRequest` so the brain
+    runs it with its file tools; the CORLINMAN.md discovery/@include pipeline
+    then folds the result into every subsequent session's system prompt."""
+    _ = (app, args)
+    return TurnRequest(_INIT_PROMPT)
+
+
 _REGISTRY: tuple[SlashCommand, ...] = (
     SlashCommand("help", "show this list", _cmd_help, aliases=("h", "?")),
     SlashCommand("new", "start a fresh session (drops the window)", _cmd_new),
@@ -199,13 +354,22 @@ _REGISTRY: tuple[SlashCommand, ...] = (
     SlashCommand("models", "list configured model aliases", _cmd_models),
     SlashCommand("session", "show the current session key", _cmd_session),
     SlashCommand("sessions", "list recent sessions (embedded mode)", _cmd_sessions),
-    SlashCommand(
-        "resume", "switch to a session and replay its turns", _cmd_resume, usage="<key>"
-    ),
+    SlashCommand("resume", "switch to a session and replay its turns", _cmd_resume, usage="<key>"),
     SlashCommand("usage", "token usage for this console run", _cmd_usage),
+    SlashCommand("cost", "estimated USD cost for this session", _cmd_cost),
     SlashCommand(
-        "compact", "summarize older turns to shrink the context window", _cmd_compact
+        "permissions",
+        "show or set the permission mode (default/acceptEdits/plan/bypass)",
+        _cmd_permissions,
+        usage="[mode]",
     ),
+    SlashCommand(
+        "plan",
+        "enter plan mode — mutating tools denied; /plan off to exit",
+        _cmd_plan,
+        usage="[off]",
+    ),
+    SlashCommand("compact", "summarize older turns to shrink the context window", _cmd_compact),
     SlashCommand(
         "rewind",
         "list workspace checkpoints or restore one",
@@ -213,10 +377,9 @@ _REGISTRY: tuple[SlashCommand, ...] = (
         usage="[n|sha]",
     ),
     SlashCommand("memory", "list loaded CORLINMAN.md project-memory files", _cmd_memory),
+    SlashCommand("init", "analyze the codebase and write a CORLINMAN.md", _cmd_init),
     SlashCommand("status", "brain / model / session overview", _cmd_status),
-    SlashCommand(
-        "progress", "set tool progress display mode", _cmd_progress, usage="<mode>"
-    ),
+    SlashCommand("progress", "set tool progress display mode", _cmd_progress, usage="<mode>"),
     SlashCommand("verbose", "toggle verbose tool progress", _cmd_verbose),
     SlashCommand("quit", "exit the console", _cmd_quit, aliases=("exit", "q")),
 )
@@ -231,15 +394,6 @@ def _lookup(name: str) -> SlashCommand | None:
         if name == cmd.name or name in cmd.aliases:
             return cmd
     return None
-
-
-@dataclass(frozen=True, slots=True)
-class TurnRequest:
-    """Sentinel return from :func:`dispatch` — the command resolved to a
-    *prelude* (wizard-style shared command like ``/persona``) that must
-    be sent through the brain as a chat turn rather than printed."""
-
-    content: str
 
 
 async def _dispatch_shared(app: Any, line: str) -> str | TurnRequest | None:

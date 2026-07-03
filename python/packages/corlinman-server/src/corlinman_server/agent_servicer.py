@@ -39,6 +39,7 @@ from corlinman_agent.coding import (
     EDIT_FILE_TOOL,
     EXECUTE_CODE_TOOL,
     LIST_FILES_TOOL,
+    NOTEBOOK_EDIT_TOOL,
     READ_FILE_TOOL,
     REVERT_CHANGES_TOOL,
     RUN_SHELL_TOOL,
@@ -52,6 +53,7 @@ from corlinman_agent.coding import (
     dispatch_edit_file,
     dispatch_execute_code,
     dispatch_list_files,
+    dispatch_notebook_edit,
     dispatch_read_file,
     dispatch_revert_changes,
     dispatch_run_shell,
@@ -234,6 +236,10 @@ from corlinman_agent.subagent.blackboard import (
     BlackboardStore,
     dispatch_blackboard_read,
     dispatch_blackboard_write,
+)
+from corlinman_agent.tool_aliases import (
+    canonicalize_tool_name,
+    canonicalize_tool_names,
 )
 from corlinman_agent.variables import VariableCascade
 from corlinman_agent.web import (
@@ -1252,6 +1258,16 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # folded into ``_active_skills`` this turn — so we compute it at most
         # once per session rather than on every tool dispatch.
         self._injected_skills_computed: set[str] = set()
+        # Dim 6 (absorbed from hermes' background next-turn prefetch): recency
+        # recall hits precomputed AFTER a turn's memory store, consumed
+        # one-shot by the NEXT turn's ``_recall_memory`` — cuts the inline
+        # recall await (real latency on remote memory-host backends). LRU
+        # capped like ``_active_skills``. The bm25 relevance recall depends on
+        # the incoming user text, so it is deliberately NOT prefetchable.
+        self._recall_prefetch: OrderedDict[str, list[Any]] = OrderedDict()
+        # Strong refs to in-flight prefetch tasks (fire-and-forget otherwise
+        # gets GC'd mid-flight); done-callback discards.
+        self._prefetch_tasks: set[Any] = set()
 
     async def Chat(  # noqa: N802 — gRPC method name
         self,
@@ -1594,7 +1610,14 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # labelled with it would be meaningless in /rewind.
         if not start.session_key.endswith(_INTERNAL_SESSION_SUFFIXES):
             try:
-                _snapshot_workspace(resolve_workspace(), user_text or "turn")
+                # Stamp the journal turn id into the snapshot subject so
+                # /rewind can key window truncation on the exact turn (Dim
+                # 11) instead of matching the user-text label.
+                _snapshot_workspace(
+                    resolve_workspace(),
+                    user_text or "turn",
+                    turn_id=journal_turn_id,
+                )
             except Exception as exc:  # noqa: BLE001 — never fail the chat
                 logger.warning("agent.chat.snapshot_failed", error=str(exc))
 
@@ -2968,6 +2991,10 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 return dispatch_write_file(args_json=event.args_json, state=file_state)
             if event.tool == EDIT_FILE_TOOL:
                 return dispatch_edit_file(args_json=event.args_json, state=file_state)
+            if event.tool == NOTEBOOK_EDIT_TOOL:
+                return dispatch_notebook_edit(
+                    args_json=event.args_json, state=file_state
+                )
             if event.tool == LIST_FILES_TOOL:
                 return dispatch_list_files(args_json=event.args_json)
             if event.tool == SEARCH_FILES_TOOL:
@@ -3526,27 +3553,10 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             resolve_signing_key,
         )
 
-        public_url = os.environ.get("CORLINMAN_PUBLIC_URL", "").strip().rstrip("/")
-        if not public_url:
-            # Fall back to the gateway config's ``[server].public_url`` when
-            # the env var is unset. The servicer has no config object in
-            # scope, so read it from the Rust→Python config-handshake JSON
-            # drop the gateway writes at boot (``$CORLINMAN_PY_CONFIG`` /
-            # ``~/.corlinman/py_config.json``). Best-effort: any read/parse
-            # failure leaves ``public_url`` empty and the typed error below
-            # fires, exactly as before.
-            cfg_public_url = _read_public_url_from_py_config()
-            if cfg_public_url:
-                public_url = cfg_public_url.strip().rstrip("/")
-        if not public_url:
-            # Zero-config fallback: the gateway learns the public origin from
-            # real inbound requests and persists it to
-            # ``<data_dir>/public_origin`` (see gateway.origin_learn). Read it
-            # so the tool can use the restricted auto-learning fallback once
-            # a request has arrived through an explicitly allowed public origin.
-            learned = _read_learned_public_origin()
-            if learned:
-                public_url = learned.strip().rstrip("/")
+        # ``CORLINMAN_PUBLIC_URL`` env > ``[server].public_url`` (py-config
+        # drop) > gateway-learned origin (``<data_dir>/public_origin``). Same
+        # resolver the media-download links use; empty → typed error below.
+        public_url = _resolve_public_base_url()
         if not public_url:
             return json.dumps(
                 {
@@ -3838,6 +3848,18 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             )
         return self._approval_gate
 
+    def set_permission_mode(self, mode: Any) -> str:
+        """Swap the runtime permission mode (console ``/permissions``).
+
+        Returns the resolved mode string (default/acceptEdits/plan/bypass). The
+        gate re-reads its ``_mode`` on every tool call, so the change applies
+        from the next call — no gate rebuild needed."""
+        return self._permission_gate.set_mode(mode).value
+
+    def get_permission_mode(self) -> str:
+        """The permission gate's current mode string."""
+        return self._permission_gate.mode.value
+
     def set_approval_resolver(self, resolver: Any | None) -> None:
         """Wire the prompt-and-wait approval resolver (CMP-04).
 
@@ -4005,19 +4027,25 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         bucket = active.get(session_key)
         if not bucket:
             return None
+        # Canonicalize both sides: a skill's ``allowed-tools`` may use the
+        # dotted logical namespace (``web.search``, ``file.read``) while the
+        # model calls the underscore wire name (``web_search``,
+        # ``read_file``). Without this the gate blocked every real tool the
+        # moment a scoped skill (deep-research / web_search / note-taking)
+        # was pulled. See ``corlinman_agent.tool_aliases``.
         union: set[str] = set()
         any_restriction = False
         for allowed in bucket.values():
             if allowed:
                 any_restriction = True
-                union.update(allowed)
+                union.update(canonicalize_tool_names(allowed))
         if not any_restriction:
             return None
         # Control tools always pass — never let an active skill strand the
         # model with no way to load another skill or stop the turn.
         if tool in (SKILL_TOOL, SUBAGENT_STOP_TOOL):
             return None
-        if tool in union:
+        if canonicalize_tool_name(tool) in union:
             return None
         return sorted(union)
 
@@ -4389,17 +4417,26 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         """
         if not start.session_key:
             return
-        host = await self._get_memory_host()
-        if host is None:
-            return
-        recent_fn = getattr(host, "recent", None)
-        if recent_fn is None:
-            return
-        try:
-            hits = await recent_fn(start.session_key, 8)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("agent.memory.recall_failed", error=str(exc))
-            return
+        # Consume the background-prefetched hits when present (one-shot pop:
+        # a rare cross-surface write between turns costs at most one slightly
+        # stale recall, and the next post-turn prefetch repopulates).
+        hits = self._recall_prefetch.pop(start.session_key, None)
+        if hits is None:
+            host = await self._get_memory_host()
+            if host is None:
+                return
+            recent_fn = getattr(host, "recent", None)
+            if recent_fn is None:
+                return
+            try:
+                hits = await recent_fn(start.session_key, 8)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("agent.memory.recall_failed", error=str(exc))
+                return
+        else:
+            logger.info(
+                "agent.memory.recall_prefetch_hit", session=start.session_key
+            )
         if not hits:
             return
         # ``recent`` returns newest-first; present oldest-first so the
@@ -4498,6 +4535,38 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             logger.info("agent.memory.stored", session=session_key)
         except Exception as exc:  # noqa: BLE001
             logger.warning("agent.memory.store_failed", error=str(exc))
+            return
+        # Background next-turn prefetch (Dim 6): the store just changed what
+        # recency recall would return, so recompute it OFF the hot path — the
+        # next turn's _recall_memory pops the result instead of awaiting the
+        # host inline. Fire-and-forget; failures degrade to inline recall.
+        try:
+            task = asyncio.get_running_loop().create_task(
+                self._prefetch_recent_recall(session_key)
+            )
+            self._prefetch_tasks.add(task)
+            task.add_done_callback(self._prefetch_tasks.discard)
+        except RuntimeError:  # pragma: no cover — no running loop (sync tests)
+            pass
+
+    async def _prefetch_recent_recall(self, session_key: str) -> None:
+        """Precompute the next turn's recency recall (see ``_recall_prefetch``)."""
+        try:
+            host = await self._get_memory_host()
+            if host is None:
+                return
+            recent_fn = getattr(host, "recent", None)
+            if recent_fn is None:
+                return
+            hits = await recent_fn(session_key, 8)
+        except Exception as exc:  # noqa: BLE001 — prefetch is best-effort
+            logger.debug("agent.memory.prefetch_failed", error=str(exc))
+            return
+        self._recall_prefetch[session_key] = list(hits or [])
+        self._recall_prefetch.move_to_end(session_key)
+        cap = _session_cache_cap()
+        while len(self._recall_prefetch) > cap:
+            self._recall_prefetch.popitem(last=False)
 
 
 def _build_default_context_assembler() -> ContextAssembler | None:
@@ -4578,6 +4647,27 @@ def _read_learned_public_origin() -> str:
     except ImportError:
         return ""
     return load_remembered_origin(_resolve_data_dir())
+
+
+def _resolve_public_base_url() -> str:
+    """Resolve the gateway's public base URL (no trailing slash), or ``""``.
+
+    Resolution order — same precedence the status-card tool uses:
+    ``CORLINMAN_PUBLIC_URL`` env > ``[server].public_url`` (from the
+    ``$CORLINMAN_PY_CONFIG`` drop) > the gateway-learned origin written to
+    ``<data_dir>/public_origin``. Used to turn a relative ``/v1/files/{id}``
+    media url into an absolute, clickable download link so a server-deployed
+    agent hands the user a real link instead of a host-less path.
+    """
+    for candidate in (
+        os.environ.get("CORLINMAN_PUBLIC_URL", ""),
+        _read_public_url_from_py_config(),
+        _read_learned_public_origin(),
+    ):
+        base = (candidate or "").strip().rstrip("/")
+        if base:
+            return base
+    return ""
 
 
 def _resolve_data_dir() -> Path:
@@ -4826,6 +4916,18 @@ def _register_tool_media(
 
     from corlinman_server.gateway.routes.files import register_local_file
 
+    # Absolutize the relative ``/v1/files/{id}`` url against the gateway's
+    # public base URL when one is resolvable, so a server-deployed agent
+    # embeds a real clickable download link (not a host-less path the user
+    # can't reach). Resolved ONCE per result — empty base keeps the relative
+    # url (the web UI still prepends its own origin; only the CLI / text
+    # surfaces lose the host, exactly as before). The /v1/files endpoint is
+    # auth-gated, so the link opens for a logged-in admin (cookie bridge).
+    _base = _resolve_public_base_url()
+
+    def _abs_url(rel: str) -> str:
+        return f"{_base}{rel}" if _base and rel.startswith("/") else rel
+
     def _try_register(raw_path: object) -> dict[str, object] | None:
         if not isinstance(raw_path, str) or not raw_path:
             return None
@@ -4847,7 +4949,7 @@ def _register_tool_media(
         size = int(entry.get("size") or 0)
         meta = {
             "kind": _media_kind_for_mime(str(entry.get("mime") or "")),
-            "url": str(entry.get("url") or ""),
+            "url": _abs_url(str(entry.get("url") or "")),
             "mime": str(entry.get("mime") or ""),
             "name": str(entry.get("name") or ""),
             **({"size": size} if size > 0 else {}),
@@ -4873,8 +4975,10 @@ def _register_tool_media(
                 f"as markdown: ![{name}]({url})"
             )
         else:
+            # ``kind`` is already "file" for a generic blob — avoid "file file".
+            noun = "file" if kind == "file" else f"{kind} file"
             parsed["display_note"] = (
-                f"The {kind} file is downloadable at the `url` — "
+                f"The {noun} is downloadable at the `url` — "
                 f"share it in your reply as a markdown link: "
                 f"[{name}]({url})"
             )

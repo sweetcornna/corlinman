@@ -29,7 +29,12 @@ from pathlib import Path
 from typing import Any
 
 from corlinman_server.console.brain import Brain, BrainSession
-from corlinman_server.console.commands import TurnRequest, dispatch
+from corlinman_server.console.commands import (
+    TurnRequest,
+    _estimate_session_cost_usd,
+    dispatch,
+    registry,
+)
 from corlinman_server.console.compaction import Compactor, maybe_auto_compact
 from corlinman_server.console.events import (
     ConsoleEvent,
@@ -47,6 +52,34 @@ from corlinman_server.console.router import ModelRouter
 __all__ = ["OUTPUT_FORMATS", "ConsoleApp", "run_console"]
 
 _BANNER = "corlinman console — /help for commands, Ctrl-C interrupts a running turn"
+
+
+def _build_slash_completer() -> Any:
+    """A prompt_toolkit completer that suggests ``/slash`` commands at the
+    start of a line — claude-code's command palette. Inert once the line
+    has a space or doesn't open with ``/``. Built lazily so prompt_toolkit
+    stays a soft dependency (the module imports without it)."""
+    from prompt_toolkit.completion import Completer, Completion  # noqa: PLC0415
+
+    class _SlashCompleter(Completer):
+        def get_completions(self, document: Any, complete_event: Any) -> Any:
+            text = document.text_before_cursor
+            if not text.startswith("/") or " " in text:
+                return
+            word = text[1:].lower()
+            for cmd in registry():
+                for name in (cmd.name, *cmd.aliases):
+                    if name.startswith(word):
+                        yield Completion(
+                            name,
+                            start_position=-len(word),
+                            display=f"/{name}",
+                            display_meta=cmd.description,
+                        )
+                        break
+
+    return _SlashCompleter()
+
 
 #: ``--print`` stdout contracts (claude-code's ``--output-format``):
 #: ``text`` streams the answer, ``json`` prints one ``result`` envelope,
@@ -99,6 +132,36 @@ def _stream_payload(ev: ConsoleEvent) -> dict[str, Any] | None:
     return None
 
 
+def compose_system_prompt(
+    *,
+    base_prompt: str,
+    memory_text: str | None,
+    override: str | None,
+    append: str | None,
+) -> str | None:
+    """Resolve the session system prompt from CLI flags + project memory.
+
+    ``override`` (``--system-prompt``) replaces the default coding prompt
+    AND project memory wholesale; ``append`` (``--append-system-prompt``)
+    rides after whatever prompt is in effect — including an override.
+    Returns ``None`` when there is nothing to send, so the servicer's
+    default-prompt path stays untouched. The servicer preserves a
+    caller-supplied system message verbatim (env block aside), which is
+    why the non-override compositions must carry ``base_prompt``
+    themselves — sending memory/append alone would silently drop the
+    default coding prompt.
+    """
+    if override:
+        parts = [override]
+    elif memory_text or append:
+        parts = [p for p in (base_prompt, memory_text) if p]
+    else:
+        return None
+    if append:
+        parts.append(append)
+    return "\n\n".join(parts) or None
+
+
 def _result_envelope(
     *,
     result: str,
@@ -128,9 +191,7 @@ def _result_envelope(
         "num_turns": num_turns,
         "is_error": error is not None,
         "error": (
-            {"reason": error.reason, "message": error.message}
-            if error is not None
-            else None
+            {"reason": error.reason, "message": error.message} if error is not None else None
         ),
     }
 
@@ -168,6 +229,9 @@ class ConsoleApp:
         #: True when the active model came from --model / /model — see
         #: run_turn's routing rule.
         self.model_explicit = False
+        #: Interactive ask-approval resolver (embedded interactive REPL only;
+        #: None in --print / attach). /permissions reads its always_allow set.
+        self.approval_resolver: Any | None = None
 
     def max_turns_reached(self) -> bool:
         """``--max-turns`` budget exhausted (0 = unlimited)."""
@@ -234,6 +298,160 @@ class ConsoleApp:
             with contextlib.suppress(Exception):
                 await journal.close()
 
+    #: How many recent turn ids the ownership probe inspects. A checkpoint
+    #: turn older than this many turns degrades to the label-match fallback
+    #: (conservative) rather than risking a wrong-session rebuild.
+    _OWNERSHIP_PROBE_LIMIT = 500
+
+    async def replay_window_before(self, turn_id: int) -> int | None:
+        """Rebuild the window from journal turns STRICTLY BEFORE ``turn_id``
+        — the turn-keyed ``/rewind`` truncation (the checkpoint was taken at
+        the start of that turn, so the window must show everything before
+        it). Returns the replayed message count; ``None`` in attach mode,
+        without a journal, or on ANY doubt about the rebuild (the caller
+        falls back to the label match / reports "window unchanged").
+
+        Safety contract (Codex #105 hardening):
+
+        * the target turn must belong to THIS session — workspace
+          checkpoints are global across console/web/channel surfaces, so a
+          foreign turn id must degrade instead of truncating to an
+          unrelated cutoff;
+        * a backend that lists no turns while the session demonstrably has
+          them (e.g. the Postgres ``list_session_turns`` stub) degrades
+          instead of wiping the window and reporting success;
+        * the rebuild is staged into a LOCAL list and only swapped in
+          after every journal read succeeded — a mid-replay failure leaves
+          the current window untouched;
+        * prior turns are paged to exhaustion (not just the newest 50) and
+          ordered with a NUMERIC turn-id tie-break for same-millisecond
+          starts.
+        """
+        if not self.embedded:
+            return None
+        journal = await self._open_journal()
+        if journal is None:
+            return None
+        try:
+            # Ownership probe: the checkpoint's turn must be one of this
+            # session's turns. Foreign (other-session) ids and unknown ids
+            # degrade to the caller's fallback.
+            own_ids = {
+                str(t)
+                for t in await journal.get_session_turn_ids(
+                    self.session.session_key, limit=self._OWNERSHIP_PROBE_LIMIT
+                )
+            }
+            if str(turn_id) not in own_ids:
+                return None
+
+            # Page prior turns to exhaustion via the before_turn_id cursor.
+            page_limit = 50
+            rows: list[dict[str, Any]] = []
+            cursor = str(turn_id)
+            while True:
+                page = await journal.list_session_turns(
+                    self.session.session_key, limit=page_limit, before_turn_id=cursor
+                )
+                page = [r for r in page if r.get("turn_id") is not None]
+                rows.extend(page)
+                if len(page) < page_limit:
+                    break
+                # Rows are newest-first; the oldest row anchors the next page.
+                cursor = str(min(page, key=lambda r: r.get("started_at_ms") or 0)["turn_id"])
+            if not rows and own_ids:
+                # The session has turns but the listing returned none — a
+                # stubbed/degraded backend (e.g. Postgres list_session_turns),
+                # not a genuine empty history. Don't wipe the window.
+                return None
+
+            def _turn_sort_key(r: dict[str, Any]) -> tuple[int, int, str]:
+                raw = str(r.get("turn_id"))
+                if raw.isdigit():
+                    return (r.get("started_at_ms") or 0, int(raw), "")
+                return (r.get("started_at_ms") or 0, 1 << 62, raw)
+
+            ordered = sorted(rows, key=_turn_sort_key)
+            rebuilt: list[dict[str, str]] = []
+            replayed = 0
+            for row in ordered:
+                messages = await journal._load_messages(row["turn_id"])  # noqa: SLF001 — stable shim
+                for msg in messages:
+                    role = str(msg.get("role", ""))
+                    content = str(msg.get("content", "") or "")
+                    if role in ("user", "assistant") and content.strip():
+                        rebuilt.append({"role": role, "content": content})
+                        replayed += 1
+            # All reads succeeded — only now replace the live window.
+            self.session.window.clear()
+            self.session.window.extend(rebuilt)
+            return replayed
+        except Exception:  # noqa: BLE001 — window rebuild is best-effort
+            return None
+        finally:
+            with contextlib.suppress(Exception):
+                await journal.close()
+
+    async def latest_session_key(self) -> str | None:
+        """Most-recent journal session key (``--continue``); ``None`` in
+        attach mode or with no journal. ``list_session_summaries`` sorts
+        PINNED sessions ahead of recency, so row 0 lies whenever any pin
+        exists (Codex #105) — pick the true max ``last_seen_at_ms`` across
+        a generous page instead."""
+        if not self.embedded:
+            return None
+        journal = await self._open_journal()
+        if journal is None:
+            return None
+        try:
+            rows = await journal.list_session_summaries(limit=50)
+            if not rows:
+                return None
+            newest = max(rows, key=lambda r: getattr(r, "last_seen_at_ms", 0) or 0)
+            key = str(getattr(newest, "session_key", ""))
+            return key or None
+        except Exception:  # noqa: BLE001 — best-effort convenience
+            return None
+        finally:
+            with contextlib.suppress(Exception):
+                await journal.close()
+
+    #: Progressive page sizes for fuzzy /resume uniqueness proof. The last
+    #: value is the hard cap — beyond ~1000 sessions the match is resolved
+    #: on the newest 1000 (documented residual, keeps the probe bounded).
+    _MATCH_PAGE_LIMITS = (50, 250, 1000)
+
+    async def match_session_keys(self, fragment: str) -> list[str]:
+        """Session keys matching ``fragment`` for fuzzy ``/resume``: an exact
+        key wins alone; otherwise recency-ordered substring matches. Empty in
+        attach mode or without a journal.
+
+        Uniqueness must be PROVED, not assumed from one page (Codex #105):
+        the summaries query is re-issued with growing limits until the
+        listing is exhausted (a short page) or the cap is reached, so a
+        second match beyond the first 50 rows still forces disambiguation.
+        """
+        if not self.embedded:
+            return []
+        journal = await self._open_journal()
+        if journal is None:
+            return []
+        try:
+            keys: list[str] = []
+            for limit in self._MATCH_PAGE_LIMITS:
+                rows = await journal.list_session_summaries(limit=limit)
+                keys = [str(getattr(r, "session_key", "")) for r in rows]
+                if len(rows) < limit:
+                    break  # listing exhausted — uniqueness is proven
+            if fragment in keys:
+                return [fragment]
+            return [k for k in keys if fragment in k]
+        except Exception:  # noqa: BLE001 — best-effort convenience
+            return []
+        finally:
+            with contextlib.suppress(Exception):
+                await journal.close()
+
     async def _open_journal(self) -> Any | None:
         try:
             from corlinman_server.agent_journal import AgentJournal  # noqa: PLC0415
@@ -265,9 +483,7 @@ class ConsoleApp:
             explicit_model=self.session.model if self.model_explicit else None,
         )
         if decision.reason == "auto:simple":
-            self.renderer.console.print(
-                f"→ routed to {decision.model} (simple task)", style="dim"
-            )
+            self.renderer.console.print(f"→ routed to {decision.model} (simple task)", style="dim")
         self.renderer.start_turn()
 
         loop = asyncio.get_running_loop()
@@ -292,6 +508,10 @@ class ConsoleApp:
             self.session.cancel_turn()
             self.renderer.console.print("⏹ interrupted", style="yellow")
         finally:
+            # Safety net: stop any rich Live the turn left running (an event
+            # stream that raised before TurnDone/TurnError) so it can never
+            # bleed into the next prompt and corrupt the terminal.
+            self.renderer.finish_turn()
             if installed:
                 with contextlib.suppress(Exception):
                     loop.remove_signal_handler(signal.SIGINT)
@@ -299,23 +519,78 @@ class ConsoleApp:
 
     # ── interactive loop ──────────────────────────────────────────────
 
+    def _print_welcome(self) -> None:
+        """A boxed welcome panel (model / session / data / brain + key
+        commands) — claude-code's intro card, in place of the old one-line
+        banner. Degrades to the plain banner if rich's panel is missing."""
+        try:
+            from rich.panel import Panel  # noqa: PLC0415
+            from rich.table import Table  # noqa: PLC0415
+            from rich.text import Text  # noqa: PLC0415
+        except Exception:  # noqa: BLE001 — never let the banner crash the REPL
+            self.renderer.console.print(_BANNER, style="bold")
+            return
+
+        meta = Table.grid(padding=(0, 2))
+        meta.add_column(style="dim", justify="right")
+        meta.add_column(style="bold", overflow="fold")
+        meta.add_row("model", self.session.model)
+        meta.add_row("session", self.session.session_key)
+        meta.add_row("data", str(self.data_dir))
+        meta.add_row("brain", self.session.brain.descriptor)
+
+        hint = Text()
+        for key, label, sep in (
+            ("/help", " commands", "   "),
+            ("/model", " switch", "   "),
+            ("Ctrl-C", " interrupt", "   "),
+            ("/quit", " exit", ""),
+        ):
+            hint.append(key, style="cyan")
+            hint.append(label + sep, style="dim")
+
+        body = Table.grid()
+        body.add_row(meta)
+        body.add_row("")
+        body.add_row(hint)
+        self.renderer.console.print(
+            Panel.fit(
+                body,
+                title="corlinman console",
+                title_align="left",
+                border_style="cyan",
+            )
+        )
+
+    def _bottom_toolbar(self) -> str:
+        """prompt_toolkit bottom bar: model · session · live token count · cost
+        (ABSORB_MATRIX Dim 12 — surfaces the session tokens/cost the loop already
+        tracks; the raw model·session bar showed neither)."""
+        s = self.session.stats
+        parts = [f" {self.session.model}", self.session.session_key]
+        if s.total_tokens:
+            parts.append(f"{s.total_tokens:,} tok")
+            cost = _estimate_session_cost_usd(
+                self.session.model, s.prompt_tokens, s.completion_tokens
+            )
+            if cost is not None:
+                parts.append(f"${cost:.4f}")
+        return " · ".join(parts)
+
     async def run_repl(self) -> None:
         from prompt_toolkit import PromptSession  # noqa: PLC0415
         from prompt_toolkit.history import FileHistory  # noqa: PLC0415
         from prompt_toolkit.patch_stdout import patch_stdout  # noqa: PLC0415
 
-        self.renderer.console.print(_BANNER, style="bold")
-        self.renderer.console.print(
-            f"brain: {self.session.brain.descriptor}   model: {self.session.model}",
-            style="dim",
-            highlight=False,
-        )
+        self._print_welcome()
 
         history_path = self.data_dir / "console_history"
         with contextlib.suppress(OSError):
             history_path.parent.mkdir(parents=True, exist_ok=True)
         prompt: PromptSession[str] = PromptSession(
             history=FileHistory(str(history_path)),
+            completer=_build_slash_completer(),
+            complete_while_typing=True,
         )
 
         while self.running:
@@ -330,9 +605,7 @@ class ConsoleApp:
                 with patch_stdout():
                     line = await prompt.prompt_async(
                         "> ",
-                        bottom_toolbar=lambda: (
-                            f" {self.session.model} · {self.session.session_key}"
-                        ),
+                        bottom_toolbar=self._bottom_toolbar,
                     )
             except KeyboardInterrupt:
                 self.renderer.console.print("(/quit to exit)", style="dim")
@@ -464,6 +737,9 @@ async def run_console(
     output_format: str = "text",
     max_turns: int = 0,
     attach_token: str | None = None,
+    continue_latest: bool = False,
+    system_prompt: str | None = None,
+    append_system_prompt: str | None = None,
 ) -> int:
     """Build the app (embedded or attach brain) and run it.
 
@@ -505,14 +781,13 @@ async def run_console(
     session.compactor = Compactor.from_config(config)
 
     # Project memory (CORLINMAN.md) — loaded in every mode, including
-    # --print (claude-code loads CLAUDE.md for one-shot runs too).
-    # The servicer's _ensure_system_prompt PRESERVES a caller-supplied
-    # system message verbatim (appending only the env block), so sending
-    # memory alone would silently drop the default coding prompt — prefix
-    # it explicitly to keep tool/coding behavior intact.
+    # --print (claude-code loads CLAUDE.md for one-shot runs too) — then
+    # composed with the Dim 10 flags (--system-prompt replaces, --append-
+    # system-prompt rides after). See compose_system_prompt for why the
+    # non-override compositions must carry the default coding prompt.
     memory_text, memory_files = load_project_memory(Path.cwd(), data_dir)
-    if memory_text:
-        base_prompt = ""
+    base_prompt = ""
+    if not system_prompt and (memory_text or append_system_prompt):
         try:
             from corlinman_server.agent_servicer import (  # noqa: PLC0415
                 _CODING_SYSTEM_PROMPT,
@@ -521,12 +796,23 @@ async def run_console(
             base_prompt = _CODING_SYSTEM_PROMPT
         except Exception:  # noqa: BLE001 — attach-only/stripped installs
             pass
-        session.system_prompt = (
-            f"{base_prompt}\n\n{memory_text}" if base_prompt else memory_text
-        )
+    composed = compose_system_prompt(
+        base_prompt=base_prompt,
+        memory_text=memory_text,
+        override=system_prompt,
+        append=append_system_prompt,
+    )
+    if composed:
+        session.system_prompt = composed
 
     console = Console(file=sys.stderr) if print_mode else Console()
-    renderer = Renderer(console, tool_progress=tool_progress)
+    # Rich UI (spinner + live markdown + tool blocks) only on an interactive
+    # REPL terminal; --print / piped / JSON output stays on the raw path.
+    renderer = Renderer(
+        console,
+        tool_progress=tool_progress,
+        rich_ui=(not print_mode and bool(console.is_terminal)),
+    )
 
     app = ConsoleApp(
         session=session,
@@ -539,6 +825,40 @@ async def run_console(
     )
     app.project_memory_files = memory_files
     app.model_explicit = model is not None
+
+    # Interactive tool approval (Dim 3): wire the ask-resolver so a permission
+    # rule's ``ask`` verdict prompts y/always/No instead of fail-closing to
+    # deny. Interactive REPL only — in --print there is no user to ask, so
+    # asks stay fail-closed (the correct non-interactive posture); attach mode
+    # has no in-process servicer to wire.
+    if embedded and not print_mode:
+        from corlinman_server.console.approval import (  # noqa: PLC0415
+            ConsoleApprovalResolver,
+            build_console_prompter,
+        )
+
+        wire = getattr(brain, "set_approval_resolver", None)
+        if callable(wire):
+            app.approval_resolver = ConsoleApprovalResolver(build_console_prompter(renderer))
+            wire(app.approval_resolver)
+
+    # ``--continue`` (Dim 11): resume the most recent journal session. An
+    # explicit ``--session`` wins (a named key beats the convenience flag).
+    if continue_latest and not session_key:
+        if embedded:
+            latest = await app.latest_session_key()
+            if latest:
+                session_key = latest
+            else:
+                console.print(
+                    "--continue: no prior sessions found — starting fresh",
+                    style="yellow",
+                )
+        else:
+            console.print(
+                "--continue is unavailable in attach mode (journal lives in the remote gateway)",
+                style="yellow",
+            )
 
     if session_key:
         if embedded:

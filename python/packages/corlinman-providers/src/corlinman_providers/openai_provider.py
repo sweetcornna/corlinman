@@ -56,6 +56,73 @@ logger = structlog.get_logger(__name__)
 # leaks the credential — see :meth:`OpenAIProvider._make_client`.
 _HEADER_AUTH_SENTINEL = "header-auth-no-bearer"
 
+
+# Endpoint suffixes operators sometimes paste as a "base URL". The OpenAI SDK
+# appends ``/chat/completions`` itself, so any of these must be trimmed back to
+# the API root or the request path doubles up (``…/chat/completions/chat/
+# completions``). Ordered so the longer ``/chat/completions`` is matched before
+# the bare ``/completions``.
+_OPENAI_ENDPOINT_SUFFIXES: tuple[str, ...] = (
+    "/chat/completions",
+    "/responses",
+    "/completions",
+    "/models",
+)
+
+
+def complete_openai_base_url(base_url: str) -> str:
+    """Adaptively complete an operator-supplied base URL to the API *root* the
+    OpenAI SDK expects (the SDK appends ``/chat/completions`` itself).
+
+    Operators paste base URLs in many shapes; this makes a relay that the admin
+    "fetch models" probe accepted also serve chat. Rules:
+
+    * a trailing ``#`` is a "use verbatim" escape — stripped, and the remainder
+      is returned unchanged (no ``/v1`` added) for gateways with a non-standard
+      root.
+    * a pasted full endpoint (``/chat/completions``, ``/responses``,
+      ``/completions``, ``/models``) is trimmed back to its root.
+    * a path already ending in ``/v<digits>`` (``/v1``, ``/api/v4``) is the root
+      and returned unchanged.
+    * anything else (bare host, ``/api``, …) gets ``/v1`` appended.
+
+    Mirrors the admin model-probe normalization (``_provider_models_url``) so
+    the probe and the chat client resolve to the same root. Idempotent:
+    re-completing an already-completed URL is a no-op.
+    """
+    import re
+    from urllib.parse import urlsplit, urlunsplit
+
+    raw = (base_url or "").strip()
+    if not raw:
+        return raw
+    if raw.endswith("#"):
+        # Verbatim escape: the operator pinned the exact root.
+        return raw[:-1].rstrip("/")
+    parts = urlsplit(raw)
+    # A bare host with no scheme (``relay.example/v1``) splits oddly; only
+    # rewrite when we have an authority to rebuild a clean URL.
+    if not parts.netloc:
+        return raw.rstrip("/")
+    path = parts.path.rstrip("/")
+    lowered = path.lower()
+    for suffix in _OPENAI_ENDPOINT_SUFFIXES:
+        if lowered.endswith(suffix):
+            path = path[: -len(suffix)]
+            break
+    # A path already ending in ``/v<digits>`` (``/v1``, ``/api/v4``) OR in a
+    # bare ``/openai`` mount (Google Gemini's ``/v1beta/openai`` compat
+    # endpoint; relays served at ``/openai``) is already the API root the SDK
+    # appends ``/chat/completions`` onto — never append ``/v1`` (doing so
+    # yields ``.../openai/v1`` → 404 on every request).
+    if re.search(r"/v\d+$", path) or path.lower().endswith("/openai"):
+        root_path = path
+    elif path:
+        root_path = f"{path}/v1"
+    else:
+        root_path = "/v1"
+    return urlunsplit((parts.scheme, parts.netloc, root_path, "", ""))
+
 # OpenAI reasoning-model family (o1 / o3 / o4 / gpt-5). These models reject
 # the classic sampling knobs: ``max_tokens`` must be sent as
 # ``max_completion_tokens`` and ``temperature`` must be omitted entirely

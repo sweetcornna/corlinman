@@ -46,7 +46,7 @@ import {
   streamSubagentsOverview,
   type SubagentStatusResponse,
 } from "@/lib/api";
-import { SubagentRow } from "@/components/subagents/subagent-row";
+import { LiveAgentsPanel } from "@/components/subagents/live-agents-panel";
 import { SubagentDetailDrawer } from "@/components/subagents/subagent-detail-drawer";
 
 const IN_FLIGHT: ReadonlySet<SubagentStatusResponse["state"]> = new Set([
@@ -94,7 +94,7 @@ export default function SubagentsPage(): React.JSX.Element {
 
   // Seed the local map from the REST snapshot whenever it lands.
   React.useEffect(() => {
-    const list = listQuery.data?.subagents;
+    const list = listQuery.data?.rows;
     if (!list) return;
     setRows((prev) => {
       const next = new Map(prev);
@@ -218,48 +218,12 @@ export default function SubagentsPage(): React.JSX.Element {
           {visibleRows.length === 0 ? (
             <EmptyState />
           ) : (
-            <div className="overflow-x-auto">
-              <table
-                data-testid="subagents-table"
-                className="w-full border-collapse text-sm"
-              >
-                <thead>
-                  <tr className="border-b border-sg-border bg-sg-inset text-[11px] uppercase tracking-wider text-sg-ink-4">
-                    <th className="px-3 py-2 text-left font-medium">
-                      {t("subagents.column.subagentType")}
-                    </th>
-                    <th className="px-3 py-2 text-left font-medium">
-                      {t("subagents.column.description")}
-                    </th>
-                    <th className="px-3 py-2 text-left font-medium">
-                      {t("subagents.column.parent")}
-                    </th>
-                    <th className="px-3 py-2 text-left font-medium">
-                      {t("subagents.column.state")}
-                    </th>
-                    <th className="px-3 py-2 text-left font-medium">
-                      {t("subagents.column.elapsed")}
-                    </th>
-                    <th className="px-3 py-2 text-left font-medium">
-                      {t("subagents.column.tools")}
-                    </th>
-                    <th className="px-3 py-2 text-right font-medium">
-                      {t("subagents.column.actions")}
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {visibleRows.map((row) => (
-                    <SubagentRow
-                      key={row.request_id}
-                      data={row}
-                      onSelect={setSelectedId}
-                      onKill={handleKill}
-                    />
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <LiveAgentsPanel
+              rows={visibleRows}
+              onSelect={setSelectedId}
+              onKill={handleKill}
+              className="px-4 pb-4"
+            />
           )}
         </CardContent>
       </Card>

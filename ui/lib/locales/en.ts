@@ -709,6 +709,12 @@ export const en = {
       "Background sub-agent dispatches and their live activity.",
     empty: "No active sub-agents.",
     loadFailed: "Load failed: {{msg}}",
+    chatPanel: {
+      title: "Agents",
+      empty: "No sub-agents this run yet.",
+      collapse: "Collapse agents panel",
+      expand: "Show agents panel",
+    },
     column: {
       subagentType: "Type",
       description: "Task",
@@ -1550,7 +1556,7 @@ export const en = {
     fieldKind: "Kind",
     fieldBaseUrl: "Base URL",
     fieldBaseUrlHint:
-      "Required for openai_compatible; optional for first-party (SDK default).",
+      "Required for openai_compatible; optional for first-party (SDK default). Paste any form — host, /api, /v1, or a full /chat/completions URL; it's auto-completed (append # to use verbatim).",
     fieldApiKeySource: "API key source",
     fieldApiKeyEnv: "Env var",
     fieldApiKeyValue: "Literal",
@@ -1568,6 +1574,20 @@ export const en = {
     modelsCopied: "Model id copied",
     modelsCopyFailed: "Copy failed: {{msg}}",
     modelsCopyAria: "Copy model {{id}}",
+    modelsHintAdd:
+      "Fetch the catalog, then add models with “+” (or “Add all”) to register them as aliases routed to this provider.",
+    modelsAdd: "Add",
+    modelsAddAria: "Add model {{id}} to corlinman",
+    modelsAddAll: "Add all",
+    modelsAdded: "Added",
+    modelsAddedAria: "Model {{id}} already added",
+    modelsAddedToast: "Added {{count}} model(s) to corlinman",
+    modelsAddFailed: "Add failed: {{msg}}",
+    modelsAddNeedsName: "Enter a provider name first",
+    modelsAddNeedsEnabled:
+      "Enable the provider first — a disabled provider's models cannot be routed",
+    modelsAddSkippedConflicts:
+      "Skipped {{count}} model(s): alias already routed to another provider",
     fieldParams: "Default params",
     fieldParamsHint:
       "Provider-level defaults, overridden by alias.params at call time.",

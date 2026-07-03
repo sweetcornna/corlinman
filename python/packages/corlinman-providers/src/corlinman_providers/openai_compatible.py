@@ -17,7 +17,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, ClassVar
 
-from corlinman_providers.openai_provider import OpenAIProvider
+from corlinman_providers.openai_provider import (
+    OpenAIProvider,
+    complete_openai_base_url,
+)
 from corlinman_providers.specs import ProviderKind, ProviderSpec
 
 
@@ -46,6 +49,14 @@ class OpenAICompatibleProvider(OpenAIProvider):
     ) -> None:
         if not base_url:
             raise ValueError("openai_compatible provider requires a base_url")
+        # Adaptive endpoint completion: accept whatever root the operator
+        # pasted (bare host, ``/api``, ``/v1``, or a full ``/chat/completions``
+        # URL) and normalise to the API root the OpenAI SDK appends onto. This
+        # makes a relay that the admin "fetch models" probe accepted also serve
+        # chat — closing the gap where the probe completed ``/v1`` but the chat
+        # client used the raw base_url. Idempotent for already-versioned roots
+        # (incl. the market kinds' ``/v1`` defaults).
+        base_url = complete_openai_base_url(base_url)
         # ``env_key`` is the env var consulted when no explicit ``api_key``
         # is given (and re-read on the reactive 401 path). The generic
         # openai_compatible kind keeps the historic ``OPENAI_API_KEY``

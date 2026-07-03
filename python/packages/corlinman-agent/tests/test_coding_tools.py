@@ -16,6 +16,7 @@ from corlinman_agent.coding import (
     coding_tool_schemas,
     dispatch_edit_file,
     dispatch_list_files,
+    dispatch_notebook_edit,
     dispatch_read_file,
     dispatch_run_shell,
     dispatch_search_files,
@@ -34,7 +35,7 @@ def _args(**kw: object) -> bytes:
 
 def test_coding_tools_set_and_schemas_align() -> None:
     schemas = coding_tool_schemas()
-    assert len(schemas) == len(CODING_TOOLS) == 9
+    assert len(schemas) == len(CODING_TOOLS) == 10
     names = {s["function"]["name"] for s in schemas}
     assert names == set(CODING_TOOLS)
 
@@ -54,18 +55,14 @@ def test_write_then_read_roundtrip(tmp_path: Path) -> None:
     assert w["action"] == "created"
     assert (tmp_path / "src" / "hello.py").read_text() == "print('hi')\n"
 
-    r = json.loads(
-        dispatch_read_file(args_json=_args(path="src/hello.py"), workspace=tmp_path)
-    )
+    r = json.loads(dispatch_read_file(args_json=_args(path="src/hello.py"), workspace=tmp_path))
     assert "print('hi')" in r["content"]
     assert r["content"].startswith("1\t")  # 1-based line numbers
     assert r["lines"] == 1
 
 
 def test_read_missing_file(tmp_path: Path) -> None:
-    r = json.loads(
-        dispatch_read_file(args_json=_args(path="nope.txt"), workspace=tmp_path)
-    )
+    r = json.loads(dispatch_read_file(args_json=_args(path="nope.txt"), workspace=tmp_path))
     assert r["error"] == "file_not_found"
 
 
@@ -93,9 +90,7 @@ def test_edit_file_rejects_ambiguous_match(tmp_path: Path) -> None:
     # replace_all bypasses the uniqueness guard.
     res2 = json.loads(
         dispatch_edit_file(
-            args_json=_args(
-                path="f.txt", old_string="x", new_string="y", replace_all=True
-            ),
+            args_json=_args(path="f.txt", old_string="x", new_string="y", replace_all=True),
             workspace=tmp_path,
         )
     )
@@ -128,9 +123,7 @@ def test_path_escape_is_rejected(tmp_path: Path) -> None:
 
 
 def test_absolute_path_outside_workspace_rejected(tmp_path: Path) -> None:
-    res = json.loads(
-        dispatch_read_file(args_json=_args(path="/etc/hosts"), workspace=tmp_path)
-    )
+    res = json.loads(dispatch_read_file(args_json=_args(path="/etc/hosts"), workspace=tmp_path))
     assert "workspace_escape" in res["error"]
 
 
@@ -157,9 +150,7 @@ def test_search_name_mode(tmp_path: Path) -> None:
     (tmp_path / "x.py").write_text("")
     (tmp_path / "y.txt").write_text("")
     res = json.loads(
-        dispatch_search_files(
-            args_json=_args(pattern="*.py", mode="name"), workspace=tmp_path
-        )
+        dispatch_search_files(args_json=_args(pattern="*.py", mode="name"), workspace=tmp_path)
     )
     assert res["matches"] == ["x.py"]
 
@@ -171,9 +162,7 @@ def test_search_name_mode(tmp_path: Path) -> None:
 
 async def test_run_shell_success(tmp_path: Path) -> None:
     res = json.loads(
-        await dispatch_run_shell(
-            args_json=_args(command="echo hello-shell"), workspace=tmp_path
-        )
+        await dispatch_run_shell(args_json=_args(command="echo hello-shell"), workspace=tmp_path)
     )
     assert res["exit_code"] == 0
     assert "hello-shell" in res["output"]
@@ -181,35 +170,27 @@ async def test_run_shell_success(tmp_path: Path) -> None:
 
 async def test_run_shell_runs_in_workspace(tmp_path: Path) -> None:
     (tmp_path / "marker.txt").write_text("")
-    res = json.loads(
-        await dispatch_run_shell(args_json=_args(command="ls"), workspace=tmp_path)
-    )
+    res = json.loads(await dispatch_run_shell(args_json=_args(command="ls"), workspace=tmp_path))
     assert "marker.txt" in res["output"]
 
 
 async def test_run_shell_nonzero_exit(tmp_path: Path) -> None:
     res = json.loads(
-        await dispatch_run_shell(
-            args_json=_args(command="exit 3"), workspace=tmp_path
-        )
+        await dispatch_run_shell(args_json=_args(command="exit 3"), workspace=tmp_path)
     )
     assert res["exit_code"] == 3
 
 
 async def test_run_shell_timeout(tmp_path: Path) -> None:
     res = json.loads(
-        await dispatch_run_shell(
-            args_json=_args(command="sleep 5", timeout=1), workspace=tmp_path
-        )
+        await dispatch_run_shell(args_json=_args(command="sleep 5", timeout=1), workspace=tmp_path)
     )
     assert "timeout" in res["error"]
 
 
 async def test_run_shell_refuses_destructive_command(tmp_path: Path) -> None:
     res = json.loads(
-        await dispatch_run_shell(
-            args_json=_args(command="rm -rf /"), workspace=tmp_path
-        )
+        await dispatch_run_shell(args_json=_args(command="rm -rf /"), workspace=tmp_path)
     )
     assert "command_refused" in res["error"]
 
@@ -217,9 +198,7 @@ async def test_run_shell_refuses_destructive_command(tmp_path: Path) -> None:
 async def test_run_shell_refuses_smuggled_compound_command(tmp_path: Path) -> None:
     """A denied pattern hidden after ';' is still caught."""
     res = json.loads(
-        await dispatch_run_shell(
-            args_json=_args(command="ls ; sudo rm file"), workspace=tmp_path
-        )
+        await dispatch_run_shell(args_json=_args(command="ls ; sudo rm file"), workspace=tmp_path)
     )
     assert "command_refused" in res["error"]
 
@@ -291,9 +270,7 @@ async def test_run_shell_rlimit_fsize_caps_output_file(tmp_path: Path) -> None:
     # Use ``head`` + ``/dev/zero`` rather than ``dd if=`` (denylist).
     cmd = f"head -c 209715200 /dev/zero > {target.name}"
     res = json.loads(
-        await dispatch_run_shell(
-            args_json=_args(command=cmd, timeout=20), workspace=tmp_path
-        )
+        await dispatch_run_shell(args_json=_args(command=cmd, timeout=20), workspace=tmp_path)
     )
     # The command exits non-zero (signal or write error), and any file
     # that was created is bounded under the RLIMIT_FSIZE cap.
@@ -321,9 +298,7 @@ async def test_run_shell_timeout_kills_forked_children(tmp_path: Path) -> None:
     cmd = "python3 -c 'import time; time.sleep(30)'"
     t0 = _time.monotonic()
     res = json.loads(
-        await dispatch_run_shell(
-            args_json=_args(command=cmd, timeout=1), workspace=tmp_path
-        )
+        await dispatch_run_shell(args_json=_args(command=cmd, timeout=1), workspace=tmp_path)
     )
     elapsed = _time.monotonic() - t0
     assert "timeout" in res["error"]
@@ -373,8 +348,7 @@ def test_write_through_symlinked_parent_is_refused(tmp_path: Path) -> None:
     assert "workspace_escape" in res["error"], res
     # The attacker directory MUST remain empty.
     assert list(attacker.iterdir()) == [], (
-        f"write escaped the workspace — attacker dir contains: "
-        f"{list(attacker.iterdir())}"
+        f"write escaped the workspace — attacker dir contains: {list(attacker.iterdir())}"
     )
 
 
@@ -415,17 +389,8 @@ def test_apply_patch_through_symlinked_parent_is_refused(tmp_path: Path) -> None
     escape = tmp_path / "escape_dir"
     escape.symlink_to(attacker, target_is_directory=True)
 
-    patch = (
-        "*** Begin Patch\n"
-        "*** Add File: escape_dir/new.txt\n"
-        "+leaked\n"
-        "*** End Patch\n"
-    )
-    res = json.loads(
-        dispatch_apply_patch(
-            args_json=_args(patch=patch), workspace=tmp_path
-        )
-    )
+    patch = "*** Begin Patch\n*** Add File: escape_dir/new.txt\n+leaked\n*** End Patch\n"
+    res = json.loads(dispatch_apply_patch(args_json=_args(patch=patch), workspace=tmp_path))
     assert "workspace_escape" in res["error"], res
     assert list(attacker.iterdir()) == []
 
@@ -481,9 +446,7 @@ def test_todo_write_stores_and_renders() -> None:
         {"content": "Step three", "activeForm": "Doing step three", "status": "pending"},
     ]
     res = json.loads(
-        dispatch_todo_write(
-            args_json=_args(todos=todos), store=store, session_key="s1"
-        )
+        dispatch_todo_write(args_json=_args(todos=todos), store=store, session_key="s1")
     )
     assert res["counts"] == {"pending": 1, "in_progress": 1, "completed": 1}
     block = render_todo_block(store, "s1")
@@ -501,9 +464,7 @@ def test_todo_write_warns_on_multiple_in_progress() -> None:
         {"content": "B", "activeForm": "Bing", "status": "in_progress"},
     ]
     res = json.loads(
-        dispatch_todo_write(
-            args_json=_args(todos=todos), store=store, session_key="s2"
-        )
+        dispatch_todo_write(args_json=_args(todos=todos), store=store, session_key="s2")
     )
     assert "warning" in res
 
@@ -514,9 +475,7 @@ def test_todo_write_rejects_bad_status() -> None:
     store = TodoStore()
     res = json.loads(
         dispatch_todo_write(
-            args_json=_args(
-                todos=[{"content": "X", "activeForm": "Xing", "status": "weird"}]
-            ),
+            args_json=_args(todos=[{"content": "X", "activeForm": "Xing", "status": "weird"}]),
             store=store,
             session_key="s3",
         )
@@ -532,16 +491,8 @@ def test_todo_write_rejects_bad_status() -> None:
 def test_apply_patch_add_file(tmp_path: Path) -> None:
     from corlinman_agent.coding import dispatch_apply_patch
 
-    patch = (
-        "*** Begin Patch\n"
-        "*** Add File: pkg/new.py\n"
-        "+print('a')\n"
-        "+print('b')\n"
-        "*** End Patch\n"
-    )
-    res = json.loads(
-        dispatch_apply_patch(args_json=_args(patch=patch), workspace=tmp_path)
-    )
+    patch = "*** Begin Patch\n*** Add File: pkg/new.py\n+print('a')\n+print('b')\n*** End Patch\n"
+    res = json.loads(dispatch_apply_patch(args_json=_args(patch=patch), workspace=tmp_path))
     assert res["applied"] is True
     assert (tmp_path / "pkg" / "new.py").read_text() == "print('a')\nprint('b')"
 
@@ -560,13 +511,9 @@ def test_apply_patch_update_file(tmp_path: Path) -> None:
         " line three\n"
         "*** End Patch\n"
     )
-    res = json.loads(
-        dispatch_apply_patch(args_json=_args(patch=patch), workspace=tmp_path)
-    )
+    res = json.loads(dispatch_apply_patch(args_json=_args(patch=patch), workspace=tmp_path))
     assert res["applied"] is True
-    assert (tmp_path / "f.py").read_text() == (
-        "line one\nline TWO changed\nline three\n"
-    )
+    assert (tmp_path / "f.py").read_text() == ("line one\nline TWO changed\nline three\n")
 
 
 def test_apply_patch_delete_file(tmp_path: Path) -> None:
@@ -574,9 +521,7 @@ def test_apply_patch_delete_file(tmp_path: Path) -> None:
 
     (tmp_path / "gone.txt").write_text("bye")
     patch = "*** Begin Patch\n*** Delete File: gone.txt\n*** End Patch\n"
-    res = json.loads(
-        dispatch_apply_patch(args_json=_args(patch=patch), workspace=tmp_path)
-    )
+    res = json.loads(dispatch_apply_patch(args_json=_args(patch=patch), workspace=tmp_path))
     assert res["applied"] is True
     assert not (tmp_path / "gone.txt").exists()
 
@@ -584,26 +529,15 @@ def test_apply_patch_delete_file(tmp_path: Path) -> None:
 def test_apply_patch_rejects_escape(tmp_path: Path) -> None:
     from corlinman_agent.coding import dispatch_apply_patch
 
-    patch = (
-        "*** Begin Patch\n"
-        "*** Add File: ../../evil.txt\n"
-        "+pwned\n"
-        "*** End Patch\n"
-    )
-    res = json.loads(
-        dispatch_apply_patch(args_json=_args(patch=patch), workspace=tmp_path)
-    )
+    patch = "*** Begin Patch\n*** Add File: ../../evil.txt\n+pwned\n*** End Patch\n"
+    res = json.loads(dispatch_apply_patch(args_json=_args(patch=patch), workspace=tmp_path))
     assert "workspace_escape" in res["error"]
 
 
 def test_apply_patch_malformed_envelope(tmp_path: Path) -> None:
     from corlinman_agent.coding import dispatch_apply_patch
 
-    res = json.loads(
-        dispatch_apply_patch(
-            args_json=_args(patch="not a patch"), workspace=tmp_path
-        )
-    )
+    res = json.loads(dispatch_apply_patch(args_json=_args(patch="not a patch"), workspace=tmp_path))
     assert "patch_parse_error" in res["error"]
 
 
@@ -619,9 +553,7 @@ def test_apply_patch_hunk_not_found(tmp_path: Path) -> None:
         "+replacement\n"
         "*** End Patch\n"
     )
-    res = json.loads(
-        dispatch_apply_patch(args_json=_args(patch=patch), workspace=tmp_path)
-    )
+    res = json.loads(dispatch_apply_patch(args_json=_args(patch=patch), workspace=tmp_path))
     assert "patch_apply_error" in res["error"]
     # File untouched — staging failed before any write.
     assert (tmp_path / "f.py").read_text() == "real content\n"
@@ -712,9 +644,7 @@ def test_search_excludes_git_dir_in_both_modes(tmp_path: Path) -> None:
         )
     )
     assert "real.py" in name_res["matches"]
-    assert not any(
-        p.startswith(".git") or "/.git/" in p for p in name_res["matches"]
-    )
+    assert not any(p.startswith(".git") or "/.git/" in p for p in name_res["matches"])
 
 
 # ---------------------------------------------------------------------------
@@ -729,15 +659,9 @@ async def test_run_shell_tail_truncates_and_spills_to_log(tmp_path: Path) -> Non
     # Emit 50_000 chars (5000 lines of 10 chars). Each line is unique so
     # we can confirm tail-bias (last lines present, first lines absent).
     cmd = (
-        "python3 -c \"\n"
-        "import sys\n"
-        "for i in range(5000):\n"
-        "    sys.stdout.write(f'{i:09d}\\n')\n"
-        "\""
+        "python3 -c \"\nimport sys\nfor i in range(5000):\n    sys.stdout.write(f'{i:09d}\\n')\n\""
     )
-    res = json.loads(
-        await dispatch_run_shell(args_json=_args(command=cmd), workspace=tmp_path)
-    )
+    res = json.loads(await dispatch_run_shell(args_json=_args(command=cmd), workspace=tmp_path))
 
     assert res["exit_code"] == 0
     assert res["truncated"] is True
@@ -813,11 +737,7 @@ def test_dispatch_revert_changes_list_mode(tmp_path: Path) -> None:
 
     (tmp_path / "f.txt").write_text("hi\n")
     snapshot(tmp_path, "first")
-    res = json.loads(
-        dispatch_revert_changes(
-            args_json=_args(mode="list"), workspace=tmp_path
-        )
-    )
+    res = json.loads(dispatch_revert_changes(args_json=_args(mode="list"), workspace=tmp_path))
     snaps = res["snapshots"]
     assert isinstance(snaps, list)
     # initial + first = 2 entries at minimum.
@@ -836,11 +756,7 @@ def test_dispatch_revert_changes_no_snapshots(tmp_path: Path) -> None:
     )
 
     assert ensure_repo(tmp_path) is True
-    res = json.loads(
-        dispatch_revert_changes(
-            args_json=_args(mode="last"), workspace=tmp_path
-        )
-    )
+    res = json.loads(dispatch_revert_changes(args_json=_args(mode="last"), workspace=tmp_path))
     assert res.get("error") == "no_snapshots"
 
 
@@ -856,9 +772,7 @@ def test_dispatch_revert_changes_default_mode_is_last(tmp_path: Path) -> None:
     (tmp_path / "f.txt").write_text("b\n")
     snapshot(tmp_path, "edit-b")
 
-    res = json.loads(
-        dispatch_revert_changes(args_json=_args(), workspace=tmp_path)
-    )
+    res = json.loads(dispatch_revert_changes(args_json=_args(), workspace=tmp_path))
     assert "reverted_to" in res
     assert (tmp_path / "f.txt").read_text() == "a\n"
 
@@ -867,17 +781,11 @@ def test_dispatch_revert_changes_rejects_bad_mode(tmp_path: Path) -> None:
     """Invalid mode strings return an ``args_invalid`` envelope."""
     from corlinman_agent.coding import dispatch_revert_changes
 
-    res = json.loads(
-        dispatch_revert_changes(
-            args_json=_args(mode="bogus"), workspace=tmp_path
-        )
-    )
+    res = json.loads(dispatch_revert_changes(args_json=_args(mode="bogus"), workspace=tmp_path))
     assert "args_invalid" in res["error"]
 
 
-def test_snapshot_handles_no_git_gracefully(
-    tmp_path: Path, monkeypatch: object
-) -> None:
+def test_snapshot_handles_no_git_gracefully(tmp_path: Path, monkeypatch: object) -> None:
     """When ``git`` is missing from PATH, snapshot() returns None silently."""
     import shutil
 
@@ -920,9 +828,7 @@ def test_snapshot_sanitises_long_multiline_label(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_snapshot_resolves_sha_without_subprocess(
-    tmp_path: Path, monkeypatch: object
-) -> None:
+def test_snapshot_resolves_sha_without_subprocess(tmp_path: Path, monkeypatch: object) -> None:
     """After ``ensure_repo`` seeds the repo, a snapshot must run only
     TWO subprocess calls (``add`` + ``commit``) and resolve the SHA by
     reading ``.git/HEAD`` directly.
@@ -960,13 +866,10 @@ def test_snapshot_resolves_sha_without_subprocess(
     # Exactly two git subcommands: ``add -A`` and ``commit ... -m ...``.
     # The third (``rev-parse --short HEAD``) is GONE — that's the perf win.
     assert len(calls) == 2, (
-        f"expected 2 git subprocess calls (add + commit), got {len(calls)}: "
-        f"{calls!r}"
+        f"expected 2 git subprocess calls (add + commit), got {len(calls)}: {calls!r}"
     )
     subcommands = [c[1] for c in calls]
-    assert subcommands == ["add", "commit"], (
-        f"unexpected subcommand sequence: {subcommands!r}"
-    )
+    assert subcommands == ["add", "commit"], f"unexpected subcommand sequence: {subcommands!r}"
 
 
 def test_snapshot_handles_detached_head(tmp_path: Path) -> None:
@@ -1022,18 +925,13 @@ def test_snapshot_handles_packed_refs(tmp_path: Path) -> None:
     # Move the ref from loose form into a fake packed-refs file.
     loose.unlink()
     packed = tmp_path / ".git" / "packed-refs"
-    packed.write_text(
-        "# pack-refs with: peeled fully-peeled sorted\n"
-        f"{sha} {ref_path}\n"
-    )
+    packed.write_text(f"# pack-refs with: peeled fully-peeled sorted\n{sha} {ref_path}\n")
 
     resolved = snap_mod._read_git_head_sha(tmp_path)
     assert resolved == sha
 
 
-def test_snapshot_head_parse_failure_returns_none(
-    tmp_path: Path, monkeypatch: object
-) -> None:
+def test_snapshot_head_parse_failure_returns_none(tmp_path: Path, monkeypatch: object) -> None:
     """When ``.git/HEAD`` is unreadable / malformed the helper returns
     ``None`` and the snapshot logs + returns ``None`` — must NOT crash.
     """
@@ -1080,7 +978,7 @@ def test_coding_tools_set_includes_revert_changes() -> None:
     schemas = coding_tool_schemas()
     names = {s["function"]["name"] for s in schemas}
     assert "revert_changes" in names
-    assert len(schemas) == len(CODING_TOOLS) == 9
+    assert len(schemas) == len(CODING_TOOLS) == 10
 
 
 # ---------------------------------------------------------------------------
@@ -1189,9 +1087,7 @@ def test_dispatch_read_file_no_state_works_as_before(tmp_path: Path) -> None:
     with_state_json = dispatch_read_file(
         args_json=_args(path="f.txt"), workspace=tmp_path, state=None
     )
-    without_state_json = dispatch_read_file(
-        args_json=_args(path="f.txt"), workspace=tmp_path
-    )
+    without_state_json = dispatch_read_file(args_json=_args(path="f.txt"), workspace=tmp_path)
     assert json.loads(with_state_json) == json.loads(without_state_json)
 
 
@@ -1245,9 +1141,7 @@ def test_edit_file_exact_still_wins_over_fuzzy(tmp_path: Path) -> None:
     (tmp_path / "f.py").write_text("alpha\nbeta\ngamma\n")
     res = json.loads(
         dispatch_edit_file(
-            args_json=_args(
-                path="f.py", old_string="beta", new_string="BETA"
-            ),
+            args_json=_args(path="f.py", old_string="beta", new_string="BETA"),
             workspace=tmp_path,
         )
     )
@@ -1257,13 +1151,7 @@ def test_edit_file_exact_still_wins_over_fuzzy(tmp_path: Path) -> None:
 
 def test_edit_file_rejects_multiple_fuzzy_matches(tmp_path: Path) -> None:
     """Multiple fuzzy spans without replace_all → not_unique error."""
-    body = (
-        "def f(x):  \n"
-        "    return x\n"
-        "\n"
-        "def f(x):  \n"
-        "    return x\n"
-    )
+    body = "def f(x):  \n    return x\n\ndef f(x):  \n    return x\n"
     (tmp_path / "dup.py").write_text(body)
     res = json.loads(
         dispatch_edit_file(
@@ -1297,9 +1185,7 @@ def test_edit_file_staleness_guard(tmp_path: Path) -> None:
     os.utime(path, (bumped, bumped))
     res = json.loads(
         dispatch_edit_file(
-            args_json=_args(
-                path="stale.py", old_string="x = 1", new_string="x = 2"
-            ),
+            args_json=_args(path="stale.py", old_string="x = 1", new_string="x = 2"),
             workspace=tmp_path,
             state=state,
         )
@@ -1476,3 +1362,160 @@ def test_read_file_truncation_emits_next_offset_and_hint(tmp_path: Path) -> None
     assert "hint" in res
     # next_offset is the first line NOT fully shown.
     assert res["shown"][1] == res["next_offset"] - 1
+
+
+def test_write_preserves_existing_file_mode(tmp_path: Path) -> None:
+    """Atomic write (tmp→replace) must keep an existing file's mode — e.g. the
+    executable bit — not reset it to 0644 (ABSORB_MATRIX Dim 4)."""
+    import os as _os
+    import stat as _stat
+
+    target = tmp_path / "script.sh"
+    target.write_text("#!/bin/sh\necho old\n")
+    _os.chmod(target, 0o755)
+
+    res = json.loads(
+        dispatch_write_file(
+            args_json=_args(path="script.sh", content="#!/bin/sh\necho new\n"),
+            workspace=tmp_path,
+        )
+    )
+    assert res["action"] == "overwritten"
+    assert target.read_text() == "#!/bin/sh\necho new\n"
+    assert _stat.S_IMODE(target.stat().st_mode) == 0o755  # executable bit kept
+
+
+def test_write_leaves_no_staging_temp_file(tmp_path: Path) -> None:
+    """The atomic staging temp file is renamed onto the target, never left."""
+    dispatch_write_file(args_json=_args(path="a.txt", content="hello"), workspace=tmp_path)
+    leftovers = [p.name for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
+    assert leftovers == []
+    assert (tmp_path / "a.txt").read_text() == "hello"
+
+
+# ---------------------------------------------------------------------------
+# notebook_edit (.ipynb cell replace / insert / delete) — ABSORB_MATRIX Dim 4
+# ---------------------------------------------------------------------------
+
+
+def _code_cell(src: str) -> dict:
+    return {
+        "cell_type": "code",
+        "metadata": {},
+        "source": src,
+        "outputs": [{"output_type": "stream", "text": "old"}],
+        "execution_count": 3,
+    }
+
+
+def _write_nb(tmp_path: Path, cells: list) -> None:
+    nb = {"cells": cells, "metadata": {}, "nbformat": 4, "nbformat_minor": 5}
+    (tmp_path / "nb.ipynb").write_text(json.dumps(nb))
+
+
+def test_notebook_edit_replace_clears_stale_outputs(tmp_path: Path) -> None:
+    _write_nb(tmp_path, [_code_cell("print(1)\n"), _code_cell("print(2)\n")])
+    res = json.loads(
+        dispatch_notebook_edit(
+            args_json=_args(path="nb.ipynb", cell_number=0, new_source="print('hi')\n"),
+            workspace=tmp_path,
+        )
+    )
+    assert res["action"] == "replaced" and res["cells_total"] == 2
+    nb = json.loads((tmp_path / "nb.ipynb").read_text())
+    assert nb["cells"][0]["source"] == ["print('hi')\n"]
+    assert nb["cells"][0]["outputs"] == []  # stale outputs cleared
+    assert nb["cells"][0]["execution_count"] is None
+
+
+def test_notebook_edit_insert_markdown(tmp_path: Path) -> None:
+    _write_nb(tmp_path, [_code_cell("a\n")])
+    res = json.loads(
+        dispatch_notebook_edit(
+            args_json=_args(
+                path="nb.ipynb",
+                cell_number=0,
+                new_source="# title\n",
+                edit_mode="insert",
+                cell_type="markdown",
+            ),
+            workspace=tmp_path,
+        )
+    )
+    assert res["action"] == "inserted"
+    nb = json.loads((tmp_path / "nb.ipynb").read_text())
+    assert len(nb["cells"]) == 2
+    assert nb["cells"][0]["cell_type"] == "markdown"
+    assert nb["cells"][0]["source"] == ["# title\n"]
+
+
+def test_notebook_edit_delete(tmp_path: Path) -> None:
+    _write_nb(tmp_path, [_code_cell("a\n"), _code_cell("b\n")])
+    res = json.loads(
+        dispatch_notebook_edit(
+            args_json=_args(path="nb.ipynb", cell_number=0, edit_mode="delete"),
+            workspace=tmp_path,
+        )
+    )
+    assert res["action"] == "deleted"
+    nb = json.loads((tmp_path / "nb.ipynb").read_text())
+    assert len(nb["cells"]) == 1 and nb["cells"][0]["source"] == "b\n"
+
+
+def test_notebook_edit_out_of_range(tmp_path: Path) -> None:
+    _write_nb(tmp_path, [_code_cell("a\n")])
+    res = json.loads(
+        dispatch_notebook_edit(
+            args_json=_args(path="nb.ipynb", cell_number=5, new_source="x"),
+            workspace=tmp_path,
+        )
+    )
+    assert "cell_index_out_of_range" in res["error"]
+
+
+def test_notebook_edit_missing_file(tmp_path: Path) -> None:
+    res = json.loads(
+        dispatch_notebook_edit(
+            args_json=_args(path="nope.ipynb", cell_number=0, new_source="x"),
+            workspace=tmp_path,
+        )
+    )
+    assert "not_found" in res["error"]
+
+
+def test_new_file_write_respects_umask(tmp_path: Path) -> None:
+    """A NEW file's mode is 0o644 masked by the process umask (workflow
+    audit finding) — the old O_CREAT path applied the umask; the atomic
+    tmp-file path must not silently widen it back to world-readable."""
+    import os
+    import stat as _stat
+
+    prev = os.umask(0o077)
+    try:
+        json.loads(
+            dispatch_write_file(
+                args_json=_args(path="secret.txt", content="s"),
+                workspace=tmp_path,
+            )
+        )
+        mode = _stat.S_IMODE(os.stat(tmp_path / "secret.txt").st_mode)
+        assert mode == 0o600, oct(mode)
+    finally:
+        os.umask(prev)
+
+
+def test_existing_file_write_preserves_mode(tmp_path: Path) -> None:
+    """Overwriting keeps the target's existing mode (e.g. executable bit)."""
+    import os
+    import stat as _stat
+
+    target = tmp_path / "tool.sh"
+    target.write_text("#!/bin/sh\n")
+    os.chmod(target, 0o755)
+    json.loads(
+        dispatch_write_file(
+            args_json=_args(path="tool.sh", content="#!/bin/sh\necho hi\n"),
+            workspace=tmp_path,
+        )
+    )
+    assert _stat.S_IMODE(os.stat(target).st_mode) == 0o755

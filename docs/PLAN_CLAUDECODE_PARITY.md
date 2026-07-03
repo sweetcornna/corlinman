@@ -1,5 +1,17 @@
 # PLAN — claude-code 1:1 feature parity (opencode secondary) + cross-channel commands
 
+> **STATUS REFRESH (2026-07-02):** the wave `status` column below predates several
+> shipped waves and is **stale**. The authoritative, re-verified current state is
+> `audit/ABSORB_MATRIX_2026-07-02.md` (all 12 dims re-checked against the live tree
+> with file:line evidence). Verified **shipped since this table** (matrix said
+> partial/missing): compaction `/compact`+circuit-breaker+event (cluster 4), MCP
+> advertise+route into the loop (cluster 13, v1.22.0), CORLINMAN.md discovery/@include
+> (cluster 5), permission arg-pattern engine `Bash(cmd:*)` + compound decomposition
+> (clusters 1-2), print/stream-json + `--max-turns` (cluster 9), subagent background
+> exec + live panel + kill (cluster 16). Landed 2026-07-02: MCP tool-face (v1.22.0),
+> jittered backoff (v1.22.2). Remaining adopt items + decisions are ranked in the
+> matrix's Landing plan. Treat the table below as historical.
+
 > Goal (2026-06-11): 完整 1:1 实现 claude-code 所有功能(opencode 为辅),强化系统能力;
 > 并让这些指令(slash commands)在所有渠道可用(console / web / QQ / Telegram / Discord / …)。
 > Source matrix: `docs/parity-matrix-2026-06-11.json` (5-agent workflow sweep of

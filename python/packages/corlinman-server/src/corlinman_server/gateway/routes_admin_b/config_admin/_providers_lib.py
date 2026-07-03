@@ -955,18 +955,32 @@ def _provider_models_url(base_url: str) -> str:
     """Return the OpenAI-shape model-list URL for an operator base URL.
 
     Operators commonly paste either the origin (``https://relay``), an API
-    root (``https://relay/api``), or a versioned root
-    (``https://relay/api/v1``, ``https://relay/api/v4``). Treat a
-    trailing ``/v<digits>`` as already versioned so the probe does not
-    request paths like ``/v1/v1/models`` or ``/v4/v1/models``.
+    root (``https://relay/api``), a versioned root (``https://relay/api/v1``,
+    ``https://relay/api/v4``), or a full endpoint URL
+    (``https://relay/v1/chat/completions``). Treat a trailing ``/v<digits>``
+    as already versioned so the probe does not request paths like
+    ``/v1/v1/models``, and trim pasted endpoint suffixes back to the API root
+    first so it never requests ``…/chat/completions/v1/models``.
     """
     from urllib.parse import urlsplit, urlunsplit
 
+    # Canonical endpoint-suffix list shared with the chat path
+    # (``complete_openai_base_url``) so probe + chat client normalize a pasted
+    # endpoint URL to the same API root.
+    from corlinman_providers.openai_provider import _OPENAI_ENDPOINT_SUFFIXES
+
     parts = urlsplit(str(base_url).strip().rstrip("/"))
     path = parts.path.rstrip("/")
-    if path.endswith("/models"):
-        models_path = path
-    elif re.search(r"/v\d+$", path):
+    lowered = path.lower()
+    for suffix in _OPENAI_ENDPOINT_SUFFIXES:
+        if lowered.endswith(suffix):
+            path = path[: -len(suffix)]
+            break
+    if re.search(r"/v\d+$", path) or path.lower().endswith("/openai"):
+        # Already an API root (versioned, or a bare ``/openai`` mount like
+        # Gemini's ``/v1beta/openai``) — append only ``/models``, never
+        # ``/v1/models`` (mirrors ``complete_openai_base_url`` so the probe
+        # and the chat client resolve to the same root).
         models_path = f"{path}/models"
     else:
         models_path = f"{path}/v1/models"

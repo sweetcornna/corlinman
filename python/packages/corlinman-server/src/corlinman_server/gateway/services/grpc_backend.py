@@ -233,13 +233,26 @@ def build_grpc_chat_service(state: Any) -> Any | None:
     client = AgentClient(channel)
     backend = GrpcAgentChatBackend(client)
     tool_executor = build_tool_executor(state)
+    # Discovered external-MCP tool schemas, computed once at boot
+    # (entrypoint's register_mcp_tools). Injected into every ChatStart.tools_json
+    # so the servicer advertises them to the model; execution routes via the
+    # mcp-kind registry entries synthesized alongside them.
+    extras = getattr(state, "extras", None)
+    mcp_tools_json = (
+        extras.get("mcp_tools_json", b"") if isinstance(extras, dict) else b""
+    )
     log.info(
         "grpc_backend.chat_service_built backend=GrpcAgentChatBackend "
-        "target=%s tool_executor_wired=%s",
+        "target=%s tool_executor_wired=%s mcp_tools_advertised=%s",
         target,
         getattr(tool_executor, "is_wired", False),
+        bool(mcp_tools_json),
     )
-    return ChatService(backend, tool_executor=tool_executor)
+    return ChatService(
+        backend,
+        tool_executor=tool_executor,
+        advertised_tools_json=mcp_tools_json or b"",
+    )
 
 
 def build_tool_executor(state: Any) -> Any:

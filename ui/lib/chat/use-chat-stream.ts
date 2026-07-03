@@ -27,7 +27,11 @@ import {
   type ChatCompletionToolDef,
   type ReasoningEffort,
 } from "@/lib/api/chat";
-import { fetchTurnEvents, listSessionTurns } from "@/lib/api/sessions";
+import {
+  fetchTurnEvents,
+  listSessionTurns,
+  type TurnEventEnvelope,
+} from "@/lib/api/sessions";
 import { buildMessageContent } from "@/lib/chat/content-parts";
 import {
   openLiveEventStream,
@@ -104,6 +108,20 @@ export interface UseChatStreamResult {
 function genId(): string {
   return `m_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
 }
+
+// Cadence of the resume poll backstop (ms). In the two-process
+// (grpc_agent) production deploy the live SSE tail of an
+// already-in-progress turn proved unreliable after a navigate-away/back —
+// the bubble froze at the backlog snapshot and only refreshed on a manual
+// re-entry. This interval IS that re-entry, automated: it re-fetches the
+// journal past our cursor and reduces the fresh events. 1.5s is small
+// enough to read as "live" for tool/step bursts, large enough that an
+// idle resumed turn costs one cheap indexed replay per tick.
+const RESUME_POLL_MS = 1_500;
+// Run the heavier turn-status completion check every Nth poll tick rather
+// than every tick — the event poll already finalizes on a terminal event,
+// so this is only the safety net for a turn that journaled none.
+const RESUME_STATUS_EVERY = 4;
 
 /**
  * Reduce a `ChatEvent` into a `ChatMessage` (mutates a draft for speed —
@@ -296,6 +314,10 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
   const statusPollRef = React.useRef<ReturnType<typeof setInterval> | null>(
     null,
   );
+  // Highest journal sequence applied for the resumed turn — the shared
+  // cursor for the live SSE tail AND the poll backstop in
+  // `resumeInFlight` (see the poll-backstop note there).
+  const resumeSeqRef = React.useRef<number>(-1);
   const qc = useQueryClient();
 
   /** Retire every id the current pending draft is known under. */
@@ -754,12 +776,29 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
     [messages],
   );
 
+  /** Apply one journal envelope to the resumed bubble, advancing the
+   *  shared cursor so the SSE tail and the poll backstop never re-read or
+   *  skip an event. The (turn, sequence) dedup in `reduceEvent` makes a
+   *  re-delivery from the other source a no-op. */
+  const applyResumeEnvelope = React.useCallback(
+    (env: LiveEvent | TurnEventEnvelope) => {
+      const seq = (env as { sequence?: number }).sequence;
+      if (typeof seq === "number" && seq > resumeSeqRef.current) {
+        resumeSeqRef.current = seq;
+      }
+      const chatEvent = liveEventToChatEvent(env as LiveEvent);
+      if (chatEvent) reduceEvent(chatEvent);
+    },
+    [reduceEvent],
+  );
+
   const resumeInFlight = React.useCallback(async () => {
     const key = (args.sessionKey ?? "").trim();
     if (!key) return;
     // Something already owns the pending bubble — nothing to reattach.
-    if (fetchActiveRef.current || pendingRef.current || journalTurnRef.current)
+    if (fetchActiveRef.current || pendingRef.current || journalTurnRef.current) {
       return;
+    }
 
     const turns = await listSessionTurns(key, 1);
     const latest = turns[0];
@@ -767,10 +806,12 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
     const turnId = latest.turn_id;
     if (retiredTurnIdsRef.current.has(turnId)) return;
     // Re-check after the await: a runTurn / second resume may have won.
-    if (fetchActiveRef.current || pendingRef.current || journalTurnRef.current)
+    if (fetchActiveRef.current || pendingRef.current || journalTurnRef.current) {
       return;
+    }
 
     journalTurnRef.current = turnId;
+    resumeSeqRef.current = -1;
     const draft: ChatMessage = {
       id: `resume_${turnId}`,
       turnId,
@@ -790,12 +831,7 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
     // from exactly where the backlog ended. The (turn, sequence) dedup
     // absorbs any overlap.
     const backlog = await fetchTurnEvents(key, turnId);
-    let lastSeq = -1;
-    for (const env of backlog) {
-      if (env.sequence > lastSeq) lastSeq = env.sequence;
-      const chatEvent = liveEventToChatEvent(env as LiveEvent);
-      if (chatEvent) reduceEvent(chatEvent);
-    }
+    for (const env of backlog) applyResumeEnvelope(env);
     // A terminal event in the backlog already finalized the turn.
     if (journalTurnRef.current !== turnId) return;
 
@@ -805,26 +841,41 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
       // A bare fresh stream (no id) gets live-only semantics server-side
       // (the poll cursor seeds at the latest sequence); naming the turn
       // keeps full delivery for the in-flight turn we are reattaching to.
-      initialLastEventId: `${turnId}:${lastSeq}`,
-      onEvent: (live) => {
-        const chatEvent = liveEventToChatEvent(live);
-        if (chatEvent) reduceEvent(chatEvent);
-      },
+      initialLastEventId: `${turnId}:${resumeSeqRef.current}`,
+      onEvent: applyResumeEnvelope,
     });
 
-    // Safety net: an agent process that journals no events (or a stalled
-    // tail) would otherwise leave the bubble pending forever. Poll the
-    // turn status; on a terminal flip, finalize — the transcript refetch
-    // inside finalize replaces the partial bubble with journal truth.
+    // Poll backstop — the load-bearing fix for "resume doesn't stream".
+    // In the two-process production deploy the live SSE tail relies on a
+    // cross-process journal poll that, empirically, does not reliably
+    // tail an already-in-progress turn after a navigate-away/back: the
+    // bubble froze at the backlog snapshot and new tool calls only
+    // appeared on a manual re-entry (which re-fetched the journal). This
+    // interval IS that re-entry, automated — it re-fetches journal events
+    // past our cursor and reduces the fresh ones every RESUME_POLL_MS.
+    // Because it reuses the exact `fetchTurnEvents` replay re-entry uses,
+    // and `reduceEvent` dedups by (turn, sequence), it streams correctly
+    // whether or not the SSE tail also fires. It doubles as the
+    // turn-completion safety net (a turn that journals no terminal event
+    // would otherwise leave the bubble pending forever) via a periodic
+    // status check every RESUME_STATUS_EVERY ticks.
+    let pollTicks = 0;
     statusPollRef.current = setInterval(() => {
       if (journalTurnRef.current !== turnId) return;
-      void listSessionTurns(key, 1).then((ts) => {
+      pollTicks += 1;
+      void fetchTurnEvents(key, turnId, resumeSeqRef.current).then((events) => {
         if (journalTurnRef.current !== turnId) return;
-        const t = ts.find((x) => x.turn_id === turnId);
-        if (t && t.status !== "in_progress") finalizeJournalTurn();
+        for (const env of events) applyResumeEnvelope(env);
       });
-    }, 5_000);
-  }, [args.sessionKey, reduceEvent, finalizeJournalTurn]);
+      if (pollTicks % RESUME_STATUS_EVERY === 0) {
+        void listSessionTurns(key, 1).then((ts) => {
+          if (journalTurnRef.current !== turnId) return;
+          const t = ts.find((x) => x.turn_id === turnId);
+          if (t && t.status !== "in_progress") finalizeJournalTurn();
+        });
+      }
+    }, RESUME_POLL_MS);
+  }, [args.sessionKey, applyResumeEnvelope, finalizeJournalTurn]);
 
   const totals = React.useMemo(() => {
     let inputTokens = 0;

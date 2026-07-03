@@ -63,6 +63,14 @@ class SubagentStatusResponse(BaseModel):
     error: str | None = None
     summary: str = ""
     log_tail: str = ""
+    # W2.x — multi-agent panel extras. ``depth`` drives supervisor→worker
+    # nesting; ``activity`` is the Codex-style live current-action line;
+    # ``source`` distinguishes durable background rows from in-memory inline
+    # rows. Defaults keep the background path (``_status_to_response``)
+    # byte-compatible — background ``SubagentStatus`` has no such fields.
+    depth: int = 0
+    activity: str = ""
+    source: str = "background"
 
 
 class SubagentListResponse(BaseModel):
@@ -76,6 +84,36 @@ class SubagentListResponse(BaseModel):
 
 def _status_to_response(status: SubagentStatus) -> SubagentStatusResponse:
     return SubagentStatusResponse(**asdict(status))
+
+
+def _live_row_to_response(row: Any) -> SubagentStatusResponse:
+    """Map a :class:`LiveSubagentRow` (inline) to the wire model.
+
+    Duck-typed (``row.to_dict()``) so the route file doesn't import the
+    observability layer directly.
+    """
+    return SubagentStatusResponse(**row.to_dict())
+
+
+def _merged_rows(
+    store_rows: list[Any],
+    registry: Any | None,
+    *,
+    active_only: bool,
+) -> list[SubagentStatusResponse]:
+    """Merge durable background-store rows with in-memory inline-registry
+    rows into one wire-model list. Background rows win on ``request_id``
+    collision (durable store is the source of truth)."""
+    out: dict[str, SubagentStatusResponse] = {}
+    if registry is not None:
+        rows = registry.list_active() if active_only else registry.list_all()
+        for row in rows:
+            resp = _live_row_to_response(row)
+            out[resp.request_id] = resp
+    for status in store_rows:
+        resp = _status_to_response(status)
+        out[resp.request_id] = resp  # background wins on collision
+    return list(out.values())
 
 
 def _error(
@@ -116,6 +154,19 @@ def _resolve_store(state: AdminState) -> SubagentTaskStore | None:
     inner = getattr(dispatcher, "store", None)
     if inner is not None and hasattr(inner, "get"):
         return cast("SubagentTaskStore", inner)
+    return None
+
+
+def _resolve_live_registry(state: AdminState) -> Any | None:
+    """Resolve the in-process :class:`LiveSubagentRegistry` off state.
+
+    Duck-typed (``list_all`` / ``list_active``) so tests can hand in a fake.
+    Returns ``None`` on degraded boots (no emitter wired) — callers then fall
+    back to the background store alone.
+    """
+    registry = getattr(state, "live_subagent_registry", None)
+    if registry is not None and hasattr(registry, "list_all"):
+        return registry
     return None
 
 

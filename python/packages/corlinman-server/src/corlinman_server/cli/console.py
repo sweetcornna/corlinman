@@ -130,6 +130,43 @@ def _load_config(data_dir: Path) -> dict[str, Any]:
     show_default=True,
     help="Exit the REPL after N completed turns (0 = unlimited).",
 )
+@click.option(
+    "-c",
+    "--continue",
+    "continue_latest",
+    is_flag=True,
+    help=(
+        "Resume the most recent session from the journal (like --session "
+        "with the newest key; an explicit --session wins)."
+    ),
+)
+@click.option(
+    "--system-prompt",
+    "system_prompt",
+    default=None,
+    metavar="TEXT",
+    help=("Replace the default system prompt (and project memory) wholesale for this run."),
+)
+@click.option(
+    "--append-system-prompt",
+    "append_system_prompt",
+    default=None,
+    metavar="TEXT",
+    help=(
+        "Append TEXT after the system prompt in effect (the default "
+        "composition or a --system-prompt override)."
+    ),
+)
+@click.option(
+    "--permission-mode",
+    type=click.Choice(["default", "acceptEdits", "plan", "bypass"], case_sensitive=False),
+    default=None,
+    help=(
+        "Initial permission mode for the embedded agent's tool gate "
+        "(switch later with /permissions). Overrides "
+        "$CORLINMAN_AGENT_PERMISSION_MODE."
+    ),
+)
 def console(
     prompt: tuple[str, ...],
     attach: str | None,
@@ -141,6 +178,10 @@ def console(
     tool_progress: str,
     output_format: str,
     max_turns: int,
+    continue_latest: bool,
+    system_prompt: str | None,
+    append_system_prompt: str | None,
+    permission_mode: str | None,
 ) -> None:
     """Interactive agent console (REPL) — the CLI face of the corlinman brain.
 
@@ -163,6 +204,19 @@ def console(
         os.environ.setdefault("CORLINMAN_DATA_DIR", str(resolved_data_dir))
     config = _load_config(resolved_data_dir)
     prompt_text = " ".join(prompt).strip() or None
+    if permission_mode:
+        # Zero-plumbing seam: the embedded servicer's PermissionGate.from_env
+        # reads this at construction (inside EmbeddedBrain.start), so the flag
+        # governs the gate without touching the request path. click's Choice
+        # is case-insensitive but preserves the user's casing — normalize to
+        # the canonical member so from_env sees the exact mode string.
+        canonical = {
+            "default": "default",
+            "acceptedits": "acceptEdits",
+            "plan": "plan",
+            "bypass": "bypass",
+        }[permission_mode.lower()]
+        os.environ["CORLINMAN_AGENT_PERMISSION_MODE"] = canonical
 
     try:
         code = asyncio.run(
@@ -178,6 +232,9 @@ def console(
                 output_format=output_format,
                 max_turns=max_turns,
                 attach_token=attach_token,
+                continue_latest=continue_latest,
+                system_prompt=system_prompt,
+                append_system_prompt=append_system_prompt,
             )
         )
     except KeyboardInterrupt:

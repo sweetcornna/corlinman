@@ -16,6 +16,11 @@ import type { ProviderView } from "@/lib/api";
 
 const fetchProvidersMock = vi.fn(async (): Promise<ProviderView[]> => []);
 const listCustomProvidersMock = vi.fn(async () => []);
+const fetchModelsMock = vi.fn(async (): Promise<unknown> => ({
+  default: "",
+  providers: [],
+  aliases: [],
+}));
 const getProviderModelsMock = vi.fn(async (name: string) => ({
   models: [{ id: `${name}-saved-model`, display_name: "Saved Model" }],
 }));
@@ -28,6 +33,14 @@ const probeProviderModelsMock = vi.fn(async (body: unknown) => {
     ],
   };
 });
+const upsertProviderMock = vi.fn(async (body: unknown) => {
+  void body;
+  return {};
+});
+const upsertAliasMock = vi.fn(async (body: unknown) => {
+  void body;
+  return {};
+});
 
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
@@ -35,7 +48,9 @@ vi.mock("@/lib/api", async () => {
     ...actual,
     fetchProviders: () => fetchProvidersMock(),
     listCustomProviders: () => listCustomProvidersMock(),
-    upsertProvider: vi.fn(),
+    fetchModels: () => fetchModelsMock(),
+    upsertProvider: (body: unknown) => upsertProviderMock(body),
+    upsertAlias: (body: unknown) => upsertAliasMock(body),
     deleteProvider: vi.fn(),
     deleteCustomProvider: vi.fn(),
     getProviderModels: (name: string) => getProviderModelsMock(name),
@@ -43,8 +58,16 @@ vi.mock("@/lib/api", async () => {
   };
 });
 
+const toastSuccessMock = vi.fn();
+const toastErrorMock = vi.fn();
+const toastWarningMock = vi.fn();
+
 vi.mock("sonner", () => ({
-  toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }),
+  toast: Object.assign(vi.fn(), {
+    success: (...args: unknown[]) => toastSuccessMock(...args),
+    error: (...args: unknown[]) => toastErrorMock(...args),
+    warning: (...args: unknown[]) => toastWarningMock(...args),
+  }),
 }));
 
 import { ProvidersAdminContent } from "./page";
@@ -90,8 +113,15 @@ describe("ProvidersAdminContent model discovery", () => {
     void i18next.changeLanguage("zh-CN");
     fetchProvidersMock.mockClear();
     listCustomProvidersMock.mockClear();
+    fetchModelsMock.mockClear();
+    fetchModelsMock.mockResolvedValue({ default: "", providers: [], aliases: [] });
     getProviderModelsMock.mockClear();
     probeProviderModelsMock.mockClear();
+    upsertProviderMock.mockClear();
+    upsertAliasMock.mockClear();
+    toastSuccessMock.mockClear();
+    toastErrorMock.mockClear();
+    toastWarningMock.mockClear();
   });
 
   afterEach(() => {
@@ -180,5 +210,384 @@ describe("ProvidersAdminContent model discovery", () => {
 
     expect(screen.queryByText("stale-model")).not.toBeInTheDocument();
     expect(screen.getByText("尚未获取模型。")).toBeInTheDocument();
+  });
+
+  it("adds a fetched model as an alias bound to the draft provider", async () => {
+    renderPage();
+
+    fireEvent.click(await screen.findByTestId("providers-add-btn"));
+    fireEvent.change(screen.getByLabelText("名称"), {
+      target: { value: "relay" },
+    });
+    fireEvent.change(screen.getByLabelText("Base URL"), {
+      target: { value: "https://relay.example/v1" },
+    });
+    fireEvent.click(screen.getByTestId("provider-fetch-models-btn"));
+    await screen.findByText("relay-model-a");
+
+    fireEvent.click(screen.getByTestId("provider-model-add-relay-model-a"));
+
+    await waitFor(() => {
+      // The brand-new draft is persisted exactly once so the alias has a
+      // real provider to reference.
+      expect(upsertProviderMock).toHaveBeenCalledTimes(1);
+      expect(upsertAliasMock).toHaveBeenCalledWith({
+        name: "relay-model-a",
+        provider: "relay",
+        model: "relay-model-a",
+      });
+    });
+    // The row flips to the "added" affordance.
+    expect(
+      await screen.findByTestId("provider-model-added-relay-model-a"),
+    ).toBeInTheDocument();
+  });
+
+  it("adds every fetched model with a single provider upsert via Add all", async () => {
+    renderPage();
+
+    fireEvent.click(await screen.findByTestId("providers-add-btn"));
+    fireEvent.change(screen.getByLabelText("名称"), {
+      target: { value: "relay" },
+    });
+    fireEvent.change(screen.getByLabelText("Base URL"), {
+      target: { value: "https://relay.example/v1" },
+    });
+    fireEvent.click(screen.getByTestId("provider-fetch-models-btn"));
+    await screen.findByText("relay-model-a");
+
+    fireEvent.click(screen.getByTestId("provider-add-all-models-btn"));
+
+    await waitFor(() => {
+      expect(upsertProviderMock).toHaveBeenCalledTimes(1);
+      expect(upsertAliasMock).toHaveBeenCalledWith({
+        name: "relay-model-a",
+        provider: "relay",
+        model: "relay-model-a",
+      });
+      expect(upsertAliasMock).toHaveBeenCalledWith({
+        name: "relay-model-b",
+        provider: "relay",
+        model: "relay-model-b",
+      });
+    });
+  });
+
+  it("disables the add control until the provider has a name", async () => {
+    renderPage();
+
+    fireEvent.click(await screen.findByTestId("providers-add-btn"));
+    // Base URL set but no name yet → cannot bind an alias.
+    fireEvent.change(screen.getByLabelText("Base URL"), {
+      target: { value: "https://relay.example/v1" },
+    });
+    fireEvent.click(screen.getByTestId("provider-fetch-models-btn"));
+    await screen.findByText("relay-model-a");
+
+    expect(screen.getByTestId("provider-model-add-relay-model-a")).toBeDisabled();
+    expect(screen.getByTestId("provider-add-all-models-btn")).toBeDisabled();
+  });
+
+  // ------------------------------------------------------------------
+  // Bug 1 — a dirty draft must be re-persisted before aliases bind
+  // ------------------------------------------------------------------
+
+  const STORED_ENV_PROVIDER: ProviderView = {
+    name: "relay",
+    kind: "openai_compatible",
+    enabled: true,
+    base_url: "https://saved.example/v1",
+    api_key_source: "env",
+    api_key_env_name: "RELAY_KEY",
+    params: {},
+    params_schema: { type: "object", properties: {} },
+  };
+
+  it("re-upserts the provider before binding aliases after base_url changed (Bug 1)", async () => {
+    fetchProvidersMock.mockResolvedValueOnce([STORED_ENV_PROVIDER]);
+    renderPage();
+
+    await screen.findByTestId("provider-row-relay");
+    fireEvent.click(screen.getByRole("button", { name: "编辑" }));
+    fireEvent.change(screen.getByLabelText("Base URL"), {
+      target: { value: "https://edited.example/v2" },
+    });
+
+    fireEvent.click(screen.getByTestId("provider-fetch-models-btn"));
+    fireEvent.click(
+      await screen.findByTestId("provider-model-add-relay-model-a"),
+    );
+
+    await waitFor(() => {
+      expect(upsertAliasMock).toHaveBeenCalledTimes(1);
+    });
+    // The edited config must be persisted so the alias binds against the
+    // NEW base_url, not the stale stored block.
+    expect(upsertProviderMock).toHaveBeenCalledTimes(1);
+    expect(upsertProviderMock.mock.calls[0]![0]).toMatchObject({
+      name: "relay",
+      base_url: "https://edited.example/v2",
+    });
+    // …and persisted BEFORE the alias references it.
+    expect(upsertProviderMock.mock.invocationCallOrder[0]!).toBeLessThan(
+      upsertAliasMock.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("does not re-upsert an untouched editing provider on add", async () => {
+    fetchProvidersMock.mockResolvedValueOnce([STORED_ENV_PROVIDER]);
+    renderPage();
+
+    await screen.findByTestId("provider-row-relay");
+    fireEvent.click(screen.getByRole("button", { name: "编辑" }));
+
+    fireEvent.click(screen.getByTestId("provider-fetch-models-btn"));
+    fireEvent.click(
+      await screen.findByTestId("provider-model-add-relay-model-a"),
+    );
+
+    await waitFor(() => {
+      expect(upsertAliasMock).toHaveBeenCalledTimes(1);
+    });
+    // Nothing changed this session → the stored block stays untouched.
+    expect(upsertProviderMock).not.toHaveBeenCalled();
+  });
+
+  // ------------------------------------------------------------------
+  // Bug 2 — never silently rebind an alias routed to another provider
+  // ------------------------------------------------------------------
+
+  it("skips candidates whose alias is bound to a different provider (Bug 2)", async () => {
+    fetchModelsMock.mockResolvedValue({
+      default: "",
+      providers: [],
+      aliases: [
+        // Same model id already routed to ANOTHER provider → conflict.
+        {
+          name: "relay-model-a",
+          provider: "other",
+          model: "relay-model-a",
+          params: {},
+          effective_params_schema: {},
+        },
+        // Already routed to THIS provider → safe (idempotent rebind).
+        {
+          name: "relay-model-b",
+          provider: "relay",
+          model: "relay-model-b",
+          params: {},
+          effective_params_schema: {},
+        },
+      ],
+    });
+    renderPage();
+
+    fireEvent.click(await screen.findByTestId("providers-add-btn"));
+    fireEvent.change(screen.getByLabelText("名称"), {
+      target: { value: "relay" },
+    });
+    fireEvent.change(screen.getByLabelText("Base URL"), {
+      target: { value: "https://relay.example/v1" },
+    });
+    fireEvent.click(screen.getByTestId("provider-fetch-models-btn"));
+    await screen.findByText("relay-model-a");
+
+    fireEvent.click(screen.getByTestId("provider-add-all-models-btn"));
+
+    await waitFor(() => {
+      expect(toastSuccessMock).toHaveBeenCalledTimes(1);
+    });
+    // Only the safe id was written; the conflicting alias was left alone.
+    expect(
+      upsertAliasMock.mock.calls.map((c) => (c[0] as { name: string }).name),
+    ).toEqual(["relay-model-b"]);
+    // The skip is surfaced to the operator with the conflict count.
+    expect(toastWarningMock).toHaveBeenCalledTimes(1);
+    expect(String(toastWarningMock.mock.calls[0]![0])).toContain("1");
+    // The conflicting model stays addable rather than flipping to "added".
+    expect(
+      screen.getByTestId("provider-model-add-relay-model-a"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("provider-model-added-relay-model-b"),
+    ).toBeInTheDocument();
+  });
+
+  it("adds nothing and never persists the draft when every candidate conflicts", async () => {
+    fetchModelsMock.mockResolvedValue({
+      default: "",
+      providers: [],
+      aliases: [
+        {
+          name: "relay-model-a",
+          provider: "other",
+          model: "relay-model-a",
+          params: {},
+          effective_params_schema: {},
+        },
+      ],
+    });
+    probeProviderModelsMock.mockResolvedValueOnce({
+      models: [{ id: "relay-model-a", display_name: "Relay Model A" }],
+    });
+    renderPage();
+
+    fireEvent.click(await screen.findByTestId("providers-add-btn"));
+    fireEvent.change(screen.getByLabelText("名称"), {
+      target: { value: "relay" },
+    });
+    fireEvent.change(screen.getByLabelText("Base URL"), {
+      target: { value: "https://relay.example/v1" },
+    });
+    fireEvent.click(screen.getByTestId("provider-fetch-models-btn"));
+    await screen.findByText("relay-model-a");
+
+    fireEvent.click(screen.getByTestId("provider-model-add-relay-model-a"));
+
+    await waitFor(() => {
+      expect(toastWarningMock).toHaveBeenCalledTimes(1);
+    });
+    expect(upsertAliasMock).not.toHaveBeenCalled();
+    expect(upsertProviderMock).not.toHaveBeenCalled();
+    expect(toastSuccessMock).not.toHaveBeenCalled();
+  });
+
+  // ------------------------------------------------------------------
+  // Bug 3 — Add / Add-all gate on draft.enabled
+  // ------------------------------------------------------------------
+
+  it("disables Add and Add-all while the draft provider is disabled (Bug 3)", async () => {
+    renderPage();
+
+    fireEvent.click(await screen.findByTestId("providers-add-btn"));
+    fireEvent.change(screen.getByLabelText("名称"), {
+      target: { value: "relay" },
+    });
+    fireEvent.change(screen.getByLabelText("Base URL"), {
+      target: { value: "https://relay.example/v1" },
+    });
+    // Toggle enabled → off (the dialog's only switch).
+    fireEvent.click(screen.getByRole("switch"));
+
+    fireEvent.click(screen.getByTestId("provider-fetch-models-btn"));
+    await screen.findByText("relay-model-a");
+
+    expect(
+      screen.getByTestId("provider-model-add-relay-model-a"),
+    ).toBeDisabled();
+    expect(screen.getByTestId("provider-add-all-models-btn")).toBeDisabled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pure helpers behind the fixes (dynamic import: exports are introduced by
+// the fix; the component suites above must run regardless).
+// ---------------------------------------------------------------------------
+
+describe("patchAffectsPersistedProvider (Bug 1 helper)", () => {
+  it.each([
+    [{ base_url: "https://x" }],
+    [{ api_key_value: "sk-1" }],
+    [{ api_key_env_name: "KEY" }],
+    [{ api_key_source: "value" as const }],
+    [{ kind: "openai" as const }],
+    [{ params: { a: 1 } }],
+    [{ enabled: false }],
+    [{ name: "n" }],
+  ])("flags provider-config patch %j", async (patch) => {
+    const { patchAffectsPersistedProvider } = await import("./page");
+    expect(patchAffectsPersistedProvider(patch)).toBe(true);
+  });
+
+  it("ignores an empty patch", async () => {
+    const { patchAffectsPersistedProvider } = await import("./page");
+    expect(patchAffectsPersistedProvider({})).toBe(false);
+  });
+});
+
+describe("extractAliasBindings / partitionAliasCandidates (Bug 2 helpers)", () => {
+  it("reads the v2 aliases array shape", async () => {
+    const { extractAliasBindings } = await import("./page");
+    expect(
+      extractAliasBindings({
+        aliases: [
+          { name: "a", provider: "p1", model: "a" },
+          { name: "b", provider: null, model: "b" },
+        ],
+      }),
+    ).toEqual([
+      { name: "a", provider: "p1" },
+      { name: "b", provider: null },
+    ]);
+  });
+
+  it("treats legacy record aliases as bound to an unknown provider", async () => {
+    const { extractAliasBindings } = await import("./page");
+    expect(extractAliasBindings({ aliases: { a: "gpt-4o" } })).toEqual([
+      { name: "a", provider: null },
+    ]);
+  });
+
+  it("returns [] for undefined / malformed data", async () => {
+    const { extractAliasBindings } = await import("./page");
+    expect(extractAliasBindings(undefined)).toEqual([]);
+    expect(extractAliasBindings({ aliases: 42 })).toEqual([]);
+  });
+
+  it("partitions safe vs conflicting candidates", async () => {
+    const { partitionAliasCandidates } = await import("./page");
+    const existing = [
+      { name: "mine", provider: "me" },
+      { name: "theirs", provider: "other" },
+      { name: "unbound", provider: null },
+    ];
+    expect(
+      partitionAliasCandidates(
+        ["mine", "theirs", "unbound", "fresh"],
+        existing,
+        "me",
+      ),
+    ).toEqual({
+      safe: ["mine", "fresh"],
+      conflicting: ["theirs", "unbound"],
+    });
+  });
+});
+
+describe("computeAddModelsGate (Bug 3 helper)", () => {
+  it("passes when identity is valid and the provider is enabled", async () => {
+    const { computeAddModelsGate } = await import("./page");
+    expect(
+      computeAddModelsGate({
+        nameOk: true,
+        baseUrlOk: true,
+        hasErrors: false,
+        enabled: true,
+      }),
+    ).toEqual({ canAdd: true, reason: null });
+  });
+
+  it("blocks a disabled provider", async () => {
+    const { computeAddModelsGate } = await import("./page");
+    expect(
+      computeAddModelsGate({
+        nameOk: true,
+        baseUrlOk: true,
+        hasErrors: false,
+        enabled: false,
+      }),
+    ).toEqual({ canAdd: false, reason: "disabled" });
+  });
+
+  it("reports identity problems ahead of the enabled gate", async () => {
+    const { computeAddModelsGate } = await import("./page");
+    expect(
+      computeAddModelsGate({
+        nameOk: false,
+        baseUrlOk: true,
+        hasErrors: false,
+        enabled: false,
+      }),
+    ).toEqual({ canAdd: false, reason: "needsIdentity" });
   });
 });

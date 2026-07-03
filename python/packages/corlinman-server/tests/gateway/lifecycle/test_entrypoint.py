@@ -104,9 +104,7 @@ def test_resolve_data_dir_falls_back_to_config_server_section(
     assert _resolve_data_dir(None, cfg) == tmp_path / "from-config"
 
     # CLI wins.
-    assert _resolve_data_dir(str(tmp_path / "from-cli"), cfg) == (
-        tmp_path / "from-cli"
-    )
+    assert _resolve_data_dir(str(tmp_path / "from-cli"), cfg) == (tmp_path / "from-cli")
 
     # Env wins over config.
     monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path / "from-env"))
@@ -273,3 +271,47 @@ def test_sigterm_exit_code_matches_rust_contract() -> None:
     """Both runtimes return 128 + SIGTERM = 143 on a clean signal-driven
     shutdown."""
     assert SIGTERM_EXIT_CODE == 143
+
+
+def test_lifespan_wires_mcp_tool_plane_after_plugin_hotload() -> None:
+    """Bug 1 (boot ordering): ``register_mcp_tools`` used to run before
+    ``_wire_plugin_hotload`` published ``state.plugin_registry``, so its
+    ``registry is None`` early-out dropped every synthesized routing entry —
+    advertised MCP tools all died with ``plugin_not_found``. The tool-plane
+    wiring must come after the registry exists."""
+    import inspect
+
+    from corlinman_server.gateway.lifecycle import entrypoint
+
+    src = inspect.getsource(entrypoint.build_app)
+    assert "_wire_mcp_tool_plane(" in src
+    assert src.index("_wire_plugin_hotload(") < src.index("_wire_mcp_tool_plane(")
+
+
+async def test_mcp_tool_plane_registers_entries_once_registry_exists() -> None:
+    """Bug 1, functionally: with the plugin registry created *later* in boot
+    (by ``_wire_plugin_hotload``), the tool-plane wiring must still land the
+    synthesized ``mcp`` entries in the live registry and stash the advertised
+    ``tools_json`` — it reads ``state.plugin_registry`` at call time."""
+    from types import SimpleNamespace
+
+    from corlinman_providers.plugins.registry import PluginRegistry
+    from corlinman_server.gateway.lifecycle.entrypoint import _wire_mcp_tool_plane
+
+    class _Tool:
+        name = "echo"
+        description = "Echo"
+        input_schema = {"type": "object"}  # noqa: RUF012 — descriptor stub
+
+    class _Manager:
+        def discovered_tools(self) -> dict[str, list[_Tool]]:
+            return {"srv": [_Tool()]}
+
+    # Boot ordering: the registry does not exist when the MCP manager
+    # connects; _wire_plugin_hotload publishes it later, before the wiring.
+    state = SimpleNamespace(config={}, extras={}, plugin_registry=None)
+    state.plugin_registry = PluginRegistry.from_roots([])  # created "later"
+    await _wire_mcp_tool_plane(state, _Manager())
+
+    assert state.plugin_registry.get("srv") is not None  # routing entry landed
+    assert state.extras["mcp_tools_json"]  # advertisement stashed

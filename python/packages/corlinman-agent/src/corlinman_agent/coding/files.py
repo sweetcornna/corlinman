@@ -12,10 +12,13 @@ Each ``dispatch_*`` returns a JSON envelope string for
 from __future__ import annotations
 
 import base64
+import contextlib
 import difflib
 import json
 import mimetypes
 import os
+import stat
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -51,9 +54,12 @@ def _require_read_before_edit() -> bool:
     produced out-of-band. Read at call time so tests/operators can flip
     it via the environment.
     """
-    return os.environ.get(
-        "CORLINMAN_REQUIRE_READ_BEFORE_EDIT", "1"
-    ).strip().lower() not in {"0", "false", "no", ""}
+    return os.environ.get("CORLINMAN_REQUIRE_READ_BEFORE_EDIT", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "",
+    }
 
 
 logger = structlog.get_logger(__name__)
@@ -61,6 +67,7 @@ logger = structlog.get_logger(__name__)
 READ_FILE_TOOL: str = "read_file"
 WRITE_FILE_TOOL: str = "write_file"
 EDIT_FILE_TOOL: str = "edit_file"
+NOTEBOOK_EDIT_TOOL: str = "notebook_edit"
 LIST_FILES_TOOL: str = "list_files"
 
 #: Directory entries never surfaced by ``list_files`` — noise / unsafe.
@@ -70,9 +77,7 @@ _LIST_SKIP = {".git", "__pycache__", "node_modules", ".venv", ".mypy_cache"}
 #: Reading these as UTF-8 text would produce garbage; instead the tool
 #: encodes them as base64 and returns a multimodal content-block list so
 #: vision models can see the image inline in the tool-result turn.
-IMAGE_EXTENSIONS: frozenset[str] = frozenset(
-    {".png", ".jpg", ".jpeg", ".gif", ".webp"}
-)
+IMAGE_EXTENSIONS: frozenset[str] = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp"})
 
 #: Explicit MIME overrides for the most common image formats; falls back
 #: to :func:`mimetypes.guess_type` for anything not in this table.
@@ -242,9 +247,7 @@ def list_files_tool_schema() -> dict[str, Any]:
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": (
-                            "Workspace-relative directory (default '.')."
-                        ),
+                        "description": ("Workspace-relative directory (default '.')."),
                     },
                 },
                 "required": [],
@@ -290,9 +293,7 @@ def _parse_pages(spec: Any, total: int) -> list[int]:
     return list(range(lo - 1, hi))
 
 
-def _read_pdf(
-    path: Path, rel: str, pages_spec: Any
-) -> str | list[dict[str, Any]]:
+def _read_pdf(path: Path, rel: str, pages_spec: Any) -> str | list[dict[str, Any]]:
     """Extract per-page text from a PDF via an OPTIONAL parser.
 
     Tries ``pypdf`` then ``pdfminer.six``; honours a ``pages`` selection
@@ -453,17 +454,11 @@ def _read_notebook(path: Path, rel: str) -> str:
                     tb = out.get("traceback", [])
                     if isinstance(tb, list):
                         rendered = "\n".join(str(t) for t in tb)
-                    rendered = (
-                        f"{out.get('ename', 'Error')}: "
-                        f"{out.get('evalue', '')}\n{rendered}"
-                    )
+                    rendered = f"{out.get('ename', 'Error')}: {out.get('evalue', '')}\n{rendered}"
                 rendered = rendered.strip()
                 if rendered:
                     if len(rendered) > _NOTEBOOK_OUTPUT_CHARS:
-                        rendered = (
-                            rendered[:_NOTEBOOK_OUTPUT_CHARS]
-                            + "\n... [output truncated]"
-                        )
+                        rendered = rendered[:_NOTEBOOK_OUTPUT_CHARS] + "\n... [output truncated]"
                     parts.append(f"  [out] {rendered}")
         blocks.append("\n".join(parts))
 
@@ -577,9 +572,7 @@ def dispatch_read_file(
     lines = text.splitlines()
     total = len(lines)
     chunk = lines[offset - 1 : offset - 1 + limit]
-    numbered = "\n".join(
-        f"{offset + i}\t{ln}" for i, ln in enumerate(chunk)
-    )
+    numbered = "\n".join(f"{offset + i}\t{ln}" for i, ln in enumerate(chunk))
     truncated = len(numbered) > MAX_READ_CHARS
     result: dict[str, Any] = {
         "path": workspace_rel(ws, path),
@@ -648,9 +641,7 @@ def dispatch_write_file(
     if not isinstance(content, str):
         return _err({"error": "args_invalid: 'content' must be a string"})
     if len(content.encode("utf-8")) > MAX_WRITE_BYTES:
-        return _err(
-            {"error": f"content_too_large: cap is {MAX_WRITE_BYTES} bytes"}
-        )
+        return _err({"error": f"content_too_large: cap is {MAX_WRITE_BYTES} bytes"})
 
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -664,31 +655,52 @@ def dispatch_write_file(
                 prior = path.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 prior = ""
-        # S3: open with ``O_NOFOLLOW`` so a leaf symlink that appeared
-        # between :func:`resolve_in_workspace` and the open (TOCTOU)
-        # is also refused at the syscall layer. The pre-check catches
-        # the static case; ``O_NOFOLLOW`` catches the race.
-        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _O_NOFOLLOW
-        try:
-            fd = os.open(path, flags, 0o644)
-        except OSError as exc:
-            # ELOOP from O_NOFOLLOW surfaces as OSError; treat as
-            # a workspace_escape so the model sees a consistent error.
-            msg = str(exc)
-            if "ELOOP" in msg or "Too many levels of symbolic links" in msg or getattr(exc, "errno", None) == 62:
-                return _err(
-                    {"path": raw.get("path"), "error": f"workspace_escape: O_NOFOLLOW refused: {exc}"}
-                )
+        # Atomic write (claude-code parity, ABSORB_MATRIX Dim 4): stage the
+        # bytes into a unique sibling temp file, fsync, then ``os.replace`` onto
+        # the target — a crash or partial write can never leave a truncated
+        # file. ``os.replace`` never follows a symlink at ``path``; we also
+        # refuse a symlinked target up front, preserving the O_NOFOLLOW
+        # workspace-escape posture of the old O_TRUNC path (a symlinked *parent*
+        # was already rejected by ``resolve_in_workspace`` above).
+        if path.is_symlink():
             return _err(
-                {"path": raw.get("path"), "error": f"write_failed: {exc}"}
+                {
+                    "path": raw.get("path"),
+                    "error": "workspace_escape: refusing to write through a symlink",
+                }
             )
+        # Preserve an existing file's mode (e.g. an executable bit); a new file
+        # gets 0644 MASKED BY THE PROCESS UMASK like the old O_CREAT path —
+        # mkstemp creates 0600 and a bare chmod(0o644) would silently widen a
+        # restrictive umask (0o077) back to world-readable. os.umask has no
+        # getter, so read it with the set/restore idiom (momentary, and tool
+        # dispatch is not concurrent within one process).
+        if existed:
+            mode = 0o644
+            with contextlib.suppress(OSError):
+                mode = stat.S_IMODE(os.stat(path).st_mode)
+        else:
+            current_umask = os.umask(0)
+            os.umask(current_umask)
+            mode = 0o644 & ~current_umask
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            tmp_fd, tmp_name = tempfile.mkstemp(
+                dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+            )
+        except OSError as exc:
+            return _err({"path": raw.get("path"), "error": f"write_failed: {exc}"})
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
                 fh.write(content)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.chmod(tmp_path, mode)
+            os.replace(tmp_path, path)
         except OSError as exc:
-            return _err(
-                {"path": raw.get("path"), "error": f"write_failed: {exc}"}
-            )
+            with contextlib.suppress(OSError):
+                tmp_path.unlink()
+            return _err({"path": raw.get("path"), "error": f"write_failed: {exc}"})
     except OSError as exc:
         return _err({"path": raw.get("path"), "error": f"write_failed: {exc}"})
     if state is not None:
@@ -714,6 +726,177 @@ def dispatch_write_file(
     return json.dumps(payload, ensure_ascii=False)
 
 
+def _atomic_replace_write(
+    path: Path, text: str, *, mode: int = 0o644, encoding: str = "utf-8"
+) -> None:
+    """Stage ``text`` into a unique temp sibling, fsync, then ``os.replace`` onto
+    ``path`` (atomic). The caller must have refused symlinks + resolved the path
+    for-write. Raises ``OSError`` on failure (temp cleaned up)."""
+    tmp_fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(tmp_fd, "w", encoding=encoding) as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp_path, mode)
+        os.replace(tmp_path, path)
+    except OSError:
+        with contextlib.suppress(OSError):
+            tmp_path.unlink()
+        raise
+
+
+def notebook_edit_tool_schema() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": NOTEBOOK_EDIT_TOOL,
+            "description": (
+                "Edit a Jupyter notebook (.ipynb): replace a cell's source, "
+                "insert a new cell before an index, or delete a cell. Cells are "
+                "addressed by 0-based index; the notebook is rewritten atomically."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Workspace-relative .ipynb path.",
+                    },
+                    "cell_number": {
+                        "type": "integer",
+                        "description": "0-based cell index.",
+                    },
+                    "new_source": {
+                        "type": "string",
+                        "description": "New cell source (required for replace / insert).",
+                    },
+                    "edit_mode": {
+                        "type": "string",
+                        "enum": ["replace", "insert", "delete"],
+                        "description": "replace (default) / insert before cell_number / delete.",
+                    },
+                    "cell_type": {
+                        "type": "string",
+                        "enum": ["code", "markdown"],
+                        "description": "Cell type for insert (default code).",
+                    },
+                },
+                "required": ["path", "cell_number"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def _nb_source_lines(text: str) -> list[str]:
+    """Split ``text`` into the line-list nbformat stores as a cell ``source``."""
+    return text.splitlines(keepends=True)
+
+
+def dispatch_notebook_edit(
+    *,
+    args_json: bytes | str,
+    workspace: Path | None = None,
+    state: FileState | None = None,
+) -> str:
+    """Edit a ``.ipynb`` cell (replace / insert / delete). JSON envelope; never raises."""
+    try:
+        raw = decode_args(args_json)
+        ws = resolve_workspace(workspace)
+        path = resolve_in_workspace(ws, raw.get("path"), for_write=True)
+    except CodingArgsInvalidError as exc:
+        return _err({"error": f"args_invalid: {exc.message}"})
+    except WorkspaceEscapeError as exc:
+        return _err({"error": f"workspace_escape: {exc}"})
+
+    edit_mode = str(raw.get("edit_mode") or "replace")
+    if edit_mode not in ("replace", "insert", "delete"):
+        return _err({"error": "args_invalid: edit_mode must be replace|insert|delete"})
+    idx = raw.get("cell_number")
+    if not isinstance(idx, int) or isinstance(idx, bool) or idx < 0:
+        return _err({"error": "args_invalid: 'cell_number' must be a non-negative integer"})
+    if path.is_symlink():
+        return _err({"error": "workspace_escape: refusing to write through a symlink"})
+    if not path.exists():
+        return _err({"error": f"not_found: {raw.get('path')}"})
+
+    try:
+        nb = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return _err({"error": f"notebook_read_failed: {exc}"})
+    if not isinstance(nb, dict) or not isinstance(nb.get("cells"), list):
+        return _err({"error": "invalid_notebook: missing 'cells' array"})
+    cells = nb["cells"]
+
+    if edit_mode == "insert":
+        if idx > len(cells):
+            return _err({"error": f"cell_index_out_of_range: {idx} > {len(cells)}"})
+        ct = str(raw.get("cell_type") or "code")
+        if ct not in ("code", "markdown"):
+            return _err({"error": "args_invalid: cell_type must be code|markdown"})
+        src = raw.get("new_source")
+        if not isinstance(src, str):
+            return _err({"error": "args_invalid: 'new_source' must be a string for insert"})
+        new_cell: dict[str, Any] = {
+            "cell_type": ct,
+            "metadata": {},
+            "source": _nb_source_lines(src),
+        }
+        if ct == "code":
+            new_cell["outputs"] = []
+            new_cell["execution_count"] = None
+        cells.insert(idx, new_cell)
+        action = "inserted"
+    else:
+        if idx >= len(cells):
+            return _err({"error": f"cell_index_out_of_range: {idx} >= {len(cells)}"})
+        if edit_mode == "delete":
+            cells.pop(idx)
+            action = "deleted"
+        else:  # replace
+            src = raw.get("new_source")
+            if not isinstance(src, str):
+                return _err({"error": "args_invalid: 'new_source' must be a string for replace"})
+            cell = cells[idx]
+            if not isinstance(cell, dict):
+                return _err({"error": "invalid_notebook: cell is not an object"})
+            cell["source"] = _nb_source_lines(src)
+            # A code cell whose source changed has stale outputs — clear them.
+            if cell.get("cell_type") == "code":
+                cell["outputs"] = []
+                cell["execution_count"] = None
+            action = "replaced"
+
+    out_text = json.dumps(nb, indent=1, ensure_ascii=False) + "\n"
+    if len(out_text.encode("utf-8")) > MAX_WRITE_BYTES:
+        return _err({"error": f"content_too_large: cap is {MAX_WRITE_BYTES} bytes"})
+    try:
+        file_mode = stat.S_IMODE(os.stat(path).st_mode)
+    except OSError:
+        file_mode = 0o644
+    try:
+        _atomic_replace_write(path, out_text, mode=file_mode)
+    except OSError as exc:
+        return _err({"error": f"write_failed: {exc}"})
+
+    if state is not None:
+        state.forget(path)
+        state.mark_seen(path)
+    return json.dumps(
+        {
+            "path": workspace_rel(ws, path),
+            "action": action,
+            "cell_number": idx,
+            "cells_total": len(cells),
+        },
+        ensure_ascii=False,
+    )
+
+
 def _line_span_offsets(text: str) -> list[tuple[int, int]]:
     """Return ``[(line_start, line_end_exclusive_of_newline)]`` per line.
 
@@ -736,9 +919,7 @@ def _line_span_offsets(text: str) -> list[tuple[int, int]]:
     return spans
 
 
-def _fuzzy_line_matches(
-    text: str, old: str, transform
-) -> list[tuple[int, int]]:
+def _fuzzy_line_matches(text: str, old: str, transform) -> list[tuple[int, int]]:
     """Find line-aligned matches of ``old`` in ``text`` under ``transform``.
 
     ``transform`` is applied per-line on both sides before comparing.
@@ -906,9 +1087,7 @@ def dispatch_edit_file(
     old = raw.get("old_string")
     new = raw.get("new_string")
     if not isinstance(old, str) or not isinstance(new, str):
-        return _err(
-            {"error": "args_invalid: old_string/new_string must be strings"}
-        )
+        return _err({"error": "args_invalid: old_string/new_string must be strings"})
     if old == new:
         return _err({"error": "args_invalid: old_string equals new_string"})
     if not path.is_file():
@@ -918,11 +1097,7 @@ def dispatch_edit_file(
     # observed this turn is a blind mutation of unseen bytes. Only enforced
     # when a FileState is threaded (the production path); state=None callers
     # (most unit tests, ad-hoc tooling) are unaffected.
-    if (
-        state is not None
-        and _require_read_before_edit()
-        and not state.was_seen(path)
-    ):
+    if state is not None and _require_read_before_edit() and not state.was_seen(path):
         return _err(
             {
                 "path": raw.get("path"),
@@ -934,9 +1109,7 @@ def dispatch_edit_file(
         )
 
     if state is not None and state.is_stale(path):
-        return _err(
-            {"path": raw.get("path"), "error": "file_changed_since_read"}
-        )
+        return _err({"path": raw.get("path"), "error": "file_changed_since_read"})
 
     try:
         raw_bytes = path.read_bytes()
@@ -991,11 +1164,7 @@ def dispatch_edit_file(
                     ),
                 }
             )
-        updated = (
-            text.replace(old_lf, new_lf)
-            if replace_all
-            else text.replace(old_lf, new_lf, 1)
-        )
+        updated = text.replace(old_lf, new_lf) if replace_all else text.replace(old_lf, new_lf, 1)
         replacements = exact_count if replace_all else 1
         tier = "exact"
 
@@ -1098,33 +1267,40 @@ def dispatch_edit_file(
     out_text = _apply_eol_bom(updated, eol, bom)
     snippet = _diff_snippet(before_text, updated, workspace_rel(ws, path))
 
+    # Atomic edit (ABSORB_MATRIX Dim 4): stage into a sibling temp file, fsync,
+    # then ``os.replace`` so a crash mid-write can't corrupt the file the agent
+    # just read. Symlink refusal + os.replace-not-following preserve the old
+    # O_NOFOLLOW workspace-escape posture; the existing file's mode is kept.
+    if path.is_symlink():
+        return _err(
+            {
+                "path": raw.get("path"),
+                "error": "workspace_escape: refusing to write through a symlink",
+            }
+        )
     try:
-        # S3: open with O_NOFOLLOW. The earlier resolve_in_workspace
-        # pre-check refused if any ancestor was a symlink at that
-        # point; O_NOFOLLOW catches a leaf symlink swapped in between
-        # the check and the open (TOCTOU). The path already exists
-        # here (we just read it above), so O_TRUNC + O_WRONLY is
-        # safe.
-        flags = os.O_WRONLY | os.O_TRUNC | _O_NOFOLLOW
-        try:
-            fd = os.open(path, flags)
-        except OSError as exc:
-            msg = str(exc)
-            if "ELOOP" in msg or "Too many levels of symbolic links" in msg or getattr(exc, "errno", None) == 62:
-                return _err(
-                    {"path": raw.get("path"), "error": f"workspace_escape: O_NOFOLLOW refused: {exc}"}
-                )
-            return _err({"path": raw.get("path"), "error": f"write_failed: {exc}"})
-        try:
-            # ``newline=""`` so Python does NOT translate our explicit EOL —
-            # ``out_text`` already carries the file's original line endings.
-            with os.fdopen(
-                fd, "w", encoding=encoding, newline=""
-            ) as fh:
-                fh.write(out_text)
-        except OSError as exc:
-            return _err({"path": raw.get("path"), "error": f"write_failed: {exc}"})
+        edit_mode = stat.S_IMODE(os.stat(path).st_mode)
+    except OSError:
+        edit_mode = 0o644
+    try:
+        tmp_fd, tmp_name = tempfile.mkstemp(
+            dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+        )
     except OSError as exc:
+        return _err({"path": raw.get("path"), "error": f"write_failed: {exc}"})
+    tmp_path = Path(tmp_name)
+    try:
+        # ``newline=""`` so Python does NOT translate our explicit EOL —
+        # ``out_text`` already carries the file's original line endings.
+        with os.fdopen(tmp_fd, "w", encoding=encoding, newline="") as fh:
+            fh.write(out_text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp_path, edit_mode)
+        os.replace(tmp_path, path)
+    except OSError as exc:
+        with contextlib.suppress(OSError):
+            tmp_path.unlink()
         return _err({"path": raw.get("path"), "error": f"write_failed: {exc}"})
     if state is not None:
         # Drop the stale cache entry but keep the path "seen" — the agent
@@ -1142,9 +1318,7 @@ def dispatch_edit_file(
     return json.dumps(payload, ensure_ascii=False)
 
 
-def dispatch_list_files(
-    *, args_json: bytes | str, workspace: Path | None = None
-) -> str:
+def dispatch_list_files(*, args_json: bytes | str, workspace: Path | None = None) -> str:
     """List a workspace directory. JSON envelope; never raises."""
     try:
         raw = decode_args(args_json)
@@ -1185,14 +1359,17 @@ __all__ = [
     "EDIT_FILE_TOOL",
     "IMAGE_EXTENSIONS",
     "LIST_FILES_TOOL",
+    "NOTEBOOK_EDIT_TOOL",
     "READ_FILE_TOOL",
     "WRITE_FILE_TOOL",
     "dispatch_edit_file",
     "dispatch_list_files",
+    "dispatch_notebook_edit",
     "dispatch_read_file",
     "dispatch_write_file",
     "edit_file_tool_schema",
     "list_files_tool_schema",
+    "notebook_edit_tool_schema",
     "read_file_tool_schema",
     "write_file_tool_schema",
 ]

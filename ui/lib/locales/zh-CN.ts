@@ -689,6 +689,12 @@ export const zhCN = {
     subtitle: "后台子代理派发与实时活动。",
     empty: "暂无活跃子代理。",
     loadFailed: "加载失败：{{msg}}",
+    chatPanel: {
+      title: "Agents",
+      empty: "本轮还没有子代理。",
+      collapse: "收起 Agent 面板",
+      expand: "展开 Agent 面板",
+    },
     column: {
       subagentType: "类型",
       description: "任务",
@@ -1514,7 +1520,8 @@ export const zhCN = {
     fieldNameHint: "标识用；alias.provider 引用此值。",
     fieldKind: "类型",
     fieldBaseUrl: "Base URL",
-    fieldBaseUrlHint: "openai_compatible 必填；第一方可留空以使用 SDK 默认。",
+    fieldBaseUrlHint:
+      "openai_compatible 必填；第一方可留空以使用 SDK 默认。可填根地址、/api、/v1 或完整的 /chat/completions 链接，会自动补全（结尾加 # 则原样使用）。",
     fieldApiKeySource: "API key 来源",
     fieldApiKeyEnv: "环境变量",
     fieldApiKeyValue: "字面量",
@@ -1531,6 +1538,19 @@ export const zhCN = {
     modelsCopied: "模型 ID 已复制",
     modelsCopyFailed: "复制失败: {{msg}}",
     modelsCopyAria: "复制模型 {{id}}",
+    modelsHintAdd:
+      "拉取模型列表后，点击“+”（或“全部添加”）将模型注册为别名并绑定到该 provider。",
+    modelsAdd: "添加",
+    modelsAddAria: "添加模型 {{id}} 到 corlinman",
+    modelsAddAll: "全部添加",
+    modelsAdded: "已添加",
+    modelsAddedAria: "模型 {{id}} 已添加",
+    modelsAddedToast: "已添加 {{count}} 个模型到 corlinman",
+    modelsAddFailed: "添加失败: {{msg}}",
+    modelsAddNeedsName: "请先填写 provider 名称",
+    modelsAddNeedsEnabled: "请先启用该 provider——禁用状态下的模型无法路由",
+    modelsAddSkippedConflicts:
+      "已跳过 {{count}} 个模型：别名已指向其他 provider",
     fieldParams: "默认参数",
     fieldParamsHint: "provider 级默认，可被 alias.params 覆盖。",
     saveLabel: "保存",

@@ -115,7 +115,7 @@ class PermissionMode(str, Enum):
 
 #: File-editing tools that :attr:`PermissionMode.ACCEPT_EDITS` auto-allows.
 _EDIT_TOOLS: frozenset[str] = frozenset(
-    {"write_file", "edit_file", "apply_patch", "revert_changes"}
+    {"write_file", "edit_file", "notebook_edit", "apply_patch", "revert_changes"}
 )
 
 #: The "mutating" tools — strict mode flips these to ``deny`` by default.
@@ -126,6 +126,7 @@ MUTATING_TOOLS: frozenset[str] = frozenset(
     {
         "write_file",
         "edit_file",
+        "notebook_edit",
         "apply_patch",
         "run_shell",
         "revert_changes",
@@ -418,6 +419,14 @@ class PermissionGate:
 
     @property
     def mode(self) -> PermissionMode:
+        return self._mode
+
+    def set_mode(self, mode: PermissionMode | str) -> PermissionMode:
+        """Swap the operating mode at runtime (normalizing via
+        :meth:`PermissionMode.coerce`) and return the resolved mode. The gate
+        re-reads ``_mode`` on every ``resolve``, so the change takes effect on
+        the next tool call. Used by the console ``/permissions`` command."""
+        self._mode = PermissionMode.coerce(mode)
         return self._mode
 
     def _mode_override(self, tool: str) -> str | None:

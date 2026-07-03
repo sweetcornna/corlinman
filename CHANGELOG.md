@@ -4,6 +4,316 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.24.3] — 2026-07-03 — Pre-merge audit fixes (stack #102–#107)
+
+> Patch release. 22 confirmed findings fixed from the pre-merge audit of the
+> stacked PRs (28/33 Codex inline comments verified live at tip + workflow
+> review); 6 architectural findings deferred to #108.
+
+### Fixed
+- **MCP (P1)**: synthesized `mcp` registry entries are now created AFTER the
+  plugin registry exists — advertised MCP tools were unroutable
+  (`plugin_not_found`) on every boot. Advertisement guards added: invalid
+  OpenAI-charset names, manifest-collision servers, and literal-shadowed
+  namespaced names are dropped consistently from both `tools_json` and entries.
+- **Console sessions**: `--continue` resumes true recency (pinned sessions no
+  longer hijack it); fuzzy `/resume` proves uniqueness beyond one 50-row page.
+- **`/rewind` (turn-keyed)**: ownership probe rejects foreign-session turn ids;
+  Postgres stub backend degrades instead of wiping the window and reporting
+  success; prior turns page to exhaustion (was: newest 50); numeric turn-id
+  tie-break; window swap is all-or-nothing on journal failure; degraded
+  rebuilds fall back to the label match; user text starting with `[turn:` can
+  no longer masquerade as a journal tag.
+- **Approval resolver**: "always" grants cleared on `/new`, `/clear`, and
+  permission-mode switches (a cached `run_shell` grant no longer bypasses
+  `/plan`); concurrent approval prompts serialized.
+- **Live subagents panel**: `rejected`/`depth_capped` children show as failed;
+  respawns after agent restart replace stale terminal rows; `/status` falls
+  back to the live registry for inline rows.
+- **Provider editor**: dirty drafts re-persist before alias binding; Add/Add-all
+  skips aliases already routed to another provider (with a warning) and is
+  gated on the enabled switch; the models probe trims pasted full-endpoint URLs.
+- **Compaction**: elision sentinel check requires the full generated shape
+  (adversarial tool output starting with the prefix can't bypass compaction);
+  duplicate synthesized tool-call ids resolve to their own round's shell.
+- **File tools**: new-file atomic writes respect the process umask again.
+
+## [1.24.2] — 2026-07-03 — System-prompt flags + informative elision
+
+> Patch release. Config-compatible. ABSORB_MATRIX Dim 10 residual +
+> Dim 2 (b)/(c) — the last two small-slice items on the landing list.
+
+### Added
+- **`corlinman console --system-prompt TEXT`** — replace the default coding
+  prompt + project memory wholesale for the run; **`--append-system-prompt
+  TEXT`** — append after whatever prompt is in effect (default composition or
+  an override). Append alone keeps the default coding prompt intact.
+
+### Changed
+- **Elided tool payloads are now informative one-liners** — compaction writes
+  `[older tool output elided — tool(args…) · N chars]` (stable prefix, fully
+  deterministic → prompt-cache safe) instead of the flat generic sentinel, so
+  the model knows what was dropped and can re-fetch it.
+- **Saved-token feedback in compaction** (claude-code microcompact semantics):
+  at ≥ summary-threshold pressure the cheap elide pass is measured first and
+  the LLM summarize sub-call is skipped when elision alone pulls the estimate
+  back under threshold; no-op elide passes preserve list identity so a
+  saturated history no longer invalidates the incremental token cache (and
+  re-walks the full message list) every round.
+
+## [1.24.1] — 2026-07-02 — Background memory-recall prefetch
+
+> Patch release. Config-compatible. ABSORB_MATRIX Dim 6 (mechanism absorbed
+> from hermes' background next-turn prefetch).
+
+### Changed
+- **Recency memory recall is prefetched off the hot path** — the start-of-turn
+  `host.recent(...)` await is now precomputed in the background right after the
+  previous turn's memory store (the moment its result changes), and consumed
+  one-shot at the next turn; a cache miss falls back to the inline recall.
+  Cuts start-of-turn latency, most visibly on remote memory-host backends. The
+  relevance (BM25) recall depends on the incoming user text and deliberately
+  stays inline.
+
+## [1.24.0] — 2026-07-02 — Session management: --continue, fuzzy /resume, turn-keyed /rewind
+
+> Minor release. Config-compatible. ABSORB_MATRIX Dim 11 (会话管理:一键续聊、
+> 模糊恢复、精确回退).
+
+### Added
+- **`corlinman console -c/--continue`** — resume the most recent journal
+  session (the summaries are newest-first, so this is a zero-cost lookup); an
+  explicit `--session` wins; attach mode / empty journal degrade with a note.
+- **Fuzzy `/resume <fragment>`** — an exact key wins alone; a unique substring
+  match resumes; multiple matches print a disambiguation list instead of
+  guessing; zero matches keep today's semantics (start a fresh named session).
+
+### Changed
+- **`/rewind` window truncation is now turn-keyed** — the workspace snapshot
+  taken at each turn's start now embeds the journal turn id in its commit
+  subject (`snapshot: [turn:<id>] <label>`), and rewinding to a tagged
+  checkpoint rebuilds the conversation window **exactly** from journal turns
+  strictly before that id, instead of matching the sanitized user-text label
+  (which degraded to "window unchanged" on duplicate text or cross-surface
+  interleave). Legacy untagged checkpoints keep the label-match fallback;
+  a missing journal degrades honestly.
+
+## [1.23.0] — 2026-07-02 — Console permission surface (mode control + interactive approval)
+
+> Minor release. Config-compatible. ABSORB_MATRIX Dim 3 — the permission engine
+> (modes + `Bash(cmd:*)`-style rules) existed but had no console surface: the
+> mode was a boot-time env default and every `ask` verdict fail-closed to deny
+> because nothing ever wired an approval resolver (控制台权限面板 + 交互式工具审批).
+
+### Added
+- **`/permissions [mode]` + `/plan [off]`** — show or switch the runtime
+  permission mode (`default` / `acceptEdits` / `plan` / `bypass`); the gate
+  re-reads its mode on every tool call, so the switch applies immediately. A
+  typo **never** changes the mode (silently coercing `plan`→`default` would
+  re-enable mutations); `bypass` prints a warning. `/plan` is the plan-mode
+  toggle. `/permissions` also lists the session's always-allowed tools.
+- **`corlinman console --permission-mode <mode>`** — seeds the embedded agent's
+  gate at boot (via `CORLINMAN_AGENT_PERMISSION_MODE`).
+- **Interactive tool approval** — an `ask` permission verdict now pauses the
+  live spinner and prompts **y**es / **a**lways-this-session / **N**o instead of
+  fail-closing to deny. "Always" caches the tool for the session; anything
+  unexpected (empty input, EOF, prompt failure) denies — fail-closed. Wired for
+  the embedded interactive REPL only: `--print` has no user to ask and attach
+  mode has no in-process servicer, so both keep the fail-closed posture.
+
+### Fixed
+- **`notebook_edit` classified as an edit + mutating tool** — it was absent
+  from both permission sets, so plan mode did not deny it (a mutating tool
+  escaping the no-side-effects guard) and `acceptEdits` did not auto-allow it.
+
+## [1.22.9] — 2026-07-02 — Live token + cost in the console status bar
+
+> Patch release. Config-compatible. ABSORB_MATRIX Dim 12 — the console bottom
+> bar now surfaces session spend.
+
+### Added
+- **Live token + cost in the bottom status bar** — the console's prompt bar
+  showed only `model · session`; it now appends the running session token count
+  and estimated USD cost once a turn produces usage, a glanceable session-spend
+  readout (hidden while idle).
+
+## [1.22.8] — 2026-07-02 — `notebook_edit` tool (.ipynb cells)
+
+> Patch release. Config-compatible. ABSORB_MATRIX Dim 4 — the claude-code
+> NotebookEdit analog (Jupyter notebooks were previously read-only).
+
+### Added
+- **`notebook_edit` builtin tool** — edit a Jupyter notebook by 0-based cell
+  index: **replace** a cell's source (clearing a code cell's stale
+  outputs/execution_count), **insert** a new code/markdown cell, or **delete** a
+  cell. Workspace-confined and rewritten atomically. Advertised alongside the
+  other coding tools.
+
+## [1.22.7] — 2026-07-02 — Atomic file writes + per-tool tracing
+
+> Patch release. Config-compatible. ABSORB_MATRIX Dim 4 (atomic Write/Edit) +
+> Dim 12 (per-tool OTel span).
+
+### Fixed
+- **Atomic `Write` / `Edit`** — both the write and edit coding tools opened the
+  target with `O_TRUNC` and wrote in place, so a crash or partial write could
+  leave a **truncated/corrupt** file. Writes now stage into a unique sibling
+  temp file (`tempfile.mkstemp`), `fsync`, then `os.replace` onto the target
+  (atomic rename). The existing file's mode (e.g. an executable bit) is
+  preserved; a symlinked target is refused and `os.replace` never follows a
+  link, preserving the prior `O_NOFOLLOW` workspace-escape posture.
+
+### Added
+- **Per-tool OTel span** — each tool execution in the chat loop is now wrapped
+  in a `tool.execute` span (`tool.name` / `tool.plugin` / `tool.is_error`,
+  exceptions recorded), complementing the existing request-level spans. No-op
+  when no tracer is installed.
+
+## [1.22.6] — 2026-07-02 — Console `/cost` (estimated session spend)
+
+> Patch release. Config-compatible. ABSORB_MATRIX Dim 12 — surfaces the
+> per-model USD cost the agent loop already computes but the console never
+> showed (`/usage` was tokens-only).
+
+### Added
+- **`/cost` console command** — shows the estimated USD spend for the current
+  session (model, turns, in/out tokens, cost), reusing the reasoning loop's
+  per-model pricing coefficients. An unknown/unpriced model reports
+  "unavailable" rather than a misleading $0. (A live cost/token status bar
+  remains a follow-up.)
+
+## [1.22.5] — 2026-07-02 — Console `/init` bootstraps CORLINMAN.md
+
+> Patch release. Config-compatible. ABSORB_MATRIX Dim 8 — the claude-code
+> `/init` analog (project-memory discovery/@include was already shipped; this
+> was the one missing piece).
+
+### Added
+- **`/init` console command** — analyzes the codebase and writes a concise
+  `CORLINMAN.md` project-memory file at the repo root. Resolves to a one-shot
+  brain turn (via `TurnRequest`) that inspects the project with the agent's file
+  tools (build/lint/test commands, architecture, conventions) and writes the
+  file, improving an existing `CORLINMAN.md` rather than discarding it. The
+  existing discovery/@include pipeline then folds it into every subsequent
+  session's system prompt.
+
+## [1.22.4] — 2026-07-02 — Tunable context-compaction reserve
+
+> Patch release. Config-compatible (defaults unchanged). ABSORB_MATRIX Dim 2 —
+> makes the model-aware compaction budget's output reserve operator-tunable,
+> including claude-code's fixed-buffer (`window − buffer`) semantics.
+
+### Added
+- **Operator-tunable compaction reserve** — when the compaction budget is
+  derived from a model's declared context window, the reserved output margin is
+  now overridable: `CORLINMAN_CONTEXT_RESERVE_TOKENS` pins a **fixed** buffer
+  (`window − buffer`, matching claude-code's `AUTOCOMPACT_BUFFER`), else the
+  proportional reserve's fraction and cap are tunable via
+  `CORLINMAN_CONTEXT_RESERVE_FRACTION` / `CORLINMAN_CONTEXT_RESERVE_CAP`. All
+  three default to the previous behaviour (0.15 fraction, 48k cap), so existing
+  deployments are unchanged. The reserve is clamped to never exceed the window.
+
+## [1.22.3] — 2026-07-02 — MCP tool namespacing + server allow/deny policy
+
+> Patch release. Config-compatible. Hardens the v1.22.0 MCP tool-face
+> (ABSORB_MATRIX Dim 5) — closes a bare-name collision gap and adds a server
+> policy absorbed from claude-code's `allowedMcpServers`/`deniedMcpServers`.
+
+### Fixed
+- **Cross-server MCP tools no longer silently drop, and can't shadow builtins**
+  — discovered MCP tools were advertised by their bare name with first-wins
+  dedup, so a tool of the same name on two servers dropped the second, and an
+  MCP tool named like a builtin (`calculator`, `web_search`) shadowed it. Tools
+  are now advertised **namespaced as `{server}_{tool}`** (unique per server,
+  distinct from bare builtins); the `McpToolBridge` strips the `{server}_`
+  prefix back to the bare tool the server knows, guarded by `has_tool` so a real
+  on-disk `mcp` manifest advertising a bare name is untouched.
+
+### Added
+- **MCP server allow/deny policy** — `[mcp].deniedMcpServers` /
+  `allowedMcpServers` (deny wins; a non-empty allow-list is exclusive) filter
+  which connected servers' tools are advertised + routable, applied at boot in
+  `register_mcp_tools`.
+
+## [1.22.2] — 2026-07-02 — Jittered retry backoff (thundering-herd defence)
+
+> Patch release. Config-compatible. First Phase-2 absorb from
+> `audit/ABSORB_MATRIX_2026-07-02.md` (Dim 1, mechanism absorbed from
+> hermes-agent's jittered backoff — re-implemented, no code copied).
+
+### Changed
+- **Transient-retry backoff is now jittered** — when a provider 429/5xx has no
+  `retry-after` hint, the reasoning loop's exponential backoff
+  (`0.5·2^(n-1)` capped 16s) previously used a fixed value, so a fleet of
+  workers retrying the same overload resynchronised into a thundering herd.
+  Backoff now applies **equal jitter** (half fixed + a random half), spreading
+  retries across `[base/2, base]`. Provider `retry-after`/reset hints are still
+  honoured verbatim. Extracted as the testable `_retry_backoff_seconds` helper
+  (injectable RNG) in `reasoning_loop.py`.
+
+## [1.22.1] — 2026-07-02 — Live multi-agent panel: accurate tool-call count
+
+> Patch release. Config-compatible. Fixes an inflated tool-call number on the
+> live multi-agent panel (实时多智能体面板的工具调用计数虚高).
+
+### Fixed
+- **Live subagent tool-call count no longer inflates** — the shared
+  `LiveSubagentRegistry` is fed the same `ToolStateRunning` frame once per open
+  SSE client (the session poll) and again via the emitter observer, and each
+  delivery did `tool_calls_made += 1`, so the panel showed 2×–N× the real count
+  during a run. Counting is now idempotent by the frame's `tool_call_id` (a
+  per-child seen-set, pruned with the terminal row), so a re-delivered tool
+  start is counted exactly once regardless of how many clients are watching or
+  which feed path (emitter vs cross-process journal poll) delivers it.
+
+## [1.22.0] — 2026-07-02 — External MCP tools reach the model (advertise + route)
+
+> Minor release. Config-compatible. Connected external MCP servers' tools are
+> now advertised to the model and executable end-to-end — closing the gap where
+> `McpClientManager.discovered_tools()` had no consumer, so the agent could
+> never see or call an external MCP tool (让 agent 真正看得见并调用外部 MCP 工具).
+> See `audit/BUG_LEDGER_2026-07-02.md` §3 (L-003).
+
+### Added
+- **MCP tools in the agent tool plane** — at gateway boot, after the MCP client
+  manager connects its servers, the gateway now (1) synthesizes one `mcp`-kind
+  plugin-registry entry per ready server so the existing tool executor routes a
+  bare tool call through the `mcp` branch → `McpToolBridge` → `call_tool` with
+  no new dispatch code, and (2) injects the discovered tools' OpenAI function
+  schemas into every `ChatStart.tools_json`, so the agent servicer advertises
+  them to the model. Both halves run gateway-side (the only process where the
+  live manager and plugin registry exist) from a single pass over
+  `discovered_tools()`; the schemas are threaded from gateway state, not the
+  chat request, so the channel request contract is untouched. Tool names are
+  advertised bare (server resolved at execution via `find_tool`), de-duplicated
+  across servers, and a synthesized entry never clobbers a real on-disk
+  manifest. Boot-time snapshot; hot-plug refresh is a follow-up.
+
+## [1.21.9] — 2026-07-02 — openai_compatible `/openai` mounts serve chat again + green gate
+
+> Patch release. Config-compatible. Fixes a silent chat-404 regression for
+> openai_compatible providers whose base URL is a bare `/openai` API root
+> (裸 `/openai` 根地址的中转/网关), and restores the green local CI gate. Part of
+> the zero-bug sweep — see `audit/BUG_LEDGER_2026-07-02.md`.
+
+### Fixed
+- **`/openai`-mounted base URLs no longer 404 every chat message** — the
+  adaptive base-url normalizer only recognised a path ending in `/v<digits>`
+  as an already-complete API root, so a base URL ending in a bare `/openai`
+  mount (Google Gemini's documented OpenAI-compat endpoint
+  `…/v1beta/openai`, or a relay served at `…/openai`) got `/v1` appended and
+  the OpenAI SDK hit `…/openai/v1/chat/completions` → 401/404 on every turn
+  (裸 `/openai` 根地址每条消息都 404). Both mirror normalizers —
+  `complete_openai_base_url` (chat client) and `_provider_models_url` (admin
+  model probe) — now treat a `/openai`-ending path as an API root, so chat and
+  the "fetch models" probe resolve to the same root. Regression tests added on
+  both sides.
+- **Local CI gate green again** — fixed the two latent gate failures on the
+  branch: a ruff `I001` import-order error in `test_tool_aliases`, and a mypy
+  `arg-type` where the console spinner frame (`Spinner.render()` typed
+  `RenderableType`) was passed into `Text.append_text` (needs `Text`); the
+  frame is now `isinstance`-narrowed, with a render-path regression test.
+
 ## [1.21.8] — 2026-06-16 — Codex provider test no longer false-fails after OAuth login
 
 > Patch release. Config-compatible. Fixes the admin provider "Test" button for

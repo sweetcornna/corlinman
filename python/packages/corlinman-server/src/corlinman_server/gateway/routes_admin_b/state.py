@@ -251,6 +251,13 @@ class AdminState:
     # 503 (``subagent_dispatcher_unavailable``) in that case.
     subagent_store: Any | None = None
     subagent_dispatcher: Any | None = None
+    # ``live_subagent_registry`` is the in-process
+    # :class:`~corlinman_server.gateway.observability.LiveSubagentRegistry`
+    # fed off the emitter's subagent-lifecycle envelopes. The
+    # ``/admin/subagents*`` routes merge its INLINE rows with the durable
+    # background-store rows so the overview shows turn-spawned children too.
+    # ``None`` in degraded boots (no emitter) — the merge simply skips it.
+    live_subagent_registry: Any | None = None
 
     # -- W1.3 (skill hub): ClawHub client + install task store ----------
     #

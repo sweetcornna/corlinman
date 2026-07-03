@@ -194,7 +194,7 @@ def test_module_defaults_match_design() -> None:
     documented values and are read by both the supervisor policy and
     callers that want to plug ``DEFAULT_MAX_WALL_SECONDS`` into their
     own configs."""
-    assert DEFAULT_MAX_WALL_SECONDS == 60
+    assert DEFAULT_MAX_WALL_SECONDS == 180
     assert DEFAULT_MAX_TOOL_CALLS == 12
     # D7 — single-level nesting (parent → child). A subagent cannot spawn a
     # sub-subagent; matches Claude Code's Task tool.

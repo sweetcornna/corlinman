@@ -37,7 +37,7 @@ export interface SubagentRowProps {
   onKill: (requestId: string) => void;
 }
 
-const IN_FLIGHT_STATES: ReadonlySet<SubagentState> = new Set([
+export const IN_FLIGHT_STATES: ReadonlySet<SubagentState> = new Set([
   "queued",
   "running",
   "stalled",
@@ -47,7 +47,7 @@ const IN_FLIGHT_STATES: ReadonlySet<SubagentState> = new Set([
  * Glass status tokens `<ToolWidget>` uses: in-flight → warn, succeeded →
  * ok, failed/killed/timeout → err. The sg tokens are theme-aware so the
  * pill flips between light/dark automatically — no `dark:` variants. */
-function statePresentation(state: SubagentState): {
+export function statePresentation(state: SubagentState): {
   Icon: React.ComponentType<{ className?: string }>;
   className: string;
 } {
@@ -91,7 +91,7 @@ function statePresentation(state: SubagentState): {
 }
 
 /** Formats `ms` into a compact `14s` / `2m 31s` / `1h 04m` string. */
-function formatElapsed(ms: number): string {
+export function formatElapsed(ms: number): string {
   if (ms <= 0) return "0s";
   const totalSec = Math.floor(ms / 1000);
   if (totalSec < 60) return `${totalSec}s`;
@@ -106,7 +106,7 @@ function formatElapsed(ms: number): string {
 /** Live elapsed counter — ticks every second when in-flight, freezes
  * on terminal. Computes from `started_at` (epoch-ms) when present,
  * falls back to the precomputed `elapsed_ms` snapshot otherwise. */
-function useElapsed(
+export function useElapsed(
   data: SubagentStatusResponse,
 ): number {
   const inFlight = IN_FLIGHT_STATES.has(data.state);

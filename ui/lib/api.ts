@@ -683,10 +683,17 @@ export interface SubagentStatusResponse {
   elapsed_ms: number;
   error: string | null;
   summary: string;
+  /** W2.x multi-agent panel extras (older gateways omit them). `depth`
+   * drives supervisor→worker nesting; `activity` is the live current-action
+   * line; `source` distinguishes durable background rows from in-memory
+   * inline (chat-turn) rows. */
+  depth?: number;
+  activity?: string;
+  source?: "inline" | "background";
 }
 
 export interface SubagentListResponse {
-  subagents: SubagentStatusResponse[];
+  rows: SubagentStatusResponse[];
 }
 
 /** GET /admin/subagents?include_terminal=… */

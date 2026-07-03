@@ -22,5 +22,14 @@ from corlinman_server.gateway.observability.emitter import (
     BubbleEmitter,
     JournalBackedEmitter,
 )
+from corlinman_server.gateway.observability.live_subagents import (
+    LiveSubagentRegistry,
+    LiveSubagentRow,
+)
 
-__all__ = ["BubbleEmitter", "JournalBackedEmitter"]
+__all__ = [
+    "BubbleEmitter",
+    "JournalBackedEmitter",
+    "LiveSubagentRegistry",
+    "LiveSubagentRow",
+]

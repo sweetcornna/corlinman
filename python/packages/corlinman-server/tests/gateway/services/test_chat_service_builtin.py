@@ -117,6 +117,40 @@ def test_build_chat_start_tolerates_request_without_persona_id() -> None:
     assert start.persona_id == ""
 
 
+def test_build_chat_start_defaults_to_empty_tools_json() -> None:
+    start = _build_chat_start(InternalChatRequest(model="x", messages=[]))
+
+    assert start.tools_json == b""
+
+
+def test_build_chat_start_injects_advertised_tools_json() -> None:
+    """Gateway-supplied MCP tool schemas ride into ChatStart.tools_json so the
+    servicer advertises them to the model (L-003: discovered MCP tools)."""
+    advertised = b'[{"type":"function","function":{"name":"echo"}}]'
+
+    start = _build_chat_start(
+        InternalChatRequest(model="x", messages=[]),
+        advertised_tools_json=advertised,
+    )
+
+    assert start.tools_json == advertised
+
+
+def test_advertised_tools_come_from_gateway_not_the_channel_request() -> None:
+    """The duck-typed channel request is untouched: advertised MCP tools are
+    threaded from gateway state, so a channel ``SimpleNamespace`` (no new field)
+    still builds and gets the tools — the contract that once killed all channels
+    stays safe."""
+    advertised = b'[{"type":"function","function":{"name":"echo"}}]'
+
+    start = _build_chat_start(
+        _channel_style_request(), advertised_tools_json=advertised
+    )
+
+    assert start.tools_json == advertised
+    assert start.persona_id == ""  # channel request needed no new attribute
+
+
 @pytest.mark.asyncio
 async def test_run_chat_with_channel_request_missing_persona_id_streams_to_done() -> None:
     """End-to-end guard: a channel-style request (no ``persona_id``) must
@@ -137,3 +171,44 @@ async def test_run_chat_with_channel_request_missing_persona_id_streams_to_done(
 
     assert any(isinstance(ev, DoneEvent) for ev in events)
     assert not any(isinstance(ev, ErrorEvent) for ev in events)
+
+
+@pytest.mark.asyncio
+async def test_tool_execution_emits_per_tool_otel_span() -> None:
+    """A real (non-builtin) tool_call runs through the executor inside a
+    ``tool.execute`` OTel span with a ``tool.name`` attribute (Dim 12)."""
+    from corlinman_server import telemetry as telemetry_mod
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    provider = TracerProvider()
+    exporter = InMemorySpanExporter()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    telemetry_mod._PROVIDER = provider  # noqa: SLF001
+    try:
+        backend = _ScriptedBackend(
+            [
+                agent_pb2.ServerFrame(
+                    tool_call=agent_pb2.ToolCall(
+                        call_id="c1", plugin="calc", tool="calculator",
+                        args_json=b"{}", seq=1,
+                    )
+                ),
+                agent_pb2.ServerFrame(done=agent_pb2.Done(finish_reason="stop")),
+            ]
+        )
+        executor = _RecordingExecutor()
+        req = InternalChatRequest(model="x", messages=[])
+        _ = [ev async for ev in _run_chat(backend, executor, req, asyncio.Event())]
+
+        assert executor.calls, "executor must run for a non-builtin tool_call"
+        spans = exporter.get_finished_spans()
+        tool_spans = [s for s in spans if s.name == "tool.execute"]
+        assert tool_spans, f"expected a tool.execute span; got {[s.name for s in spans]}"
+        assert tool_spans[0].attributes.get("tool.name") == "calculator"
+    finally:
+        provider.shutdown()
+        telemetry_mod._PROVIDER = None  # noqa: SLF001
