@@ -2642,8 +2642,11 @@ class ReasoningLoop:
         :func:`_compact_history` fills in for the round.
 
         * A FAILED summary sub-call increments the consecutive-failure
-          count and parks the slow path for
-          ``_COMPACT_SUMMARY_COOLDOWN_ROUNDS`` rounds; at
+          count and parks the slow path for exactly
+          ``_COMPACT_SUMMARY_COOLDOWN_ROUNDS`` rounds — the ``+ 1`` in the
+          assignment makes the knob mean "N whole rounds are skipped"
+          against the caller's ``rounds >= until`` gate, so ``=1`` skips
+          one round instead of retrying immediately (Codex #111). At
           ``_COMPACT_SUMMARY_BREAKER_LIMIT`` failures it is disabled for
           the rest of the turn (one warning log).
         * A SUCCESSFUL summary re-arms the failure count. A run of
@@ -2659,7 +2662,9 @@ class ReasoningLoop:
                 return
             if outcome.get("summary_failed"):
                 self._summary_failures += 1
-                self._summary_cooldown_until_round = rounds + _COMPACT_SUMMARY_COOLDOWN_ROUNDS
+                self._summary_cooldown_until_round = (
+                    rounds + _COMPACT_SUMMARY_COOLDOWN_ROUNDS + 1
+                )
                 # A failure breaks the low-savings SUCCESS streak too —
                 # anti-thrash must only fire on truly consecutive
                 # low-savings successes (Codex #111).
@@ -2682,7 +2687,9 @@ class ReasoningLoop:
             else:
                 self._summary_low_savings_streak = 0
             if self._summary_low_savings_streak >= _COMPACT_SUMMARY_LOW_SAVINGS_STREAK_LIMIT:
-                self._summary_cooldown_until_round = rounds + _COMPACT_SUMMARY_COOLDOWN_ROUNDS
+                self._summary_cooldown_until_round = (
+                    rounds + _COMPACT_SUMMARY_COOLDOWN_ROUNDS + 1
+                )
                 self._summary_low_savings_streak = 0
         except Exception as exc:  # noqa: BLE001 — bookkeeping must never break the loop
             logger.warning("reasoning_loop.summary_breaker_state_error", error=str(exc))

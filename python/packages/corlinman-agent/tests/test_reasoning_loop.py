@@ -2068,9 +2068,9 @@ async def test_summary_failure_sets_cooldown(monkeypatch: pytest.MonkeyPatch) ->
 
     await asyncio.wait_for(_drive(loop, start, tool_content="Z" * 4_000), timeout=3.0)
 
-    # Compaction rounds r=0..5. Attempts: r=0 (fail → cooldown_until=3),
-    # suppressed r=1,2, re-attempt r=3 (fail → cooldown_until=6), suppressed
-    # r=4,5. Exactly two summary sub-calls fire.
+    # Compaction rounds r=0..5. Attempts: r=0 (fail → cooldown_until=0+3+1=4,
+    # i.e. exactly 3 rounds skipped), suppressed r=1,2,3, re-attempt r=4
+    # (fail → cooldown_until=8), suppressed r=5. Exactly two sub-calls fire.
     assert prov.summary_calls == 2
     assert loop._summary_failures == 2
     assert loop._summary_disabled is False
@@ -2195,9 +2195,9 @@ async def test_summary_low_savings_streak_trips_cooldown(monkeypatch: pytest.Mon
     await asyncio.wait_for(_drive(loop, start, tool_content="ok"), timeout=3.0)
 
     # r=0 low-savings success (streak→1); r=1 low-savings success (streak→2
-    # → cooldown_until = 1+3 = 4, streak reset); r=2,3 suppressed; r=4 allowed
-    # again.
-    assert allowed_seen[:5] == [True, True, False, False, True]
+    # → cooldown_until = 1+3+1 = 5, exactly 3 rounds skipped, streak reset);
+    # r=2,3,4 suppressed; r=5 allowed again.
+    assert allowed_seen[:6] == [True, True, False, False, False, True]
 
 
 @pytest.mark.asyncio
@@ -2249,11 +2249,12 @@ async def test_summary_failure_resets_low_savings_streak(monkeypatch: pytest.Mon
     start = ChatStart(model="x", messages=[{"role": "user", "content": "go"}])
     await asyncio.wait_for(_drive(loop, start, tool_content="ok"), timeout=3.0)
 
-    # r=0 low-savings success (streak→1); r=1 failure (cooldown_until=1+2=3,
-    # streak RESET to 0); r=2 suppressed (2<3); r=3 attempt: low-savings
-    # success → streak→1 only — NO cooldown, so r=4 stays allowed.
-    # (Without the reset, r=3 would read streak=2, trip, and suppress r=4.)
-    assert allowed_seen[:5] == [True, True, False, True, True]
+    # r=0 low-savings success (streak→1); r=1 failure (cooldown_until=
+    # 1+2+1=4, exactly 2 rounds skipped, streak RESET to 0); r=2,3
+    # suppressed; r=4 attempt: low-savings success → streak→1 only — NO
+    # cooldown, so r=5 stays allowed. (Without the reset, r=4 would read
+    # streak=2, trip, and suppress r=5.)
+    assert allowed_seen[:6] == [True, True, False, False, True, True]
     assert loop._summary_low_savings_streak == 1
     assert len(attempts) == 3
 
