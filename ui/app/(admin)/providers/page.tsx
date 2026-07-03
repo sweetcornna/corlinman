@@ -55,6 +55,7 @@ import {
   CorlinmanApiError,
   deleteCustomProvider,
   deleteProvider,
+  fetchModels,
   fetchProviders,
   getProviderModels,
   listCustomProviders,
@@ -62,6 +63,7 @@ import {
   upsertAlias,
   upsertProvider,
   type CustomProviderRow,
+  type ModelsResponse,
   type ProviderKind,
   type ProviderModel,
   type ProviderModelProbeRequest,
@@ -207,6 +209,114 @@ type ModelDiscoveryRequest = {
   draft: DraftProvider;
   editing: ProviderView | null;
 };
+
+// ----------------------- add-models pure helpers ---------------------------
+//
+// Exported for unit tests (page.test.tsx). These back the model-add flow's
+// three safety rails: dirty-draft re-persistence, alias-conflict skipping,
+// and the enabled gate.
+
+/** Every `DraftProvider` field is part of the persisted
+ * ``[providers.<name>]`` block, so an edit to ANY of them invalidates a
+ * previously persisted provider: the next model-add must re-upsert the
+ * provider first or its aliases would bind against the stale stored config
+ * (the backend keeps a stored api_key when the upsert carries none, so a
+ * re-upsert never clobbers a literal key the operator didn't re-enter). */
+const PROVIDER_CONFIG_KEYS = [
+  "name",
+  "kind",
+  "enabled",
+  "base_url",
+  "api_key_source",
+  "api_key_env_name",
+  "api_key_value",
+  "params",
+] as const satisfies readonly (keyof DraftProvider)[];
+
+export function patchAffectsPersistedProvider(
+  patch: Partial<DraftProvider>,
+): boolean {
+  return PROVIDER_CONFIG_KEYS.some((key) => patch[key] !== undefined);
+}
+
+export type AliasBinding = { name: string; provider: string | null };
+
+/** Liberal reader for `/admin/models` — v2 gateways reply with an
+ * `AliasView[]`, v0.1 gateways with a `Record<alias, model>` (no provider
+ * information → `provider: null`). Anything malformed yields `[]`. */
+export function extractAliasBindings(data: unknown): AliasBinding[] {
+  if (!data || typeof data !== "object") return [];
+  const aliases = (data as { aliases?: unknown }).aliases;
+  if (Array.isArray(aliases)) {
+    const out: AliasBinding[] = [];
+    for (const entry of aliases) {
+      if (
+        entry &&
+        typeof entry === "object" &&
+        typeof (entry as { name?: unknown }).name === "string"
+      ) {
+        const provider = (entry as { provider?: unknown }).provider;
+        out.push({
+          name: (entry as { name: string }).name,
+          provider: typeof provider === "string" ? provider : null,
+        });
+      }
+    }
+    return out;
+  }
+  if (aliases && typeof aliases === "object") {
+    return Object.keys(aliases).map((name) => ({ name, provider: null }));
+  }
+  return [];
+}
+
+/** Split model-add candidates into `safe` (no alias yet, or the alias
+ * already routes to THIS provider — an idempotent rebind) and `conflicting`
+ * (alias routes to a different — or unknown — provider). Upserting a
+ * conflicting id would silently reroute every chat using that alias, so the
+ * caller must skip those and tell the operator. */
+export function partitionAliasCandidates(
+  ids: string[],
+  existing: AliasBinding[],
+  providerName: string,
+): { safe: string[]; conflicting: string[] } {
+  const byName = new Map(existing.map((a) => [a.name, a]));
+  const safe: string[] = [];
+  const conflicting: string[] = [];
+  for (const id of ids) {
+    const bound = byName.get(id);
+    if (!bound || bound.provider === providerName) {
+      safe.push(id);
+    } else {
+      conflicting.push(id);
+    }
+  }
+  return { safe, conflicting };
+}
+
+export type AddModelsGate = {
+  canAdd: boolean;
+  reason: "needsIdentity" | "disabled" | null;
+};
+
+/** Gate for the Add / Add-all controls. Identity problems (missing name /
+ * base_url, param errors) rank ahead of the enabled gate; a disabled
+ * provider is never built by the runtime registry, so aliases bound to it
+ * would not resolve. */
+export function computeAddModelsGate(args: {
+  nameOk: boolean;
+  baseUrlOk: boolean;
+  hasErrors: boolean;
+  enabled: boolean;
+}): AddModelsGate {
+  if (!args.nameOk || !args.baseUrlOk || args.hasErrors) {
+    return { canAdd: false, reason: "needsIdentity" };
+  }
+  if (!args.enabled) {
+    return { canAdd: false, reason: "disabled" };
+  }
+  return { canAdd: true, reason: null };
+}
 
 /**
  * Exported as a named function so `/admin/credentials` can mount the
@@ -526,12 +636,18 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
     modelDiscoveryGeneration.current += 1;
     setDraft((prev) => ({ ...prev, ...patch }));
     setModelDiscovery({ models: [] });
+    if (patchAffectsPersistedProvider(patch)) {
+      // ANY provider-config edit (base_url, key, kind, params, enabled, …)
+      // invalidates the persisted ``[providers.<name>]`` block — force a
+      // fresh upsert on the next add so aliases never bind against a stale
+      // stored config.
+      providerPersistedRef.current = false;
+    }
     if (patch.name !== undefined) {
       // Provider identity changed — aliases would bind to the new name, so
-      // drop the per-model added markers and force a fresh provider upsert.
+      // also drop the per-model added markers.
       setAddedModels(new Set());
       setPendingAdds(new Set());
-      providerPersistedRef.current = false;
     }
   }, []);
 
@@ -589,41 +705,76 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
     },
   });
 
+  // Existing alias bindings — used to refuse a silent rebind of an alias
+  // that currently routes to a different provider (see addModelsMutation).
+  // Shares the ["admin", "models"] cache with the Models page.
+  const modelsQuery = useQuery<ModelsResponse>({
+    queryKey: ["admin", "models"],
+    queryFn: fetchModels,
+    enabled: open,
+    retry: false,
+  });
+
   const addModelsMutation = useMutation({
     mutationFn: async (ids: string[]) => {
       const providerName = draft.name.trim();
       if (!providerName) {
         throw new Error(t("providers.modelsAddNeedsName"));
       }
-      // Persist the provider once so each alias references a real
-      // ``[providers.<name>]`` block. An alias may be written before its
-      // provider exists, but chat resolution would then fail — so for a
-      // brand-new draft we upsert the provider on the first add. Existing
-      // (editing) providers are already persisted; skip to avoid clobbering
-      // a stored literal api_key the operator didn't re-enter this session.
-      if (!providerPersistedRef.current) {
-        await upsertProvider(toUpsert(draft));
-        providerPersistedRef.current = true;
+      // An alias with the same model id may already route to a DIFFERENT
+      // provider; overwriting it would silently reroute every chat using it.
+      // Partition against the loaded alias list and only upsert the safe ids
+      // (no alias yet, or alias already on this provider).
+      const { safe, conflicting } = partitionAliasCandidates(
+        ids,
+        extractAliasBindings(modelsQuery.data),
+        providerName,
+      );
+      if (safe.length > 0) {
+        // Persist the provider once so each alias references a real
+        // ``[providers.<name>]`` block reflecting the CURRENT draft. A
+        // brand-new draft is persisted on the first add; an editing draft is
+        // re-persisted only after a config field changed this session
+        // (updateDraft resets the flag — a pristine editing session never
+        // re-upserts).
+        if (!providerPersistedRef.current) {
+          await upsertProvider(toUpsert(draft));
+          providerPersistedRef.current = true;
+        }
+        // Alias name == upstream model id, bound to this provider. This is
+        // the mechanism that makes the model routable: chat resolves the
+        // alias to (provider, model), so a custom provider's models stop
+        // falling through to the public OpenAI default.
+        for (const id of safe) {
+          await upsertAlias({ name: id, provider: providerName, model: id });
+        }
       }
-      // Alias name == upstream model id, bound to this provider. This is the
-      // mechanism that makes the model routable: chat resolves the alias to
-      // (provider, model), so a custom provider's models stop falling through
-      // to the public OpenAI default.
-      for (const id of ids) {
-        await upsertAlias({ name: id, provider: providerName, model: id });
-      }
-      return ids;
+      return { added: safe, skipped: conflicting };
     },
     onMutate: (ids) => {
       setPendingAdds((prev) => new Set([...prev, ...ids]));
     },
-    onSuccess: (ids) => {
-      setAddedModels((prev) => new Set([...prev, ...ids]));
-      toast.success(t("providers.modelsAddedToast", { count: ids.length }));
-      // Surface the new aliases on the Models page + chat picker, and refresh
-      // the provider table (a brand-new draft may have just been persisted).
-      qc.invalidateQueries({ queryKey: ["admin", "models"] });
-      qc.invalidateQueries({ queryKey: ["admin", "providers"] });
+    onSuccess: ({ added, skipped }) => {
+      if (added.length > 0) {
+        setAddedModels((prev) => new Set([...prev, ...added]));
+        toast.success(
+          t("providers.modelsAddedToast", { count: added.length }),
+        );
+        // Surface the new aliases on the Models page + chat picker, and
+        // refresh the provider table (a brand-new draft may have just been
+        // persisted).
+        qc.invalidateQueries({ queryKey: ["admin", "models"] });
+        qc.invalidateQueries({ queryKey: ["admin", "providers"] });
+      }
+      if (skipped.length > 0) {
+        toast.warning(
+          t("providers.modelsAddSkippedConflicts", {
+            count: skipped.length,
+            defaultValue:
+              "Skipped {{count}} model(s): alias already routed to another provider",
+          }),
+        );
+      }
     },
     onError: (err) => {
       toast.error(
@@ -656,8 +807,24 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
 
   // A valid provider identity is required before a model can be bound to it
   // as an alias (name + — for openai_compatible — a base_url, and no param
-  // errors). Mirrors the save-button gating.
-  const canAddModels = nameOk && baseUrlOk && !hasErrors;
+  // errors — mirrors the save-button gating), AND the draft must be enabled:
+  // the runtime registry never builds a disabled provider, so its aliases
+  // would not resolve.
+  const addModelsGate = computeAddModelsGate({
+    nameOk,
+    baseUrlOk,
+    hasErrors,
+    enabled: draft.enabled,
+  });
+  const canAddModels = addModelsGate.canAdd;
+  const addModelsBlockedTitle = canAddModels
+    ? undefined
+    : addModelsGate.reason === "disabled"
+      ? t("providers.modelsAddNeedsEnabled", {
+          defaultValue:
+            "Enable the provider first — a disabled provider's models cannot be routed",
+        })
+      : t("providers.modelsAddNeedsName");
   const remainingModelIds = modelDiscovery.models
     .map((m) => m.id)
     .filter((id) => !addedModels.has(id) && !pendingAdds.has(id));
@@ -816,11 +983,7 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
                         remainingModelIds.length === 0 ||
                         addModelsMutation.isPending
                       }
-                      title={
-                        !canAddModels
-                          ? t("providers.modelsAddNeedsName")
-                          : undefined
-                      }
+                      title={addModelsBlockedTitle}
                       data-testid="provider-add-all-models-btn"
                     >
                       {addModelsMutation.isPending ? (
@@ -907,11 +1070,7 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
                               aria-label={t("providers.modelsAddAria", {
                                 id: m.id,
                               })}
-                              title={
-                                !canAddModels
-                                  ? t("providers.modelsAddNeedsName")
-                                  : undefined
-                              }
+                              title={addModelsBlockedTitle}
                               disabled={
                                 !canAddModels ||
                                 pending ||

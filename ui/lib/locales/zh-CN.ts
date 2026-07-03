@@ -1548,6 +1548,9 @@ export const zhCN = {
     modelsAddedToast: "已添加 {{count}} 个模型到 corlinman",
     modelsAddFailed: "添加失败: {{msg}}",
     modelsAddNeedsName: "请先填写 provider 名称",
+    modelsAddNeedsEnabled: "请先启用该 provider——禁用状态下的模型无法路由",
+    modelsAddSkippedConflicts:
+      "已跳过 {{count}} 个模型：别名已指向其他 provider",
     fieldParams: "默认参数",
     fieldParamsHint: "provider 级默认，可被 alias.params 覆盖。",
     saveLabel: "保存",

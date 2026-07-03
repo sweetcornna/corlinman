@@ -1584,6 +1584,10 @@ export const en = {
     modelsAddedToast: "Added {{count}} model(s) to corlinman",
     modelsAddFailed: "Add failed: {{msg}}",
     modelsAddNeedsName: "Enter a provider name first",
+    modelsAddNeedsEnabled:
+      "Enable the provider first — a disabled provider's models cannot be routed",
+    modelsAddSkippedConflicts:
+      "Skipped {{count}} model(s): alias already routed to another provider",
     fieldParams: "Default params",
     fieldParamsHint:
       "Provider-level defaults, overridden by alias.params at call time.",

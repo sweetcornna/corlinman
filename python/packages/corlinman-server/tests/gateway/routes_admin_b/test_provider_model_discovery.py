@@ -817,6 +817,25 @@ class TestCodexCredentialStatus:
             "https://generativelanguage.googleapis.com/v1beta/openai/models",
         ),
         ("https://relay.example/openai", "https://relay.example/openai/models"),
+        # a pasted full endpoint URL is trimmed back to the API root before
+        # deriving /models — the same _OPENAI_ENDPOINT_SUFFIXES normalization
+        # the chat client applies via complete_openai_base_url (regression:
+        # https://relay/v1/chat/completions probed
+        # https://relay/v1/chat/completions/v1/models → 404).
+        (
+            "https://relay.example/v1/chat/completions",
+            "https://relay.example/v1/models",
+        ),
+        ("https://relay.example/v1/responses", "https://relay.example/v1/models"),
+        ("https://relay.example/v1/completions", "https://relay.example/v1/models"),
+        # suffix pasted on an unversioned root → trimmed, then /v1 derived
+        (
+            "https://relay.example/chat/completions",
+            "https://relay.example/v1/models",
+        ),
+        # bare /models on an unversioned host mirrors the chat client too:
+        # complete_openai_base_url resolves the root to /v1, so probe /v1/models
+        ("https://relay.example/models", "https://relay.example/v1/models"),
     ],
 )
 def test_provider_models_url_mirrors_base_url_completion(
