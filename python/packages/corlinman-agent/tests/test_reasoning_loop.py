@@ -1853,6 +1853,49 @@ def test_compact_history_accepts_prev_estimate_kwarg() -> None:
 
 
 # ---------------------------------------------------------------------------
+# post_compact hook emission (Codex #109 round 5)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_maybe_emit_post_compact_fires_event() -> None:
+    """The helper both compaction paths share fires ``post_compact`` with
+    the before/after message counts."""
+    from corlinman_agent.reasoning_loop import ReasoningLoop
+
+    calls: list[tuple[str, dict, dict]] = []
+
+    class _Runner:
+        async def run_event_async(self, event, payload=None, ctx=None):
+            calls.append((event, dict(payload or {}), dict(ctx or {})))
+
+    loop = ReasoningLoop(provider=object())
+    loop.set_hook_runner(_Runner())
+    loop._session_key = "sess-pc"
+    await loop._maybe_emit_post_compact(12, 5)
+    assert calls == [
+        ("post_compact", {"messages_before": 12, "messages_after": 5}, {"session_key": "sess-pc"})
+    ]
+
+
+@pytest.mark.asyncio
+async def test_maybe_emit_post_compact_defensive() -> None:
+    """No runner → no-op; a raising hook is swallowed (never wedges the turn)."""
+    from corlinman_agent.reasoning_loop import ReasoningLoop
+
+    loop = ReasoningLoop(provider=object())
+    # No runner wired — must not raise.
+    await loop._maybe_emit_post_compact(3, 1)
+
+    class _Boom:
+        async def run_event_async(self, event, payload=None, ctx=None):
+            raise RuntimeError("hook blew up")
+
+    loop.set_hook_runner(_Boom())
+    await loop._maybe_emit_post_compact(3, 1)  # swallowed, no raise
+
+
+# ---------------------------------------------------------------------------
 # model-aware compaction budget (_resolve_context_budget)
 # ---------------------------------------------------------------------------
 

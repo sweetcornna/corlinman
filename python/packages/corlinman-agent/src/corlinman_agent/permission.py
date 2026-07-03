@@ -370,6 +370,44 @@ def extract_arg_candidates(
     return extract_primary_arg(tool, args)
 
 
+def match_hook_rule(rule: str, tool: str, args: dict[str, Any] | None = None) -> bool:
+    """Evaluate one permission-rule string against a tool call.
+
+    The declarative-hooks ``if`` matcher (``corlinman-hooks`` cannot import
+    this package, so the grammar is injected as this callable). Reuses the
+    exact ``tool(pattern)`` sugar and arg-candidate extraction the
+    permission gate uses — the rule grammar is designed once and shared,
+    per the parity-matrix contract.
+
+    ``rule`` examples: ``"run_shell(git push*)"`` (natural command-prefix
+    form), ``"run_shell(git:*)"`` (the permission gate's basename form —
+    both work here), ``"write_file(*.ts)"``, ``"run_shell"`` (any args),
+    ``"*"`` (any tool). Unparseable rules return ``False`` (the hook
+    group is skipped, never the tool call).
+
+    Scope note: for ``run_shell`` the raw command string is added as an
+    extra match candidate ON TOP of the gate's ``basename:command``
+    candidates, so the documented claude-style spelling fires too. This
+    widening is hook-local — it only selects which hook groups run; the
+    permission gate's own rule semantics are untouched.
+    """
+    text = str(rule or "").strip()
+    if not text:
+        return False
+    try:
+        parsed = PermissionRule(tool=text, action="allow")
+    except ValueError:
+        return False
+    candidates = extract_arg_candidates(tool, args)
+    if tool == "run_shell" and isinstance(args, dict):
+        raw_command = args.get("command")
+        if isinstance(raw_command, str) and raw_command.strip():
+            merged = [candidates] if isinstance(candidates, str) else list(candidates or [])
+            merged.append(raw_command.strip())
+            candidates = merged
+    return parsed.applies_to_args(tool, PermissionContext(), candidates)
+
+
 class PermissionGate:
     """Decides whether a builtin tool call should run.
 

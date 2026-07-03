@@ -175,16 +175,72 @@ class HookRunner:
         config: dict[str, Any] | None = None,
         *,
         hooks_dir: str | Path | None = None,
+        rule_matcher: Callable[[str, str, dict[str, Any]], bool] | None = None,
+        prompt_evaluator: Callable[[str, dict[str, Any]], Any] | None = None,
+        agent_evaluator: Callable[[str, dict[str, Any]], Any] | None = None,
+        http_post: Callable[[str, dict[str, Any], float], tuple[int, str]] | None = None,
     ) -> None:
-        config = config or {}
-        raw = config.get("hooks", {})
-        self._hooks: dict[str, str] = (
-            {k: str(v) for k, v in raw.items() if v} if isinstance(raw, dict) else {}
-        )
-        # event name -> list of in-process handlers discovered from disk.
+        # Wiring callables are kept so :meth:`reload` can rebuild the
+        # declarative engine without the call site re-passing them.
+        self._rule_matcher = rule_matcher
+        self._prompt_evaluator = prompt_evaluator
+        self._agent_evaluator = agent_evaluator
+        self._http_post = http_post
+        self._hooks_dir: Path | None = Path(hooks_dir) if hooks_dir is not None else None
+        # event name -> list of in-process handlers. ``_handlers`` is the
+        # merged runtime map every dispatch path reads; ``_manual_handlers``
+        # tracks the subset added via the public :meth:`register_handler`
+        # API so :meth:`reload` can rebuild discovery without dropping
+        # plugin-contributed hooks.
         self._handlers: dict[str, list[_Handler]] = {}
+        self._manual_handlers: dict[str, list[_Handler]] = {}
+        self._configure(config or {})
         if hooks_dir is not None:
             self.discover(hooks_dir)
+
+    def _configure(self, config: dict[str, Any]) -> None:
+        """(Re)build shell-hook + declarative state from a config dict.
+
+        Shell hooks are string values only; the ``declarative`` sub-table
+        (and scalar knobs like ``enabled``) must never be mistaken for a
+        shell command.
+        """
+        from corlinman_hooks.declarative import DeclarativeEngine, parse_declarative
+
+        raw = config.get("hooks", {})
+        if not isinstance(raw, dict):
+            raw = {}
+        self._hooks = {k: str(v) for k, v in raw.items() if v and isinstance(v, str) and k != "declarative"}
+        self._declarative = DeclarativeEngine(
+            parse_declarative(raw.get("declarative")),
+            rule_matcher=self._rule_matcher,
+            prompt_evaluator=self._prompt_evaluator,
+            agent_evaluator=self._agent_evaluator,
+            http_post=self._http_post,
+        )
+
+    def reload(self, config: dict[str, Any] | None, hooks_dir: str | Path | None = None) -> dict[str, Any]:
+        """Rebuild shell hooks, declarative groups, and discovered handlers.
+
+        Called by ``/hooks reload`` and the config-watcher callback so a
+        ``[hooks]`` edit takes effect without a restart (the runner was
+        historically boot-time-only). Returns a summary dict for display.
+        """
+        self._configure(config or {})
+        # Rebuild from the manually-registered layer, NOT from empty —
+        # plugin-contributed handlers survive a config reload; only
+        # file-discovered ones are re-derived from disk.
+        self._handlers = {ev: list(hs) for ev, hs in self._manual_handlers.items()}
+        target_dir = Path(hooks_dir) if hooks_dir is not None else self._hooks_dir
+        if target_dir is not None:
+            self._hooks_dir = target_dir
+            self.discover(target_dir)
+        return {
+            "shell_hooks": len(self._hooks),
+            "declarative_groups": len(self.declarative_groups),
+            "declarative_warnings": len(self._declarative.warnings),
+            "discovered_handlers": sum(len(hs) for hs in self._handlers.values()),
+        }
 
     # ------------------------------------------------------------------
     # Discovery
@@ -203,6 +259,16 @@ class HookRunner:
         """Map of event name -> count of discovered in-process handlers."""
         return {ev: len(hs) for ev, hs in self._handlers.items()}
 
+    @property
+    def declarative_groups(self) -> list[dict[str, Any]]:
+        """Serializable declarative matcher-group summary (admin/`/hooks`)."""
+        return self._declarative.describe()
+
+    @property
+    def declarative_warnings(self) -> list[str]:
+        """Parse warnings collected from the declarative config."""
+        return self._declarative.warnings
+
     def supported_events(self) -> list[str]:
         """Return the canonical event names this runner understands.
 
@@ -220,14 +286,21 @@ class HookRunner:
             "pre_compact",
             "post_compact",
             "stop",
+            "user_prompt_submit",
         ]
 
     def register_handler(self, event: str, handler: _Handler) -> None:
         """Register an in-process ``handler`` against ``event``.
 
-        Used by :meth:`discover` and available for programmatic
-        registration (tests, plugin-contributed hooks).
+        Public programmatic registration (tests, plugin-contributed
+        hooks). Handlers added here survive :meth:`reload`; discovery
+        uses :meth:`_register_discovered` so its handlers are re-derived
+        from disk instead.
         """
+        self._manual_handlers.setdefault(event, []).append(handler)
+        self._handlers.setdefault(event, []).append(handler)
+
+    def _register_discovered(self, event: str, handler: _Handler) -> None:
         self._handlers.setdefault(event, []).append(handler)
 
     def discover(self, hooks_dir: str | Path) -> int:
@@ -252,6 +325,11 @@ class HookRunner:
         fallback parses the flat ``key: value`` manifest shape.
         """
         root = Path(hooks_dir)
+        # Remember the last discovered directory so :meth:`reload` can
+        # re-derive these handlers even when the runner was built without
+        # a ``hooks_dir`` and populated via a later ``discover()`` call
+        # (Codex #109: a reload otherwise dropped them permanently).
+        self._hooks_dir = root
         if not root.is_dir():
             return 0
         registered = 0
@@ -281,7 +359,7 @@ class HookRunner:
             if handler is None:
                 continue
             for ev in events:
-                self.register_handler(ev, handler)
+                self._register_discovered(ev, handler)
                 registered += 1
         if registered:
             _log.info("hook.discover.registered", extra={"dir": str(root), "count": registered})
@@ -466,7 +544,24 @@ class HookRunner:
 
         In-process discovered ``pre_tool`` handlers run *after* the shell
         hook (only if it allowed) and can deny, mutate args, or annotate.
+        Declarative hooks run last (legacy → discovered → declarative;
+        first deny anywhere wins, mutations merge last-write-wins).
         """
+        base = self._legacy_pre_tool(tool_name, args, ctx)
+        if not base.allow or not self._declarative.has("pre_tool"):
+            return base
+        effective = base.mutated_args if base.mutated_args is not None else args
+        decl = self._declarative.run_sync("pre_tool", tool_name, effective, ctx or {})
+        if not decl.allow:
+            return decl
+        return self._merge_pre_tool_tiers(base, decl)
+
+    def _legacy_pre_tool(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        ctx: dict[str, Any] | None = None,
+    ) -> HookDecision:
         cmd = self._hooks.get(f"pre_{tool_name}") or self._hooks.get("pre_tool")
         if cmd:
             payload = json.dumps({"tool": tool_name, "args": args}, ensure_ascii=False)
@@ -513,9 +608,47 @@ class HookRunner:
         also honored when configured: non-zero exit vetoes the stop and
         the hook's stdout becomes the ``inject_message``.
 
-        Default (no hook) → allow (the loop stops normally).
+        Default (no hook) → allow (the loop stops normally). Declarative
+        ``Stop`` groups run after the legacy paths (``command``/``http``
+        kinds only in this sync form — see :meth:`run_stop_async`).
         """
         ctx = ctx or {}
+        base = self._legacy_stop(ctx)
+        if not base.allow or not self._declarative.has("stop"):
+            return base
+        decl = self._declarative.run_sync("stop", "", {}, ctx, extra=dict(ctx))
+        if not decl.allow:
+            return decl
+        return self._merge_pre_tool_tiers(base, decl)
+
+    async def run_stop_async(self, ctx: dict[str, Any] | None = None) -> HookDecision:
+        """Async variant of :meth:`run_stop` (preferred in the loop).
+
+        The legacy shell hook runs off-thread so it cannot stall the event
+        loop, and declarative ``Stop`` groups get the full executor set —
+        including ``prompt``/``agent`` kinds, which the sync form skips.
+        """
+        ctx = ctx or {}
+        shell = await asyncio.to_thread(self._legacy_stop_shell, ctx)
+        base = shell
+        if base.allow and self._handlers.get("stop"):
+            base = self._run_handlers("stop", ctx)
+        if not base.allow or not self._declarative.has("stop"):
+            return base
+        decl = await self._declarative.run("stop", "", {}, ctx, extra=dict(ctx))
+        if not decl.allow:
+            return decl
+        return self._merge_pre_tool_tiers(base, decl)
+
+    def _legacy_stop(self, ctx: dict[str, Any]) -> HookDecision:
+        shell = self._legacy_stop_shell(ctx)
+        if not shell.allow:
+            return shell
+        if self._handlers.get("stop"):
+            return self._run_handlers("stop", ctx)
+        return HookDecision.allow_all()
+
+    def _legacy_stop_shell(self, ctx: dict[str, Any]) -> HookDecision:
         cmd = self._hooks.get("stop")
         if cmd:
             payload = json.dumps(ctx, ensure_ascii=False)
@@ -535,8 +668,6 @@ class HookRunner:
                     msg = (result.stdout or result.stderr or "").strip()[:1000]
                     _log.info("hook.stop.veto", extra={"returncode": result.returncode})
                     return HookDecision(allow=False, reason="stop vetoed by hook", inject_message=msg or None)
-        if self._handlers.get("stop"):
-            return self._run_handlers("stop", ctx)
         return HookDecision.allow_all()
 
     def run_post_tool(self, tool_name: str, args: dict[str, Any], result_json: str) -> None:
@@ -567,6 +698,113 @@ class HookRunner:
             )
         except Exception as exc:  # noqa: BLE001
             _log.warning("hook.post_tool.error", extra={"tool": tool_name, "error": str(exc)})
+
+    async def run_post_tool_async(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        result_json: str,
+        ctx: dict[str, Any] | None = None,
+    ) -> None:
+        """Async, fire-and-forget post-tool hooks (legacy + declarative).
+
+        Nothing here can block or fail the tool call by construction: the
+        legacy shell hook is scheduled as a background task, and
+        declarative ``PostToolUse`` hooks default to async. Verdicts are
+        discarded. Await :meth:`drain` to flush (tests / shutdown).
+        """
+        cmd = self._hooks.get(f"post_{tool_name}") or self._hooks.get("post_tool")
+        if cmd:
+            payload = json.dumps(
+                {"tool": tool_name, "args": args, "result": result_json},
+                ensure_ascii=False,
+            )
+            self._declarative.track(self._shell_fire_and_forget(cmd, payload))
+        # Discovered/programmatic in-process post handlers — previously
+        # advertised but never invoked (Codex #109). They run off-thread
+        # in a tracked background task so a slow handler can never delay
+        # the tool result (the servicer awaits this method on the
+        # dispatch path). Verdicts are ignored per the post-tool
+        # contract; ``_run_handlers`` isolates a raising handler.
+        if self._handlers.get(f"post_{tool_name}") or self._handlers.get("post_tool"):
+            handler_payload = {
+                "tool": tool_name,
+                "args": args,
+                "result": result_json,
+                "ctx": ctx or {},
+            }
+
+            async def _run_post_handlers() -> None:
+                await asyncio.to_thread(
+                    self._run_handlers, f"post_{tool_name}", handler_payload
+                )
+                await asyncio.to_thread(
+                    self._run_handlers, "post_tool", handler_payload
+                )
+
+            self._declarative.track(_run_post_handlers())
+        # Declarative post groups are detached too — even an operator-set
+        # ``async = false`` hook must not delay the tool result, because
+        # the servicer awaits this method on the dispatch path (Codex
+        # #109). Awaited-vs-detached only changes whether the VERDICT is
+        # read, and post-tool verdicts are discarded by contract anyway.
+        if self._declarative.has("post_tool"):
+            self._declarative.track(
+                self._declarative.run(
+                    "post_tool", tool_name, args, ctx, extra={"tool_result": result_json}
+                )
+            )
+
+    async def run_event_async(
+        self,
+        event: str,
+        payload: dict[str, Any] | None = None,
+        ctx: dict[str, Any] | None = None,
+    ) -> HookDecision:
+        """Generic lifecycle-event entry (``session_*``, ``pre_compact``,
+        ``post_compact``, ``user_prompt_submit``, ``notification``).
+
+        Runs, in order: discovered in-process handlers (which historically
+        never fired for these events), an optional legacy shell hook keyed
+        by the exact event name (fire-and-forget), and declarative groups.
+        The folded decision is returned for the caller to interpret —
+        lifecycle call sites typically treat a deny/inject as advisory
+        (e.g. a ``user_prompt_submit`` block becomes a system note), not
+        as an abort.
+        """
+        payload = dict(payload or {})
+        base = self._run_handlers(event, payload)
+        if not base.allow:
+            return base
+        cmd = self._hooks.get(event)
+        if cmd and event not in ("pre_tool", "post_tool", "stop"):
+            body = json.dumps({"event": event, **payload}, ensure_ascii=False, default=str)
+            self._declarative.track(self._shell_fire_and_forget(cmd, body))
+        if self._declarative.has(event):
+            decl = await self._declarative.run(
+                event, str(payload.get("tool_name") or ""), {}, ctx, extra=payload
+            )
+            if not decl.allow:
+                return decl
+            return self._merge_pre_tool_tiers(base, decl)
+        return base
+
+    async def _shell_fire_and_forget(self, cmd: str, payload: str) -> None:
+        proc = await asyncio.create_subprocess_shell(
+            cmd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            await asyncio.wait_for(proc.communicate(payload.encode()), timeout=_HOOK_TIMEOUT)
+        except TimeoutError:
+            proc.kill()
+            await proc.wait()
+
+    async def drain(self) -> None:
+        """Await all scheduled fire-and-forget hook tasks."""
+        await self._declarative.drain()
 
     def run_notification(
         self,
@@ -620,9 +858,24 @@ class HookRunner:
         Runs the shell hook subprocess via
         :func:`asyncio.create_subprocess_shell` so the event loop is not
         blocked. Discovered in-process handlers are then run (they are
-        synchronous callables). Returns a tuple-compatible
-        :class:`HookDecision`.
+        synchronous callables), then declarative hooks with the full
+        executor set. Returns a tuple-compatible :class:`HookDecision`.
         """
+        base = await self._legacy_pre_tool_async(tool_name, args, ctx)
+        if not base.allow or not self._declarative.has("pre_tool"):
+            return base
+        effective = base.mutated_args if base.mutated_args is not None else args
+        decl = await self._declarative.run("pre_tool", tool_name, effective, ctx or {})
+        if not decl.allow:
+            return decl
+        return self._merge_pre_tool_tiers(base, decl)
+
+    async def _legacy_pre_tool_async(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        ctx: dict[str, Any] | None = None,
+    ) -> HookDecision:
         cmd = self._hooks.get(f"pre_{tool_name}") or self._hooks.get("pre_tool")
         if cmd:
             payload = json.dumps({"tool": tool_name, "args": args}, ensure_ascii=False)

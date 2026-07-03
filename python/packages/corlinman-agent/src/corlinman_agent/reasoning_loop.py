@@ -1435,6 +1435,17 @@ class ReasoningLoop:
         """
         self._pinned_turn_id = str(turn_id) if turn_id else ""
 
+    def set_hook_runner(self, runner: Any | None) -> None:
+        """Late-bind the hook runner (mirrors :meth:`pin_turn_id`'s pattern).
+
+        The servicer resolves its runner C2-first at Chat time, after the
+        loop is constructed; duck-typed loop stand-ins in tests simply
+        omit this method and the servicer's ``getattr`` probe skips them.
+        Activates the Stop-hook veto/inject path and the ``post_compact``
+        hook emit for this loop.
+        """
+        self._hook_runner = runner
+
     @property
     def session_key(self) -> str:
         """Session key carried by the in-flight turn (empty before
@@ -1759,6 +1770,11 @@ class ReasoningLoop:
             # re-seeds from scratch.
             if messages is not messages_before_compact:
                 self._invalidate_token_cache()
+                # Identity change is the "a compaction actually happened"
+                # signal (passthrough keeps the same list).
+                await self._maybe_emit_post_compact(
+                    len(messages_before_compact), len(messages)
+                )
             rounds += 1
             tool_calls_this_round: list[ToolCallEvent] = []
             finish_reason = "stop"
@@ -1881,6 +1897,7 @@ class ReasoningLoop:
                             model=effective_model,
                         )
                         context_budget = tighter_budget
+                        _msgs_before_overflow = messages
                         messages = await _compact_history(
                             messages,
                             budget=context_budget,
@@ -1889,6 +1906,13 @@ class ReasoningLoop:
                             fast_path_only=True,
                         )
                         self._invalidate_token_cache()
+                        # A context-overflow shrink is a real compaction —
+                        # fire post_compact here too, not only on the
+                        # normal budget path (Codex #109).
+                        if messages is not _msgs_before_overflow:
+                            await self._maybe_emit_post_compact(
+                                len(_msgs_before_overflow), len(messages)
+                            )
                         tool_calls_this_round = []
                         _streaming_started = False
                         continue  # retry with smaller context
@@ -2492,6 +2516,31 @@ class ReasoningLoop:
             return None
         return [got[c.call_id] for c in calls]
 
+    async def _maybe_emit_post_compact(
+        self, messages_before: int, messages_after: int
+    ) -> None:
+        """Fire ``post_compact`` hooks after a real compaction.
+
+        Called from BOTH compaction paths — the normal pre-call budget
+        check and the context-overflow shrink-and-retry (Codex #109: the
+        overflow path silently skipped this). Advisory and
+        fire-and-forget: a runner without ``run_event_async`` (legacy
+        stand-ins) or any hook error is swallowed so a broken hook can
+        never wedge the turn.
+        """
+        runner = getattr(self, "_hook_runner", None)
+        run_event = getattr(runner, "run_event_async", None)
+        if run_event is None:
+            return
+        try:
+            await run_event(
+                "post_compact",
+                {"messages_before": messages_before, "messages_after": messages_after},
+                {"session_key": self._session_key},
+            )
+        except Exception as exc:  # noqa: BLE001 — hook must never break the loop
+            logger.warning("reasoning_loop.post_compact_hook_error", error=str(exc))
+
     async def _maybe_run_stop_hook(self, finish_reason: str) -> str | None:
         """C3: invoke the Stop hook at turn-end, if a hook runner is wired.
 
@@ -2508,7 +2557,10 @@ class ReasoningLoop:
         runner = getattr(self, "_hook_runner", None)
         if runner is None:
             return None
-        run_stop = getattr(runner, "run_stop", None)
+        # Prefer the async variant: it runs the legacy shell hook off-thread
+        # and gives declarative Stop groups the full executor set
+        # (prompt/agent kinds need an event loop; the sync form skips them).
+        run_stop = getattr(runner, "run_stop_async", None) or getattr(runner, "run_stop", None)
         if run_stop is None:
             return None
         ctx = {

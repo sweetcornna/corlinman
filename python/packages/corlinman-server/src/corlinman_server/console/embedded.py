@@ -383,6 +383,15 @@ class EmbeddedBrain:
         self._servicer.set_approval_resolver(resolver)
         return True
 
+    def get_hook_runner(self) -> Any | None:
+        """The live :class:`HookRunner` (console ``/hooks``), or ``None``
+        when the full agent path is not live (direct-provider fallback runs
+        no tools, so no hooks fire either)."""
+        if self._servicer is None:
+            return None
+        resolver = getattr(self._servicer, "_resolve_hook_runner", None)
+        return resolver() if callable(resolver) else None
+
     # ── Brain protocol ────────────────────────────────────────────────
 
     def run_turn(

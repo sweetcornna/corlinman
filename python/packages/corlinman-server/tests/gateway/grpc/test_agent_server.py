@@ -309,6 +309,7 @@ async def test_serve_in_background_threads_subagent_config(
         subagent_config: dict | None = None,
         data_dir: Path | None = None,
         py_config_path: Path | str | None = None,
+        hook_runner: object | None = None,
     ) -> None:
         seen["bind"] = bind
         seen["event_emitter"] = event_emitter
@@ -530,3 +531,38 @@ async def test_inproc_agent_serves_chat_turn(
 
     assert "TokenDeltaEvent" in events, events
     assert "DoneEvent" in events, events
+
+
+@pytest.mark.asyncio
+async def test_serve_agent_in_background_passes_state_hook_runner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The co-hosted agent shares the gateway's HookRunner instance so a
+    ConfigWatcher [hooks] reload reaches the live pre-tool gate
+    (Codex #109 round 3 — a privately-built runner went stale)."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from corlinman_server.gateway.grpc import agent_server as mod
+
+    captured: dict = {}
+
+    async def fake_serve_agent(bind, cancel, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(mod, "serve_agent", fake_serve_agent)
+    monkeypatch.setenv("CORLINMAN_GRPC_AGENT_INPROC", "1")
+    sentinel = object()
+    state = SimpleNamespace(
+        hook_runner=sentinel,
+        extras={},
+        config={},
+        data_dir=None,
+        py_config_path=None,
+        event_emitter=None,
+        subagent_dispatcher=None,
+    )
+    task = mod.serve_agent_in_background(state, asyncio.Event())
+    assert task is not None
+    await task
+    assert captured.get("hook_runner") is sentinel

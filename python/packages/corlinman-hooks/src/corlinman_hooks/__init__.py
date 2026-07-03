@@ -35,6 +35,12 @@ from corlinman_hooks.bus import (
     match_kind,
     register_hook,
 )
+from corlinman_hooks.declarative import (
+    DeclarativeConfig,
+    DeclarativeEngine,
+    match_tool,
+    parse_declarative,
+)
 from corlinman_hooks.error import (
     Closed,
     HookCancelledError,
@@ -49,6 +55,8 @@ from corlinman_hooks.runner import HookRunner
 __all__ = [
     "CancelToken",
     "Closed",
+    "DeclarativeConfig",
+    "DeclarativeEngine",
     "HookBus",
     "HookCancelledError",
     "HookError",
@@ -60,5 +68,7 @@ __all__ = [
     "RecvError",
     "SubscriptionToken",
     "match_kind",
+    "match_tool",
+    "parse_declarative",
     "register_hook",
 ]

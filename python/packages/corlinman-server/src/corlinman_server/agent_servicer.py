@@ -934,6 +934,23 @@ def _calculator_timeout_secs() -> float:
     return v if v > 0 else _DEFAULT_CALCULATOR_TIMEOUT_S
 
 
+def _hook_result_max_bytes() -> int:
+    """Max bytes of a tool result passed to PostToolUse hooks.
+
+    ``0`` (the default / unset) means NO truncation — audit hooks see the
+    full result. A positive value opts into an explicit cap (a resource
+    guard for operators who process huge tool outputs in a hook).
+    """
+    raw = os.environ.get("CORLINMAN_HOOK_RESULT_MAX_BYTES")
+    if not raw:
+        return 0
+    try:
+        n = int(raw)
+    except ValueError:
+        return 0
+    return max(0, n)
+
+
 class _SessionLockCache:
     """LRU-bounded ``session_key`` → :class:`asyncio.Lock` map.
 
@@ -1396,6 +1413,43 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             except Exception as exc:  # noqa: BLE001 — never block the chat
                 logger.warning("agent.chat.user_prompt_emit_failed", error=str(exc))
 
+        # Declarative ``UserPromptSubmit`` hooks. These cannot abort the
+        # turn: a deny/inject verdict from an awaited (async=false) hook
+        # becomes a note the model sees — prepended to the messages on a
+        # fresh turn, or appended to the injected supplement text when a
+        # turn is already running (Codex #109: the supplement branch
+        # returns early, so a start.messages write would be dropped).
+        # Default-async groups return allow immediately and run detached.
+        _hook_note: str | None = None
+        if user_text:
+            _runner = self._resolve_hook_runner()
+            _run_event = getattr(_runner, "run_event_async", None)
+            if _run_event is not None:
+                try:
+                    _d = await _run_event(
+                        "user_prompt_submit",
+                        {"user_text": user_text, "model": start.model or ""},
+                        {
+                            "session_key": start.session_key or "",
+                            "user_id": _extract_user_id(start),
+                        },
+                    )
+                    _note = None
+                    if not bool(getattr(_d, "allow", True)):
+                        _note = (
+                            getattr(_d, "reason", None)
+                            or "a user_prompt_submit hook flagged this prompt"
+                        )
+                    _inject = getattr(_d, "inject_message", None)
+                    if isinstance(_inject, str) and _inject.strip():
+                        _note = f"{_note}\n{_inject}" if _note else _inject
+                    if _note:
+                        _hook_note = f"[hook:user_prompt_submit] {_note}"
+                except Exception as exc:  # noqa: BLE001 — never block the chat
+                    logger.warning(
+                        "agent.chat.user_prompt_hook_failed", error=str(exc)
+                    )
+
         # Claude-Code-style mid-turn supplement: if a turn is ALREADY
         # running for this session_key, inject the new user text into
         # the in-flight loop and return a short ``supplemented`` Done
@@ -1406,7 +1460,16 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         if start.session_key and user_text:
             active_loop = self._active_loops.get(start.session_key)
             if active_loop is not None:
-                active_loop.inject_user_message(user_text)
+                # The hook note rides along with the supplement text into
+                # BOTH the live loop and the journal, so a resume after a
+                # restart replays the same guidance the live model saw
+                # (Codex #109: the journal previously dropped the note).
+                _supplement_text = (
+                    user_text
+                    if _hook_note is None
+                    else f"{user_text}\n\n{_hook_note}"
+                )
+                active_loop.inject_user_message(_supplement_text)
                 # T4.1: journal the supplement onto the existing turn
                 # so a resume sees the full conversation. Best-effort.
                 journal = await self._get_journal()
@@ -1421,7 +1484,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                             await journal.append_message(
                                 active_turn.turn_id,
                                 role="user",
-                                content=f"[追加] {user_text}",
+                                content=f"[追加] {_supplement_text}",
                             )
                     except Exception as exc:  # noqa: BLE001 — degrade
                         logger.warning(
@@ -1456,6 +1519,11 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     done=agent_pb2.Done(finish_reason="supplemented")
                 )
                 return
+
+        # Fresh turn (no in-flight loop absorbed the prompt): the hook
+        # note lands as a system note ahead of context assembly.
+        if _hook_note is not None:
+            start.messages = _inject_memory_note(list(start.messages), _hook_note)
 
         # T4.2: per-session async lock — same-session RPCs serialize so
         # the todo store / cost meter / workspace snapshot can't race.
@@ -1646,6 +1714,14 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             tool_result_timeout=30.0,
             event_emitter=self._event_emitter,
         )
+        # Activates the loop's Stop-hook veto/inject path (previously
+        # inert here — the loop supported it but was never handed a
+        # runner) and its post_compact hook emit. Dim 9 parity. Probed
+        # via ``getattr`` so duck-typed loop stand-ins (tests) that don't
+        # implement the setter keep working, same as ``pin_turn_id``.
+        _set_hook_runner = getattr(loop, "set_hook_runner", None)
+        if callable(_set_hook_runner):
+            _set_hook_runner(self._resolve_hook_runner())
         if journal_turn_id is not None:
             # One turn identity everywhere: the journal rows (turns /
             # turn_messages) carry ``begin_turn()``'s id while the loop's
@@ -1658,8 +1734,25 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             if callable(_pin):
                 _pin(str(journal_turn_id))
 
+        # PostToolUse hooks for EXTERNAL (plugin/MCP) tools: their results
+        # come back as client tool_result frames carrying only a call_id,
+        # so the emit site records ``call_id → (tool, args)`` here and the
+        # pump fires the hooks through this callback (Codex #109).
+        pending_external_tools: dict[str, tuple[str, dict[str, Any]]] = {}
+
+        async def _on_external_tool_result(
+            call_id: str, content: str, is_error: bool
+        ) -> None:
+            _ = is_error
+            info = pending_external_tools.pop(call_id, None)
+            if info is None:
+                return
+            await self._run_post_tool_hooks(info[0], info[1], start, content)
+
         inbound_task = asyncio.create_task(
-            _pump_inbound(request_iterator, loop),
+            _pump_inbound(
+                request_iterator, loop, on_tool_result=_on_external_tool_result
+            ),
             name="agent.chat.pump_inbound",
         )
 
@@ -1769,8 +1862,12 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                             tool_call_id=event.call_id,
                             tool_name=event.tool,
                             args_json=event.args_json,
+                            # Inner (no post hooks) — this path fires them
+                            # itself AFTER _register_tool_media so hooks
+                            # audit the URL-bearing result the model sees
+                            # (Codex #109), not the pre-rewrite local path.
                             invoke=functools.partial(
-                                self._dispatch_builtin,
+                                self._dispatch_builtin_inner,
                                 event,
                                 start,
                                 provider,
@@ -1837,6 +1934,15 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                                     )
                                 )
                                 seq += 1
+                        # PostToolUse hooks — fired here with the FINAL
+                        # result (post media-rewrite) rather than inside
+                        # the dispatch wrapper (Codex #109).
+                        await self._run_post_tool_hooks(
+                            event.tool,
+                            self._parse_args_dict(event.args_json),
+                            start,
+                            result_json,
+                        )
                         # Detect error envelope so the channel UI can
                         # render ❌ instead of ✅. Cheap parse — bail on
                         # malformed JSON (counts as success then).
@@ -1934,6 +2040,69 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                                     error=str(exc),
                                 )
                         continue
+                    # PreToolUse hook gate for EXTERNAL plugin/MCP tools —
+                    # the blocking gate used to live only in the builtin
+                    # dispatch path, so a PreToolUse hook with matcher="*"
+                    # could stop builtins but not a mutating MCP/plugin
+                    # call (Codex #109). Run it here before yielding the
+                    # ToolCall frame chat_service executes.
+                    _ext_allow, _ext_reason, _ext_mutated = (
+                        await self._run_pre_tool_hook_gate(event, start)
+                    )
+                    if not _ext_allow:
+                        logger.info(
+                            "agent.tool.hook_blocked",
+                            tool=event.tool,
+                            call_id=event.call_id,
+                            message=_ext_reason,
+                            external=True,
+                        )
+                        # Feed the block back as this tool's result so the
+                        # model reads it and continues; never yield the
+                        # external frame, so chat_service never executes it.
+                        _blocked_result = json.dumps(
+                            {
+                                "error": f"blocked by hook: {_ext_reason}",
+                                "tool": event.tool,
+                            }
+                        )
+                        loop.feed_tool_result(
+                            ToolResult(
+                                call_id=event.call_id,
+                                content=_blocked_result,
+                                is_error=True,
+                            )
+                        )
+                        # Fire PostToolUse with the block result — a
+                        # builtin blocked by the same hook flows through
+                        # the post-hook wrapper, so an external block must
+                        # too (Codex #109: matcher="*" audit hooks record
+                        # every blocked attempt, builtin or external).
+                        await self._run_post_tool_hooks(
+                            event.tool,
+                            self._parse_args_dict(event.args_json),
+                            start,
+                            _blocked_result,
+                        )
+                        continue
+                    if _ext_mutated is not None:
+                        try:
+                            event.args_json = json.dumps(_ext_mutated).encode("utf-8")
+                        except (TypeError, ValueError) as exc:
+                            logger.warning(
+                                "agent.tool.hook_mutated_args_invalid",
+                                tool=event.tool,
+                                error=str(exc),
+                            )
+                    # Correlate for PostToolUse hooks — the external
+                    # result returns through ``_pump_inbound`` carrying
+                    # only a call_id (Codex #109: plugin/MCP tools were
+                    # invisible to post hooks despite the matcher="*"
+                    # audit contract).
+                    pending_external_tools[event.call_id] = (
+                        event.tool,
+                        self._parse_args_dict(event.args_json),
+                    )
                     yield agent_pb2.ServerFrame(
                         tool_call=agent_pb2.ToolCall(
                             call_id=event.call_id,
@@ -2539,6 +2708,130 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         provider: CorlinmanProvider,
         file_state: FileState | None = None,
     ) -> str | list[dict[str, Any]]:
+        """Dispatch a builtin tool, then fire post-tool hooks with the result.
+
+        Thin wrapper so ``PostToolUse`` hooks (legacy ``post_{tool}`` shell
+        keys + declarative groups) see the actual result string — the inner
+        method has many exit paths and its ``finally`` only knows ok/timing.
+        Post-tool hooks are fire-and-forget by contract: they can never
+        block, mutate, or fail the call.
+        """
+        result = await self._dispatch_builtin_inner(event, start, provider, file_state)
+        await self._run_post_tool_hooks(
+            event.tool, self._parse_args_dict(event.args_json), start, result
+        )
+        return result
+
+    async def _run_post_tool_hooks(
+        self,
+        tool: str,
+        args: dict[str, Any],
+        start: AgentChatStart,
+        result: str | list[dict[str, Any]],
+    ) -> None:
+        """Fire PostToolUse hooks with a tool's FINAL result.
+
+        Three call sites (Codex #109 — post hooks must audit every tool
+        call with the result the model actually sees):
+
+        * the main Chat loop, AFTER ``_register_tool_media`` rewrote
+          local paths into URLs;
+        * the ``_dispatch_builtin`` wrapper (child-executor path — no
+          media rewrite there);
+        * the external plugin/MCP result path, via the ``_pump_inbound``
+          callback correlated through ``pending_external_tools``.
+        """
+        runner = self._resolve_hook_runner()
+        post = getattr(runner, "run_post_tool_async", None)
+        if post is None:
+            return
+        try:
+            result_str = result if isinstance(result, str) else json.dumps(result)
+            # Post hooks receive the FULL result by default so audit /
+            # archive / validation hooks see exactly what the model and
+            # journal see (Codex #109 — a silent 16 KB cap corrupted
+            # large run_shell / read_file / external results). Post hooks
+            # are detached (fire-and-forget, off the dispatch path), so a
+            # large payload can't delay the turn. Operators who still want
+            # a bound can set CORLINMAN_HOOK_RESULT_MAX_BYTES>0 — an
+            # EXPLICIT, opt-in truncation rather than a silent one.
+            _cap = _hook_result_max_bytes()
+            if _cap > 0 and len(result_str) > _cap:
+                result_str = result_str[:_cap] + "…[truncated for hook]"
+            await post(
+                tool,
+                args,
+                result_str,
+                {
+                    "session_key": getattr(start, "session_key", None),
+                    "tenant_id": getattr(start, "tenant_id", None),
+                    "user_id": _extract_user_id(start),
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 — post-hooks never affect the call
+            logger.warning("agent.tool.post_hook_error", tool=tool, error=str(exc))
+
+    async def _run_pre_tool_hook_gate(
+        self, event: ToolCallEvent, start: AgentChatStart
+    ) -> tuple[bool, str, dict[str, Any] | None]:
+        """Run the PreToolUse hook gate (legacy shell + discovered + declarative).
+
+        Returns ``(allow, reason, mutated_args)``. Shared by the builtin
+        dispatch path and the external plugin/MCP branch so a declarative
+        or shell ``PreToolUse`` hook with ``matcher = "*"`` gates EVERY
+        tool call, not just builtins (Codex #109 — external MCP/plugin
+        tools previously bypassed the blocking gate). Defensive on every
+        axis: no runner, a legacy ``(allow, reason)`` tuple / bare bool
+        return, or any exception all degrade to "allow" so a broken hook
+        never wedges dispatch.
+        """
+        runner = self._resolve_hook_runner()
+        pre = getattr(runner, "run_pre_tool_async", None)
+        if pre is None:
+            return True, "", None
+        try:
+            args_dict = self._parse_args_dict(event.args_json)
+            ctx = {
+                "session_key": getattr(start, "session_key", None),
+                "tenant_id": getattr(start, "tenant_id", None),
+                "user_id": _extract_user_id(start),
+            }
+            decision = await pre(event.tool, args_dict, ctx)
+            reason_legacy = ""
+            if hasattr(decision, "allow"):
+                allow = bool(decision.allow)
+            elif isinstance(decision, (tuple, list)) and decision:
+                allow = bool(decision[0])
+                if len(decision) > 1 and isinstance(decision[1], str):
+                    reason_legacy = decision[1]
+                decision = None
+            else:
+                allow = bool(decision)
+                decision = None
+            if not allow:
+                reason = (
+                    getattr(decision, "reason", None)
+                    if decision is not None
+                    else reason_legacy
+                ) or "hook blocked"
+                return False, reason, None
+            mutated = (
+                getattr(decision, "mutated_args", None) if decision is not None else None
+            )
+            return True, "", mutated if isinstance(mutated, dict) else None
+        except Exception as exc:  # noqa: BLE001 — hook failure must not break dispatch
+            logger.warning(
+                "agent.tool.hook_runner_error", tool=event.tool, error=str(exc)
+            )
+            return True, "", None
+
+    async def _dispatch_builtin_inner(
+        self,
+        event: ToolCallEvent,
+        start: AgentChatStart,
+        provider: CorlinmanProvider,
+        file_state: FileState | None = None,
+    ) -> str | list[dict[str, Any]]:
         """Route an in-process builtin tool to its handler.
 
         Returns the JSON-encoded result string that the loop feeds back
@@ -2686,86 +2979,30 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 }
             )
 
-        # C3 PreToolDispatch hook gate: run ``pre_{tool}`` / ``pre_tool``.
-        # The runner is resolved C2-first (``app_state.hook_runner`` set by
-        # wire-B in the lifespan) and falls back to the constructor-injected
-        # one. A blocking decision (``allow=False``) short-circuits with a
-        # ``tool_not_allowed`` envelope; ``mutated_args`` rewrites the call.
-        # The async variant keeps the event loop unblocked on subprocess I/O.
-        _hook_runner = self._resolve_hook_runner()
-        if _hook_runner is not None:
+        # C3 PreToolDispatch hook gate (shared with the external-tool
+        # branch via :meth:`_run_pre_tool_hook_gate`). A blocking decision
+        # (``allow=False``) short-circuits with a ``blocked by hook``
+        # envelope; ``mutated_args`` rewrites the call before dispatch.
+        _allow, _reason, _mutated = await self._run_pre_tool_hook_gate(event, start)
+        if not _allow:
+            logger.info(
+                "agent.tool.hook_blocked",
+                tool=event.tool,
+                call_id=event.call_id,
+                message=_reason,
+            )
+            self._emit_tool_called(
+                event, start, ok=False, duration_ms=0, error_code="hook_blocked"
+            )
+            return json.dumps(
+                {"error": f"blocked by hook: {_reason}", "tool": event.tool}
+            )
+        if _mutated is not None:
             try:
-                _args_dict: dict[str, Any] = {}
-                try:
-                    _raw = event.args_json.decode("utf-8", "replace")
-                    _args_dict = json.loads(_raw) if _raw.strip() else {}
-                    if not isinstance(_args_dict, dict):
-                        _args_dict = {}
-                except (json.JSONDecodeError, ValueError):
-                    pass
-                _hook_ctx = {
-                    "session_key": getattr(start, "session_key", None),
-                    "tenant_id": getattr(start, "tenant_id", None),
-                    "user_id": _extract_user_id(start),
-                }
-                _decision = await _hook_runner.run_pre_tool_async(
-                    event.tool, _args_dict, _hook_ctx
-                )
-                # ``run_pre_tool_async`` returns a HookDecision; it is also
-                # tuple-unpackable as (allow, reason) for back-compat. Read
-                # the rich fields defensively so a runner that still returns
-                # a bare tuple / bool degrades cleanly.
-                _reason_legacy: str = ""
-                if hasattr(_decision, "allow"):
-                    _allow = bool(_decision.allow)
-                elif isinstance(_decision, (tuple, list)) and _decision:
-                    # Legacy ``(allow, reason)`` tuple shape.
-                    _allow = bool(_decision[0])
-                    if len(_decision) > 1 and isinstance(_decision[1], str):
-                        _reason_legacy = _decision[1]
-                    _decision = None
-                else:
-                    # Bare bool / unexpected shape — treat truthy as allow.
-                    _allow = bool(_decision)
-                    _decision = None
-                if not _allow:
-                    _reason = (
-                        getattr(_decision, "reason", None)
-                        if _decision is not None
-                        else _reason_legacy
-                    ) or "hook blocked"
-                    logger.info(
-                        "agent.tool.hook_blocked",
-                        tool=event.tool,
-                        call_id=event.call_id,
-                        message=_reason,
-                    )
-                    self._emit_tool_called(
-                        event, start, ok=False, duration_ms=0,
-                        error_code="hook_blocked"
-                    )
-                    return json.dumps(
-                        {"error": f"blocked by hook: {_reason}", "tool": event.tool}
-                    )
-                # Honour an arg rewrite — re-encode the mutated args back
-                # onto the event so the downstream dispatch reads them.
-                _mutated = (
-                    getattr(_decision, "mutated_args", None)
-                    if _decision is not None
-                    else None
-                )
-                if isinstance(_mutated, dict):
-                    try:
-                        event.args_json = json.dumps(_mutated).encode("utf-8")
-                    except (TypeError, ValueError) as exc:
-                        logger.warning(
-                            "agent.tool.hook_mutated_args_invalid",
-                            tool=event.tool,
-                            error=str(exc),
-                        )
-            except Exception as exc:  # noqa: BLE001 — hook failure must not break dispatch
+                event.args_json = json.dumps(_mutated).encode("utf-8")
+            except (TypeError, ValueError) as exc:
                 logger.warning(
-                    "agent.tool.hook_runner_error",
+                    "agent.tool.hook_mutated_args_invalid",
                     tool=event.tool,
                     error=str(exc),
                 )
@@ -5109,10 +5346,16 @@ async def _expect_start(
 async def _pump_inbound(
     iterator: AsyncIterator[agent_pb2.ClientFrame],
     loop: ReasoningLoop,
+    *,
+    on_tool_result: Callable[[str, str, bool], Awaitable[None]] | None = None,
 ) -> None:
     """Forward post-ChatStart :class:`ClientFrame` messages to the loop.
 
-    * ``tool_result`` → :meth:`ReasoningLoop.feed_tool_result`
+    * ``tool_result`` → :meth:`ReasoningLoop.feed_tool_result`, then the
+      optional ``on_tool_result(call_id, content, is_error)`` callback
+      (PostToolUse hooks for external tools — fed AFTER the loop so a
+      slow hook path never delays the model's next round; failures are
+      logged and swallowed)
     * ``cancel`` → :meth:`ReasoningLoop.cancel` and return
     * ``approval`` → logged only (S5 wires this into an approval gate)
     * duplicate ``start`` / unknown kinds → ignored
@@ -5129,6 +5372,15 @@ async def _pump_inbound(
                     is_error=tr.is_error,
                 )
             )
+            if on_tool_result is not None:
+                try:
+                    await on_tool_result(tr.call_id, content, tr.is_error)
+                except Exception as exc:  # noqa: BLE001 — hooks never break the pump
+                    logger.warning(
+                        "agent.chat.post_tool_hook_error",
+                        call_id=tr.call_id,
+                        error=str(exc),
+                    )
             logger.debug(
                 "agent.chat.tool_result_in",
                 call_id=tr.call_id,

@@ -530,6 +530,48 @@ file_rolling = true
 # ---------------------------------------------------------------------------
 # [hooks] — in-process hook bus. `capacity` bounds the fan-out queue; set
 # `enabled = false` to short-circuit dispatch while keeping handlers registered.
+#
+# Legacy shell hooks: flat `event_key = "command"` entries (pre_tool /
+# pre_{tool_name} / post_tool / stop / notification). Exit-code contract:
+# 0 = allow, non-zero = deny (pre_tool) / veto (stop). Unchanged.
+#
+# Declarative hooks (claude-code parity): per-event matcher groups under
+# [hooks.declarative]. Event names accept the claude-code spelling
+# (PreToolUse, PostToolUse, Stop, UserPromptSubmit, SessionStart/End/Reset,
+# PreCompact, PostCompact, Notification) or snake_case. Per group:
+#   matcher — tool-name pattern: exact | "A|B" | "prefix*" | "*" (default)
+#   if      — optional permission-rule refinement, same grammar as
+#             [agent.permissions] rules. For run_shell both spellings
+#             work: the natural command prefix "run_shell(git push*)"
+#             and the gate's basename form "run_shell(git:*)"
+#   hooks   — list of { kind, ... , timeout, async } definitions:
+#     kind = "command"  stdin gets JSON {event, tool_name, tool_input, ...}.
+#                       Exit 0 = allow (stdout may return a JSON verdict:
+#                       {"decision": "allow"|"block", reason, mutated_args,
+#                       inject_message} — "block" wins over exit 0);
+#                       exit 2 = block with stderr as the reason;
+#                       any other exit = logged, fail-open; timeout = open.
+#     kind = "http"     POST the payload; 2xx JSON body = same verdict
+#                       shape; anything else fails open.
+#     kind = "prompt" / "agent"  LLM judge / verifier subagent via
+#                       evaluators injected at wiring time; fail open
+#                       (with one log line) until an evaluator is wired.
+# Blocking-capable events (PreToolUse / Stop / PreCompact) default to
+# async = false (awaited, verdict counts); observation events default to
+# async = true (fire-and-forget, can never add latency). Use `/hooks` in
+# the console to view, test, and reload; edits to [hooks] hot-reload when
+# the config watcher is enabled. PostToolUse hooks receive the FULL tool
+# result by default; set env CORLINMAN_HOOK_RESULT_MAX_BYTES>0 for an
+# explicit cap. PreToolUse gates every tool call — builtin AND MCP/plugin.
+#
+# Example — block force-pushes and audit every tool call:
+#   [[hooks.declarative.PreToolUse]]
+#   matcher = "run_shell"
+#   if = "run_shell(git push --force*)"
+#   hooks = [ { kind = "command", command = "exit 2" } ]
+#
+#   [[hooks.declarative.PostToolUse]]
+#   hooks = [ { kind = "http", url = "http://127.0.0.1:9911/audit" } ]
 # ---------------------------------------------------------------------------
 [hooks]
 capacity = 1024
