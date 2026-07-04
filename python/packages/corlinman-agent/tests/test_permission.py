@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from corlinman_agent.permission import (
     ALLOW,
+    ASK,
     DENY,
     LOG,
     PermissionContext,
@@ -167,6 +168,31 @@ def test_task_control_default_deny_gate_rescued() -> None:
     )
     assert g.decide("shell_task_output") == ALLOW
     assert g.decide("shell_task_kill") == ALLOW
+
+
+def test_task_control_carries_ask_approval_through() -> None:
+    """Codex #112 r8: run_shell set to ``ask`` (+ default deny) means an
+    APPROVED run_shell(run_in_background) starts a task, so the control surface
+    must never be DENIED by the catch-all. Read-only ``shell_task_output`` is
+    rescued to ``allow``; ``shell_task_kill`` — a destructive op — inherits
+    run_shell's ``ask`` verdict directly via the alias (prompt-before-kill,
+    consistent with an ask-before-shell policy). Neither is denied."""
+    g = PermissionGate(
+        [PermissionRule(tool="run_shell", action=ASK)],
+        default_action=DENY,
+    )
+    assert g.decide("run_shell") == ASK  # start is user-gated
+    assert g.decide("shell_task_output") == ALLOW  # read-only, rescued from deny
+    assert g.decide("shell_task_kill") == ASK  # inherits run_shell's ask verdict
+    # A SCOPED ask grant can't tie the argless control call to its command, so
+    # the kill can't meaningfully re-prompt — the task was already approved at
+    # start, so it's rescued to ``allow`` (never left denied).
+    g2 = PermissionGate(
+        [PermissionRule(tool="run_shell", action=ASK, arg_pattern="npm:*")],
+        strict=True,
+    )
+    assert g2.decide("shell_task_kill") == ALLOW
+    assert g2.decide("shell_task_output") == ALLOW
 
 
 def test_log_decision_is_observer_only() -> None:

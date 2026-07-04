@@ -581,8 +581,13 @@ class PermissionGate:
             ):
                 continue
             scoped = rule.arg_pattern is not None and rule.arg_pattern != "*"
-            if rule.action in (ALLOW, LOG):
+            if rule.action in (ALLOW, LOG, ASK):
                 # A scoped OR unscoped allow proves at least one command runs.
+                # ``ask`` counts too: an approved run_shell(run_in_background)
+                # starts and returns a task_id, so the approval must carry
+                # through to the poll/kill of that task (Codex #112 r8) — the
+                # control surface is rescued to ``allow`` (not re-prompted) so
+                # the model can manage the task the user just approved.
                 return True
             # action == DENY: unscoped blocks all shell; scoped blocks only
             # that one command, so keep scanning for a surviving allow.

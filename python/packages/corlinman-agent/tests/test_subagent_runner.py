@@ -656,6 +656,39 @@ def test_subagent_run_shell_does_not_imply_task_tools() -> None:
     assert "shell_task_output" not in eff and "shell_task_kill" not in eff
 
 
+def test_subagent_wildcard_child_strips_task_controls() -> None:
+    """Codex #112 r8: a general-purpose child (no per-spawn allowlist → inherit
+    the parent's whole set via the wildcard/legacy path) must NOT keep the
+    task-control surface. It can't create bg tasks and runs under the parent
+    session_key, so an inherited shell_task_kill would reach the parent's
+    jobs. The strip covers the inherit path, not just the narrow-allowlist
+    implication removed in r7."""
+    from corlinman_agent.subagent.runner import _filter_tools_for_child
+
+    parent = frozenset(
+        {"run_shell", "shell_task_output", "shell_task_kill", "web_search"}
+    )
+    # requested_allowlist=None → Layer-2 inherit copies the full parent set.
+    eff = _filter_tools_for_child(
+        parent_tool_names=parent,
+        card_tools_allowed=None,  # legacy card → inherit verbatim
+        requested_allowlist=None,
+        child_depth=1,
+        max_depth=1,
+    )
+    assert eff == frozenset({"run_shell", "web_search"})
+    assert "shell_task_output" not in eff and "shell_task_kill" not in eff
+    # Same for an explicit ``["*"]`` card (wildcard inherit).
+    eff2 = _filter_tools_for_child(
+        parent_tool_names=parent,
+        card_tools_allowed=["*"],
+        requested_allowlist=None,
+        child_depth=1,
+        max_depth=1,
+    )
+    assert "shell_task_output" not in eff2 and "shell_task_kill" not in eff2
+
+
 def test_subagent_task_tools_only_when_explicitly_requested() -> None:
     """A child still gets a control tool if its allowlist NAMES it (the
     operator's explicit choice) — the implication is what's dropped, not the

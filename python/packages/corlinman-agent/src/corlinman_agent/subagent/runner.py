@@ -127,6 +127,15 @@ TOOL_ALLOWLIST_ESCALATION_ERROR: str = "tool_allowlist_escalation"
 #: card declared.
 WILDCARD_TOOL: str = "*"
 
+#: The background-shell task-control surface (canonical names). A child can't
+#: create bg tasks (bg is refused in child context) and its tool calls run
+#: under the PARENT's session_key, so inheriting these lets it poll/kill the
+#: PARENT's jobs — they're stripped from every child unless its per-spawn
+#: allowlist names them outright (Codex #112 r7/r8).
+_TASK_CONTROL_CANON: frozenset[str] = frozenset(
+    {"shell_task_output", "shell_task_kill"}
+)
+
 if TYPE_CHECKING:  # pragma: no cover - import only for type checkers
     # Avoids forcing a runtime import of corlinman-persona for callers
     # who pass `persona_store=None`. The pyproject lists corlinman-persona
@@ -912,18 +921,6 @@ def _filter_tools_for_child(
             card_by_canon[canonicalize_tool_name(t)] for t in requested_allowlist
         }
 
-    # NOTE: run_shell does NOT imply the task-control surface for a *child*.
-    # A subagent is refused ``run_in_background=true`` (the child executor
-    # rejects it — its bounded lifetime can't own a detached task), so a child
-    # can never create a bg task of its own and has no legitimate use for
-    # shell_task_output / shell_task_kill. Worse, child tool calls dispatch
-    # under the PARENT's ``session_key``, so a child handed a parent task_id
-    # would pass the registry's ownership gate and poll/kill the PARENT's job.
-    # Implying the controls here would hand that cross-session reach to any
-    # child granted plain run_shell, so the implication is intentionally
-    # dropped for children (Codex #112 r7). A child only gets the control
-    # tools if its card explicitly lists them.
-
     # D7 — single-level nesting (parent → child). EVERY spawned child
     # (``child_depth >= 1``) loses the spawn tools, regardless of the
     # configured ``max_depth``. This matches reality on two fronts: the
@@ -935,6 +932,24 @@ def _filter_tools_for_child(
     # the signature for the supervisor cap contract / future deeper nesting;
     # the prune itself no longer keys off it.)
     if child_depth >= 1:
+        # Task controls require an EXPLICIT grant on a child. run_shell does
+        # NOT imply them, AND the wildcard / legacy card path inherits the
+        # parent's whole set (which carries shell_task_output/kill), so we must
+        # actively strip them: a child can't create bg tasks (bg is refused in
+        # child context) and its tool calls dispatch under the PARENT's
+        # session_key, so an inherited control would let the child poll or kill
+        # the PARENT's jobs via the registry's ownership gate. Keep a control
+        # tool only when the caller's per-spawn allowlist NAMED it outright
+        # (Codex #112 r7/r8).
+        requested_canon = {
+            canonicalize_tool_name(t) for t in (requested_allowlist or [])
+        }
+        effective = {
+            t
+            for t in effective
+            if (canon := canonicalize_tool_name(t)) not in _TASK_CONTROL_CANON
+            or canon in requested_canon
+        }
         effective.discard(SUBAGENT_SPAWN_TOOL)
         effective.discard(SUBAGENT_SPAWN_MANY_TOOL)
         effective.discard(SUBAGENT_SPAWN_INLINE_TOOL)
