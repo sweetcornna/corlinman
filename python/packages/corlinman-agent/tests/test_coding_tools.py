@@ -35,7 +35,7 @@ def _args(**kw: object) -> bytes:
 
 def test_coding_tools_set_and_schemas_align() -> None:
     schemas = coding_tool_schemas()
-    assert len(schemas) == len(CODING_TOOLS) == 10
+    assert len(schemas) == len(CODING_TOOLS) == 12
     names = {s["function"]["name"] for s in schemas}
     assert names == set(CODING_TOOLS)
 
@@ -201,6 +201,69 @@ async def test_run_shell_refuses_smuggled_compound_command(tmp_path: Path) -> No
         await dispatch_run_shell(args_json=_args(command="ls ; sudo rm file"), workspace=tmp_path)
     )
     assert "command_refused" in res["error"]
+
+
+# ---------------------------------------------------------------------------
+# Dim 4 — run_shell(run_in_background=true)
+# ---------------------------------------------------------------------------
+
+
+async def test_run_shell_background_returns_task_id_immediately(tmp_path: Path) -> None:
+    """A bg command returns fast with a task_id instead of blocking."""
+    import time as _time
+
+    from corlinman_agent.coding.shell_tasks import reset_registry
+
+    reset_registry()
+    try:
+        t0 = _time.monotonic()
+        res = json.loads(
+            await dispatch_run_shell(
+                args_json=_args(command="sleep 5", run_in_background=True),
+                workspace=tmp_path,
+                session_key="s1",
+            )
+        )
+        elapsed = _time.monotonic() - t0
+        assert elapsed < 1.0, f"bg spawn blocked for {elapsed:.2f}s"
+        assert res["status"] == "running"
+        assert res["task_id"]
+        assert res["log_path"].startswith(".corlinman/shell_task_")
+        assert "shell_task_output" in res["note"]
+
+        # Foreground is unaffected — a plain call still runs to completion.
+        fg = json.loads(
+            await dispatch_run_shell(args_json=_args(command="echo fg-ok"), workspace=tmp_path)
+        )
+        assert fg["exit_code"] == 0
+        assert "fg-ok" in fg["output"]
+    finally:
+        from corlinman_agent.coding import shell_tasks
+
+        reg = shell_tasks._REGISTRY
+        if reg is not None:
+            await reg.shutdown()
+        reset_registry()
+
+
+async def test_run_shell_background_refuses_destructive_before_spawn(tmp_path: Path) -> None:
+    """The destructive-command guard fires BEFORE any bg task is spawned."""
+    from corlinman_agent.coding.shell_tasks import get_registry, reset_registry
+
+    reset_registry()
+    try:
+        res = json.loads(
+            await dispatch_run_shell(
+                args_json=_args(command="rm -rf /", run_in_background=True),
+                workspace=tmp_path,
+            )
+        )
+        assert "command_refused" in res["error"]
+        assert "task_id" not in res
+        # Nothing was registered — no process was ever spawned.
+        assert get_registry().running_count == 0
+    finally:
+        reset_registry()
 
 
 # ---------------------------------------------------------------------------
@@ -978,7 +1041,7 @@ def test_coding_tools_set_includes_revert_changes() -> None:
     schemas = coding_tool_schemas()
     names = {s["function"]["name"] for s in schemas}
     assert "revert_changes" in names
-    assert len(schemas) == len(CODING_TOOLS) == 10
+    assert len(schemas) == len(CODING_TOOLS) == 12
 
 
 # ---------------------------------------------------------------------------

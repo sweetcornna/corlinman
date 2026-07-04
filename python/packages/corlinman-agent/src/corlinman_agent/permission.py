@@ -142,7 +142,43 @@ MUTATING_TOOLS: frozenset[str] = frozenset(
         # effects with real blast radius, so strict mode must opt in.
         "send_attachment",
         "text_to_speech",
+        # ``shell_task_kill`` terminates a running background shell process
+        # group — a real side effect, so plan/strict mode must deny it by
+        # default. (It also inherits run_shell's verdict via
+        # ``_PERMISSION_TOOL_ALIAS`` below, so an explicit run_shell allow
+        # rule lets the model terminate the tasks it started.)
+        "shell_task_kill",
     }
+)
+
+#: Permission aliases — a tool that inherits another tool's verdict entirely
+#: (rules + mode + strict). ``shell_task_kill`` is the teardown surface of
+#: ``run_shell``, so it resolves WITH run_shell's identity: allowed wherever
+#: run_shell is (an explicit allow rule) and denied in plan/strict by
+#: default exactly like run_shell. Without this, run_shell — whose schema
+#: now advertises ``run_in_background=true`` — could start a background task
+#: the model is then forbidden to ``shell_task_kill`` (Codex #112 r6).
+#: Mirrors the run_shell⇒task-tools implication the skill / subagent
+#: allowlists already carry. (``shell_task_output`` is read-only and stays
+#: allowed by default in every mode, so it needs no alias — but it DOES
+#: participate in the task-control rescue below so a ``*``-deny catch-all
+#: can't strand it.)
+_PERMISSION_TOOL_ALIAS: dict[str, str] = {
+    "shell_task_kill": "run_shell",
+}
+
+#: The background-shell task-control surface: poll a task's output and
+#: terminate it. Both operate ONLY on tasks the caller's session already
+#: started (the registry's session-ownership gate confines them), so their
+#: permission tracks the *grant to start* tasks, not run_shell's per-command
+#: scoping. The argless control call carries no command, so an arg-scoped
+#: ``run_shell(npm:*)`` allow can never match it and a ``*``-deny catch-all
+#: would swallow it — stranding the model with a task it can neither poll nor
+#: kill until the watchdog expires. ``_can_start_shell_tasks`` rescues exactly
+#: that case: if the session may start SOME task, it may control its own tasks
+#: (Codex #112 r7).
+_TASK_CONTROL_TOOLS: frozenset[str] = frozenset(
+    {"shell_task_output", "shell_task_kill"}
 )
 
 
@@ -517,6 +553,52 @@ class PermissionGate:
         the catch-all ``"*"`` (see :meth:`PermissionRule.applies_to`)."""
         return self.resolve_with_args(tool, ctx, None)
 
+    def _can_start_shell_tasks(self, ctx: PermissionContext) -> bool:
+        """Would run_shell resolve to *allow* for at least one command here?
+
+        Backs the task-control rescue: a session that may start SOME shell
+        task may poll/kill its OWN tasks. Mirrors :meth:`resolve_with_args`'
+        ordering (rules beat mode/strict/default) but treats ANY run_shell
+        allow/log rule as sufficient while IGNORING arg scope — a scoped
+        ``run_shell(npm:*)`` allow proves the session can start that command's
+        task, so it counts. A scoped ``run_shell(rm:*)`` DENY only blocks that
+        one command and is skipped; an *unscoped* run_shell/``*`` deny is
+        decisive. The registry's session-ownership gate — not this predicate —
+        is what confines control to the caller's own tasks.
+        """
+        if self._mode is PermissionMode.BYPASS:
+            return True
+        rules = (
+            reversed(self._rules) if self._last_match_wins else iter(self._rules)
+        )
+        for rule in rules:
+            if rule.tool not in ("run_shell", "*"):
+                continue
+            if (
+                rule.match is not None
+                and not rule.match.is_empty()
+                and not rule.match.matches(ctx)
+            ):
+                continue
+            scoped = rule.arg_pattern is not None and rule.arg_pattern != "*"
+            if rule.action in (ALLOW, LOG, ASK):
+                # A scoped OR unscoped allow proves at least one command runs.
+                # ``ask`` counts too: an approved run_shell(run_in_background)
+                # starts and returns a task_id, so the approval must carry
+                # through to the poll/kill of that task (Codex #112 r8) — the
+                # control surface is rescued to ``allow`` (not re-prompted) so
+                # the model can manage the task the user just approved.
+                return True
+            # action == DENY: unscoped blocks all shell; scoped blocks only
+            # that one command, so keep scanning for a surviving allow.
+            if not scoped:
+                return False
+        # No decisive rule — run_shell (a mutating tool) settles on mode /
+        # strict / default.
+        if self._mode is PermissionMode.PLAN or self._strict:
+            return False
+        return self._default == ALLOW
+
     def resolve_with_args(
         self,
         tool: str,
@@ -536,6 +618,18 @@ class PermissionGate:
         if self._mode is PermissionMode.BYPASS:
             return ALLOW, None
 
+        # The task-control surface (poll/kill of the session's OWN tasks)
+        # tracks the *grant to start* tasks, not run_shell's per-command
+        # scoping — see ``_TASK_CONTROL_TOOLS``. Remember the original identity
+        # so a catch-all denial can be rescued once the normal resolution
+        # (below) has run under run_shell's alias.
+        is_task_control = tool in _TASK_CONTROL_TOOLS
+
+        # A shell-task tool inherits run_shell's full verdict (rules + mode
+        # + strict): the whole decision below runs under run_shell's
+        # identity so the poll/kill surface tracks the run_shell grant.
+        tool = _PERMISSION_TOOL_ALIAS.get(tool, tool)
+
         arg_value = extract_arg_candidates(tool, args)
         matched: tuple[str, int] | None = None
         for idx, rule in enumerate(self._rules):
@@ -544,15 +638,43 @@ class PermissionGate:
                 if not self._last_match_wins:
                     break
         if matched is not None:
+            action, matched_idx = matched
+            # A control tool denied ONLY by a wildcard (``*``) rule is the
+            # catch-all-swallow case — not an operator deny that names the
+            # tool. Rescue it iff the session can start tasks at all.
+            if (
+                is_task_control
+                and action == DENY
+                and self._rules[matched_idx].tool == "*"
+                and self._can_start_shell_tasks(ctx)
+            ):
+                return ALLOW, None
             return matched
 
         # No explicit rule — consult the operating mode, then strict-mode,
-        # then the gate default.
+        # then the gate default. A control tool denied by any of these three
+        # defaults is rescued when the session can start tasks (e.g. a
+        # scoped-only ``run_shell(npm:*)`` grant the argless call couldn't
+        # match, or a ``default=deny`` gate).
         mode_action = self._mode_override(tool)
         if mode_action is not None:
+            if (
+                is_task_control
+                and mode_action == DENY
+                and self._can_start_shell_tasks(ctx)
+            ):
+                return ALLOW, None
             return mode_action, None
         if self._strict and tool in MUTATING_TOOLS:
+            if is_task_control and self._can_start_shell_tasks(ctx):
+                return ALLOW, None
             return DENY, None
+        if (
+            is_task_control
+            and self._default == DENY
+            and self._can_start_shell_tasks(ctx)
+        ):
+            return ALLOW, None
         return self._default, None
 
     def audit_log_entry(

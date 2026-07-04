@@ -127,6 +127,15 @@ TOOL_ALLOWLIST_ESCALATION_ERROR: str = "tool_allowlist_escalation"
 #: card declared.
 WILDCARD_TOOL: str = "*"
 
+#: The background-shell task-control surface (canonical names). A child can't
+#: create bg tasks (bg is refused in child context) and its tool calls run
+#: under the PARENT's session_key, so inheriting these lets it poll/kill the
+#: PARENT's jobs — they're stripped from every child unless its per-spawn
+#: allowlist names them outright (Codex #112 r7/r8).
+_TASK_CONTROL_CANON: frozenset[str] = frozenset(
+    {"shell_task_output", "shell_task_kill"}
+)
+
 if TYPE_CHECKING:  # pragma: no cover - import only for type checkers
     # Avoids forcing a runtime import of corlinman-persona for callers
     # who pass `persona_store=None`. The pyproject lists corlinman-persona
@@ -923,6 +932,35 @@ def _filter_tools_for_child(
     # the signature for the supervisor cap contract / future deeper nesting;
     # the prune itself no longer keys off it.)
     if child_depth >= 1:
+        # Task controls require an EXPLICIT grant on a child. run_shell does
+        # NOT imply them, AND the wildcard / legacy card path inherits the
+        # parent's whole set (which carries shell_task_output/kill), so we must
+        # actively strip them: a child can't create bg tasks (bg is refused in
+        # child context) and its tool calls dispatch under the PARENT's
+        # session_key, so an inherited control would let the child poll or kill
+        # the PARENT's jobs via the registry's ownership gate. Keep a control
+        # tool only when the caller's per-spawn allowlist NAMED it outright
+        # (Codex #112 r7/r8).
+        # "Explicitly named" = the control tool appears by name in the card's
+        # OWN (non-wildcard) tool list OR the caller's per-spawn allowlist. A
+        # wildcard / legacy (empty) card is a blanket inherit — it does NOT
+        # count as naming the control, so those children lose it; a deliberate
+        # ``["run_shell", "shell_task_output"]`` card keeps it.
+        explicit_canon: set[str] = set()
+        if card_tools_allowed and WILDCARD_TOOL not in card_tools_allowed:
+            explicit_canon |= {
+                canonicalize_tool_name(t) for t in card_tools_allowed
+            }
+        if requested_allowlist:
+            explicit_canon |= {
+                canonicalize_tool_name(t) for t in requested_allowlist
+            }
+        effective = {
+            t
+            for t in effective
+            if (canon := canonicalize_tool_name(t)) not in _TASK_CONTROL_CANON
+            or canon in explicit_canon
+        }
         effective.discard(SUBAGENT_SPAWN_TOOL)
         effective.discard(SUBAGENT_SPAWN_MANY_TOOL)
         effective.discard(SUBAGENT_SPAWN_INLINE_TOOL)

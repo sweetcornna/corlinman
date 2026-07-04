@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator, Mapping
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar
 
@@ -1518,6 +1519,141 @@ async def test_servicer_dispatches_calculator_in_process() -> None:
         await servicer._dispatch_builtin(event, start, _FakeProvider([]))
     )
     assert payload["result"] == 42
+
+
+@pytest.mark.asyncio
+async def test_servicer_dispatches_shell_task_tools_in_process() -> None:
+    """Dim 4: the two ``shell_task_*`` tools are registered in
+    ``BUILTIN_TOOLS`` and flow through ``_dispatch_builtin``.
+
+    We exercise the dispatch-branch wiring with an unknown task_id so no
+    background process is spawned — a cheap smoke of the seam that keeps
+    ``run_shell``/``shell_task_output``/``shell_task_kill`` reachable."""
+    from corlinman_agent.reasoning_loop import ChatStart, ToolCallEvent
+    from corlinman_server.agent_servicer import (
+        BUILTIN_TOOLS,
+        CorlinmanAgentServicer,
+    )
+
+    assert {"shell_task_output", "shell_task_kill"} <= BUILTIN_TOOLS
+
+    servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: _FakeProvider([]))
+    start = ChatStart(model="m", messages=[], tools=[], session_key="s")
+
+    out = json.loads(
+        await servicer._dispatch_builtin(
+            ToolCallEvent(
+                call_id="c1",
+                plugin="builtin",
+                tool="shell_task_output",
+                args_json=b'{"task_id": "nope"}',
+            ),
+            start,
+            _FakeProvider([]),
+        )
+    )
+    assert out["error"] == "task_not_found"
+
+    kill = json.loads(
+        await servicer._dispatch_builtin(
+            ToolCallEvent(
+                call_id="c2",
+                plugin="builtin",
+                tool="shell_task_kill",
+                args_json=b'{"task_id": "nope"}',
+            ),
+            start,
+            _FakeProvider([]),
+        )
+    )
+    assert kill["error"] == "task_not_found"
+
+
+@pytest.mark.asyncio
+async def test_servicer_shell_task_poll_kill_are_session_scoped(
+    tmp_path: Path,
+) -> None:
+    """Codex #112: the servicer threads the turn's ``session_key`` into the
+    ``shell_task_output`` / ``shell_task_kill`` dispatchers, so a task spawned
+    by one session is invisible to another (no leaked-task_id read/kill)."""
+    from corlinman_agent.coding import shell_tasks as st
+    from corlinman_agent.reasoning_loop import ChatStart, ToolCallEvent
+    from corlinman_server.agent_servicer import CorlinmanAgentServicer
+
+    st.reset_registry()
+    reg = st.get_registry()
+    task = await reg.spawn(
+        command="sleep 5", session_key="owner", workspace=tmp_path
+    )
+    tid = task.task_id
+    try:
+        servicer = CorlinmanAgentServicer(
+            provider_resolver=lambda _m: _FakeProvider([])
+        )
+        intruder = ChatStart(
+            model="m", messages=[], tools=[], session_key="intruder"
+        )
+        owner = ChatStart(model="m", messages=[], tools=[], session_key="owner")
+        args = f'{{"task_id": "{tid}"}}'.encode()
+
+        # Cross-session poll + kill both resolve to task_not_found.
+        out = json.loads(
+            await servicer._dispatch_builtin(
+                ToolCallEvent(
+                    call_id="c1",
+                    plugin="builtin",
+                    tool="shell_task_output",
+                    args_json=args,
+                ),
+                intruder,
+                _FakeProvider([]),
+            )
+        )
+        assert out["error"] == "task_not_found"
+        kill = json.loads(
+            await servicer._dispatch_builtin(
+                ToolCallEvent(
+                    call_id="c2",
+                    plugin="builtin",
+                    tool="shell_task_kill",
+                    args_json=args,
+                ),
+                intruder,
+                _FakeProvider([]),
+            )
+        )
+        assert kill["error"] == "task_not_found"
+
+        # The owning session still sees + terminates it.
+        seen = json.loads(
+            await servicer._dispatch_builtin(
+                ToolCallEvent(
+                    call_id="c3",
+                    plugin="builtin",
+                    tool="shell_task_output",
+                    args_json=args,
+                ),
+                owner,
+                _FakeProvider([]),
+            )
+        )
+        assert seen["task_id"] == tid
+        owner_kill = json.loads(
+            await servicer._dispatch_builtin(
+                ToolCallEvent(
+                    call_id="c4",
+                    plugin="builtin",
+                    tool="shell_task_kill",
+                    args_json=args,
+                ),
+                owner,
+                _FakeProvider([]),
+            )
+        )
+        assert owner_kill["status"] == "killed"
+    finally:
+        await reg.shutdown()
+        st.reset_registry()
 
 
 @pytest.mark.asyncio

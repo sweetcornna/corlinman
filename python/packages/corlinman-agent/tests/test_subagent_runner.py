@@ -630,3 +630,115 @@ async def test_empty_allowlist_is_pure_llm_call() -> None:
 
     # Loop translates an empty list to ``tools=None`` on the provider call.
     assert provider.tools_seen == [None]
+
+
+def test_subagent_run_shell_does_not_imply_task_tools() -> None:
+    """run_shell does NOT drag the task-control surface into a child (Codex
+    #112 r7). A child is refused ``run_in_background=true``, so it can never
+    make a bg task, and its tool calls run under the PARENT's session_key —
+    implying shell_task_output/kill would let any child granted plain
+    run_shell poll or kill the PARENT's background jobs. The child only gets
+    a control tool if its allowlist requests it explicitly."""
+    from corlinman_agent.subagent.runner import _filter_tools_for_child
+
+    parent = frozenset(
+        {"run_shell", "shell_task_output", "shell_task_kill", "web_search"}
+    )
+    # Caller narrows to just run_shell — the task tools DO NOT come along.
+    eff = _filter_tools_for_child(
+        parent_tool_names=parent,
+        card_tools_allowed=None,
+        requested_allowlist=["run_shell"],
+        child_depth=1,
+        max_depth=1,
+    )
+    assert eff == frozenset({"run_shell"})
+    assert "shell_task_output" not in eff and "shell_task_kill" not in eff
+
+
+def test_subagent_wildcard_child_strips_task_controls() -> None:
+    """Codex #112 r8: a general-purpose child (no per-spawn allowlist → inherit
+    the parent's whole set via the wildcard/legacy path) must NOT keep the
+    task-control surface. It can't create bg tasks and runs under the parent
+    session_key, so an inherited shell_task_kill would reach the parent's
+    jobs. The strip covers the inherit path, not just the narrow-allowlist
+    implication removed in r7."""
+    from corlinman_agent.subagent.runner import _filter_tools_for_child
+
+    parent = frozenset(
+        {"run_shell", "shell_task_output", "shell_task_kill", "web_search"}
+    )
+    # requested_allowlist=None → Layer-2 inherit copies the full parent set.
+    eff = _filter_tools_for_child(
+        parent_tool_names=parent,
+        card_tools_allowed=None,  # legacy card → inherit verbatim
+        requested_allowlist=None,
+        child_depth=1,
+        max_depth=1,
+    )
+    assert eff == frozenset({"run_shell", "web_search"})
+    assert "shell_task_output" not in eff and "shell_task_kill" not in eff
+    # Same for an explicit ``["*"]`` card (wildcard inherit).
+    eff2 = _filter_tools_for_child(
+        parent_tool_names=parent,
+        card_tools_allowed=["*"],
+        requested_allowlist=None,
+        child_depth=1,
+        max_depth=1,
+    )
+    assert "shell_task_output" not in eff2 and "shell_task_kill" not in eff2
+
+
+def test_subagent_task_tools_only_when_explicitly_requested() -> None:
+    """A child still gets a control tool if its allowlist NAMES it (the
+    operator's explicit choice) — the implication is what's dropped, not the
+    ability to grant the tools deliberately."""
+    from corlinman_agent.subagent.runner import _filter_tools_for_child
+
+    parent = frozenset(
+        {"run_shell", "shell_task_output", "shell_task_kill", "web_search"}
+    )
+    eff = _filter_tools_for_child(
+        parent_tool_names=parent,
+        card_tools_allowed=None,
+        requested_allowlist=["run_shell", "shell_task_output"],
+        child_depth=1,
+        max_depth=1,
+    )
+    assert eff == frozenset({"run_shell", "shell_task_output"})
+    assert "shell_task_kill" not in eff  # not requested → not granted
+
+
+def test_subagent_card_explicit_task_control_survives() -> None:
+    """A card that EXPLICITLY names a control tool (not via wildcard) is a
+    deliberate operator grant and survives even with no per-spawn allowlist —
+    only wildcard/legacy inherit is stripped (Codex #112 r8)."""
+    from corlinman_agent.subagent.runner import _filter_tools_for_child
+
+    parent = frozenset(
+        {"run_shell", "shell_task_output", "shell_task_kill", "web_search"}
+    )
+    eff = _filter_tools_for_child(
+        parent_tool_names=parent,
+        card_tools_allowed=["run_shell", "shell_task_output"],  # explicit
+        requested_allowlist=None,
+        child_depth=1,
+        max_depth=1,
+    )
+    assert eff == frozenset({"run_shell", "shell_task_output"})
+    assert "shell_task_kill" not in eff  # not named → stripped
+
+
+def test_subagent_task_tools_not_implied_without_run_shell() -> None:
+    """No run_shell in the child's set → the task tools are NOT added
+    (implication is one-directional)."""
+    from corlinman_agent.subagent.runner import _filter_tools_for_child
+
+    eff = _filter_tools_for_child(
+        parent_tool_names=frozenset({"run_shell", "shell_task_output", "web_search"}),
+        card_tools_allowed=None,
+        requested_allowlist=["web_search"],
+        child_depth=1,
+        max_depth=1,
+    )
+    assert eff == frozenset({"web_search"})

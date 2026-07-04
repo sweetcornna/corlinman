@@ -44,6 +44,8 @@ from corlinman_agent.coding import (
     REVERT_CHANGES_TOOL,
     RUN_SHELL_TOOL,
     SEARCH_FILES_TOOL,
+    SHELL_TASK_KILL_TOOL,
+    SHELL_TASK_OUTPUT_TOOL,
     TODO_WRITE_TOOL,
     WRITE_FILE_TOOL,
     FileState,
@@ -58,6 +60,8 @@ from corlinman_agent.coding import (
     dispatch_revert_changes,
     dispatch_run_shell,
     dispatch_search_files,
+    dispatch_shell_task_kill,
+    dispatch_shell_task_output,
     dispatch_todo_write,
     dispatch_write_file,
     render_todo_block,
@@ -2600,6 +2604,25 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         async def _execute(child_event: ToolCallEvent) -> str:
             if child_event.tool in _SUBAGENT_SPAWN_TOOLS:
                 return json.dumps({"error": "subagent_no_recursive_spawn"})
+            # A subagent child is a bounded, cancellable execution. A
+            # detached run_shell(run_in_background=true) would register
+            # under the PARENT session and outlive the child — escaping the
+            # child's wall-clock cap with nothing to reap it on cancel
+            # (Codex #112 r6). Refuse bg mode in child context; the child
+            # can still run the command in the foreground.
+            if child_event.tool == RUN_SHELL_TOOL:
+                _child_args = self._parse_args_dict(child_event.args_json)
+                if _child_args.get("run_in_background") is True:
+                    return json.dumps(
+                        {
+                            "error": (
+                                "background_not_allowed_in_subagent: run the "
+                                "command in the foreground (a subagent's "
+                                "lifetime can't own a detached task)"
+                            ),
+                            "tool": child_event.tool,
+                        }
+                    )
             result = await self._dispatch_builtin(
                 child_event, start, provider, file_state
             )
@@ -3238,7 +3261,29 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             if event.tool == SEARCH_FILES_TOOL:
                 return dispatch_search_files(args_json=event.args_json)
             if event.tool == RUN_SHELL_TOOL:
-                return await dispatch_run_shell(args_json=event.args_json)
+                # Thread session_key so a ``run_in_background=true`` call can
+                # tag its background task per session (mirrors execute_code).
+                # The foreground path ignores it — behaviour is unchanged.
+                return await dispatch_run_shell(
+                    args_json=event.args_json,
+                    session_key=start.session_key,
+                )
+            if event.tool == SHELL_TASK_OUTPUT_TOOL:
+                # Poll a background shell task's streamed output (Dim 4).
+                # Thread session_key so a leaked task_id can't read another
+                # session's task (mirrors the run_shell spawn path).
+                return dispatch_shell_task_output(
+                    args_json=event.args_json,
+                    session_key=start.session_key,
+                )
+            if event.tool == SHELL_TASK_KILL_TOOL:
+                # Terminate a background shell task's process group (Dim 4).
+                # Ownership-gated by session_key — a cross-session kill on a
+                # leaked task_id resolves to task_not_found.
+                return await dispatch_shell_task_kill(
+                    args_json=event.args_json,
+                    session_key=start.session_key,
+                )
             if event.tool == EXECUTE_CODE_TOOL:
                 # Disabled by default — dispatch_execute_code returns an
                 # ``execute_code_disabled`` envelope unless
@@ -4281,6 +4326,14 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 union.update(canonicalize_tool_names(allowed))
         if not any_restriction:
             return None
+        # A skill that grants run_shell implies its background-polling
+        # surface: run_shell(run_in_background=true) hands back a task_id the
+        # model must be able to poll (shell_task_output) and terminate
+        # (shell_task_kill). Without this implication a bg command in a
+        # skill-scoped context (e.g. bundled_skills that grant shell.run)
+        # returns a task the model is then forbidden to touch (Codex #112).
+        if RUN_SHELL_TOOL in union:
+            union.update({SHELL_TASK_OUTPUT_TOOL, SHELL_TASK_KILL_TOOL})
         # Surface — but never reject — two spellings of one tool across the
         # active skills' allowed-tools (e.g. ``web.search`` + ``web_search``):
         # the canonical fold above still matches the wire tool (behaviour
