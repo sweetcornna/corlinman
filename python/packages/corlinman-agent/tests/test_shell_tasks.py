@@ -704,3 +704,86 @@ async def test_pump_reaps_group_on_natural_exit(
 
     assert await _poll(_completed) is not None, "task never completed"
     assert reaped, "pump did not reap the process group on natural exit"
+
+
+# ---------------------------------------------------------------------------
+# Codex #112 round 3 — non-bool bg flag, oversized offset, log-cap reap
+# ---------------------------------------------------------------------------
+
+
+async def test_run_in_background_non_bool_rejected(tmp_path: Path) -> None:
+    """A non-boolean run_in_background (e.g. the string "false", which is
+    truthy) is rejected — never silently detached (Codex #112 r3)."""
+    for bad in ("false", "true", 1, 0):
+        res = json.loads(
+            await dispatch_run_shell(
+                args_json=_args(command="echo x", run_in_background=bad),
+                workspace=tmp_path,
+            )
+        )
+        assert "args_invalid" in res.get("error", ""), f"{bad!r} not rejected"
+        assert "run_in_background" in res["error"]
+    # A real bool still works both ways.
+    fg = json.loads(
+        await dispatch_run_shell(
+            args_json=_args(command="echo fg", run_in_background=False),
+            workspace=tmp_path,
+        )
+    )
+    assert fg["exit_code"] == 0 and "task_id" not in fg
+
+
+async def test_read_oversized_offset_is_safe(
+    registry: ShellTaskRegistry, tmp_path: Path
+) -> None:
+    """An absurd offset (past the platform file-offset type) must not escape
+    the never-raise envelope — seek's ValueError/OverflowError is caught
+    (Codex #112 r3)."""
+    task = await registry.spawn(
+        command="echo hi", session_key="", workspace=tmp_path
+    )
+
+    def _done() -> Any:
+        r = registry.read(task.task_id, 0)
+        return r if (r and r[2] != "running") else None
+
+    assert await _poll(_done) is not None
+    # 2**64 overflows off_t on every platform — read() must degrade (empty
+    # output + real status), not raise out of the never-raise envelope.
+    result = registry.read(task.task_id, 2**64)
+    assert result is not None
+    text, _off, status, _exit, has_more = result
+    assert text == ""
+    assert has_more is False
+    assert status == "completed"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX setsid / killpg only apply on POSIX",
+)
+async def test_log_cap_path_reaps_orphan_group(
+    registry: ShellTaskRegistry, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The log-cap branch also does the direct pgid reap, so a daemonized
+    writer that outlives the wrapper is swept (Codex #112 r3)."""
+    reaped: list[int] = []
+    import corlinman_agent.coding.shell_tasks as st_mod
+
+    real = st_mod.reap_orphan_group
+    monkeypatch.setattr(
+        st_mod, "reap_orphan_group", lambda p: (reaped.append(p.pid), real(p))[0]
+    )
+    monkeypatch.setenv("CORLINMAN_SHELL_TASK_MAX_LOG_BYTES", "4096")  # floor, trips fast
+    task = await registry.spawn(
+        command="python3 -c \"import sys\nwhile True: sys.stdout.write('y'*4096); sys.stdout.flush()\"",
+        session_key="",
+        workspace=tmp_path,
+    )
+
+    def _capped() -> Any:
+        r = registry.read(task.task_id, 0)
+        return r if (r and r[2] == "log_capped") else None
+
+    assert await _poll(_capped, timeout=8.0) is not None, "log cap never tripped"
+    assert reaped, "log-cap path did not run the orphan-group reap"

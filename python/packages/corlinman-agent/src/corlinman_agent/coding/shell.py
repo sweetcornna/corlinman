@@ -405,6 +405,16 @@ async def dispatch_run_shell(
     if not isinstance(command, str) or not command.strip():
         return json.dumps({"error": "args_invalid: missing or empty 'command'"})
     command = command.strip()
+    # ``run_in_background`` must be a real boolean. A loose client sending
+    # the STRING ``"false"`` is truthy — a plain ``bool(...)`` check would
+    # silently detach a command the caller wanted run in the foreground
+    # (returning a task_id instead of output + exit code). Reject non-bools,
+    # mirroring the subagent-spawn parser (Codex #112 r3).
+    run_in_background = raw.get("run_in_background", False)
+    if not isinstance(run_in_background, bool):
+        return json.dumps(
+            {"error": "args_invalid: 'run_in_background' must be a boolean when provided"}
+        )
     # Screen the whole line *and* every operator-split segment, so a
     # denied pattern smuggled after ';' / '|' / '&&' is still caught.
     # This runs BEFORE any spawn — including the background path — so a
@@ -423,7 +433,7 @@ async def dispatch_run_shell(
     # and return a task_id immediately. The safety guards above have
     # already run. Import lazily so :mod:`.shell_tasks` (which imports from
     # this module) doesn't create an import cycle.
-    if bool(raw.get("run_in_background")):
+    if run_in_background:
         from corlinman_agent.coding.shell_tasks import (
             ShellTaskQuotaExceeded,
             get_registry,

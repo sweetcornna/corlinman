@@ -402,7 +402,13 @@ class ShellTaskRegistry:
                     break
         if capped:
             # Log cap tripped — reap the whole group and stamp log_capped.
+            # ``kill_process_group`` handles the live-wrapper case; but if
+            # the wrapper already exited while a daemonized child kept
+            # flooding the inherited pipe, its getpgid() fails and reaps
+            # only the dead wrapper. Follow with the direct killpg-by-pid
+            # so the surviving writer can't outlive the task (Codex #112 r3).
             kill_process_group(proc)
+            reap_orphan_group(proc)
             try:
                 await proc.wait()
             except ProcessLookupError:  # pragma: no cover — race
@@ -499,13 +505,15 @@ class ShellTaskRegistry:
                 text = data.decode("utf-8", errors="replace")
                 new_offset += len(data)
                 has_more = len(data) == cap
-            except OSError:
-                # Spill unreadable: not created yet (rare spawn race), or
-                # the .corlinman dir was replaced / permissions changed
-                # (NotADirectoryError / PermissionError are OSError too).
-                # Surface no output rather than raising — the returned
-                # status still tells the caller the task's real state,
-                # honouring the tools' never-raise envelope contract.
+            except (OSError, ValueError, OverflowError):
+                # Spill unreadable — not created yet (rare spawn race), the
+                # .corlinman dir replaced / permissions changed
+                # (NotADirectoryError / PermissionError are OSError), or an
+                # ``offset`` past the platform file-offset type
+                # (ValueError / OverflowError from seek, Codex #112 r3).
+                # Surface no output rather than raising — the returned status
+                # still tells the caller the task's real state, honouring the
+                # tools' never-raise envelope contract.
                 pass
         return (text, new_offset, task.status, task.exit_code, has_more)
 
