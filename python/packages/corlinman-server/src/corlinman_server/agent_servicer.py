@@ -2604,6 +2604,25 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         async def _execute(child_event: ToolCallEvent) -> str:
             if child_event.tool in _SUBAGENT_SPAWN_TOOLS:
                 return json.dumps({"error": "subagent_no_recursive_spawn"})
+            # A subagent child is a bounded, cancellable execution. A
+            # detached run_shell(run_in_background=true) would register
+            # under the PARENT session and outlive the child — escaping the
+            # child's wall-clock cap with nothing to reap it on cancel
+            # (Codex #112 r6). Refuse bg mode in child context; the child
+            # can still run the command in the foreground.
+            if child_event.tool == RUN_SHELL_TOOL:
+                _child_args = self._parse_args_dict(child_event.args_json)
+                if _child_args.get("run_in_background") is True:
+                    return json.dumps(
+                        {
+                            "error": (
+                                "background_not_allowed_in_subagent: run the "
+                                "command in the foreground (a subagent's "
+                                "lifetime can't own a detached task)"
+                            ),
+                            "tool": child_event.tool,
+                        }
+                    )
             result = await self._dispatch_builtin(
                 child_event, start, provider, file_state
             )

@@ -515,3 +515,25 @@ async def test_sec03_calculator_timeout_returns_error(
     assert elapsed < 2.0, "dispatch must return well before the 5s hang"
     payload = json.loads(result)
     assert "error" in payload
+
+
+@pytest.mark.asyncio
+async def test_child_executor_rejects_background_shell() -> None:
+    """A subagent child cannot start a detached run_shell(run_in_background=
+    true): the task would register under the parent session and outlive the
+    child's wall-clock cap with nothing to reap it (Codex #112 r6). The child
+    executor refuses bg mode; a foreground run_shell still flows through."""
+    servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: _FakeProvider([]))
+    child_exec = servicer._make_child_tool_executor(
+        _start("parent::sess"), _FakeProvider([]), None
+    )
+    # Background mode is refused.
+    bg = json.loads(
+        await child_exec(_tool_event("run_shell", {"command": "sleep 5", "run_in_background": True}))
+    )
+    assert "background_not_allowed_in_subagent" in bg["error"]
+    # A non-bg run_shell is NOT short-circuited here (flows to dispatch).
+    fg = json.loads(
+        await child_exec(_tool_event("run_shell", {"command": "echo hi"}))
+    )
+    assert "background_not_allowed_in_subagent" not in fg.get("error", "")

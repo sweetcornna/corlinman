@@ -143,11 +143,27 @@ MUTATING_TOOLS: frozenset[str] = frozenset(
         "send_attachment",
         "text_to_speech",
         # ``shell_task_kill`` terminates a running background shell process
-        # group — a real side effect, so plan/strict mode must deny it.
-        # (``shell_task_output`` is read-only and stays allowed.)
+        # group — a real side effect, so plan/strict mode must deny it by
+        # default. (It also inherits run_shell's verdict via
+        # ``_PERMISSION_TOOL_ALIAS`` below, so an explicit run_shell allow
+        # rule lets the model terminate the tasks it started.)
         "shell_task_kill",
     }
 )
+
+#: Permission aliases — a tool that inherits another tool's verdict entirely
+#: (rules + mode + strict). ``shell_task_kill`` is the teardown surface of
+#: ``run_shell``, so it resolves WITH run_shell's identity: allowed wherever
+#: run_shell is (an explicit allow rule) and denied in plan/strict by
+#: default exactly like run_shell. Without this, run_shell — whose schema
+#: now advertises ``run_in_background=true`` — could start a background task
+#: the model is then forbidden to ``shell_task_kill`` (Codex #112 r6).
+#: Mirrors the run_shell⇒task-tools implication the skill / subagent
+#: allowlists already carry. (``shell_task_output`` is read-only and stays
+#: allowed by default in every mode, so it needs no alias.)
+_PERMISSION_TOOL_ALIAS: dict[str, str] = {
+    "shell_task_kill": "run_shell",
+}
 
 
 @dataclass(frozen=True)
@@ -539,6 +555,11 @@ class PermissionGate:
         # BYPASS wins over everything — operator opted out of gating.
         if self._mode is PermissionMode.BYPASS:
             return ALLOW, None
+
+        # A shell-task tool inherits run_shell's full verdict (rules + mode
+        # + strict): the whole decision below runs under run_shell's
+        # identity so the poll/kill surface tracks the run_shell grant.
+        tool = _PERMISSION_TOOL_ALIAS.get(tool, tool)
 
         arg_value = extract_arg_candidates(tool, args)
         matched: tuple[str, int] | None = None

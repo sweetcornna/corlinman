@@ -67,11 +67,32 @@ def test_strict_mode_explicit_allow_overrides() -> None:
 
 def test_plan_mode_denies_shell_task_kill_allows_output() -> None:
     """Codex #112: ``shell_task_kill`` mutates (terminates a live process
-    group) so plan/strict mode must deny it; ``shell_task_output`` is
-    read-only and stays allowed."""
+    group) so plan/strict mode must deny it by default; ``shell_task_output``
+    is read-only and stays allowed."""
     g = PermissionGate(mode=PermissionMode.PLAN)
     assert g.decide("shell_task_kill") == DENY
     assert g.decide("shell_task_output") == ALLOW  # read-only, no blast radius
+
+
+def test_shell_task_kill_inherits_run_shell_grant() -> None:
+    """Codex #112 r6: shell_task_kill resolves with run_shell's verdict — an
+    explicit run_shell allow rule lets the model terminate the bg tasks it
+    started, even in plan/strict mode (where it'd otherwise be denied)."""
+    g = PermissionGate(
+        [PermissionRule(tool="run_shell", action=ALLOW)],
+        mode=PermissionMode.PLAN,
+    )
+    # run_shell explicitly allowed → its teardown tool is allowed too.
+    assert g.decide("run_shell") == ALLOW
+    assert g.decide("shell_task_kill") == ALLOW
+    # With NO run_shell rule, plan mode still denies the kill (default).
+    g2 = PermissionGate(mode=PermissionMode.PLAN)
+    assert g2.decide("shell_task_kill") == DENY
+    # Strict mode: same inheritance.
+    g3 = PermissionGate(
+        [PermissionRule(tool="run_shell", action=ALLOW)], strict=True
+    )
+    assert g3.decide("shell_task_kill") == ALLOW
 
 
 def test_log_decision_is_observer_only() -> None:

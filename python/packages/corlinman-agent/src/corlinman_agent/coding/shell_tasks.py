@@ -670,7 +670,10 @@ def _atexit_shutdown() -> None:
         for task in list(reg._tasks.values()):
             if task.status == "running" and task._proc is not None:
                 try:
-                    kill_process_group(task._proc)
+                    # Full group reap (both kill_process_group and the direct
+                    # killpg-by-pid) so a daemonized child that outlived the
+                    # wrapper doesn't survive interpreter exit (Codex #112 r6).
+                    reg._reap(task._proc)
                 except Exception:  # noqa: BLE001
                     pass
     except Exception:  # noqa: BLE001 — never raise at exit

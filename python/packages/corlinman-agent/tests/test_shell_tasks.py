@@ -927,3 +927,32 @@ def test_dispatcher_offset_overflow_degrades(
     out = json.loads(dispatch_shell_task_output(args_json=raw))
     # Unknown task → task_not_found (NOT builtin_tool_failed / a raised error).
     assert out["error"] == "task_not_found"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX setsid / killpg only apply on POSIX"
+)
+async def test_atexit_shutdown_reaps_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The synchronous atexit fallback reaps the whole group via _reap, so a
+    daemonized child can't survive interpreter exit (Codex #112 r6)."""
+    import corlinman_agent.coding.shell_tasks as st_mod
+
+    reg = st_mod.ShellTaskRegistry()
+    monkeypatch.setattr(st_mod, "_REGISTRY", reg)
+    reaped: list[int] = []
+    real = st_mod.ShellTaskRegistry._reap
+    monkeypatch.setattr(
+        st_mod.ShellTaskRegistry,
+        "_reap",
+        staticmethod(lambda p: (reaped.append(p.pid), real(p))[1]),
+    )
+    await reg.spawn(
+        command="python3 -c 'import time; time.sleep(30)'",
+        session_key="",
+        workspace=tmp_path,
+    )
+    st_mod._atexit_shutdown()  # the interpreter-exit fallback
+    assert reaped, "atexit path did not reap the running task's group"
+    await reg.shutdown()
