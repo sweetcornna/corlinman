@@ -95,6 +95,80 @@ def test_shell_task_kill_inherits_run_shell_grant() -> None:
     assert g3.decide("shell_task_kill") == ALLOW
 
 
+def test_task_control_honours_arg_scoped_run_shell_grant() -> None:
+    """Codex #112 r7: a strict deployment that allows only ``run_shell(npm:*)``
+    can still START a bg npm task (rule beats mode), so it must be able to
+    poll AND kill it — even though the argless control call carries no command
+    for the ``npm:*`` pattern to match."""
+    g = PermissionGate(
+        [PermissionRule(tool="run_shell", action=ALLOW, arg_pattern="npm:*")],
+        strict=True,
+    )
+    # The scoped grant lets an npm command run...
+    assert (
+        g.resolve_with_args(
+            "run_shell", PermissionContext(), {"command": "npm run dev"}
+        )[0]
+        == ALLOW
+    )
+    # ...so the argless control surface for the task it started is allowed too.
+    assert g.decide("shell_task_kill") == ALLOW
+    assert g.decide("shell_task_output") == ALLOW
+    # A deployment with NO run_shell grant at all cannot start tasks, so the
+    # control surface stays denied under strict.
+    g2 = PermissionGate(
+        [PermissionRule(tool="write_file", action=ALLOW)], strict=True
+    )
+    assert g2.decide("shell_task_kill") == DENY
+    assert g2.decide("shell_task_output") == ALLOW  # read-only, no run_shell → harmless
+
+
+def test_task_control_rescued_from_wildcard_deny() -> None:
+    """Codex #112 r7: an allowlist ``[run_shell allow, * deny]`` lets the
+    model start a bg task, so the follow-up poll (shell_task_output) and kill
+    (shell_task_kill) must inherit the run_shell grant instead of being
+    swallowed by the ``*`` catch-all deny."""
+    g = PermissionGate(
+        [
+            PermissionRule(tool="run_shell", action=ALLOW),
+            PermissionRule(tool="*", action=DENY),
+        ]
+    )
+    assert g.decide("run_shell") == ALLOW
+    assert g.decide("shell_task_output") == ALLOW  # was swallowed by * deny
+    assert g.decide("shell_task_kill") == ALLOW
+    # But a plain tool the operator didn't allow still hits the catch-all.
+    assert g.decide("web_search") == DENY
+
+
+def test_task_control_denied_when_run_shell_denied() -> None:
+    """The rescue is grant-tracking, not a blanket allow: if run_shell is
+    itself denied (so no task can be started), the control surface for kill
+    stays denied — you can't terminate a task you were never allowed to
+    start."""
+    g = PermissionGate(
+        [
+            PermissionRule(tool="run_shell", action=DENY),
+            PermissionRule(tool="*", action=ALLOW),
+        ]
+    )
+    assert g.decide("run_shell") == DENY
+    # run_shell denied → can't start tasks → kill not rescued (and the * allow
+    # doesn't reach it via the alias, which resolves under run_shell's deny).
+    assert g.decide("shell_task_kill") == DENY
+
+
+def test_task_control_default_deny_gate_rescued() -> None:
+    """A ``default_action=deny`` gate with an explicit run_shell allow still
+    lets the model poll/kill the tasks it started."""
+    g = PermissionGate(
+        [PermissionRule(tool="run_shell", action=ALLOW)],
+        default_action=DENY,
+    )
+    assert g.decide("shell_task_output") == ALLOW
+    assert g.decide("shell_task_kill") == ALLOW
+
+
 def test_log_decision_is_observer_only() -> None:
     g = PermissionGate([PermissionRule(tool="run_shell", action=LOG)])
     assert g.decide("run_shell") == LOG

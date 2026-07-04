@@ -95,15 +95,6 @@ from corlinman_agent.subagent.api import (
 #: all agree.
 SUBAGENT_SPAWN_TOOL: str = "subagent_spawn"
 
-#: The run_shell family — mirror the wire names in ``corlinman_agent.coding``
-#: (kept as local literals to avoid importing the coding package into the
-#: subagent runner). A child allowed ``run_shell`` implies its background
-#: task-polling surface, so a narrow allowlist can't hand it an untouchable
-#: ``task_id`` (Codex #112).
-_RUN_SHELL_TOOL: str = "run_shell"
-_SHELL_TASK_OUTPUT_TOOL: str = "shell_task_output"
-_SHELL_TASK_KILL_TOOL: str = "shell_task_kill"
-
 #: Fan-out sibling of ``subagent_spawn`` — the orchestrator agent (v0.7)
 #: emits this to dispatch N children concurrently under one parent. The
 #: supervisor's per-parent concurrency cap
@@ -921,15 +912,17 @@ def _filter_tools_for_child(
             card_by_canon[canonicalize_tool_name(t)] for t in requested_allowlist
         }
 
-    # A child allowed run_shell can start background tasks, so it must also
-    # be able to poll (shell_task_output) and terminate (shell_task_kill)
-    # them — otherwise a narrow allowlist hands the child a task_id it is
-    # then forbidden to touch (Codex #112). Only implies tools the parent
-    # actually holds, so the child never exceeds the parent's ceiling.
-    if _RUN_SHELL_TOOL in effective:
-        for _implied in (_SHELL_TASK_OUTPUT_TOOL, _SHELL_TASK_KILL_TOOL):
-            if _implied in parent_by_canon:
-                effective.add(parent_by_canon[_implied])
+    # NOTE: run_shell does NOT imply the task-control surface for a *child*.
+    # A subagent is refused ``run_in_background=true`` (the child executor
+    # rejects it — its bounded lifetime can't own a detached task), so a child
+    # can never create a bg task of its own and has no legitimate use for
+    # shell_task_output / shell_task_kill. Worse, child tool calls dispatch
+    # under the PARENT's ``session_key``, so a child handed a parent task_id
+    # would pass the registry's ownership gate and poll/kill the PARENT's job.
+    # Implying the controls here would hand that cross-session reach to any
+    # child granted plain run_shell, so the implication is intentionally
+    # dropped for children (Codex #112 r7). A child only gets the control
+    # tools if its card explicitly lists them.
 
     # D7 — single-level nesting (parent → child). EVERY spawned child
     # (``child_depth >= 1``) loses the spawn tools, regardless of the
