@@ -327,6 +327,7 @@ export default function SystemPage() {
       {activeUpgradeId ? (
         <UpgradeProgress
           requestId={activeUpgradeId}
+          currentVersion={info?.current ?? null}
           onTerminal={() => {
             // Stop driving the URL once the upgrade lands; let the user
             // come back to a clean page if they refresh post-reload.

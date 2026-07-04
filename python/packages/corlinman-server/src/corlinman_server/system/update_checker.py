@@ -53,12 +53,9 @@ __all__ = [
 ]
 
 
-# Fallback when ``importlib.metadata.version("corlinman-server")`` is not
-# installable (editable checkout pre-``uv sync``, fresh sandbox, etc.).
-# Anything semver-ish would work; ``0.0.0-dev`` is intentionally lower
-# than any release so the checker still flags "newer available" when run
-# from a raw clone.
-_DEV_FALLBACK_VERSION = "0.0.0-dev"
+# Version resolution (current vs release-space comparison) lives in
+# :mod:`corlinman_server.system.app_version`; ``current_version()`` below
+# delegates to it so every reader agrees on the running version.
 
 # Default cache TTL between polls; mirrored by the config dataclass.
 _DEFAULT_INTERVAL_HOURS = 6
@@ -259,26 +256,17 @@ class UpdateChecker:
     def current_version(self) -> str:
         """Resolve the currently-installed gateway version.
 
-        Order of precedence:
-
-        1. ``importlib.metadata.version("corlinman-server")`` — works
-           against an installed dist (the normal deploy path).
-        2. ``CORLINMAN_VERSION`` env var — escape hatch for ops who pin a
-           version string at boot (e.g. via systemd ``Environment=``).
-        3. ``"0.0.0-dev"`` — last resort; lower than any release so the
-           checker still says "update available" against a real tag.
+        Delegates to :func:`corlinman_server.system.app_version.resolve_app_version`
+        so the updater compares against the same release-spaced version
+        that ``/healthz``, telemetry and MCP report. Reading the
+        ``corlinman-server`` sub-package metadata directly (the old
+        behaviour) drifted from the root release version and left the
+        checker permanently on "update available"; see that module for
+        the full precedence chain.
         """
-        import importlib.metadata
-        import os
+        from corlinman_server.system.app_version import resolve_app_version
 
-        try:
-            return importlib.metadata.version("corlinman-server")
-        except importlib.metadata.PackageNotFoundError:
-            pass
-        env_val = os.environ.get("CORLINMAN_VERSION")
-        if env_val:
-            return env_val
-        return _DEV_FALLBACK_VERSION
+        return resolve_app_version()
 
     # ------------------------------------------------------------------
     # Cache I/O

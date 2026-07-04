@@ -31,7 +31,6 @@ import logging.handlers
 import os
 from dataclasses import dataclass, field
 from enum import Enum
-from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
@@ -48,11 +47,12 @@ _PROVIDER: Any = None
 
 
 def _pkg_version() -> str:
-    """Lookup ``corlinman-server`` package version with a default."""
-    try:
-        return version("corlinman-server")
-    except PackageNotFoundError:  # pragma: no cover — installed in tests
-        return "0.0.0"
+    """Resolve the running app version via the shared resolver so OTel's
+    ``service.version`` and the "server restarted (vX)" broadcast match
+    the updater (see :mod:`corlinman_server.system.app_version`)."""
+    from corlinman_server.system.app_version import resolve_app_version
+
+    return resolve_app_version()
 
 
 def try_init_tracer() -> Any | None:

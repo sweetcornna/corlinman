@@ -28,7 +28,6 @@ distinguish "running but losing a probe" from "broken".
 from __future__ import annotations
 
 import asyncio
-import importlib.metadata
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -54,15 +53,15 @@ _STATUS_ORDER: dict[ProbeStatus, int] = {"ok": 0, "warn": 1, "fail": 2}
 
 
 def _package_version() -> str:
-    """Best-effort version string for the health payload's ``version`` field.
+    """Version string for the health payload's ``version`` field.
 
-    Falls back to ``"0.0.0"`` when the package metadata is unavailable
-    (editable installs, tests run out of a fresh git checkout).
+    Routes through the shared resolver so ``/healthz`` reports the same
+    release-spaced version as the updater and the top-right chip (see
+    :mod:`corlinman_server.system.app_version`).
     """
-    try:
-        return importlib.metadata.version("corlinman-server")
-    except importlib.metadata.PackageNotFoundError:
-        return "0.0.0"
+    from corlinman_server.system.app_version import resolve_app_version
+
+    return resolve_app_version()
 
 
 @dataclass(slots=True)
