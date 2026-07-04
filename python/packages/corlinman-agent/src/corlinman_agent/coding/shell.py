@@ -227,6 +227,31 @@ def kill_process_group(proc: asyncio.subprocess.Process) -> None:
             pass
 
 
+def reap_orphan_group(proc: asyncio.subprocess.Process) -> None:
+    """SIGKILL anything still in ``proc``'s group AFTER the leader exited.
+
+    A command that daemonizes its real work — ``sleep 600 >/dev/null 2>&1
+    &`` — lets the shell leader exit 0 while a child lives on in the same
+    process group. By the time a background task's pump sees the pipe EOF,
+    asyncio's child watcher has already reaped the leader zombie, so
+    ``os.getpgid(proc.pid)`` (what :func:`kill_process_group` calls first)
+    raises ``ProcessLookupError`` and can't find the group. Under
+    ``setsid`` the group id equals the leader's original pid, so we
+    ``killpg(proc.pid, SIGKILL)`` DIRECTLY to reap the survivors — the
+    pgid stays reserved (not recycled) while the group has members, so
+    this targets exactly that group. Best-effort: an already-empty group
+    (the common, no-daemon case) raises ``ProcessLookupError`` and is
+    swallowed. Keeps daemonized children inside the task lifecycle
+    (watchdog / kill controls) instead of escaping as true orphans.
+    """
+    if sys.platform == "win32":
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
 #: Splits a command line into top-level segments on shell operators so a
 #: denied pattern hidden after ``;`` / ``|`` / ``&&`` is still caught.
 _SEGMENT_SPLIT = re.compile(r"[;&|]+|\bthen\b|\bdo\b")

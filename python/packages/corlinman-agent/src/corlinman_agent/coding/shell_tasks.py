@@ -33,6 +33,15 @@ MiB — the child's ``RLIMIT_FSIZE`` does NOT bound this, because the
 spawn time so an operator (or a test) can adjust them without restarting
 the process.
 
+A background task OWNS its process group (``setsid`` makes the shell a
+group leader): when it retires — natural exit, kill, watchdog, or log
+cap — the whole group is reaped, so a command that daemonizes its real
+work (``sleep 600 &``) cannot escape the lifecycle as a true orphan.
+Each ``shell_task_output`` read is capped
+(``CORLINMAN_SHELL_TASK_READ_MAX_BYTES``, default 64 KiB) with a
+``has_more`` paging flag so a chatty task can't stuff megabytes into one
+tool result.
+
 ## Security caveat
 
 A background task is a real shell — the module docstring of :mod:`.shell`
@@ -67,6 +76,7 @@ from corlinman_agent.coding.shell import (
     _build_child_env,
     _preexec_apply_rlimits,
     kill_process_group,
+    reap_orphan_group,
 )
 
 logger = structlog.get_logger(__name__)
@@ -99,6 +109,16 @@ _MIN_MAX_LOG_BYTES: int = 4096
 #: Appended to the spill file when a task trips the size cap, so a poller sees
 #: WHY the stream stopped. Encoded once (bytes) since the pump writes binary.
 _LOG_CAP_MARKER: bytes = "[log cap reached — task killed]\n".encode()
+
+#: Max bytes returned by a single ``shell_task_output`` read. A task can spill
+#: up to the 16 MiB log cap; without a per-read bound the model could pull the
+#: whole log into one tool result, which the servicer journals verbatim before
+#: the reasoning loop's own truncation. 64 KiB mirrors foreground
+#: ``run_shell``'s inline order of magnitude; the poller pages the rest via the
+#: returned ``new_offset``. Overridable via ``CORLINMAN_SHELL_TASK_READ_MAX_BYTES``.
+_DEFAULT_READ_MAX_BYTES: int = 65536
+#: Floor for the per-read cap so a misconfigured tiny value still makes progress.
+_MIN_READ_MAX_BYTES: int = 4096
 
 #: Terminal states — a task in one of these never transitions again.
 _TERMINAL_STATES: frozenset[str] = frozenset(
@@ -142,6 +162,16 @@ def _env_max_log_bytes() -> int:
         except ValueError:
             pass
     return _DEFAULT_MAX_LOG_BYTES
+
+
+def _env_read_max_bytes() -> int:
+    raw = os.environ.get("CORLINMAN_SHELL_TASK_READ_MAX_BYTES")
+    if raw:
+        try:
+            return max(_MIN_READ_MAX_BYTES, int(raw))
+        except ValueError:
+            pass
+    return _DEFAULT_READ_MAX_BYTES
 
 
 class ShellTaskQuotaExceeded(Exception):
@@ -390,6 +420,13 @@ class ShellTaskRegistry:
             )
             return
         rc = await proc.wait()
+        # A command that daemonizes its real work (``sleep 600 &``) exits the
+        # shell leader while a child lives on in the same group. Reap the
+        # group before retiring the row, or that child escapes the watchdog
+        # + kill controls forever (once terminal, nothing reaps it). Uses a
+        # direct killpg-by-pid because the leader zombie is already reaped
+        # here so getpgid would fail (Codex #112 r2).
+        reap_orphan_group(proc)
         async with self._lock:
             # A kill / watchdog may have already stamped a terminal state;
             # only the natural-exit path claims a still-``running`` task.
@@ -418,41 +455,50 @@ class ShellTaskRegistry:
 
     def read(
         self, task_id: str, offset: int, expected_session_key: str = ""
-    ) -> tuple[str, int, str, int | None] | None:
+    ) -> tuple[str, int, str, int | None, bool] | None:
         """Read the spill file from ``offset`` for ``task_id``.
 
-        Returns ``(text_from_offset, new_offset, status, exit_code)`` or
-        ``None`` when the task id is unknown (or was evicted). ``offset`` is
-        a byte offset; the returned ``new_offset`` is where the next poll
-        should resume. A partial multi-byte tail is decoded with
-        ``errors="replace"`` so a boundary split never raises.
+        Returns ``(text_from_offset, new_offset, status, exit_code,
+        has_more)`` or ``None`` when the task id is unknown (or was
+        evicted). ``offset`` is a byte offset; the returned ``new_offset``
+        is where the next poll should resume. A partial multi-byte tail is
+        decoded with ``errors="replace"`` so a boundary split never raises.
 
-        ``expected_session_key`` gates ownership: when it is non-empty AND
-        the task recorded a non-empty session_key AND they differ, this
-        returns ``None`` — behaving exactly as an unknown task so a leaked
-        task_id can't leak another session's output (or even its existence).
-        Tasks recorded with an empty session_key (direct library callers)
-        stay readable by any caller.
+        Each read is capped at ``CORLINMAN_SHELL_TASK_READ_MAX_BYTES``
+        (default 64 KiB) so a chatty task that hit the 16 MiB log cap can't
+        stuff megabytes into one tool result (the servicer journals it
+        verbatim before the loop's own truncation). ``has_more`` is ``True``
+        when the read filled the cap — the model pages the rest by polling
+        again from ``new_offset``, matching foreground ``run_shell``'s
+        inline cap.
+
+        ``expected_session_key`` gates ownership: an OWNED task (one that
+        recorded a non-empty session_key) requires an EXACT match — an empty
+        or mismatched expected key returns ``None``, behaving exactly as an
+        unknown task so a leaked task_id can't read another session's output
+        (or even its existence). The gateway normalizes no-session requests
+        to ``""``, so an owned task must reject that too. Tasks recorded
+        with an empty session_key (direct library callers) stay readable by
+        any caller.
         """
         task = self._tasks.get(task_id)
         if task is None:
             return None
-        if (
-            expected_session_key
-            and task.session_key
-            and task.session_key != expected_session_key
-        ):
+        if task.session_key and expected_session_key != task.session_key:
             return None
         text = ""
         new_offset = max(0, offset)
+        has_more = False
         log_abs = task._log_abs
         if log_abs is not None:
+            cap = _env_read_max_bytes()
             try:
                 with open(log_abs, "rb") as fh:
                     fh.seek(new_offset)
-                    data = fh.read()
+                    data = fh.read(cap)
                 text = data.decode("utf-8", errors="replace")
                 new_offset += len(data)
+                has_more = len(data) == cap
             except OSError:
                 # Spill unreadable: not created yet (rare spawn race), or
                 # the .corlinman dir was replaced / permissions changed
@@ -461,7 +507,7 @@ class ShellTaskRegistry:
                 # status still tells the caller the task's real state,
                 # honouring the tools' never-raise envelope contract.
                 pass
-        return (text, new_offset, task.status, task.exit_code)
+        return (text, new_offset, task.status, task.exit_code, has_more)
 
     # ------------------------------------------------------------------
     # Kill
@@ -478,20 +524,17 @@ class ShellTaskRegistry:
         ``task_not_found``.
 
         ``expected_session_key`` gates ownership identically to
-        :meth:`read`: a non-empty mismatch against the task's recorded
-        (non-empty) session_key returns ``None`` so a leaked task_id can't
-        kill another session's process. Empty-session tasks stay killable
-        by any caller.
+        :meth:`read`: an OWNED task (non-empty recorded session_key)
+        requires an EXACT match — an empty or mismatched key returns
+        ``None`` so a leaked task_id (or a normalized no-session caller)
+        can't kill another session's process. Empty-session tasks stay
+        killable by any caller.
         """
         async with self._lock:
             task = self._tasks.get(task_id)
             if task is None:
                 return None
-            if (
-                expected_session_key
-                and task.session_key
-                and task.session_key != expected_session_key
-            ):
+            if task.session_key and expected_session_key != task.session_key:
                 return None
             if task.status in _TERMINAL_STATES:
                 return task
@@ -603,8 +646,10 @@ def shell_task_output_tool_schema() -> dict[str, Any]:
                 "run_shell(run_in_background=true). Pass the task_id and an "
                 "offset (0 the first time, then the new_offset from the "
                 "previous call) to page through the combined stdout+stderr "
-                "as it streams. Returns the task status and, once finished, "
-                "the exit_code."
+                "as it streams. Each call returns at most ~64 KiB; when "
+                "has_more is true, call again with the returned new_offset "
+                "to fetch the rest. Returns the task status and, once "
+                "finished, the exit_code."
             ),
             "parameters": {
                 "type": "object",
@@ -686,13 +731,14 @@ def dispatch_shell_task_output(
     result = reg.read(task_id, offset, expected_session_key=session_key)
     if result is None:
         return json.dumps({"error": "task_not_found", "task_id": task_id})
-    text, new_offset, status, exit_code = result
+    text, new_offset, status, exit_code, has_more = result
     task = reg.get(task_id)
     envelope: dict[str, Any] = {
         "task_id": task_id,
         "status": status,
         "output": text,
         "new_offset": new_offset,
+        "has_more": has_more,
         "log_path": task.log_path if task is not None else "",
     }
     if exit_code is not None:
