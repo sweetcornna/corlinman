@@ -787,3 +787,99 @@ async def test_log_cap_path_reaps_orphan_group(
 
     assert await _poll(_capped, timeout=8.0) is not None, "log cap never tripped"
     assert reaped, "log-cap path did not run the orphan-group reap"
+
+
+# ---------------------------------------------------------------------------
+# Codex #112 round 4 — reap consistency (watchdog/kill), evicted-log delete
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX setsid / killpg only apply on POSIX"
+)
+async def test_watchdog_expired_path_reaps_group(
+    registry: ShellTaskRegistry, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The lifetime-watchdog (expired) path reaps the whole group, not just
+    the wrapper (Codex #112 r4)."""
+    reaped: list[int] = []
+    import corlinman_agent.coding.shell_tasks as st_mod
+
+    real = st_mod.ShellTaskRegistry._reap
+    monkeypatch.setattr(
+        st_mod.ShellTaskRegistry,
+        "_reap",
+        staticmethod(lambda p: (reaped.append(p.pid), real(p))[1]),
+    )
+    monkeypatch.setenv("CORLINMAN_SHELL_TASK_MAX_LIFETIME_S", "0.2")
+    task = await registry.spawn(
+        command="python3 -c 'import time; time.sleep(30)'",
+        session_key="",
+        workspace=tmp_path,
+    )
+
+    def _expired() -> Any:
+        r = registry.read(task.task_id, 0)
+        return r if (r and r[2] == "expired") else None
+
+    assert await _poll(_expired, timeout=5.0) is not None, "watchdog never fired"
+    assert reaped, "expired path did not reap the group"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX setsid / killpg only apply on POSIX"
+)
+async def test_kill_path_reaps_group(
+    registry: ShellTaskRegistry, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Explicit kill reaps the whole group via the shared _reap (Codex #112 r4)."""
+    reaped: list[int] = []
+    import corlinman_agent.coding.shell_tasks as st_mod
+
+    real = st_mod.ShellTaskRegistry._reap
+    monkeypatch.setattr(
+        st_mod.ShellTaskRegistry,
+        "_reap",
+        staticmethod(lambda p: (reaped.append(p.pid), real(p))[1]),
+    )
+    task = await registry.spawn(
+        command="python3 -c 'import time; time.sleep(30)'",
+        session_key="",
+        workspace=tmp_path,
+    )
+    killed = await registry.kill(task.task_id)
+    assert killed is not None and killed.status == "killed"
+    assert reaped, "kill path did not reap the group"
+
+
+async def test_evicted_task_log_deleted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Evicting a terminal record deletes its spill file so the retention cap
+    also bounds workspace disk (Codex #112 r4)."""
+    import corlinman_agent.coding.shell_tasks as st_mod
+
+    monkeypatch.setattr(st_mod, "_TERMINAL_CAP", 1)  # evict after the 2nd
+    reg = st_mod.ShellTaskRegistry()
+    try:
+        t1 = await reg.spawn(command="echo a", session_key="", workspace=tmp_path)
+
+        def _t1_done() -> Any:
+            r = reg.read(t1.task_id, 0)
+            return r if (r and r[2] != "running") else None
+
+        assert await _poll(_t1_done) is not None
+        log1 = tmp_path / t1.log_path
+        assert log1.exists()
+
+        # A second terminal task evicts the first (cap=1) → its log is removed.
+        t2 = await reg.spawn(command="echo b", session_key="", workspace=tmp_path)
+
+        def _t2_done() -> Any:
+            r = reg.read(t2.task_id, 0)
+            return r if (r and r[2] != "running") else None
+
+        assert await _poll(_t2_done) is not None
+        assert not log1.exists(), "evicted task's spill file was left on disk"
+    finally:
+        await reg.shutdown()

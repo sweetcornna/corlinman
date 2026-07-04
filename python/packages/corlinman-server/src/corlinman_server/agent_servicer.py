@@ -4304,6 +4304,14 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 union.update(canonicalize_tool_names(allowed))
         if not any_restriction:
             return None
+        # A skill that grants run_shell implies its background-polling
+        # surface: run_shell(run_in_background=true) hands back a task_id the
+        # model must be able to poll (shell_task_output) and terminate
+        # (shell_task_kill). Without this implication a bg command in a
+        # skill-scoped context (e.g. bundled_skills that grant shell.run)
+        # returns a task the model is then forbidden to touch (Codex #112).
+        if RUN_SHELL_TOOL in union:
+            union.update({SHELL_TASK_OUTPUT_TOOL, SHELL_TASK_KILL_TOOL})
         # Control tools always pass — never let an active skill strand the
         # model with no way to load another skill or stop the turn.
         if tool in (SKILL_TOOL, SUBAGENT_STOP_TOOL):

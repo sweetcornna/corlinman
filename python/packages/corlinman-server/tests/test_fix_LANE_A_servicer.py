@@ -116,6 +116,21 @@ async def test_skill_dotted_allowed_tools_match_wire_tool_names() -> None:
 
 
 @pytest.mark.asyncio
+async def test_skill_run_shell_implies_bg_task_tools() -> None:
+    """A skill granting run_shell implies its background-polling surface —
+    shell_task_output / shell_task_kill are NOT blocked, so a bg command in
+    a skill-scoped context can be polled and killed (Codex #112 r4)."""
+    servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: _FakeProvider([]))
+    servicer._record_active_skill("t::sess", "verification", ["shell.run"])
+    for wire in ("run_shell", "shell_task_output", "shell_task_kill"):
+        assert (
+            servicer._skill_allowed_tools_block(wire, "t::sess") is None
+        ), f"{wire} should be implied by a run_shell grant"
+    # A tool still outside the grant is blocked.
+    assert servicer._skill_allowed_tools_block("web_search", "t::sess") is not None
+
+
+@pytest.mark.asyncio
 async def test_sec01_active_skills_cleared_at_turn_end() -> None:
     """The per-session active-skill entry is cleared at turn/session end so
     it cannot narrow a later turn forever."""

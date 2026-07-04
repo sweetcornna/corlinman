@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import contextlib
 import json
 import os
 import sys
@@ -172,6 +173,19 @@ def _env_read_max_bytes() -> int:
         except ValueError:
             pass
     return _DEFAULT_READ_MAX_BYTES
+
+
+def _unlink_quietly(path: Path | None) -> None:
+    """Best-effort delete of a spill file (missing / unreadable → ignore).
+
+    Called when a terminal record is evicted so the terminal-retention cap
+    also bounds workspace disk — a long session running many chatty bg
+    tasks otherwise leaves a log-cap's worth of bytes per evicted task
+    (Codex #112)."""
+    if path is None:
+        return
+    with contextlib.suppress(OSError):
+        path.unlink()
 
 
 class ShellTaskQuotaExceeded(Exception):
@@ -337,10 +351,12 @@ class ShellTaskRegistry:
                 self._pump_body(task, max_log_bytes), timeout=max_lifetime_s
             )
         except TimeoutError:
-            # Lifetime watchdog fired — kill the whole group and stamp expired.
+            # Lifetime watchdog fired — reap the whole group and stamp
+            # expired. A daemonized child that outlived the wrapper is swept
+            # here too, not just on the natural-exit path (Codex #112).
             proc = task._proc
             if proc is not None:
-                kill_process_group(proc)
+                self._reap(proc)
                 try:
                     await proc.wait()
                 except ProcessLookupError:  # pragma: no cover — race
@@ -363,7 +379,7 @@ class ShellTaskRegistry:
             proc = task._proc
             if proc is not None:
                 try:
-                    kill_process_group(proc)
+                    self._reap(proc)
                     await proc.wait()
                 except Exception:  # noqa: BLE001 — best-effort reap
                     pass
@@ -402,13 +418,7 @@ class ShellTaskRegistry:
                     break
         if capped:
             # Log cap tripped — reap the whole group and stamp log_capped.
-            # ``kill_process_group`` handles the live-wrapper case; but if
-            # the wrapper already exited while a daemonized child kept
-            # flooding the inherited pipe, its getpgid() fails and reaps
-            # only the dead wrapper. Follow with the direct killpg-by-pid
-            # so the surviving writer can't outlive the task (Codex #112 r3).
-            kill_process_group(proc)
-            reap_orphan_group(proc)
+            self._reap(proc)
             try:
                 await proc.wait()
             except ProcessLookupError:  # pragma: no cover — race
@@ -429,10 +439,8 @@ class ShellTaskRegistry:
         # A command that daemonizes its real work (``sleep 600 &``) exits the
         # shell leader while a child lives on in the same group. Reap the
         # group before retiring the row, or that child escapes the watchdog
-        # + kill controls forever (once terminal, nothing reaps it). Uses a
-        # direct killpg-by-pid because the leader zombie is already reaped
-        # here so getpgid would fail (Codex #112 r2).
-        reap_orphan_group(proc)
+        # + kill controls forever (once terminal, nothing reaps it).
+        self._reap(proc)
         async with self._lock:
             # A kill / watchdog may have already stamped a terminal state;
             # only the natural-exit path claims a still-``running`` task.
@@ -447,12 +455,38 @@ class ShellTaskRegistry:
             status=task.status,
         )
 
+    @staticmethod
+    def _reap(proc: asyncio.subprocess.Process) -> None:
+        """Reap a task's WHOLE process group before it is retired.
+
+        Every terminal path (natural exit, log cap, lifetime watchdog,
+        pump-setup failure, explicit kill) funnels through here so a
+        daemonized child (``sleep 600 &``) can never survive its task
+        (Codex #112). Two complementary reaps cover both cases:
+
+        * :func:`kill_process_group` — the live-wrapper case (resolves the
+          group via ``getpgid``) plus the win32 / non-setsid test
+          fallbacks;
+        * :func:`reap_orphan_group` — the exited-wrapper-but-live-group
+          case, where the wrapper zombie is already reaped so ``getpgid``
+          fails and only a direct ``killpg(pid)`` (pgid == leader pid under
+          setsid) can sweep the survivors.
+
+        Idempotent and best-effort: an already-empty group is a no-op.
+        """
+        kill_process_group(proc)
+        reap_orphan_group(proc)
+
     def _retire(self, task: ShellTask) -> None:
         """Record ``task`` in the bounded terminal window (caller holds the
-        lock). Evicts the oldest terminal record when the cap is hit."""
+        lock). Evicts the oldest terminal record when the cap is hit —
+        deleting the evicted task's spill file too, so the terminal-
+        retention cap also bounds workspace disk (Codex #112)."""
         while len(self._terminal_ids) >= _TERMINAL_CAP:
             evicted = self._terminal_ids.popleft()
-            self._tasks.pop(evicted, None)
+            evicted_task = self._tasks.pop(evicted, None)
+            if evicted_task is not None:
+                _unlink_quietly(evicted_task._log_abs)
         self._terminal_ids.append(task.task_id)
 
     # ------------------------------------------------------------------
@@ -548,7 +582,11 @@ class ShellTaskRegistry:
                 return task
             proc = task._proc
             if proc is not None:
-                kill_process_group(proc)
+                # Reap the whole group — including a daemonized child that
+                # already outlived the wrapper, which kill_process_group
+                # alone would miss (Codex #112), leaving future kills a
+                # no-op on an already-terminal row.
+                self._reap(proc)
             task.status = "killed"
             task.exit_code = None
             self._retire(task)
