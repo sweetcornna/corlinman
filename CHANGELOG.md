@@ -4,6 +4,58 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.27.0] — 2026-07-04 — Wave 4: compaction breaker (Dim 2) + background shell (Dim 4) + #108 backend
+
+> Closes claude-code parity Wave 4: the summary-LLM compactor now degrades
+> gracefully under a broken/low-value summarizer, `run_shell` gains a
+> first-class background mode with a poll/kill control surface hardened
+> across the full permission and subagent matrix, and the last three #108
+> backend cleanups land.
+
+### Added
+- **Dim 2 — summary-LLM cooldown + failure breaker** (`reasoning_loop`). The
+  optional summary-based compactor no longer thrashes: a failed summary trips
+  a precise N-round cooldown (skips exactly N rounds, no off-by-one retry) and
+  a run of low-savings summaries trips a breaker that disables it for the turn.
+  Env knobs `CORLINMAN_COMPACT_SUMMARY_COOLDOWN_ROUNDS` (default 5) and
+  `CORLINMAN_COMPACT_SUMMARY_BREAKER_LIMIT` (default 3).
+- **Dim 4 — `run_shell(run_in_background=true)`** plus `shell_task_output`
+  (paged poll) and `shell_task_kill` (terminate). Properties:
+  - **Session-ownership isolation** — a task is keyed to the session that
+    started it; only that session can poll or kill it (registry gate).
+  - **64 KiB paged reads** with a `has_more` cursor and a monotonic offset;
+    non-bool `run_in_background` and non-integer/overflowing `offset` are both
+    hardened to never raise (validated at dispatch, clamped on read).
+  - **Unified process-group reap** (`_reap`) routed through EVERY terminal
+    path — natural exit, log-cap kill, lifetime watchdog, explicit kill,
+    registry shutdown, and interpreter `atexit` — including a direct
+    `killpg`-by-pid fallback that reaps daemonized grandchildren after the
+    leader zombie is gone.
+  - **Lifecycle watchdog** (max lifetime) + **log-cap** eviction that deletes
+    the evicted task's spill file.
+  - **Task-control permission model** — the poll/kill surface tracks the
+    *grant to start* tasks, not `run_shell`'s per-command scoping: an
+    `allow`/`log`/`ask` run_shell grant (scoped `run_shell(npm:*)`, unscoped,
+    or rescued from a `*`-deny / `default=deny` catch-all, under strict/plan)
+    carries through to the control tools, confined by the session-ownership
+    gate. `shell_task_kill` aliases run_shell; read-only `shell_task_output`
+    stays plan-allowed.
+  - **Subagent safety** — a child is refused `run_in_background` (its bounded
+    lifetime can't own a detached task) and the task-control tools are stripped
+    from every child unless its card or per-spawn allowlist names them
+    explicitly, so a child (which dispatches under the parent `session_key`)
+    can't poll or kill the parent's jobs.
+
+### Fixed / Performance
+- **#108 item 3** — duplicate tool names that canonicalize to the same wire
+  name now emit a single structured `warn_alias_collisions` per gate instead
+  of silently dropping one.
+- **#108 item 4** — the subagents overview SSE loop is now an adaptive
+  three-clock poll with a pre-scan keepalive, cutting idle churn while keeping
+  sub-heartbeat latency on real changes.
+- **#108 item 5** — public-URL auto-detection caches on the persist file's
+  mtime instead of re-reading every request.
+
 ## [1.26.0] — 2026-07-03 — MCP client: sampling + tools/list_changed + dynamic advertisement (Dim 5)
 
 > Completes the MCP client dimension (claude-code parity Dim 5). The
