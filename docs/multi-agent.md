@@ -143,7 +143,7 @@ spawns children. Schema:
     "subagent_type": str?,        # registry key; fallback "general-purpose"
     "description": str?,          # 3-5 word task label for UI
     "tool_allowlist": list[str]?, # caller-side narrow (intersected with card)
-    "max_wall_seconds": int?,     # capped at 60s
+    "max_wall_seconds": int?,     # capped at 300s
     "max_tool_calls": int?,
     "extra_context": str?,        # appended to the child's first user message
     "run_in_background": bool?,   # default false
@@ -331,14 +331,14 @@ API callers (Python SDK, `curl`) can pin the same way by passing
 ## Caps and safety
 
 Supervisor caps live in
-`corlinman-subagent/src/corlinman_subagent/supervisor.py`:
+`python/packages/corlinman-subagent/src/corlinman_subagent/supervisor.py`:
 
 | Cap                            | Default | Why                                           |
 |--------------------------------|---------|-----------------------------------------------|
-| `max_concurrent_per_parent`    | 3       | Parent can't fork a dozen children at once.   |
+| `max_concurrent_per_parent`    | 10      | Parent can't fork a dozen children at once.   |
 | `max_concurrent_per_tenant`    | 15      | Whole gateway is bounded.                     |
-| `max_depth`                    | 2       | No nested-grandchild delegation by default.   |
-| `max_wall_seconds_ceiling`     | 60      | Hard wall on any child, even if caller asked for longer. |
+| `max_depth`                    | 1       | No nested-grandchild delegation by default.   |
+| `max_wall_seconds_ceiling`     | 300     | Hard wall on any child, even if caller asked for longer. |
 
 Tool whitelist enforcement (`runner.py:_filter_tools_for_child`) is the
 authoritative gate: child tools ⊆ parent tools, full stop. The wildcard
@@ -441,12 +441,12 @@ removed from `$DATA_DIR/agents/` and the registry reloaded.
 
 ## Limitations
 
-- **No nested delegation by default.** `max_depth=2` means a child
+- **No nested delegation by default.** `max_depth=1` means a child
   cannot spawn its own children. A future role-escalation pass
   (planned in [`PLAN_MULTI_AGENT.md`](PLAN_MULTI_AGENT.md) §3) will
   add an `orchestrator` role that can re-delegate.
-- **60-second wall.** Even with `max_wall_seconds: 600` on the call,
-  the supervisor ceiling is 60s. Long workflows belong in a plugin or
+- **300-second wall.** Even with `max_wall_seconds: 600` on the call,
+  the supervisor ceiling is 300s. Long workflows belong in a plugin or
   in the (planned) batch-task surface, not a single subagent.
 - **No plugin agents.** Cards must live on disk under one of the three
   tiers. Plugins cannot register cards at runtime yet.

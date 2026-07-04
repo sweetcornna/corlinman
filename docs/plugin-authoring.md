@@ -67,10 +67,10 @@ last_touched_at = "2026-04-20T10:00:00Z"
 
 - `plugin_type` — 决定运行时协议：`sync`/`async` 走 stdio JSON-RPC；`service` 走 gRPC
 - `entry_point.command + args` — `Command::spawn` 起子进程
-- `communication.timeout_ms` — 硬超时 + `CancellationToken` 同时发信号
+- `communication.timeout_ms` — 硬超时 + `asyncio` 任务取消（cancellation）同时发信号
 - `capabilities.tools[*]` — 对 LLM 暴露的工具清单，parameters 是标准 JSON Schema（OpenAI function calling 格式）
 - `capabilities.disable_model_invocation` — 高危工具置 `true`；approval middleware 硬拒 LLM 触发
-- `sandbox` — 留空则不沙箱；填了走 Docker（bollard 组装 HostConfig）
+- `sandbox` — 留空则不沙箱；填了走 Docker（docker-py SDK 组装 HostConfig）
 - `meta.last_touched_*` — UI 写回时自动填
 
 ## 3. Hello World
@@ -246,7 +246,7 @@ curl -X POST http://localhost:6005/plugin-callback/task_xyz789 \
   -d '{"status":"success","result":{"content":"done"}}'
 ```
 
-gateway 根据 `task_id` 找到等着的 `oneshot::Sender` 唤醒 Agent loop。超时由 manifest `communication.timeout_ms` 和 `CancellationToken` 联合控制；超时后即使 callback 也会被拒。
+gateway 根据 `task_id` 找到 `AsyncTaskRegistry` 里 park 的 future 唤醒 Agent loop。超时由 manifest `communication.timeout_ms` 和 asyncio task cancellation 联合控制；超时后即使 callback 也会被拒。
 
 **回调鉴权**：`task_id` 是一次性凭据，无需 Bearer。插件不要把 `task_id` 写日志。
 
@@ -340,7 +340,7 @@ corlinman plugins inspect <name>       # 一个插件详情 + origin + 校验结
 corlinman plugins doctor               # 整体健康检查
 ```
 
-**hot-reload**：manifest 文件改了 `notify` watcher 在 60s 内重新发现，不用重启 gateway。entry_point 代码本身的改动下次调用生效（每次 spawn 新进程）。
+**hot-reload**：manifest 文件改了 `watchdog` watcher 在 60s 内重新发现，不用重启 gateway。entry_point 代码本身的改动下次调用生效（每次 spawn 新进程）。
 
 ## 10. 常见问题
 
@@ -358,7 +358,7 @@ A: `sandbox.binds` 加 `["/dev/nvidia0:/dev/nvidia0", "/dev/nvidiactl:/dev/nvidi
 
 ## 延伸阅读
 
-- Manifest schema 的 Rust 源头：`rust/crates/corlinman-plugins/src/manifest.rs`
+- Manifest schema 的源头：`python/packages/corlinman-providers/src/corlinman_providers/plugins/manifest.py`
 - Origin ranking 和 discovery 细节：计划文件 §7
 - 运维视角（OOM、审批堆积、超时）：[runbook.md](runbook.md)
 - 整体架构里插件的位置：[architecture.md](architecture.md) §6 时序图

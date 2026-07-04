@@ -179,9 +179,11 @@ The active profile drives:
 - Which `curator_state` row gates the lifecycle loop.
 
 > The switcher only affects the *admin UI's* view. Chat requests
-> coming in over `/v1/chat/completions` carry a header
-> (`X-Corlinman-Profile: <slug>`); requests without it land on
-> `default`.
+> coming in over `/v1/chat/completions` resolve their profile from
+> app state / the `corlinman_active_profile` client hint rather than a
+> dedicated header; requests without any hint land on `default`.
+> (Per-request tenant scoping is a separate axis, keyed off
+> `?tenant=` / the `X-Corlinman-Tenant` header.)
 
 ---
 
@@ -240,7 +242,7 @@ Profiles are **parallel** to the existing `agents/*.yaml` registry, not
 a replacement. The decision was recorded in
 [`PLAN_EASY_SETUP.md`](PLAN_EASY_SETUP.md) §6.
 
-- The four shipped agents (`agents/orchestrator.yaml` etc) keep working
+- The five shipped agents (`agents/orchestrator.yaml` etc) keep working
   exactly as before — same loading path, same `/admin/agents` UI, same
   routing.
 - A profile is a richer construct: it bundles persona + memory + skills
@@ -262,10 +264,10 @@ profile. The whole multi-profile surface is opt-in.
   each profile's `skills/` directory
 - [`profiles/paths.py`][paths] — the canonical on-disk layout
 - [`profiles/store.py`][store] — the SQLite-backed registry + clone logic
-- [`routes_admin_a/profiles.py`][routes] — the 7-endpoint FastAPI surface
+- [`routes_admin_a/studio/profiles.py`][routes] — the 7-endpoint FastAPI surface
 
 [paths]: ../python/packages/corlinman-server/src/corlinman_server/profiles/paths.py
 [store]: ../python/packages/corlinman-server/src/corlinman_server/profiles/store.py
-[routes]: ../python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_a/profiles.py
+[routes]: ../python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_a/studio/profiles.py
 [hermes]: https://github.com/yamamoto-toru/hermes-agent
 [evolution]: evolution-curator.md

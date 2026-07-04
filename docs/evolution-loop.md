@@ -6,7 +6,7 @@ Phase 2 wave 2-B closes the auto-evolution loop by wiring the Python
 ```
 ┌────────────────────┐  daily 03:00 UTC   ┌──────────────────────────┐
 │ corlinman-scheduler│ ─────────────────▶ │ corlinman-evolution-engine │
-│  (Rust, in-process)│                    │ (Python, subprocess)        │
+│(Python, in-process)│                    │ (Python, subprocess)        │
 └──────────┬─────────┘                    └──────────────┬──────────────┘
            │ exit code + duration                        │ writes proposals
            ▼                                              ▼

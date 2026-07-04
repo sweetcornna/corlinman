@@ -1,14 +1,17 @@
 # Milestones 进展跟踪
 
-单一页面跟踪 corlinman 里程碑实况。每次滩头推进后更新此文件；里程碑**定义**（目标、完成标准、工期估算）见计划文件 [§11](/Users/cornna/.claude/plans/openclaw-rust-python-corlinma-graceful-meerkat.md)，本文只记"当前跑到哪"。
+> ⚠️ **历史记录** —— 本文档记录 **M0 → 1.0**（2026-04 ~ 05）的里程碑达成，技术栈描述反映**当时**状态。项目已于 **2026-05-24 发布 1.0**，随后完成全量 **Rust → Python 迁移**（`rust/` 已删除，现为纯 Python 栈），当前 **v1.27.0**。**1.0 之后的演进见 [`CHANGELOG.md`](../CHANGELOG.md)，前瞻计划见 [`roadmap.md`](roadmap.md)。**
+
+单一页面跟踪 corlinman 早期里程碑达成情况。里程碑**定义**（目标、完成标准）见 [`roadmap.md`](roadmap.md) 与 [`CHANGELOG.md`](../CHANGELOG.md)，本文只记 M0→1.0 期间"当时跑到哪"。
 
 **状态图例**：✅ 已完成 / 🚧 部分完成（active）/ ⏳ 未开工 / ⚠️ blocked
 
-## 总览表（updated 2026-04-21）
+## 总览表（M0–M8，1.0 已于 2026-05-24 全部关闭）
 
-**1.0 已发布** — M0–M8 全部关闭。`v0.1.0` tag 于 2026-04-21 打出，随后
-`v0.1.1`（部署 hotfix）、`v0.1.2`（admin UI 重设计）陆续落地。后续演进
-按 sprint 继续跑，见文末 "Post-1.0" 节。
+**1.0 已发布**（2026-05-24），当前 **v1.27.0**（2026-07-04）。M0–M8 早期 sprint
+全部关闭；`v0.1.0`（tag 2026-04-21）之后经 `v0.1.1`/`v0.1.2`/`ap1.0.0` 演进至
+1.0，再到 1.27.0 的完整历史见 [`CHANGELOG.md`](../CHANGELOG.md)。下表为早期里程碑
+的历史记录。
 
 | 里程碑 | 目标（一句话） | FT 工期 | 状态 | 实际完成比 | 关键 evidence |
 | --- | --- | --- | --- | --- | --- |
@@ -26,7 +29,7 @@
 
 以下是 M0 已着陆的文件、目录和组件，供新贡献者找切入点。
 
-**Rust workspace**：`/Users/cornna/project/corlinman/Cargo.toml` + 9 crate 骨架
+**Rust workspace**（M0 当时交付，**后已全量迁移到 Python 并删除 `rust/`** —— 下列 crate 的职责现由 `python/packages/` 下的包承载）：`Cargo.toml` + 9 crate 骨架
 
 ```
 rust/crates/corlinman-core/

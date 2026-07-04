@@ -7,7 +7,7 @@
 
 ## 1. `corlinman doctor` 报问题该怎么修
 
-`corlinman doctor` 分模块运行检查。M7 起覆盖 8 个模块（后续还会扩，目标 50+）：
+`corlinman doctor` 分模块运行检查。覆盖以下模块（后续还会扩）：
 
 | module        | 说明 |
 |---------------|------|
@@ -15,9 +15,8 @@
 | `manifest`    | `data_dir/plugins/*/plugin-manifest.toml` 扫描 |
 | `upstream`    | enabled providers 的 `api_key` 能否解析 |
 | `sqlite`      | `data_dir/vector/chunks.sqlite` 打得开，FTS5 可用 |
-| `usearch`     | `data_dir/vector/index.usearch` 打得开，维度匹配 embedding 模型 |
 | `channels`    | `[channels.qq]` 若启用，ws_url 合法且 2s 握手尝试 |
-| `scheduler`   | 每个 `[[scheduler.jobs]].cron` 用 `cron` crate 能 parse |
+| `scheduler`   | 每个 `[[scheduler.jobs]].cron` 用 `croniter` 能 parse |
 | `permissions` | `data_dir` 及 `plugins/agents/knowledge/vector/logs` 子目录存在且可读写 |
 
 每个 check 输出 `✓ OK / ! WARN / ✗ FAIL` + 简短 hint。
@@ -25,8 +24,7 @@
 - **FAIL `config.toml` 解析失败**：看 hint 里的 key 和行号，通常是引号不匹配或缩进错误。
 - **FAIL `upstream.anthropic` 429 / 5xx**：provider 不可达或 key 失效。`echo $ANTHROPIC_API_KEY` 确认环境变量真的注入进容器。
 - **FAIL `sqlite.FTS5 unavailable`**：容器里的 SQLite 没带 FTS5，重打镜像或换宿主 libsqlite。
-- **FAIL `usearch open_checked(dim=N) failed`**：索引维度和 `[rag] embedding_model` 不匹配，`corlinman vector rebuild` 重建。
-- **FAIL `scheduler.jobs[i] invalid cron`**：corlinman 用 7 字段 cron（秒 分 时 日 月 周 年）。
+- **FAIL `scheduler.jobs[i] invalid cron`**：corlinman 通过 `croniter` 解析 cron：5 字段（分 时 日 月 周）或 6 字段（含秒）；为兼容旧配置，7 字段表达式末尾的 year 列会被丢弃。
 - **WARN `manifest.duplicates`**：发现同名 manifest 有多条；`corlinman plugins inspect <name>`
   看所有候选，删掉不要的。
 - **WARN `channels.qq ws unreachable` / `ws connect timed out`**：gocq/NapCatQQ 没起或 `ws_url` 配错。
@@ -45,7 +43,6 @@
     {"name": "config", "status": "ok"},
     {"name": "agent_grpc", "status": "ok"},
     {"name": "sqlite", "status": "ok"},
-    {"name": "usearch", "status": "warn", "detail": "index file mtime > 24h stale"},
     {"name": "plugin_registry", "status": "ok"},
     {"name": "channels.qq", "status": "fail", "detail": "ws disconnected"}
   ]
@@ -57,10 +54,10 @@
 
 外部健康探针建议只认 `unhealthy`（降流量），不认 `degraded`（继续吃流量，但告警）。
 
-## 3. 用 `request_id` + `trace_id` 关联 Rust ↔ Python
+## 3. 用 `request_id` + `trace_id` 关联 gateway ↔ agent
 
 每个请求在进 gateway 时生成 `request_id`（UUID v4），`traceparent` header 生成或继承 W3C trace
-context 的 `trace_id`。Rust 侧通过 `tracing::info_span!` 注入，Python 侧通过
+context 的 `trace_id`。gateway 和 agent 两侧都通过
 `structlog.contextvars` 注入，**字段名两端一致**。
 
 排查流程：
@@ -96,7 +93,7 @@ curl http://localhost:6005/metrics | grep corlinman_plugin_execute_total
 
 ## 5. upstream LLM 429，退避是否起效
 
-gateway 的 `corlinman-agent-client::retry` 按 `DEFAULT_SCHEDULE = [5s, 10s, 30s, 60s]` 指数
+gateway 的退避重试助手按 `DEFAULT_SCHEDULE = [5s, 10s, 30s, 60s]` 指数
 退避。metric 验证：
 ```bash
 curl http://localhost:6005/metrics | grep corlinman_backoff_retries_total
@@ -104,16 +101,15 @@ curl http://localhost:6005/metrics | grep corlinman_backoff_retries_total
 # corlinman_backoff_retries_total{reason="upstream_5xx"} 7
 ```
 
-`reason` 字段取值见 `corlinman-core::error::FailoverReason` enum：`rate_limited` /
-`upstream_5xx` / `upstream_timeout` / `upstream_invalid_response` / `network`。
+`reason` 字段取值见 Python 侧 `common_pb2.FailoverReason`：`rate_limit` / `billing` / `auth` / `auth_permanent` / `timeout` / `model_not_found` / `format` / `context_overflow` / `overloaded`（原 `upstream_5xx` / `upstream_timeout` / `upstream_invalid_response` / `network` 已不再使用）。
 
 如果 `rate_limited` 计数猛涨但最终请求还是失败（`corlinman_http_requests_total{status="5xx"}`
 也涨），说明 4 档退避也扛不住，需要：
-- 降低并发（客户端侧或在 gateway 加 rate limit，M7 引入）
+- 降低并发（客户端侧或在 gateway 加 rate limit）
 - 切换到备用 provider：`ModelRedirect.json` 配好 fallback chain
 - 临时提升 provider quota
 
-## 6. RAG 结果不对，usearch 重建
+## 6. RAG 结果不对，重建 SQLite FTS5 索引
 
 症状：Agent 回答明显漏掉 dailynote 里有的内容、或检索出无关旧笔记。
 
@@ -129,8 +125,8 @@ curl http://localhost:6005/metrics | grep corlinman_backoff_retries_total
    ```bash
    corlinman vector rebuild --source ~/.corlinman/knowledge --confirm
    ```
-   这会：新建 `.usearch.new` → 重跑 embedding → 原子 rename 到 `.usearch`。期间 gateway 仍用老索引。完成后读新索引。如出错原文件未动。
-4. 如果是 `config.toml` 的 `[rag]` 段参数调错导致 RRF 融合偏移，`corlinman config diff` 对比 default。
+   这会：新建临时 SQLite 库 → 重跑分块并重建 FTS5 索引 → 原子 rename 覆盖旧库。期间 gateway 仍用老索引。完成后读新索引。如出错原文件未动。
+4. 如果是 `config.toml` 的 `[rag]` 段参数调错导致 FTS5 BM25 排序异常，`corlinman config diff` 对比 default。
 
 ## 7. QQ bot 重连循环
 
@@ -197,7 +193,7 @@ curl -u admin:你的密码 http://localhost:6005/admin/channels/qq/napcat/diagno
 
 ## 8. 定时任务没触发
 
-`corlinman-scheduler` 启动时把 `config.toml` 的 `[[scheduler.jobs]]` 里配的 cron job 注册到 `tokio-cron-scheduler`。排查：
+gateway 的 scheduler 启动时把 `config.toml` 的 `[[scheduler.jobs]]` 里配的 cron job 注册到基于 `croniter` 的调度器（`corlinman_server.scheduler`）。排查：
 
 1. Admin UI 的 `/admin/scheduler` 页看任务列表和下次触发时间。列表空的话 config 没读到。
 2. 手动触发验证任务本身 OK：
@@ -288,29 +284,29 @@ unit 要单独排期。
 
 **数据向后兼容**：1.x 任意版本的数据 1.x 任意版本都能读。2.0 会有一次 `corlinman migrate` 流程，届时补充 migration 文档。
 
-## 11. `/metrics` 指标清单（M7 起）
+## 11. `/metrics` 指标清单
 
 gateway 暴露 `GET /metrics`（Prometheus text exposition v0.0.4）。完整 metric family：
 
 | 名称                                          | 类型      | labels              | 埋点位置                                    |
 |-----------------------------------------------|-----------|---------------------|---------------------------------------------|
-| `corlinman_http_requests_total`               | counter   | `route`, `status`   | `corlinman-gateway::middleware::trace`      |
-| `corlinman_chat_stream_duration_seconds`      | histogram | `model`, `finish`   | `routes::chat::chat_stream` (TODO wall-timer) |
-| `corlinman_plugin_execute_total`              | counter   | `plugin`, `status`  | `corlinman-plugins::runtime` (TODO wiring)  |
+| `corlinman_http_requests_total`               | counter   | `route`, `status`   | `corlinman_server.gateway` HTTP 中间件      |
+| `corlinman_chat_stream_duration_seconds`      | histogram | `model`, `finish`   | `corlinman_server.gateway` chat 路由 |
+| `corlinman_plugin_execute_total`              | counter   | `plugin`, `status`  | `corlinman_server.gateway.grpc` 插件分发器  |
 | `corlinman_plugin_execute_duration_seconds`   | histogram | `plugin`            | 同上                                        |
-| `corlinman_backoff_retries_total`             | counter   | `reason`            | `corlinman-agent-client::retry::with_retry` |
-| `corlinman_agent_grpc_inflight`               | gauge     | —                   | `agent-client::stream::ChatStream::open`    |
-| `corlinman_vector_query_duration_seconds`     | histogram | `stage` (hnsw/bm25/fuse) | `corlinman-vector::hybrid::search`     |
+| `corlinman_backoff_retries_total`             | counter   | `reason`            | `corlinman_server` 退避重试助手 |
+| `corlinman_agent_grpc_inflight`               | gauge     | —                   | `corlinman_server` agent gRPC 客户端    |
+| `corlinman_vector_query_duration_seconds`     | histogram | `stage`（bm25 等） | `corlinman_server.gateway.rag_store`     |
 
 `status` 用数字字符串（`"200"` / `"503"`）；`finish ∈ {stop, length, tool_calls, error}`；`reason` 取
-`FailoverReason::as_str`（`rate_limit` / `upstream_5xx` / `timeout` / `auth` / ...）。
+`FailoverReason` 名称（`rate_limit` / `billing` / `timeout` / `auth` / `overloaded` / ...）。
 
 所有 metric 家族在 bootstrap 时就用 `label="startup"` 预先注册一条零值 series（`inc_by(0.0)` / `observe(0.0)`）
 以便 Grafana 面板和告警规则能在 zero-traffic 启动阶段也匹配到 series。dashboard 侧可直接过滤掉
 `{route="startup"}` / `{plugin="startup"}` / `{stage="startup"}`。
 
-埋点所有权：gateway 定义全部 metric 句柄（`corlinman_gateway::metrics`），plugins / agent-client / vector
-三个 crate 通过 import 同一组 `Lazy` 静态拿到同一 `Registry`。TODO：OpenTelemetry OTLP exporter
+埋点所有权：gateway 在 `corlinman_server.gateway.core.metrics` 定义全部 metric 句柄，其他模块
+通过 import 同一组句柄，注册到专用的 `CollectorRegistry`（`REGISTRY`）复用它。TODO：OpenTelemetry OTLP exporter
 和 Grafana dashboard JSON（`ops/dashboards/corlinman.json`）留到下一迭代。
 
 ## 延伸阅读

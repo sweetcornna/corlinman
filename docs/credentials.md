@@ -17,7 +17,7 @@ just pasted. No `.env` file — corlinman writes directly to TOML.
 
 For each well-known provider, the page exposes a fixed set of editable
 fields. The whitelist lives in
-[`routes_admin_b/credentials.py`][routes] (`_ALLOWED_FIELDS`):
+[`config_admin/_credentials_lib.py`](../python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_b/config_admin/_credentials_lib.py) (`_ALLOWED_FIELDS`):
 
 | Provider     | Fields                                  |
 | ------------ | --------------------------------------- |
@@ -91,8 +91,7 @@ existed on your clipboard and inside the backend's atomic write — it
 never round-trips through a GET response, never appears in browser
 history, never lands in the SSE log stream.
 
-If you forget what you pasted, the only way to read it back is to
-inspect `config.toml` on disk. By design.
+If you forget what you pasted, an admin can read it back via `GET /admin/credentials/{provider}/{key}/reveal` (auth-gated, never logged; returns 404 for `{env="…"}` refs, which the surface intentionally never resolves), or inspect `config.toml` on disk.
 
 ---
 
@@ -128,9 +127,11 @@ All routes mount behind admin auth. Base URL: `http://localhost:6005`.
 | Method | Path                                          | Body / params                       | Response                  |
 | ------ | --------------------------------------------- | ----------------------------------- | ------------------------- |
 | GET    | `/admin/credentials`                          | —                                   | `200` `CredentialsListResponse` |
-| PUT    | `/admin/credentials/{provider}/{key}`         | `{value: "..."}`                    | `204`                     |
+| PUT    | `/admin/credentials/{provider}/{key}`         | `{value: "..."}`                    | `200` `{status:"ok"}`     |
 | DELETE | `/admin/credentials/{provider}/{key}`         | —                                   | `204`                     |
-| POST   | `/admin/credentials/{provider}/enable`        | `{enabled: true \| false}`          | `204`                     |
+| POST   | `/admin/credentials/{provider}/enable`        | `{enabled: true \| false}`          | `200` `{status:"ok"}`     |
+| GET    | `/admin/credentials/{provider}/{key}/reveal`  | —                                   | `200` `{value:"..."}` (404 for `{env=…}`) |
+| GET    | `/admin/credentials/codex/status`             | —                                   | `200` codex OAuth status  |
 
 ### `CredentialsListResponse` shape
 
@@ -155,9 +156,8 @@ All routes mount behind admin auth. Base URL: `http://localhost:6005`.
 
 | Code               | When                                             |
 | ------------------ | ------------------------------------------------ |
-| `unknown_provider` | Provider name not in the whitelist (400)         |
 | `unknown_field`    | Field name not in `_ALLOWED_FIELDS` (400)        |
-| `empty_value`      | PUT with empty `value` (422; use DELETE instead) |
+| `invalid_value`    | PUT `value` is not a string (400)                |
 
 ---
 
@@ -205,8 +205,8 @@ first-class, add a row to `_ALLOWED_FIELDS`, `_DEFAULT_KIND`, and
 
 - [Providers reference](providers.md) — full kind list + recipes
 - [Quickstart](quickstart.md) — onboarding wizard vs credentials page
-- [`routes_admin_b/credentials.py`][routes] — the four-endpoint surface
+- [`config_admin/credentials.py`][routes] — the six-endpoint surface
 - [`config.example.toml`](config.example.toml) — annotated full config
 
-[routes]: ../python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_b/credentials.py
+[routes]: ../python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_b/config_admin/credentials.py
 [hermes-env]: https://github.com/yamamoto-toru/hermes-agent

@@ -277,20 +277,21 @@ Out of scope for this round (tracked in
 ## Platform tracing & metrics
 
 This document catalogues the tracing spans and Prometheus metrics exposed
-by the corlinman platform after B5-BE4. It is intended as a quick
+by the corlinman platform. It is intended as a quick
 reference when debugging production issues or extending dashboards.
 
 ## Scrape endpoint
 
 Prometheus scrapes `GET /metrics` on the gateway (default port `6005`).
-The endpoint emits text-exposition v0.0.4 and is served by
-`corlinman-gateway::routes::metrics`. Metric definitions live in
-`corlinman-core::metrics` and are re-exported by `corlinman-gateway::metrics`
-so every subcrate registers into the same `prometheus::Registry`.
+The endpoint emits text-exposition v0.0.4 (`prometheus_client.generate_latest`) and is served by
+`corlinman_server.gateway.routes.metrics`. Metric definitions live in
+`corlinman_server.gateway.core.metrics`, which registers every family on a
+dedicated `prometheus_client.CollectorRegistry` (`REGISTRY`) rather than the
+process-global default registry.
 
 ## Metric families
 
-### Existing families (pre-B5-BE4)
+### Core families
 
 | Metric | Type | Labels |
 |---|---|---|
@@ -303,7 +304,7 @@ so every subcrate registers into the same `prometheus::Registry`.
 | `corlinman_channels_rate_limited_total` | counter | `channel`, `reason` |
 | `corlinman_vector_query_duration_seconds` | histogram | `stage` |
 
-### B1–B4 additions
+### Additional families
 
 | Metric | Type | Labels |
 |---|---|---|
@@ -336,20 +337,21 @@ Label cardinality is kept bounded:
 
 ## Tracing spans
 
-| Span | Crate::module | Fields |
+| Span | Module | Fields |
 |---|---|---|
-| `hook_emit` | `corlinman-hooks::bus` | `event_kind`, `session_key`, `priority_tier_count` |
-| `placeholder_render` | `corlinman-core::placeholder` | `template_len`, `depth_used`, `unresolved_count` |
-| `protocol_dispatch` | `corlinman-plugins::protocol::dispatcher` | `outcomes_count`, `block_count`, `fc_count` |
-| `block_parse` | `corlinman-plugins::protocol::block` | `envelope_count`, `error_count` |
-| `wstool_invoke` | `corlinman-wstool::runtime` | `tool`, `runner_id`, `duration_ms`, `ok` |
-| `file_fetch` | `corlinman-wstool::file_fetcher` | `uri_scheme`, `total_bytes`, `ok` |
-| `telegram_webhook` | `corlinman-channels::telegram::webhook` | `chat_type`, `mention_reason`, `media_kind` |
+| `hook_emit` | `corlinman_hooks.bus` | `event_kind`, `session_key`, `priority_tier_count` |
+| `placeholder_render` | `corlinman_server.gateway.grpc.placeholder` | `template_len`, `depth_used`, `unresolved_count` |
+| `protocol_dispatch` | `corlinman_providers.plugins.protocol.dispatcher` | `outcomes_count`, `block_count`, `fc_count` |
+| `block_parse` | `corlinman_providers.plugins.protocol.block` | `envelope_count`, `error_count` |
+| `wstool_invoke` | `corlinman_wstool.runtime` | `tool`, `runner_id`, `duration_ms`, `ok` |
+| `file_fetch` | `corlinman_wstool.file_fetcher` | `uri_scheme`, `total_bytes`, `ok` |
+| `telegram_webhook` | `corlinman_channels.telegram.webhook` | `chat_type`, `mention_reason`, `media_kind` |
 | `epa_backfill` (structlog event) | `corlinman_agent.rag.epa_backfill` | `chunks_processed`, `basis_axes`, `wall_clock_s`, `chunks_skipped`, `namespaces_touched`, `namespace`, `status` |
 
-All Rust spans are emitted via `tracing`. The gateway forwards them to an
-OTLP collector when `CORLINMAN_OTEL_ENDPOINT` is set (see
-`corlinman-gateway::telemetry`).
+Spans are emitted via OpenTelemetry. The gateway forwards them to an
+OTLP collector when `OTEL_EXPORTER_OTLP_ENDPOINT` is set (see
+`corlinman_server.telemetry`); once initialised, `structlog` stamps
+`trace_id` / `span_id` onto log lines.
 
 ## Common queries
 
@@ -387,19 +389,22 @@ OTLP collector when `CORLINMAN_OTEL_ENDPOINT` is set (see
 
 ### Tracing filters
 
-With `tracing-subscriber` + `EnvFilter` the gateway honours `RUST_LOG`:
+The gateway logs via `structlog`; the uvicorn/root log level is set with `LOG_LEVEL` (default `info`). Because structlog routes through stdlib `logging`, individual loggers can be raised or lowered with the stdlib API:
 
-- Focus on a single span family:
+- Raise the global level:
   ```bash
-  RUST_LOG="info,corlinman_plugins::protocol=debug"
+  LOG_LEVEL=debug
   ```
 - Drill into WsTool timing:
-  ```bash
-  RUST_LOG="info,corlinman_wstool::runtime=debug"
+  ```python
+  import logging
+  logging.getLogger("corlinman_wstool.runtime").setLevel(logging.DEBUG)
   ```
 - Quiet everything except hook emits:
-  ```bash
-  RUST_LOG="warn,corlinman_hooks::bus=info"
+  ```python
+  import logging
+  logging.getLogger().setLevel(logging.WARNING)
+  logging.getLogger("corlinman_hooks.bus").setLevel(logging.INFO)
   ```
 
 With an OTLP collector attached, the same field names (`tool`,
@@ -408,7 +413,7 @@ Jaeger as span attributes.
 
 ## Pointing an OTel collector at the gateway
 
-The gateway initialises a tracer provider when `CORLINMAN_OTEL_ENDPOINT`
+The gateway initialises a tracer provider when `OTEL_EXPORTER_OTLP_ENDPOINT`
 is set. Minimal setup with `docker-compose`:
 
 ```yaml
@@ -425,7 +430,7 @@ services:
 
   corlinman-gateway:
     environment:
-      CORLINMAN_OTEL_ENDPOINT: "http://otel-collector:4317"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
 ```
 
 Collector config routes traces to Tempo/Jaeger and leaves metrics to

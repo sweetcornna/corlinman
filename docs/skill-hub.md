@@ -203,14 +203,14 @@ non-trivial surface and the installer pipeline takes it seriously.
 
 | Guard                       | Where                                                 | Behaviour                                                                |
 |-----------------------------|-------------------------------------------------------|--------------------------------------------------------------------------|
-| Slug regex                  | `client.py:_validate_slug`                            | `^[a-z][a-z0-9-]{1,63}$`. Rejects path-traversal characters up-front.    |
-| Path-traversal              | `installer.py:_validate_tar_member`                   | Refuses any member with `..` segments, absolute paths, or symlinks.      |
+| Slug regex                  | `installer.py:_validate_name`                            | `^[a-z][a-z0-9-]{1,63}$`. Rejects path-traversal characters up-front.    |
+| Path-traversal              | `installer.py:_safe_extract`                   | Refuses any member with `..` segments, absolute paths, or symlinks.      |
 | 25 MiB total cap            | `installer.py:_MAX_TOTAL_UNCOMPRESSED_BYTES`          | Decompressed tarball size; protects against zip-bombs.                   |
 | 10 MiB per-file cap         | `installer.py:_MAX_PER_FILE_BYTES`                    | A single huge member fails the install before extraction touches disk.   |
 | Sidecar-gated uninstall     | `installer.py:uninstall_skill`                        | Refuses any directory missing `.openclaw-meta.json`.                     |
-| Server-side bundled gate    | `gateway/routes_admin_b/skills.py`                    | Returns `409 bundled_protected` on `DELETE /admin/skills/{bundled}`.     |
+| Server-side bundled gate    | `gateway/routes_admin_b/marketplace/skills.py`                    | Returns `409 bundled_protected` on `DELETE /admin/skills/{bundled}`.     |
 | Content-hash record         | Sidecar                                               | Tarball's `sha256` is recorded for forensic comparison.                  |
-| Audit log                   | `system/audit_log.py`                                 | Every install + uninstall lands an entry with actor + slug + version.    |
+| Audit log                   | `system/audit.py`                                 | Every install + uninstall lands an entry with actor + slug + version.    |
 
 The two size caps fire before any bytes leave the streaming
 extractor, so a malicious 4-GiB tarball burns at most ~25 MiB of

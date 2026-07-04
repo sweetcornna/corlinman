@@ -1,6 +1,6 @@
 # CI Status — `.github/workflows/ci.yml`
 
-> Snapshot captured 2026-04-20 after the first real end-to-end dry run of the
+> Snapshot for v1.27.0 (2026-07-04). Documents the pure-Python + UI CI gate in
 > `ci.yml` pipeline. Before this pass the workflow had never been executed;
 > it shipped with several drifts (toolchain pin, boundary-check command,
 > vitest exit code) that would have failed on the first push. This document
@@ -15,50 +15,7 @@ infrastructure itself is broken and needs me to fix it.
 
 ## Per-job status
 
-### 1. `rust` — yellow
-
-Pipeline wiring: **green**. Code inside the workspace: **yellow**.
-
-Changed:
-- Swapped `dtolnay/rust-toolchain@1.82.0` for `dtolnay/rust-toolchain@master`
-  with `toolchain: stable`. The repo's `rust-toolchain.toml` pins 1.95.0 and
-  `Cargo.toml` requires `rust-version = "1.85"`; the hard-pinned 1.82 would
-  have refused to build the workspace.
-- Kept protobuf-compiler / pkg-config / libssl-dev install — `tonic-build`
-  needs `protoc` at compile time and reqwest/openssl links libssl.
-- Kept `taiki-e/install-action` for `cargo-nextest` — avoids the 3-minute
-  `cargo install` on every run.
-
-Runs I executed locally:
-- `cargo fmt --all -- --check` -> 35 diffs, **all** in peer-agent crates
-  (`corlinman-agent-client`, `-channels`, `-core`, `-plugins`, `-vector`).
-  No CI-side fix; owner agents must run `cargo fmt --all` before their
-  next commit.
-- `cargo clippy --workspace --all-targets -- -D warnings` -> 3 errors in
-  peer crates:
-  - `corlinman-vector/src/lib.rs:70` `approx_constant` for `3.14159`
-  - `corlinman-plugins/src/registry.rs:130` `unnecessary_sort_by`
-  - `corlinman-agent-client` two `useless_conversion` on `Vec<u8>`
-- `cargo nextest run --workspace` — not run locally (nextest not on this
-  machine); wiring is identical to what ran green in prior smoke on
-  `6957458` and I have not touched any test code.
-
-Next step: the owning agents for those crates run `cargo fmt --all` plus
-`cargo clippy --fix --workspace --all-targets --allow-dirty` once the
-M1-M5 beachhead merges.
-
-### rust-release-check — not added
-
-Skipped for now. Existing `rust-clippy` and `rust-test` jobs already use
-`Swatinem/rust-cache@v2`, and local `release-check` measurement is sufficient
-until CI timing shows a release-like compile gate is needed. On the 2026-05-16
-Windows workstation, `cargo build --profile release-check -p corlinman-gateway
--p corlinman-cli` was accepted by Cargo but blocked before completion by the
-known `numkong v7.6.0` MSVC C compile failure and missing `protoc`, so adding a
-new advisory CI job now would expand signal surface before local validation is
-clean.
-
-### 2. `python` — RED (corrected 2026-05-29, audit R5)
+### 2. `py-ruff` / `py-mypy` / `py-test` — RED (corrected 2026-05-29, audit R5)
 
 > **Correction (R5).** The numbers below this banner (7 mypy / 17 ruff) were
 > stale and materially understated reality, and the "Scoped `uv run mypy .` to
@@ -84,10 +41,13 @@ clean.
 > initiative (mostly safe `ruff --fix` import churn + a CJK-unicode rule policy
 > call + 156 real mypy fixes) — tracked in `audit/ARCH_DEBT.md` (#R5-Q1).
 
-### 2 (historical). `python` — yellow
+### 2 (historical). `py-ruff` / `py-mypy` / `py-test` — yellow
 
-Pipeline wiring: **green**. Python code: **yellow** (7 mypy + 17 ruff in
-peer packages).
+The Python plane is split across three jobs — `py-ruff` (`uv run ruff
+check .`), `py-mypy` (`uv run mypy python/packages/`), and `py-test`
+(`uv run pytest -m "not live_llm and not live_transport"`). Pipeline
+wiring: **green**. Python code: **yellow** (7 mypy + 17 ruff in peer
+packages).
 
 Changed:
 - Added `extend-exclude = ["**/_generated/**"]` under `[tool.ruff]` in
@@ -100,7 +60,7 @@ Changed:
   latter fixes a "Duplicate module named tests" crash caused by every
   `corlinman-*` package shipping its own `tests/__init__.py`). Added
   `exclude` for `_generated/` and per-package `tests/` dirs. Documented
-  a `TODO(M7)` to flip strict back on once the Python plane stabilises.
+  a TODO to flip strict back on once the Python plane stabilises.
 - Scoped `uv run mypy .` to `uv run mypy python/packages/` so the
   top-level `scripts/` and stale caches are not traversed.
 
@@ -121,7 +81,7 @@ Runs I executed locally:
 - `uv run mypy python/packages/` -> 7 errors (listed above)
 - `uv run pytest -m "not live_llm and not live_transport"` -> **31
   passed**, no skips. Live-transport / live-LLM markers remain skipped by
-  design — they belong to the M7 soak suite.
+  design — they belong to the soak suite.
 
 ### 3. `ui` — green
 
@@ -182,59 +142,13 @@ their next push. After that, this job is green.
 Pipeline wiring: **green** (was red before the fix below).
 
 Changed:
-- Rust: `cargo modules structure --package corlinman-gateway` failed
-  because the package has both a `lib` (the router/state code) and a
-  `bin` target (the gateway binary); cargo-modules refuses to pick one.
-  Added `--lib --no-fns` so the graph dump is deterministic.
-- Added `protobuf-compiler` install (cargo-modules runs cargo check
-  under the hood, same `protoc` dependency as the rust job).
 - Added a Python layering check using `import-linter` (see
   `.importlinter` at repo root). Contract enforces
   `corlinman_server -> corlinman_agent -> {providers, embedding} ->
   corlinman_grpc` with no reverse arrows.
 
 Runs I executed locally:
-- `cargo modules structure --package corlinman-gateway --lib --no-fns`
-  -> 21-line tree, exits 0.
-- `uv run lint-imports` -> "1 kept, 0 broken" against 45 files / 39
-  dependencies.
-
-### 6. `docker-build` — green (not exercised locally)
-
-Pipeline wiring: **green**. Local verification: skipped (no Docker
-daemon on this workstation).
-
-Changed:
-- Bumped `docker/Dockerfile` from `FROM rust:1.82-slim` to `FROM
-  rust:1.85-slim` for both `rust-planner` and `rust-builder` stages.
-  The workspace requires `rust-version = "1.85"` and the
-  `rust-toolchain.toml` pin is 1.95; 1.82 would fail with "package
-  requires rustc 1.85 or newer" on the first `cargo chef cook`.
-- Runtime stage unchanged (`python:3.12-slim` + `tini` + `nodejs`).
-
-The job itself only runs `docker/build-push-action@v6` with
-`target: runtime` and `push: false`, so the GHA sandbox exercises the
-full multi-stage build. I did not rebuild locally because Docker is not
-installed on this host; if the CI run reveals a cargo-chef or buildx
-issue that only reproduces in GHA, `docker buildx build --target
-rust-builder --load -t corlinman:rust-check .` is the minimum
-reproduction.
-
-### 7. `cargo-deny` — green (advisory)
-
-New job, `continue-on-error: true`. Wired as a safety net — it reports
-license incompatibilities and RustSec advisories but does **not** gate
-merges while the workspace dep graph is still moving. Promoted to a
-required check once M7's dep stabilisation lands.
-
-Config lives in `deny.toml` at repo root. Policy:
-- Licenses: explicit allow-list (MIT, Apache-2.0, BSD-2/3, ISC, Zlib,
-  CC0, 0BSD, MPL-2.0, Unicode-DFS-2016, Unicode-3.0, Apache-2.0 WITH
-  LLVM-exception).
-- Bans: `multiple-versions = "warn"` (tolerated while transitive deps
-  churn), `wildcards = "deny"`.
-- Advisories: RustSec default DB, `yanked = "warn"`.
-- Sources: only crates.io; unknown registries/git repos warn.
+- `uv run lint-imports` -> layering contract kept (Python plane only).
 
 ## Cross-cutting changes
 
@@ -243,23 +157,16 @@ New or changed files owned by CI:
 - `pyproject.toml` — added `import-linter>=2.0` to dev deps; added
   `[tool.ruff] extend-exclude`; relaxed `[tool.mypy]`.
 - `.importlinter` — new, Python-plane layering contract.
-- `deny.toml` — new, cargo-deny policy.
-- `docker/Dockerfile` — `rust:1.82-slim` -> `rust:1.85-slim`.
 - `Makefile` — added `ci` target mirroring the workflow.
 - `docs/ci-status.md` — this file.
 
 New workspace dev-dependencies added:
 - Python: `import-linter>=2.0` (brings `grimp`, `click`, `rich`).
-- Rust: none added to `Cargo.toml` — `cargo-deny`, `cargo-nextest`, and
-  `cargo-modules` are installed via `taiki-e/install-action` inside CI,
-  not as workspace deps.
 
 ## Known yellows (summary)
 
 | Area | Count | Owner | Fix |
 | --- | --- | --- | --- |
-| `cargo fmt` diffs | 35 | peer crates | `cargo fmt --all` |
-| `cargo clippy` errors | 3 | vector, plugins, agent-client | fix-by-owner |
 | `ruff` errors | 17 | agent, providers, server, grpc init | `ruff check --fix` |
 | `mypy` errors | 7 | providers, server | type-level fixes |
 | proto stub drift | 5 files | grpc package | regen + commit stubs |
@@ -272,22 +179,20 @@ fail loudly on every one of them, which is the behaviour we want.
 - `live_llm` pytest marker — tests hit real LLM APIs and cost money.
   Runs manually before a release cut, not on every PR.
 - `live_transport` pytest marker — needs real channel endpoints (QQ
-  OneBot, Telegram). Scheduled for the M7 nightly soak lane.
+  OneBot, Telegram). Scheduled for the nightly soak lane.
 - Playwright e2e (`pnpm -C ui test:e2e`) — runs in a dedicated browser
   lane, not in the `ui` unit-test step.
-- Rust proto drift check — tonic-build generates Rust stubs at
-  `cargo build` time into `target/`, so there is nothing to diff; only
-  the Python stubs are vendored into the tree.
+- Proto drift check — `bash scripts/gen-proto.sh` regenerates the Python
+  gRPC stubs from `proto/` via `grpcio-tools`; CI / pre-commit diff the
+  vendored stubs under `python/packages/corlinman-grpc/.../_generated/` and
+  fail if they drift from the IDL.
 
-## Next steps (M7 scope)
+## Next steps
 
 - Nightly schedule (`schedule: cron`) running `live_llm` and
   `live_transport` suites against a staging LLM key + sandbox channel.
-- `cargo fuzz` target for the stdio plugin line-framer (highest-risk
-  parser in the Rust plane).
 - 24-hour soak of the gateway + channel mesh under synthetic load,
   publishing p95 latency and reconnect counts to `docs/soak/`.
-- Promote `cargo-deny` from advisory to required.
 - Flip `[tool.mypy] strict = true` once the last yellow clears.
-- Add a `docker-build` that actually pushes a `corlinman:nightly` image
+- Add a `docker-build` job that pushes a `corlinman:nightly` image
   to GHCR on green main, gated by a signed tag.

@@ -86,7 +86,7 @@ Corlinman is a multi-layered LLM platform with 25+ Python packages organized aro
 The `corlinman-server` gateway is a multi-layer HTTP service:
 
 ```
-entrypoint.py (1769 LOC — build_app + lifespan; v1.17.0 decomposed, was 4040)
+entrypoint.py (1889 LOC — build_app + lifespan; v1.17.0 decomposed, was 4040)
 ├─ lifecycle/   (boot siblings: cli_helpers, bootstrap_constants, config_resolve,
 │                config_loading, app_factory, c2_wiring, scheduler_integration;
 │                + admin_seed, legacy_migration, py_config, starter_skills)
@@ -166,7 +166,7 @@ Channel Adapters (corlinman-channels) + Memory Host (corlinman-memory-host)
 
 ## Proposed Ownership Map
 
-Group the 25 packages + gateway monolith into **8 independent owner-areas**, each a team that can iterate in parallel:
+Group the 25 packages + gateway monolith into **12 independent owner-areas**, each a team that can iterate in parallel:
 
 ### 1. **Gateway Orchestration** (gateway-lead)
 - Owns: `gateway/lifecycle`, `gateway/core`, `gateway/middleware`
@@ -366,7 +366,7 @@ apps/swift-mac/                                                                 
 
 | Metric | Current State | Target | Owner |
 |---|---|---|---|
-| **entrypoint.py LOC** | 4040 | < 2000 | gateway-lead |
+| **entrypoint.py LOC** | ~1889 (decomposed in v1.17.0, 4040→1769) | ✅ met (<2000) | gateway-lead |
 | **routes_admin_b LOC** | 16.9K (26 files) | Split into 6 sub-packages | admin-backend-team |
 | **routes_admin_a LOC** | 7.4K (11 files) | Reduce to < 4K | admin-control-plane-team |
 | **Monolith gateway LOC** | 56K | < 40K via extraction | gateway-lead |

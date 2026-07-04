@@ -104,7 +104,7 @@ no network access, no general file write — by construction.
 
 The fork inherits the parent's provider + model so it costs whatever
 your normal chat costs. It runs with a narrow prompt template tailored
-to the trigger (see `evolution/prompts/{memory,skill,combined,curator,user_preference_patch}.md`).
+to the trigger (see `evolution/prompts/{memory_review,skill_review,combined_review,curator_review,user_preference_patch}.md`).
 
 Implementation: [`gateway/evolution/background_review.py`][bg-py].
 

@@ -143,9 +143,9 @@ paste when they get a tag out of band.
 
 ---
 
-## One-click upgrade (Unreleased)
+## One-click upgrade
 
-The next release (target v1.3.0) ships one-click upgrade — click the
+corlinman ships one-click upgrade — click the
 **Upgrade to vX.Y.Z** button on `/admin/system`, type the tag in the
 confirm dialog, watch the live progress panel. Two privileged paths:
 
@@ -206,13 +206,12 @@ paste fallback tab still works.
   manual upgrade tabs stay accessible behind a collapsed accordion
   below the primary Upgrade button. `[system.update_check] enabled =
   false` disables polling but leaves the page useful.
-- **Scheduler-driven auto-check is pending.** The `system.update_check`
-  builtin is registered with the scheduler, but the gateway lifespan
-  hasn't been wired to spawn the scheduler loop yet. In the meantime
-  the per-tab 30s poll from `<UpdateBubble />` and the on-page-load
-  fetch on `/admin/system` keep detection live — what's missing is the
-  background poll that fires when no admin tab is open. A future
-  release will close this gap.
+- **Scheduler-driven auto-check runs in the background.** The
+  `system.update_check` builtin is registered with the scheduler and
+  the gateway lifespan spawns the scheduler runtime at boot (since
+  v1.10.0), so the background poll fires even when no admin tab is open.
+  The per-tab 30s poll from `<UpdateBubble />` and the on-page-load
+  fetch on `/admin/system` remain as additional detection paths.
 - **Single source repo.** The checker polls one repo at a time. Forks
   that want to track both upstream and their own releases need to wire
   a second checker themselves.
@@ -232,8 +231,7 @@ paste fallback tab still works.
    can't reach `api.github.com`, or `repo` is misconfigured.
 4. `last_checked_at` more than `2 * interval_hours` old means the
    scheduled poll isn't running — see [Limitations](#limitations);
-   the manual button is the workaround until the lifespan wire-up
-   lands.
+   the manual button forces an immediate check while you diagnose.
 
 ### `403` from `api.github.com` in the logs
 

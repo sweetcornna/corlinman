@@ -7,7 +7,7 @@ well in your logs and aliases; the `kind` field is the wire-shape
 discriminator that picks which adapter actually gets built.
 
 This doc is the working reference: the schema, the table of supported
-kinds, the recipe for adding a new market provider without a Rust patch,
+kinds, the recipe for adding a new market provider without a code patch,
 and a handful of common operator scenarios. The fully-annotated TOML
 sample lives in [`docs/config.example.toml`](config.example.toml).
 
@@ -15,7 +15,7 @@ sample lives in [`docs/config.example.toml`](config.example.toml).
 
 ```toml
 [providers.<operator-chosen-name>]
-kind     = "<one of 14 valid values>"
+kind     = "<one of 16 valid values>"
 api_key  = { env = "<ENV_VAR>" }     # or { value = "..." }
 base_url = "https://..."             # required for openai_compatible
 enabled  = true                       # false = declared-only, no adapter built
@@ -53,10 +53,8 @@ surface them up-front):
   serve the same model id (e.g. `gpt-4o` via OpenAI and via OpenRouter).
 
 The schema lives in
-[`rust/crates/corlinman-core/src/config.rs`](../rust/crates/corlinman-core/src/config.rs)
-under `ProvidersConfig` / `ProviderEntry` / `ProviderKind`. The Python
-side mirrors it in
-[`corlinman_providers.specs`](../python/packages/corlinman-providers/src/corlinman_providers/specs.py).
+[`corlinman_providers.specs`](../python/packages/corlinman-providers/src/corlinman_providers/specs.py)
+under `ProviderSpec` / `ProviderKind` — the pure-Python source of truth after the Rust->Python migration.
 
 ## 2. Supported kinds
 
@@ -74,12 +72,15 @@ side mirrors it in
 | `together`          | `https://api.together.xyz/v1`                       | Bearer token           | Yes       | Pure OpenAI-compat.                                                                    |
 | `groq`              | `https://api.groq.com/openai/v1`                    | Bearer token           | No\*      | Ultra-fast inference. \*Embedding endpoint not exposed today.                          |
 | `replicate`         | `https://api.replicate.com/openai/v1`               | Bearer token           | Yes       | OpenAI-compat predictions endpoint.                                                    |
-| `bedrock`           | n/a                                                 | SigV4 (TODO)           | n/a       | **Declared-only stub.** Runtime raises `NotImplementedError`. See workaround below.    |
-| `azure`             | n/a                                                 | API key + deployment   | n/a       | **Declared-only stub.** Runtime raises `NotImplementedError`. See workaround below.    |
+| `bedrock`           | n/a                                                 | AWS SigV4              | No\*      | Bespoke adapter — hand-rolled SigV4 over httpx signs `InvokeModelWithResponseStream` (see `_aws_sigv4`). \*Embedding raises `NotImplementedError`. |
+| `azure`             | n/a                                                 | API key + deployment   | Yes       | Bespoke adapter — OpenAI wire shape with Azure deployment-id routing and `api-key` auth. |
+| `codex`             | n/a (OpenAI wire)                                   | OAuth (`~/.codex/auth.json`) | No        | ChatGPT-subscription OAuth; JWT passed as the bearer token. |
+| `mock`              | n/a                                                 | none                   | No        | Built-in echo adapter (reverses the last user message) for the easy-setup skip-LLM path. |
 
-The seven kinds added in the free-form-providers refactor (`mistral`,
-`cohere`, `together`, `groq`, `replicate`, `bedrock`, `azure`) all dispatch
-through the shared `OpenAICompatibleProvider` Python adapter at runtime.
+The five OpenAI-wire market kinds added in the free-form-providers refactor (`mistral`,
+`cohere`, `together`, `groq`, `replicate`) dispatch through the shared
+`OpenAICompatibleProvider` Python adapter at runtime. `bedrock` and `azure` now
+have their own bespoke adapters (`BedrockProvider`, `AzureProvider`).
 They exist as named kinds so the admin UI shows `Mistral` / `Groq` /
 `Cohere` instead of an undifferentiated `OpenAI-compatible`, and so per-
 kind quirks (Bedrock SigV4, Azure deployment IDs, …) can land later as
@@ -87,24 +88,18 @@ adapter overrides without a schema change.
 
 ### Bedrock and Azure today
 
-Both kinds parse and round-trip through the validator, but build-time
-adapter construction raises `NotImplementedError` so the failure is loud.
-Until proper SigV4 / deployment-routing support lands, declare them as
-`openai_compatible` against a compatible proxy:
-
-```toml
-[providers.bedrock]
-kind = "openai_compatible"
-base_url = "https://your-sigv4-proxy.example.com/v1"
-api_key = { env = "BEDROCK_PROXY_KEY" }
-enabled = true
-```
+Both kinds now build real adapters: `bedrock` signs
+`InvokeModelWithResponseStream` with hand-rolled AWS SigV4 over httpx (see
+`corlinman_providers._aws_sigv4`), and `azure` reuses the OpenAI wire shape
+with Azure deployment-id routing and `api-key` auth. Configure them directly
+by `kind`; no `openai_compatible` proxy workaround is required. (Bedrock
+embeddings — Titan / Cohere-on-Bedrock — still raise `NotImplementedError`
+and land separately.)
 
 ## 3. Adding a new market provider
 
 The vast majority of LLM vendors ship an OpenAI-wire-compatible endpoint.
-For those, an operator can wire up a brand-new provider with **zero Rust
-or Python code changes** — just two TOML lines:
+For those, an operator can wire up a brand-new provider with **zero code changes** — just two TOML lines:
 
 ```toml
 [providers.fireworks]
@@ -127,7 +122,7 @@ Fireworks endpoint via the shared OpenAI-compat adapter. Restart (or hot-
 reload via `POST /admin/config/reload`) and the new provider appears in
 `/admin/providers` and is available to every alias.
 
-A new kind is only worth adding to the Rust enum when one of the
+A new kind is only worth adding to the `ProviderKind` enum when one of the
 following is true:
 
 1. The vendor's wire format diverges from OpenAI in a way the shared
@@ -282,21 +277,21 @@ voice model.
   `no_provider_enabled` warning, which is informational — `validate`
   still exits zero on warnings.
 - `corlinman config show` prints the current config with secrets
-  redacted (`SecretRef::Literal` becomes `***REDACTED***`; env refs keep
+  redacted (literal `{ value = "..." }` refs become `***REDACTED***`; env refs keep
   the env var name for debuggability).
 - `GET /admin/providers` returns every declared entry with the same
   redaction; `POST /admin/providers` upserts; `DELETE /admin/providers/:name`
   refuses with HTTP 409 if any alias references the entry — unbind first.
 - The admin UI's `/providers` page renders the kind dropdown straight
-  from `ProviderKind::all()`, so any kind added to the Rust enum appears
-  there automatically once the gateway is rebuilt.
+  from `list_supported_kinds()`, so any kind added to the Python `ProviderKind`
+  enum appears there automatically after a config reload.
 
 ## See also
 
 - [`docs/config.example.toml`](config.example.toml) — fully annotated TOML.
 - [`docs/architecture.md` §7](architecture.md#7-数据与配置组织) — data
   directory layout and config path resolution.
-- [`rust/crates/corlinman-core/src/config.rs`](../rust/crates/corlinman-core/src/config.rs)
+- [`python/packages/corlinman-providers/src/corlinman_providers/specs.py`](../python/packages/corlinman-providers/src/corlinman_providers/specs.py)
   — schema source of truth.
 - [`python/packages/corlinman-providers/src/corlinman_providers/`](../python/packages/corlinman-providers/src/corlinman_providers/)
   — adapter implementations.

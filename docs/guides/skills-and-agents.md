@@ -39,7 +39,7 @@ in this order. Each step's output feeds the next:
    any placeholder that resolved to `None` is left literal so the model
    can see an authoring bug rather than hide it.
 
-> 💡 **Debug tip / 调试提示**: set `RUST_LOG=corlinman_core::placeholder=debug`
+> 💡 **Debug tip / 调试提示**: set `LOG_LEVEL=debug`
 > to see each substitution and its source tier.
 
 ---
@@ -194,10 +194,7 @@ it.
 After editing any of these files:
 
 ```bash
-# Rust side — decode + cross-field validation over the full example config.
-cargo test -p corlinman-core --test config_samples
-
-# Python side — load the sample agents/ + TVStxt/ and assert shape.
+# Load the sample agents/ + TVStxt/ and assert shape.
 uv run pytest python/packages/corlinman-agent/tests/test_config_samples.py -v
 ```
 
