@@ -4,6 +4,38 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.26.0] — 2026-07-03 — MCP client: sampling + tools/list_changed + dynamic advertisement (Dim 5)
+
+> Completes the MCP client dimension (claude-code parity Dim 5). The
+> bespoke JSON-RPC client dropped every server-initiated frame; it now
+> routes them, so corlinman can service a server's sampling requests and
+> react to a server pushing `tools/list_changed`.
+
+### Added
+- **Server→client inbound frame router** in both transports (stdio + ws):
+  `classify_inbound` splits request/notification/response; unhandled
+  server requests reply `-32601` so a compliant server never hangs.
+- **`sampling/createMessage` responder** (`[mcp.sampling]`): mode
+  `off`/`auto`/`ask` (secure default `off`), per-server rate limit, model
+  whitelist, `maxTokens` clamp, over an injected provider-agnostic
+  completer. The capability is advertised in the handshake only when
+  wired + enabled. *(The production completer that runs the LLM
+  completion is a documented follow-up; until then sampling stays
+  dormant/secure-off.)*
+- **`tools/list_changed` client listener**: a server push re-lists that
+  server's tools (debounced, `list_changed_debounce_ms`) and
+  re-advertises the tool plane.
+- **Dynamic re-advertisement** (`refresh_mcp_advertisement`): one
+  entrypoint shared by the list_changed listener and admin hot-plug —
+  recomputes `mcp_tools_json`, **prunes** synthesized entries for
+  vanished servers (previously left dead tools advertised until
+  restart), and refreshes the live ChatService.
+
+### Fixed
+- **Issue #108 (MCP hot-plug schema refresh)**: admin
+  enable/disable/restart/remove/reconfigure now re-advertise the tool
+  plane without a restart (the `McpAdapter` fires the same refresh hook).
+
 ## [1.25.0] — 2026-07-03 — Declarative hooks + /hooks (claude-code parity Dim 9)
 
 > Operators can now define lifecycle hooks in config — no code. A

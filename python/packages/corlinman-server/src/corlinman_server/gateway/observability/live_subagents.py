@@ -129,6 +129,33 @@ class LiveSubagentRegistry:
         # ``ToolStateRunning`` frame (fed once per open SSE client poll AND via
         # the emitter observer) increments ``tool_calls_made`` only once.
         self._counted_tool_calls: dict[str, set[str]] = {}
+        # Monotonically increasing mutation counter — bumped on every genuine
+        # row create / update / remove (see :meth:`revision`). The overview SSE
+        # loop reads it as a cheap O(1) change probe instead of re-scanning all
+        # rows every tick (Codex #113).
+        self._revision: int = 0
+
+    # ------------------------------------------------------------------
+    # Cheap change signal (overview-loop probe)
+    # ------------------------------------------------------------------
+
+    @property
+    def revision(self) -> int:
+        """Monotonically increasing counter, bumped on every row mutation.
+
+        The ``/admin/subagents/events/live`` loop probes this (an O(1) int
+        read) each base tick to decide whether the expensive ``list_all()`` +
+        merge full scan is worth running — a change bumps the revision, so the
+        loop detects it within one probe tick without paying scan cost while
+        idle. It is *not* a row count and carries no meaning beyond
+        "something changed since you last looked"; only equality across two
+        reads matters.
+        """
+        return self._revision
+
+    def _bump(self) -> None:
+        """Advance the mutation counter. Called from every row-writing path."""
+        self._revision += 1
 
     # ------------------------------------------------------------------
     # Emitter hot-path hook
@@ -263,6 +290,7 @@ class LiveSubagentRegistry:
             depth=depth,
             source="inline",
         )
+        self._bump()  # a fresh/replaced row is a change
 
     def _apply_child_event(
         self,
@@ -276,6 +304,10 @@ class LiveSubagentRegistry:
         row = self._rows.get(child_key)
         if row is None or row.state in _TERMINAL_STATES:
             return
+        # Snapshot the mutable display fields so a re-delivered frame that
+        # changes nothing (same activity, already-counted tool call) does NOT
+        # bump the revision — only genuine changes do.
+        before = (row.activity, row.tool_calls_made)
         # Codex-style current-activity line, derived only from coarse,
         # low-churn inner events (tool starts/stops, block boundaries) — never
         # per-token deltas.
@@ -299,6 +331,8 @@ class LiveSubagentRegistry:
                 row.activity = "思考中…"
             elif block_type == "text":
                 row.activity = "撰写回复…"
+        if (row.activity, row.tool_calls_made) != before:
+            self._bump()
 
     def _apply_completed(
         self,
@@ -334,6 +368,7 @@ class LiveSubagentRegistry:
         row.elapsed_ms = elapsed_ms or row.elapsed_ms
         row.summary = summary
         row.activity = ""
+        self._bump()  # running → terminal transition is a change
         self._prune_terminal()
 
     # ------------------------------------------------------------------
@@ -355,9 +390,12 @@ class LiveSubagentRegistry:
             k for k, r in self._rows.items() if r.state in _TERMINAL_STATES
         ]
         excess = len(terminal_keys) - self._terminal_cap
-        for k in terminal_keys[:excess] if excess > 0 else []:
+        if excess <= 0:
+            return
+        for k in terminal_keys[:excess]:
             self._rows.pop(k, None)
             self._counted_tool_calls.pop(k, None)
+        self._bump()  # dropping a row is also a change
 
 
 __all__ = ["LiveSubagentRegistry", "LiveSubagentRow"]

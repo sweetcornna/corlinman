@@ -361,3 +361,100 @@ def test_observe_journal_event_ignores_non_subagent() -> None:
     reg.observe_journal_event({"event_type": "TextDelta", "payload": {"text": "hi"}})
     reg.observe_journal_event({"event_type": "SubagentSpawned", "payload": {}})
     assert reg.list_all() == []
+
+
+# --------------------------------------------------------------------- #
+# revision — cheap O(1) change signal the overview SSE loop probes        #
+# (Codex #113 round 2).                                                   #
+# --------------------------------------------------------------------- #
+
+
+def _spawn_journal(child: str) -> dict:
+    return {
+        "event_type": "SubagentSpawned",
+        "timestamp_ms": 1000,
+        "payload": {
+            "parent_session_key": "sess",
+            "child_session_key": child,
+            "child_agent_id": "researcher",
+            "depth": 0,
+            "prompt_preview": "find the answer",
+        },
+    }
+
+
+def test_revision_starts_at_zero_and_increments_each_mutation() -> None:
+    """Every genuine row mutation (spawn → tool event → completion) advances
+    the revision so the overview probe sees the change."""
+    reg = LiveSubagentRegistry()
+    assert reg.revision == 0
+
+    reg.observe_journal_event(_spawn_journal("c1"))
+    after_spawn = reg.revision
+    assert after_spawn > 0
+
+    reg.observe_journal_event({
+        "event_type": "SubagentEvent",
+        "timestamp_ms": 1100,
+        "payload": {
+            "child_session_key": "c1",
+            "envelope": {
+                "event_type": "ToolStateRunning",
+                "payload": {"tool_name": "web_search", "tool_call_id": "tc1"},
+            },
+        },
+    })
+    after_tool = reg.revision
+    assert after_tool > after_spawn
+
+    reg.observe_journal_event({
+        "event_type": "SubagentCompleted",
+        "timestamp_ms": 5200,
+        "payload": {
+            "child_session_key": "c1",
+            "finish_reason": "completed",
+            "tool_calls_made": 1,
+            "elapsed_ms": 10,
+            "summary": "done",
+        },
+    })
+    after_complete = reg.revision
+    assert after_complete > after_tool
+
+
+def test_revision_stable_on_noop_observe() -> None:
+    """A no-op observe (garbage, non-subagent, an idempotent re-delivered
+    spawn, or a re-delivered tool frame that changes nothing) must NOT bump
+    the revision — else the overview loop would scan on every SSE poll."""
+    reg = LiveSubagentRegistry()
+    reg.observe_journal_event(_spawn_journal("c1"))
+    base = reg.revision
+
+    # Garbage / non-subagent envelopes.
+    reg.observe(object())
+    reg.observe_journal_event({"event_type": "TextDelta", "payload": {}})
+    assert reg.revision == base
+
+    # Re-delivered spawn while the row is still active → early return, no bump.
+    reg.observe_journal_event(_spawn_journal("c1"))
+    assert reg.revision == base
+
+    # First tool frame is a real change (activity/count) → bumps.
+    tool_frame = {
+        "event_type": "SubagentEvent",
+        "timestamp_ms": 1100,
+        "payload": {
+            "child_session_key": "c1",
+            "envelope": {
+                "event_type": "ToolStateRunning",
+                "payload": {"tool_name": "web_search", "tool_call_id": "tc1"},
+            },
+        },
+    }
+    reg.observe_journal_event(tool_frame)
+    after_tool = reg.revision
+    assert after_tool > base
+
+    # Re-delivered identical tool frame (deduped id, same activity) → no bump.
+    reg.observe_journal_event(tool_frame)
+    assert reg.revision == after_tool

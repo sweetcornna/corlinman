@@ -59,7 +59,10 @@ from corlinman_agent.reasoning_loop import (
     ToolCallEvent,
     ToolResult,
 )
-from corlinman_agent.tool_aliases import canonicalize_tool_name
+from corlinman_agent.tool_aliases import (
+    canonicalize_tool_name,
+    warn_alias_collisions,
+)
 
 #: Async callback the child loop uses to actually EXECUTE a tool call and
 #: return its JSON result envelope (the same string the parent feeds back as
@@ -857,6 +860,12 @@ def _filter_tools_for_child(
     # but keep the parent's REAL wire name in the effective set so the
     # child's advertised schema + execution-boundary check still use
     # dispatchable names. See ``corlinman_agent.tool_aliases``.
+    #
+    # Surface — but never reject — two real parent tools that canonicalize to
+    # the same wire name: the fold below keys the last one to win, silently
+    # dropping the other, so a single structured warning flags the ambiguity
+    # for the operator. Behaviour is otherwise unchanged (#108 item 3).
+    warn_alias_collisions(parent_tool_names, gate="subagent_allowlist")
     parent_by_canon = {canonicalize_tool_name(t): t for t in parent_tool_names}
 
     # ── Layer 1: card narrowing (W1.1). ──────────────────────────────

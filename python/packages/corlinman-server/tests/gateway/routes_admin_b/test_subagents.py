@@ -14,6 +14,7 @@ Covers the four endpoint shapes the live activity panel needs:
 
 from __future__ import annotations
 
+import os
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -426,3 +427,140 @@ async def test_live_overview_emits_initial_snapshot(
         await streaming.body_iterator.aclose()
     _ = StarletteRequest  # silence unused-import for linters
     _ = scope
+
+
+# ---------------------------------------------------------------------------
+# adaptive overview poll cadence (#108 item 4)
+# ---------------------------------------------------------------------------
+
+
+def test_next_poll_interval_backs_off_when_unchanged_up_to_cap() -> None:
+    """A run of unchanged ticks grows the interval by ×1.5 up to the 10s
+    cap and never past it."""
+    base = subagent_routes._SUBAGENT_OVERVIEW_POLL_BASE_SECONDS
+    cap = subagent_routes._SUBAGENT_OVERVIEW_POLL_MAX_SECONDS
+    assert base == 2.0
+    assert cap == 10.0
+
+    interval = base
+    seen = [interval]
+    for _ in range(20):
+        interval = subagent_routes._next_poll_interval(False, interval)
+        seen.append(interval)
+        # Monotonically non-decreasing and never above the cap.
+        assert interval <= cap
+        assert interval >= seen[-2]
+    # 2 → 3 → 4.5 → 6.75 → 10 (capped) …
+    assert seen[1] == pytest.approx(3.0)
+    assert seen[2] == pytest.approx(4.5)
+    assert seen[-1] == pytest.approx(cap)
+
+
+def test_next_poll_interval_resets_to_base_on_change() -> None:
+    """Any change snaps the interval straight back to the base for liveness,
+    regardless of how far it had backed off."""
+    base = subagent_routes._SUBAGENT_OVERVIEW_POLL_BASE_SECONDS
+    cap = subagent_routes._SUBAGENT_OVERVIEW_POLL_MAX_SECONDS
+    assert subagent_routes._next_poll_interval(True, cap) == base
+    assert subagent_routes._next_poll_interval(True, base) == base
+    assert subagent_routes._next_poll_interval(True, 4.5) == base
+
+
+# ---------------------------------------------------------------------------
+# overview change-signature probe (Codex #113 round 2) — the cheap O(1) probe
+# that replaces the old per-tick full scan / _sleep_slices machinery.
+# ---------------------------------------------------------------------------
+
+
+class _StubStore:
+    """Minimal stand-in exposing only the ``_persist_path`` the signature
+    probe reads (the real ``SubagentTaskStore`` flushes to this file after
+    every mutation)."""
+
+    def __init__(self, path: Path) -> None:
+        self._persist_path = path
+
+
+def _spawn_journal(child: str = "c1") -> dict:
+    return {
+        "event_type": "SubagentSpawned",
+        "timestamp_ms": 1000,
+        "payload": {
+            "parent_session_key": "p",
+            "child_session_key": child,
+            "child_agent_id": "researcher",
+            "depth": 0,
+            "prompt_preview": "go",
+        },
+    }
+
+
+def test_overview_change_signature_tracks_store_mtime(tmp_path: Path) -> None:
+    """Moving the store's persist-file mtime changes the store component of
+    the signature while leaving the registry component untouched."""
+    f = tmp_path / "subagents.json"
+    f.write_text("{}", encoding="utf-8")
+    store = _StubStore(f)
+    reg = LiveSubagentRegistry()
+
+    sig1 = subagent_routes._overview_change_signature(store, reg)
+    # Advance the mtime deterministically (ns granularity avoids clock-tick
+    # flakiness).
+    st = f.stat()
+    os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+    sig2 = subagent_routes._overview_change_signature(store, reg)
+
+    assert sig1 != sig2
+    assert sig2[1] != sig1[1]  # store component moved
+    assert sig2[0] == sig1[0]  # registry component unchanged
+
+
+def test_overview_change_signature_tracks_registry_revision(
+    tmp_path: Path,
+) -> None:
+    """A registry mutation (spawn) changes the registry component while the
+    untouched store file leaves its component stable."""
+    f = tmp_path / "subagents.json"
+    f.write_text("{}", encoding="utf-8")
+    store = _StubStore(f)
+    reg = LiveSubagentRegistry()
+
+    sig1 = subagent_routes._overview_change_signature(store, reg)
+    reg.observe_journal_event(_spawn_journal())
+    sig2 = subagent_routes._overview_change_signature(store, reg)
+
+    assert sig2[0] != sig1[0]  # registry component moved
+    assert sig2[1] == sig1[1]  # store component unchanged
+
+
+def test_overview_change_signature_tolerates_missing_path(
+    tmp_path: Path,
+) -> None:
+    """A store with no persist path, a path that doesn't exist, and an absent
+    registry each degrade to a ``None`` component rather than raising."""
+    reg = LiveSubagentRegistry()
+
+    # Store object without ``_persist_path`` → mtime component None.
+    assert subagent_routes._overview_change_signature(object(), reg) == (0, None)
+    # Persist path that doesn't exist on disk → mtime None, no raise.
+    store = _StubStore(tmp_path / "nope.json")
+    assert subagent_routes._overview_change_signature(store, reg) == (0, None)
+    # No store and no registry at all → both components None.
+    assert subagent_routes._overview_change_signature(None, None) == (None, None)
+
+
+def test_prescan_keepalive_due_below_half() -> None:
+    """No pre-scan keepalive while silence is under half the heartbeat —
+    avoids redundant frames right after a data yield."""
+    hb = subagent_routes._SUBAGENT_SSE_HEARTBEAT_SECONDS
+    assert subagent_routes._prescan_keepalive_due(0.0) is False
+    assert subagent_routes._prescan_keepalive_due(hb / 2 - 0.01) is False
+
+
+def test_prescan_keepalive_due_at_or_past_half() -> None:
+    """Pre-scan keepalive fires once silence reaches halfway to the deadline,
+    so a slow scan can't overrun the heartbeat (Codex #113 r3)."""
+    hb = subagent_routes._SUBAGENT_SSE_HEARTBEAT_SECONDS
+    assert subagent_routes._prescan_keepalive_due(hb / 2) is True
+    assert subagent_routes._prescan_keepalive_due(hb) is True
+    assert subagent_routes._prescan_keepalive_due(hb * 2) is True

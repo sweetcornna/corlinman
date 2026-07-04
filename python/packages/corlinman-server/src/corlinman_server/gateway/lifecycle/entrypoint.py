@@ -197,31 +197,22 @@ async def _wire_mcp_tool_plane(state: Any, mcp_manager: Any) -> None:
     unroutable (``plugin_not_found``). Best-effort: never break boot.
     """
     try:
-        from corlinman_server.gateway.mcp.advertise import (
-            register_mcp_tools,
-        )
+        from corlinman_server.gateway.mcp.advertise import register_mcp_tools
 
-        # Server allow/deny policy from ``[mcp]`` config (claude-code
-        # ``allowedMcpServers`` / ``deniedMcpServers``): deny wins; a
-        # non-empty allow-list is exclusive.
-        _mcp_cfg = state.config.get("mcp") if isinstance(state.config, dict) else None
-        _mcp_cfg = _mcp_cfg if isinstance(_mcp_cfg, dict) else {}
-        _denied = frozenset(
-            str(s) for s in (_mcp_cfg.get("deniedMcpServers") or _mcp_cfg.get("denied") or [])
-        )
-        _allowed_raw = _mcp_cfg.get("allowedMcpServers") or _mcp_cfg.get("allowed")
-        _allowed = (
-            frozenset(str(s) for s in _allowed_raw)
-            if isinstance(_allowed_raw, (list, tuple, set)) and _allowed_raw
-            else None
-        )
-        _mcp_added, _mcp_tools_json = await register_mcp_tools(
+        discovered = mcp_manager.discovered_tools()
+        _allowed, _denied = _mcp_server_policy(state)
+        _mcp_added, _mcp_tools_json, _advertised = await register_mcp_tools(
             getattr(state, "plugin_registry", None),
-            mcp_manager.discovered_tools(),
+            discovered,
             allowed=_allowed,
             denied=_denied,
         )
         state.extras["mcp_tools_json"] = _mcp_tools_json
+        # The servers that ACTUALLY produced an entry this call — not
+        # merely policy-allowed. A server whose tools became empty/invalid
+        # produced none, so it falls out of this set and the prune diff
+        # removes its stale route (Codex #110).
+        state.extras["mcp_advertised_servers"] = _advertised
         logger.info(
             "gateway.mcp.tools_wired",
             entries=_mcp_added,
@@ -229,6 +220,70 @@ async def _wire_mcp_tool_plane(state: Any, mcp_manager: Any) -> None:
         )
     except Exception as exc:  # pragma: no cover — best-effort
         logger.warning("gateway.mcp.tools_wire_failed", error=str(exc))
+
+
+def _mcp_server_policy(state: Any) -> tuple[frozenset[str] | None, frozenset[str]]:
+    """Read the ``[mcp]`` allow/deny policy (claude-code
+    ``allowedMcpServers``/``deniedMcpServers``): deny wins; a non-empty
+    allow-list is exclusive. Returns ``(allowed_or_None, denied)``."""
+    mcp_cfg = state.config.get("mcp") if isinstance(state.config, dict) else None
+    mcp_cfg = mcp_cfg if isinstance(mcp_cfg, dict) else {}
+    denied = frozenset(
+        str(s) for s in (mcp_cfg.get("deniedMcpServers") or mcp_cfg.get("denied") or [])
+    )
+    allowed_raw = mcp_cfg.get("allowedMcpServers") or mcp_cfg.get("allowed")
+    allowed = (
+        frozenset(str(s) for s in allowed_raw)
+        if isinstance(allowed_raw, (list, tuple, set)) and allowed_raw
+        else None
+    )
+    return allowed, denied
+
+
+async def refresh_mcp_advertisement(state: Any) -> None:
+    """Re-advertise the MCP tool plane after a post-boot change.
+
+    Unifies two triggers (issue #108): an admin hot-plug via ``McpAdapter``
+    and a server-pushed ``notifications/tools/list_changed``. Both leave
+    the boot snapshot (``state.extras["mcp_tools_json"]`` + synthesized
+    registry entries + the already-built ChatService) stale until restart.
+    This re-runs advertisement, prunes entries for servers that vanished,
+    and refreshes the live ChatService so the next ChatStart injects the
+    fresh ``tools_json``. Idempotent + serialized under a per-state lock so
+    concurrent adapter + listener triggers can't interleave. Best-effort.
+    """
+    lock = state.extras.get("_mcp_refresh_lock")
+    if lock is None:
+        lock = asyncio.Lock()
+        state.extras["_mcp_refresh_lock"] = lock
+    async with lock:
+        mcp_manager = state.extras.get("mcp_manager") if hasattr(state, "extras") else None
+        if mcp_manager is None:
+            return
+        try:
+            from corlinman_server.gateway.mcp.advertise import prune_stale_mcp_entries
+
+            await _wire_mcp_tool_plane(state, mcp_manager)
+            after = state.extras.get("mcp_advertised_servers", frozenset())
+            # Reconcile the registry to the freshly-advertised set: remove
+            # every synthesized entry whose server is not in ``after``
+            # (``register_mcp_tools`` only upserts, so a dropped-out server
+            # leaves a dead route otherwise). Always runs — the registry
+            # is kept in lockstep with ``after`` on every refresh.
+            removed = await prune_stale_mcp_entries(
+                getattr(state, "plugin_registry", None), after
+            )
+            if removed:
+                logger.info("gateway.mcp.refresh_pruned", removed=removed)
+            # Rebuild the live ChatService so it re-reads the new snapshot.
+            refresh_fn = state.extras.get("chat_refresh_fn")
+            if callable(refresh_fn):
+                result = refresh_fn()
+                if asyncio.iscoroutine(result):
+                    await result
+            logger.info("gateway.mcp.readvertised", servers=sorted(after))
+        except Exception as exc:  # noqa: BLE001 — refresh never breaks the caller
+            logger.warning("gateway.mcp.refresh_failed", error=str(exc))
 
 
 # ---------------------------------------------------------------------------
@@ -1019,10 +1074,33 @@ def build_app(
         # tools" — the gateway still boots. Closed in the lifespan-exit
         # ``finally``.
         try:
-            from corlinman_mcp_server import McpClientManager
+            from corlinman_mcp_server import (
+                McpClientManager,
+                SamplingConfig,
+                SamplingResponder,
+            )
             from corlinman_mcp_server.client_manager import McpServerSpec
 
-            _mcp_manager = McpClientManager.from_config(state.config)
+            # Dim 5 sampling: parse [mcp.sampling] and build a responder.
+            # The completer (which runs the actual LLM completion) is a
+            # documented follow-up — until one is injected the responder
+            # never advertises the capability and rejects requests
+            # (secure-by-default; mode defaults to "off" anyway).
+            _mcp_cfg = state.config.get("mcp") if isinstance(state.config, dict) else None
+            _sampling_completer = state.extras.get("mcp_sampling_completer")
+            _sampling = SamplingResponder(
+                SamplingConfig.from_mcp_config(_mcp_cfg),
+                _sampling_completer,
+            )
+            _mcp_manager = McpClientManager.from_config(
+                state.config, sampling_responder=_sampling
+            )
+            # Server-pushed tools/list_changed → re-advertise the tool
+            # plane (same entrypoint the admin hot-plug uses — issue #108).
+            _mcp_manager.on_tools_changed = lambda: refresh_mcp_advertisement(state)
+            _dbg_ms = _mcp_cfg.get("list_changed_debounce_ms") if isinstance(_mcp_cfg, dict) else None
+            if isinstance(_dbg_ms, int) and _dbg_ms > 0:
+                _mcp_manager._list_changed_debounce_ms = _dbg_ms
 
             # Marketplace-installed MCP servers persist across restarts in
             # ``<data_dir>/mcp_servers.sqlite``. Register every stored spec
@@ -1067,7 +1145,11 @@ def build_app(
                         McpAdapter,
                     )
 
-                    admin_b_state.extras["mcp_adapter"] = McpAdapter(_mcp_manager, _mcp_store)
+                    admin_b_state.extras["mcp_adapter"] = McpAdapter(
+                        _mcp_manager,
+                        _mcp_store,
+                        on_changed=lambda: refresh_mcp_advertisement(state),
+                    )
                     if resolved_data_dir is not None:
                         from corlinman_server.system.marketplace.plugin_store import (
                             PluginStore,
@@ -1184,7 +1266,14 @@ def build_app(
                 with suppress(AttributeError, TypeError):
                     admin_b_state.extras["config_swap_fn"] = _make_config_swap_fn(app, state)
                 with suppress(AttributeError, TypeError):
-                    admin_b_state.extras["chat_refresh_fn"] = _make_chat_refresh_fn(state)
+                    _chat_refresh = _make_chat_refresh_fn(state)
+                    admin_b_state.extras["chat_refresh_fn"] = _chat_refresh
+                    # Mirror onto the main AppState too: refresh_mcp_advertisement
+                    # (fired from the MCP list_changed listener + admin hot-plug)
+                    # only holds ``state`` and must rebuild the live ChatService
+                    # after re-advertising (Codex #110 — it read the wrong state).
+                    if isinstance(getattr(state, "extras", None), dict):
+                        state.extras["chat_refresh_fn"] = _chat_refresh
                 logger.debug(
                     "gateway.config_reload.swap_fn_wired",
                     path=str(config_path) if config_path else None,

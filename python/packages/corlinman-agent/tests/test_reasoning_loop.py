@@ -843,6 +843,8 @@ async def test_run_invokes_compact_each_round(monkeypatch: pytest.MonkeyPatch) -
         model: str | None = None,
         fast_path_only: bool = False,
         prev_estimate: int | None = None,
+        summary_allowed: bool = True,
+        outcome: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         counter["calls"] += 1
         return await real(
@@ -852,6 +854,8 @@ async def test_run_invokes_compact_each_round(monkeypatch: pytest.MonkeyPatch) -
             model=model,
             fast_path_only=fast_path_only,
             prev_estimate=prev_estimate,
+            summary_allowed=summary_allowed,
+            outcome=outcome,
         )
 
     monkeypatch.setattr(rl_module, "_compact_history", _spy)
@@ -1772,6 +1776,8 @@ async def test_token_cache_invalidates_through_run_when_compacted(
         model: str | None = None,
         fast_path_only: bool = False,
         prev_estimate: int | None = None,
+        summary_allowed: bool = True,
+        outcome: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         # Return a list with same content but different identity.
         return [dict(m) for m in msgs]
@@ -1973,6 +1979,399 @@ def test_resolve_context_budget_reserve_fraction_and_cap_overridable(
 
     # 200k - min(0.25*200k=50k, cap 100k) = 150k
     assert rl._resolve_context_budget(_P(), "big") == 200_000 - 50_000
+
+
+# ---------------------------------------------------------------------------
+# ABSORB_MATRIX Dim 2 (d)/(e) — summary-LLM cooldown / anti-thrash + breaker
+# ---------------------------------------------------------------------------
+
+
+def _tool_round(cid: str) -> list[ProviderChunk]:
+    """One tool-call round for :class:`_MultiRoundProvider`."""
+    return [
+        ProviderChunk(kind="tool_call_start", tool_call_id=cid, tool_name="t"),
+        ProviderChunk(kind="tool_call_delta", tool_call_id=cid, arguments_delta="{}"),
+        ProviderChunk(kind="tool_call_end", tool_call_id=cid),
+        ProviderChunk(kind="done", finish_reason="tool_calls"),
+    ]
+
+
+async def _drive(loop: ReasoningLoop, start: ChatStart, *, tool_content: str) -> None:
+    """Run the loop, satisfying every tool call with ``tool_content``."""
+    async for e in loop.run(start):
+        if isinstance(e, ToolCallEvent):
+            loop.feed_tool_result(ToolResult(call_id=e.call_id, content=tool_content))
+
+
+class _SummaryFailProvider:
+    """Drives ``tool_rounds`` tool-call rounds; the compaction summary
+    sub-call (detected by ``tools is None`` + the capped summary
+    ``max_tokens``) is counted and always fails, so the loop's cooldown /
+    breaker logic engages while the reasoning rounds keep flowing.
+    """
+
+    def __init__(self, *, tool_rounds: int) -> None:
+        self._tool_rounds = tool_rounds
+        self.summary_calls = 0
+        self.main_calls = 0
+
+    async def chat_stream(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, Any]],
+        tools: Any = None,
+        temperature: Any = None,
+        max_tokens: Any = None,
+        extra: Any = None,
+    ) -> AsyncIterator[ProviderChunk]:  # type: ignore[override]
+        from corlinman_agent.reasoning_loop import _COMPACT_SUMMARY_MAX_TOKENS
+
+        # Compaction summary sub-call — tools suppressed + capped output.
+        if tools is None and max_tokens == _COMPACT_SUMMARY_MAX_TOKENS:
+            self.summary_calls += 1
+            raise RuntimeError("summary boom")
+            yield ProviderChunk(kind="done")  # unreachable — keeps this a generator
+        # Main reasoning round.
+        self.main_calls += 1
+        if self.main_calls <= self._tool_rounds:
+            cid = f"call{self.main_calls}"
+            yield ProviderChunk(kind="tool_call_start", tool_call_id=cid, tool_name="t")
+            yield ProviderChunk(kind="tool_call_delta", tool_call_id=cid, arguments_delta="{}")
+            yield ProviderChunk(kind="tool_call_end", tool_call_id=cid)
+            yield ProviderChunk(kind="done", finish_reason="tool_calls")
+        else:
+            yield ProviderChunk(kind="token", text="final")
+            yield ProviderChunk(kind="done", finish_reason="stop")
+
+
+@pytest.mark.asyncio
+async def test_summary_failure_sets_cooldown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed summary sub-call backs the slow path off for COOLDOWN rounds.
+
+    ABSORB_MATRIX Dim 2 (d): with pressure pinned above the summary
+    threshold every round, the summarizer is attempted, fails, and is NOT
+    re-attempted until ``_COMPACT_SUMMARY_COOLDOWN_ROUNDS`` rounds later —
+    counted via the provider's summary sub-calls.
+    """
+    from corlinman_agent import reasoning_loop as rl_mod
+
+    # Tight budget so any non-trivial history clears the summary threshold;
+    # small cooldown; breaker high so it can't interfere with this test.
+    monkeypatch.setattr(rl_mod, "_CONTEXT_BUDGET_OVERRIDE", 200)
+    monkeypatch.setattr(rl_mod, "_COMPACT_SUMMARY_COOLDOWN_ROUNDS", 3)
+    monkeypatch.setattr(rl_mod, "_COMPACT_SUMMARY_BREAKER_LIMIT", 99)
+
+    prov = _SummaryFailProvider(tool_rounds=5)
+    loop = ReasoningLoop(prov, tool_result_timeout=1.0)
+    start = ChatStart(model="x", messages=_huge_tool_history(rounds=6, char_count=1_000))
+
+    await asyncio.wait_for(_drive(loop, start, tool_content="Z" * 4_000), timeout=3.0)
+
+    # Compaction rounds r=0..5. Attempts: r=0 (fail → cooldown_until=0+3+1=4,
+    # i.e. exactly 3 rounds skipped), suppressed r=1,2,3, re-attempt r=4
+    # (fail → cooldown_until=8), suppressed r=5. Exactly two sub-calls fire.
+    assert prov.summary_calls == 2
+    assert loop._summary_failures == 2
+    assert loop._summary_disabled is False
+
+
+@pytest.mark.asyncio
+async def test_summary_breaker_disables_after_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """After ``_COMPACT_SUMMARY_BREAKER_LIMIT`` failures the slow path is
+    disabled for the rest of the turn — no further attempts even once the
+    cooldown would have elapsed (ABSORB_MATRIX Dim 2 (e)).
+    """
+    from corlinman_agent import reasoning_loop as rl_mod
+
+    monkeypatch.setattr(rl_mod, "_CONTEXT_BUDGET_OVERRIDE", 200)
+    # Cooldown of 1 so a would-be re-attempt is allowed every round; only
+    # the breaker keeps the summarizer off.
+    monkeypatch.setattr(rl_mod, "_COMPACT_SUMMARY_COOLDOWN_ROUNDS", 1)
+    monkeypatch.setattr(rl_mod, "_COMPACT_SUMMARY_BREAKER_LIMIT", 3)
+
+    prov = _SummaryFailProvider(tool_rounds=6)
+    loop = ReasoningLoop(prov, tool_result_timeout=1.0)
+    start = ChatStart(model="x", messages=_huge_tool_history(rounds=6, char_count=1_000))
+
+    await asyncio.wait_for(_drive(loop, start, tool_content="Z" * 4_000), timeout=3.0)
+
+    # r=0 fail (cd=1), r=1 fail (cd=2), r=2 fail → breaker trips. r=3+ are
+    # never re-attempted despite the 1-round cooldown having elapsed.
+    assert prov.summary_calls == 3
+    assert loop._summary_disabled is True
+
+
+@pytest.mark.asyncio
+async def test_summary_success_resets_failure_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A successful summary re-arms the failure streak (Dim 2 (e)).
+
+    Uses a stubbed ``_compact_history`` so the outcome fed to the breaker
+    state machine is deterministic: the first allowed attempt fails, the
+    next succeeds — the failure count must climb to 1 then reset to 0.
+    """
+    from corlinman_agent import reasoning_loop as rl_mod
+
+    monkeypatch.setattr(rl_mod, "_COMPACT_SUMMARY_COOLDOWN_ROUNDS", 1)
+    monkeypatch.setattr(rl_mod, "_COMPACT_SUMMARY_BREAKER_LIMIT", 99)
+
+    prov = _MultiRoundProvider([_tool_round(f"c{i}") for i in range(4)])
+    loop = ReasoningLoop(prov, tool_result_timeout=1.0)
+
+    failures_history: list[int] = []
+    calls = {"n": -1}
+
+    async def _fake_compact(
+        msgs: list[dict[str, Any]],
+        *,
+        budget: int,
+        provider: Any = None,
+        model: str | None = None,
+        fast_path_only: bool = False,
+        prev_estimate: int | None = None,
+        summary_allowed: bool = True,
+        outcome: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        if outcome is not None and summary_allowed:
+            failures_history.append(loop._summary_failures)
+            calls["n"] += 1
+            outcome["summary_attempted"] = True
+            if calls["n"] == 0:
+                outcome["summary_failed"] = True  # first attempt fails
+            else:
+                outcome["summary_failed"] = False
+                outcome["summary_saved_fraction"] = 0.5  # healthy savings
+        return msgs
+
+    monkeypatch.setattr(rl_mod, "_compact_history", _fake_compact)
+
+    start = ChatStart(model="x", messages=[{"role": "user", "content": "go"}])
+    await asyncio.wait_for(_drive(loop, start, tool_content="ok"), timeout=3.0)
+
+    # Snapshot taken at the START of each attempt: 0 (nothing yet), 1 (the
+    # first attempt failed), 0 (the success reset it).
+    assert failures_history[:3] == [0, 1, 0]
+    assert loop._summary_failures == 0
+    assert loop._summary_low_savings_streak == 0
+
+
+@pytest.mark.asyncio
+async def test_summary_low_savings_streak_trips_cooldown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two consecutive low-savings successes trip the cooldown (Dim 2 (d)).
+
+    A summary that shrinks the window by < 10% is barely worth its cost;
+    a run of them should back the slow path off just like a failure would.
+    """
+    from corlinman_agent import reasoning_loop as rl_mod
+
+    monkeypatch.setattr(rl_mod, "_COMPACT_SUMMARY_COOLDOWN_ROUNDS", 3)
+    monkeypatch.setattr(rl_mod, "_COMPACT_SUMMARY_BREAKER_LIMIT", 99)
+
+    allowed_seen: list[bool] = []
+
+    async def _fake_compact(
+        msgs: list[dict[str, Any]],
+        *,
+        budget: int,
+        provider: Any = None,
+        model: str | None = None,
+        fast_path_only: bool = False,
+        prev_estimate: int | None = None,
+        summary_allowed: bool = True,
+        outcome: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        allowed_seen.append(summary_allowed)
+        if outcome is not None and summary_allowed:
+            outcome["summary_attempted"] = True
+            outcome["summary_failed"] = False
+            outcome["summary_saved_fraction"] = 0.02  # < 0.10 → low savings
+        return msgs
+
+    monkeypatch.setattr(rl_mod, "_compact_history", _fake_compact)
+
+    prov = _MultiRoundProvider([_tool_round(f"c{i}") for i in range(6)])
+    loop = ReasoningLoop(prov, tool_result_timeout=1.0)
+    start = ChatStart(model="x", messages=[{"role": "user", "content": "go"}])
+    await asyncio.wait_for(_drive(loop, start, tool_content="ok"), timeout=3.0)
+
+    # r=0 low-savings success (streak→1); r=1 low-savings success (streak→2
+    # → cooldown_until = 1+3+1 = 5, exactly 3 rounds skipped, streak reset);
+    # r=2,3,4 suppressed; r=5 allowed again.
+    assert allowed_seen[:6] == [True, True, False, False, False, True]
+
+
+@pytest.mark.asyncio
+async def test_summary_failure_resets_low_savings_streak(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed attempt between two low-savings successes breaks the streak
+    (Codex #111): anti-thrash fires only on TRULY consecutive low-savings
+    successes, not ones separated by a failure + its cooldown.
+    """
+    from corlinman_agent import reasoning_loop as rl_mod
+
+    monkeypatch.setattr(rl_mod, "_COMPACT_SUMMARY_COOLDOWN_ROUNDS", 2)
+    monkeypatch.setattr(rl_mod, "_COMPACT_SUMMARY_BREAKER_LIMIT", 99)
+
+    # Scripted per-attempt outcomes: low-savings success, then failure,
+    # then low-savings success — the third must NOT trip the streak
+    # cooldown (streak restarted at 1 after the failure).
+    script = [
+        {"summary_failed": False, "summary_saved_fraction": 0.02},
+        {"summary_failed": True, "summary_saved_fraction": 0.0},
+        {"summary_failed": False, "summary_saved_fraction": 0.02},
+    ]
+    attempts: list[int] = []
+    allowed_seen: list[bool] = []
+
+    async def _fake_compact(
+        msgs: list[dict[str, Any]],
+        *,
+        budget: int,
+        provider: Any = None,
+        model: str | None = None,
+        fast_path_only: bool = False,
+        prev_estimate: int | None = None,
+        summary_allowed: bool = True,
+        outcome: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        allowed_seen.append(summary_allowed)
+        if outcome is not None and summary_allowed and script:
+            step = script.pop(0)
+            attempts.append(1)
+            outcome["summary_attempted"] = True
+            outcome["summary_failed"] = step["summary_failed"]
+            outcome["summary_saved_fraction"] = step["summary_saved_fraction"]
+        return msgs
+
+    monkeypatch.setattr(rl_mod, "_compact_history", _fake_compact)
+
+    prov = _MultiRoundProvider([_tool_round(f"c{i}") for i in range(6)])
+    loop = ReasoningLoop(prov, tool_result_timeout=1.0)
+    start = ChatStart(model="x", messages=[{"role": "user", "content": "go"}])
+    await asyncio.wait_for(_drive(loop, start, tool_content="ok"), timeout=3.0)
+
+    # r=0 low-savings success (streak→1); r=1 failure (cooldown_until=
+    # 1+2+1=4, exactly 2 rounds skipped, streak RESET to 0); r=2,3
+    # suppressed; r=4 attempt: low-savings success → streak→1 only — NO
+    # cooldown, so r=5 stays allowed. (Without the reset, r=4 would read
+    # streak=2, trip, and suppress r=5.)
+    assert allowed_seen[:6] == [True, True, False, False, True, True]
+    assert loop._summary_low_savings_streak == 1
+    assert len(attempts) == 3
+
+
+@pytest.mark.asyncio
+async def test_summary_allowed_false_gates_only_llm_call() -> None:
+    """``summary_allowed=False`` suppresses the LLM sub-call only — the
+    cheap elide path still runs (Dim 2 (d): elide is never gated).
+    """
+    from corlinman_agent.reasoning_loop import _ELIDED_TOOL_PREFIX, _compact_history
+
+    messages = _huge_tool_history(rounds=6, char_count=1_000)
+
+    class _NeverSummaryProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def chat_stream(self, **_: Any) -> AsyncIterator[ProviderChunk]:  # type: ignore[override]
+            self.calls += 1
+            raise AssertionError("summary sub-call must not fire when summary_allowed=False")
+            yield ProviderChunk(kind="done")  # unreachable
+
+    prov = _NeverSummaryProvider()
+    outcome: dict[str, Any] = {}
+    out = await _compact_history(
+        messages,
+        budget=200,
+        provider=prov,
+        model="x",
+        summary_allowed=False,
+        outcome=outcome,
+    )
+
+    # Provider never touched; no summary attempt recorded.
+    assert prov.calls == 0
+    assert outcome.get("summary_attempted", False) is False
+    # Elide STILL happened — older tool payloads collapsed to the sentinel.
+    tool_msgs = [m for m in out if m.get("role") == "tool"]
+    assert any(m["content"].startswith(_ELIDED_TOOL_PREFIX) for m in tool_msgs)
+
+
+@pytest.mark.asyncio
+async def test_compact_outcome_records_summary_success() -> None:
+    """The ``outcome`` dict captures a produced summary + its saved fraction."""
+    from corlinman_agent.reasoning_loop import _compact_history
+
+    messages = _huge_tool_history(rounds=6, char_count=1_000)
+
+    class _SummaryProvider:
+        async def chat_stream(
+            self,
+            *,
+            model: str,
+            messages: list[dict[str, Any]],
+            tools: Any = None,
+            temperature: Any = None,
+            max_tokens: Any = None,
+            extra: Any = None,
+        ) -> AsyncIterator[ProviderChunk]:  # type: ignore[override]
+            yield ProviderChunk(kind="token", text="dense summary")
+            yield ProviderChunk(kind="done", finish_reason="stop")
+
+    outcome: dict[str, Any] = {}
+    await _compact_history(
+        messages, budget=200, provider=_SummaryProvider(), model="x", outcome=outcome
+    )
+    assert outcome["summary_attempted"] is True
+    assert outcome["summary_failed"] is False
+    assert outcome["summary_saved_fraction"] > 0.0
+
+
+@pytest.mark.asyncio
+async def test_compact_outcome_records_summary_failure() -> None:
+    """A raising sub-call records ``summary_failed=True`` + zero savings."""
+    from corlinman_agent.reasoning_loop import _compact_history
+
+    messages = _huge_tool_history(rounds=6, char_count=1_000)
+
+    class _BrokenProvider:
+        async def chat_stream(self, **_: Any) -> AsyncIterator[ProviderChunk]:  # type: ignore[override]
+            raise RuntimeError("simulated 5xx")
+            yield ProviderChunk(kind="done")  # unreachable
+
+    outcome: dict[str, Any] = {}
+    await _compact_history(
+        messages, budget=200, provider=_BrokenProvider(), model="x", outcome=outcome
+    )
+    assert outcome["summary_attempted"] is True
+    assert outcome["summary_failed"] is True
+    assert outcome["summary_saved_fraction"] == 0.0
+
+
+def test_env_positive_int_parses_and_floors(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``_env_positive_int``: default when unset/garbage, override when
+    valid, floored when below the floor.
+    """
+    from corlinman_agent import reasoning_loop as rl
+
+    name = "CORLINMAN_TEST_POSITIVE_INT_XYZ"
+    monkeypatch.delenv(name, raising=False)
+    assert rl._env_positive_int(name, 5, floor=1) == 5  # default
+    monkeypatch.setenv(name, "8")
+    assert rl._env_positive_int(name, 5, floor=1) == 8  # override
+    monkeypatch.setenv(name, "garbage")
+    assert rl._env_positive_int(name, 5, floor=1) == 5  # bad → default
+    monkeypatch.setenv(name, "0")
+    assert rl._env_positive_int(name, 5, floor=1) == 1  # below floor → floored
+    monkeypatch.setenv(name, "-4")
+    assert rl._env_positive_int(name, 5, floor=1) == 1  # negative → floored
+
+
+def test_compact_summary_cooldown_breaker_knob_defaults() -> None:
+    """The import-time cooldown / breaker knobs land at their floored defaults."""
+    from corlinman_agent import reasoning_loop as rl
+
+    assert rl._COMPACT_SUMMARY_COOLDOWN_ROUNDS >= 1
+    assert rl._COMPACT_SUMMARY_BREAKER_LIMIT >= 1
 
 
 def test_env_positive_float_rejects_bad_values() -> None:
