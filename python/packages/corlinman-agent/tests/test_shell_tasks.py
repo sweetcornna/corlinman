@@ -883,3 +883,47 @@ async def test_evicted_task_log_deleted(
         assert not log1.exists(), "evicted task's spill file was left on disk"
     finally:
         await reg.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Codex #112 round 5 — shutdown reap + dispatcher offset OverflowError
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX setsid / killpg only apply on POSIX"
+)
+async def test_shutdown_reaps_group(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """shutdown() reaps each running task's whole group (via _reap), so a
+    daemonized child can't block the awaited pump (Codex #112 r5)."""
+    reaped: list[int] = []
+    import corlinman_agent.coding.shell_tasks as st_mod
+
+    real = st_mod.ShellTaskRegistry._reap
+    monkeypatch.setattr(
+        st_mod.ShellTaskRegistry,
+        "_reap",
+        staticmethod(lambda p: (reaped.append(p.pid), real(p))[1]),
+    )
+    reg = ShellTaskRegistry()
+    await reg.spawn(
+        command="python3 -c 'import time; time.sleep(30)'",
+        session_key="",
+        workspace=tmp_path,
+    )
+    await asyncio.wait_for(reg.shutdown(), timeout=5.0)
+    assert reaped, "shutdown did not reap the running task's group"
+
+
+def test_dispatcher_offset_overflow_degrades(
+    singleton_reset: None,
+) -> None:
+    """A non-finite offset (JSON ``1e10000`` → inf) makes int() raise
+    OverflowError in the dispatcher's own parse — it must degrade to 0, not
+    escape the never-raise envelope (Codex #112 r5)."""
+    # inf can't go through _args' json.dumps as a bare float portably, so
+    # craft the raw JSON directly.
+    raw = b'{"task_id": "nope", "offset": 1e10000}'
+    out = json.loads(dispatch_shell_task_output(args_json=raw))
+    # Unknown task → task_not_found (NOT builtin_tool_failed / a raised error).
+    assert out["error"] == "task_not_found"

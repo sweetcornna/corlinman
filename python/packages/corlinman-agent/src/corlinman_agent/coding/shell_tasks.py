@@ -616,7 +616,10 @@ class ShellTaskRegistry:
             running = [t for t in self._tasks.values() if t.status == "running"]
             for t in running:
                 if t._proc is not None:
-                    kill_process_group(t._proc)
+                    # Full group reap — a daemonized child that outlived the
+                    # wrapper would otherwise keep the pipe open and block the
+                    # awaited pump below indefinitely (Codex #112 r5).
+                    self._reap(t._proc)
                 t.status = "killed"
                 t.exit_code = None
                 self._retire(t)
@@ -769,8 +772,12 @@ def dispatch_shell_task_output(
 
     offset = raw.get("offset", 0)
     try:
+        # ``int(offset)`` on a non-finite JSON float (e.g. ``1e10000`` →
+        # ``inf``) raises OverflowError — catch it here too so a bad paging
+        # arg degrades to offset 0 instead of escaping the never-raise
+        # envelope as a generic builtin_tool_failed (Codex #112 r5).
         offset = max(0, int(offset))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         offset = 0
 
     reg = get_registry()

@@ -630,3 +630,40 @@ async def test_empty_allowlist_is_pure_llm_call() -> None:
 
     # Loop translates an empty list to ``tools=None`` on the provider call.
     assert provider.tools_seen == [None]
+
+
+def test_subagent_run_shell_implies_task_tools() -> None:
+    """A child whose effective set includes run_shell also gets
+    shell_task_output/shell_task_kill (when the parent holds them), so a
+    narrow allowlist can't hand it an untouchable bg task_id (Codex #112)."""
+    from corlinman_agent.subagent.runner import _filter_tools_for_child
+
+    parent = frozenset(
+        {"run_shell", "shell_task_output", "shell_task_kill", "web_search"}
+    )
+    # Caller narrows to just run_shell — the two task tools come along.
+    eff = _filter_tools_for_child(
+        parent_tool_names=parent,
+        card_tools_allowed=None,
+        requested_allowlist=["run_shell"],
+        child_depth=1,
+        max_depth=1,
+    )
+    assert "run_shell" in eff
+    assert "shell_task_output" in eff and "shell_task_kill" in eff
+    assert "web_search" not in eff  # the narrowing still holds otherwise
+
+
+def test_subagent_task_tools_not_implied_without_run_shell() -> None:
+    """No run_shell in the child's set → the task tools are NOT added
+    (implication is one-directional)."""
+    from corlinman_agent.subagent.runner import _filter_tools_for_child
+
+    eff = _filter_tools_for_child(
+        parent_tool_names=frozenset({"run_shell", "shell_task_output", "web_search"}),
+        card_tools_allowed=None,
+        requested_allowlist=["web_search"],
+        child_depth=1,
+        max_depth=1,
+    )
+    assert eff == frozenset({"web_search"})
