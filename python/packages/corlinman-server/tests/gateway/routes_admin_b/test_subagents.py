@@ -547,3 +547,20 @@ def test_overview_change_signature_tolerates_missing_path(
     assert subagent_routes._overview_change_signature(store, reg) == (0, None)
     # No store and no registry at all → both components None.
     assert subagent_routes._overview_change_signature(None, None) == (None, None)
+
+
+def test_prescan_keepalive_due_below_half() -> None:
+    """No pre-scan keepalive while silence is under half the heartbeat —
+    avoids redundant frames right after a data yield."""
+    hb = subagent_routes._SUBAGENT_SSE_HEARTBEAT_SECONDS
+    assert subagent_routes._prescan_keepalive_due(0.0) is False
+    assert subagent_routes._prescan_keepalive_due(hb / 2 - 0.01) is False
+
+
+def test_prescan_keepalive_due_at_or_past_half() -> None:
+    """Pre-scan keepalive fires once silence reaches halfway to the deadline,
+    so a slow scan can't overrun the heartbeat (Codex #113 r3)."""
+    hb = subagent_routes._SUBAGENT_SSE_HEARTBEAT_SECONDS
+    assert subagent_routes._prescan_keepalive_due(hb / 2) is True
+    assert subagent_routes._prescan_keepalive_due(hb) is True
+    assert subagent_routes._prescan_keepalive_due(hb * 2) is True

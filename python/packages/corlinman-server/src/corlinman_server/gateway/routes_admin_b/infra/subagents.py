@@ -94,6 +94,21 @@ def _next_poll_interval(changed: bool, current: float) -> float:
     )
 
 
+def _prescan_keepalive_due(silence_s: float) -> bool:
+    """Whether to send a keepalive BEFORE a full overview scan.
+
+    The scan (``_combined()`` + merge) can take real wall-clock time under
+    a slow store. The loop checks the heartbeat only *before* the scan, so a
+    scan that outruns the remaining heartbeat budget would silence the SSE
+    stream past its documented rhythm. Pre-emitting once silence has passed
+    the halfway mark bounds the post-scan silence to the scan duration alone
+    (for any scan shorter than half the heartbeat, the deadline is never
+    crossed) without spraying redundant keepalives right after a data frame.
+    Pure function; extracted for testability (Codex #113 r3).
+    """
+    return silence_s >= _SUBAGENT_SSE_HEARTBEAT_SECONDS / 2
+
+
 def _overview_change_signature(
     store: Any, registry: Any
 ) -> tuple[int | None, int | None]:
@@ -537,6 +552,17 @@ def router() -> APIRouter:
                     # the cheap probe diverges from the last scan's signature.
                     sig = _overview_change_signature(store, registry)
                     if now >= next_full_scan or sig != last_scan_sig:
+                        # A full ``_combined()`` + merge can take real time under
+                        # a slow/large store. If the heartbeat is already past
+                        # halfway to its deadline, send a keepalive BEFORE the
+                        # scan — otherwise a scan that outruns the remaining
+                        # budget silences the stream past the documented 10s
+                        # rhythm and a strict proxy drops the connection
+                        # (Codex #113 r3). ``last_byte`` resets, so the only
+                        # post-scan silence is the scan itself.
+                        if _prescan_keepalive_due(now - last_byte):
+                            yield b": keepalive\n\n"
+                            last_byte = time.monotonic()
                         seen_ids: set[str] = set()
                         changed = False
                         for row in await _combined():
