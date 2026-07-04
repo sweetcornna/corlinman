@@ -941,14 +941,25 @@ def _filter_tools_for_child(
         # the PARENT's jobs via the registry's ownership gate. Keep a control
         # tool only when the caller's per-spawn allowlist NAMED it outright
         # (Codex #112 r7/r8).
-        requested_canon = {
-            canonicalize_tool_name(t) for t in (requested_allowlist or [])
-        }
+        # "Explicitly named" = the control tool appears by name in the card's
+        # OWN (non-wildcard) tool list OR the caller's per-spawn allowlist. A
+        # wildcard / legacy (empty) card is a blanket inherit — it does NOT
+        # count as naming the control, so those children lose it; a deliberate
+        # ``["run_shell", "shell_task_output"]`` card keeps it.
+        explicit_canon: set[str] = set()
+        if card_tools_allowed and WILDCARD_TOOL not in card_tools_allowed:
+            explicit_canon |= {
+                canonicalize_tool_name(t) for t in card_tools_allowed
+            }
+        if requested_allowlist:
+            explicit_canon |= {
+                canonicalize_tool_name(t) for t in requested_allowlist
+            }
         effective = {
             t
             for t in effective
             if (canon := canonicalize_tool_name(t)) not in _TASK_CONTROL_CANON
-            or canon in requested_canon
+            or canon in explicit_canon
         }
         effective.discard(SUBAGENT_SPAWN_TOOL)
         effective.discard(SUBAGENT_SPAWN_MANY_TOOL)
