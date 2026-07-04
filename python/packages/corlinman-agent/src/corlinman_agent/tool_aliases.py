@@ -30,6 +30,10 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+import structlog
+
+logger = structlog.get_logger(__name__)
+
 # Dotted names whose verb/namespace order REVERSES into the wire name, so a
 # plain ``.`` → ``_`` would produce the wrong string (``file_read`` instead
 # of ``read_file``). Everything else is handled by the generic rule below.
@@ -73,4 +77,72 @@ def canonicalize_tool_names(names: Iterable[str] | None) -> set[str]:
     return {canonicalize_tool_name(n) for n in (names or ()) if n}
 
 
-__all__ = ["canonicalize_tool_name", "canonicalize_tool_names"]
+def detect_alias_collisions(
+    names: Iterable[str],
+) -> list[tuple[str, list[str]]]:
+    """Find distinct spellings that canonicalize onto the same wire name.
+
+    Returns ``(canonical, sources)`` pairs — one per canonical form that at
+    least *two distinct* input spellings fold onto (e.g. both ``a.b`` and
+    ``a_b`` resolve to ``a_b``). ``sources`` is de-duplicated and sorted for
+    stable logging; the outer list is sorted by canonical name. Falsy /
+    whitespace-only names are ignored.
+
+    The canonicalization is intentionally lossy (dotted → wire), so two
+    genuinely different tools *could* collide. This is a POLICY signal, not
+    a hard failure: both call sites that consult it — the skill allowed-tools
+    gate and the subagent allowlist gate — are security gates where a hard
+    reject could silently break a working dotted allowlist. So the callers
+    only WARN; the fold itself still applies (first-registered wins) exactly
+    as before. Empty list ⇒ no ambiguity.
+    """
+    by_canon: dict[str, set[str]] = {}
+    for name in names:
+        n = (name or "").strip()
+        if not n:
+            continue
+        by_canon.setdefault(canonicalize_tool_name(n), set()).add(n)
+    collisions = [
+        (canon, sorted(sources))
+        for canon, sources in by_canon.items()
+        if len(sources) >= 2
+    ]
+    collisions.sort(key=lambda item: item[0])
+    return collisions
+
+
+# Process-lifetime dedup for :func:`warn_alias_collisions`. The gates rebuild
+# their allow-sets on every dispatch/spawn, so without this a standing
+# ambiguity would log on every call; keyed on ``(gate, canonical, sources)``
+# so each distinct collision at each call site is surfaced exactly once.
+_warned_collisions: set[tuple[str, str, tuple[str, ...]]] = set()
+
+
+def warn_alias_collisions(names: Iterable[str], *, gate: str) -> None:
+    """Emit ONE structured ``tool_aliases.collision`` warning per collision.
+
+    Runs :func:`detect_alias_collisions` over ``names`` (the raw source
+    spellings a gate is about to fold into its canonical allow-set) and logs
+    a single warning per distinct collision, tagged with ``gate`` (the call
+    site). Deduplicated for the process lifetime so a hot gate does not spam.
+    Purely advisory — the caller's allow/deny logic is unchanged.
+    """
+    for canonical, sources in detect_alias_collisions(names):
+        key = (gate, canonical, tuple(sources))
+        if key in _warned_collisions:
+            continue
+        _warned_collisions.add(key)
+        logger.warning(
+            "tool_aliases.collision",
+            gate=gate,
+            canonical=canonical,
+            sources=sources,
+        )
+
+
+__all__ = [
+    "canonicalize_tool_name",
+    "canonicalize_tool_names",
+    "detect_alias_collisions",
+    "warn_alias_collisions",
+]
