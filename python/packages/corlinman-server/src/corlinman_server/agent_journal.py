@@ -388,6 +388,25 @@ class AgentJournal:
         """
         return await self._backend.latest_sequence(turn_id)
 
+    async def latest_event_rowid(self) -> int:
+        """Storage-order high-water mark of the whole event timeline
+        (``0`` when empty) — seeds the process-wide subagent tail cursor
+        at boot so the tail is forward-only.
+        """
+        return await self._backend.latest_event_rowid()
+
+    async def load_subagent_events_since(
+        self, after_rowid: int, *, limit: int = 500
+    ) -> tuple[int, list[dict[str, Any]]]:
+        """Cross-session tail of subagent lifecycle events past
+        ``after_rowid`` — ``(new_cursor, rows)`` in the
+        :meth:`load_events` dict shape. See
+        :meth:`JournalBackend.load_subagent_events_since`.
+        """
+        return await self._backend.load_subagent_events_since(
+            after_rowid, limit=limit
+        )
+
     async def get_session_turn_ids(
         self, session_key: str, limit: int = 50
     ) -> list[int]:

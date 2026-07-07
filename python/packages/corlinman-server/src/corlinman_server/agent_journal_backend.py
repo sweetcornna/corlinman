@@ -409,6 +409,19 @@ class JournalBackend(Protocol):
         """Highest stored ``sequence`` for ``turn_id`` (``-1`` if none)."""
         ...
 
+    async def latest_event_rowid(self) -> int:
+        """Storage-order high-water mark of the whole event timeline
+        (``0`` when empty) — seeds the process-wide subagent tail cursor."""
+        ...
+
+    async def load_subagent_events_since(
+        self, after_rowid: int, *, limit: int = 500
+    ) -> tuple[int, list[dict[str, Any]]]:
+        """Global (cross-session) tail of subagent lifecycle events past
+        ``after_rowid``. Returns ``(new_cursor, rows)``; rows share the
+        :meth:`load_events` dict shape."""
+        ...
+
     async def get_session_turn_ids(
         self, session_key: str, limit: int = 50
     ) -> list[int]:
@@ -2004,6 +2017,89 @@ class SqliteJournalBackend:
         if not row or row[0] is None:
             return -1
         return int(row[0])
+
+    async def latest_event_rowid(self) -> int:
+        """High-water ``rowid`` across the WHOLE ``turn_events`` table
+        (``0`` when empty). ``rowid`` is SQLite's implicit monotonic
+        insertion counter — it gives the process-wide subagent tail a
+        cheap cross-session cursor without touching the (turn_id,
+        sequence) domain key. Seeded at boot so the tail is forward-only
+        (a crashed spawn from last week must not resurrect as "running").
+        """
+        try:
+            cur = await self._c.execute("SELECT MAX(rowid) FROM turn_events")
+            row = await cur.fetchone()
+            await cur.close()
+        except aiosqlite.Error as exc:
+            logger.warning(
+                "agent.journal.latest_event_rowid_failed", error=str(exc)
+            )
+            return 0
+        if not row or row[0] is None:
+            return 0
+        return int(row[0])
+
+    async def load_subagent_events_since(
+        self, after_rowid: int, *, limit: int = 500
+    ) -> tuple[int, list[dict[str, Any]]]:
+        """Cross-session tail of subagent lifecycle events (C1 / #108).
+
+        Returns ``(new_cursor, rows)`` where rows are the
+        ``SubagentSpawned`` / ``SubagentEvent`` / ``SubagentCompleted``
+        events with ``rowid > after_rowid``, oldest-first, in the
+        :meth:`load_events` dict shape (parsed ``payload``). Cursor
+        semantics: the global ``MAX(rowid)`` is snapshotted FIRST and the
+        scan is bounded to it, so an event committed between the two
+        statements can never be skipped. A full page (``len == limit``)
+        advances the cursor only to its last row (remainder next call);
+        a short page means everything up to the snapshot was scanned, so
+        the cursor jumps there — trailing non-subagent rows are never
+        rescanned. Best-effort: a read error returns
+        ``(after_rowid, [])`` and the caller just polls again.
+        """
+        high_water = await self.latest_event_rowid()
+        if high_water <= int(after_rowid):
+            return int(after_rowid), []
+        try:
+            cur = await self._c.execute(
+                "SELECT rowid, turn_id, sequence, event_type, payload_json, "
+                "timestamp_ms FROM turn_events "
+                "WHERE rowid > ? AND rowid <= ? AND event_type IN (?, ?, ?) "
+                "ORDER BY rowid ASC LIMIT ?",
+                (
+                    int(after_rowid),
+                    int(high_water),
+                    "SubagentSpawned",
+                    "SubagentEvent",
+                    "SubagentCompleted",
+                    int(limit),
+                ),
+            )
+            rows = list(await cur.fetchall())
+            await cur.close()
+        except aiosqlite.Error as exc:
+            logger.warning(
+                "agent.journal.load_subagent_events_failed", error=str(exc)
+            )
+            return int(after_rowid), []
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            try:
+                payload = json.loads(r[4]) if r[4] else {}
+            except (TypeError, ValueError, json.JSONDecodeError):
+                payload = {}
+            out.append(
+                {
+                    "turn_id": str(r[1]),
+                    "sequence": int(r[2]),
+                    "event_type": str(r[3]),
+                    "payload": payload,
+                    "timestamp_ms": int(r[5]),
+                }
+            )
+        if len(out) >= int(limit) and rows:
+            return int(rows[-1][0]), out
+        return high_water, out
 
     async def get_session_turn_ids(
         self, session_key: str, limit: int = 50

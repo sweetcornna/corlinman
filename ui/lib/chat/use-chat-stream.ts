@@ -820,6 +820,26 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
 
     journalTurnRef.current = turnId;
     resumeSeqRef.current = -1;
+    // C2 (#108 item 3) — re-render the user's message for the resumed
+    // turn. The settled transcript excludes the in-progress turn
+    // wholesale (see `_replay_from_journal`), so without this the thread
+    // shows the assistant streaming a reply to… nothing. The preview is
+    // the journal's 200-char truncation; good enough for the live view —
+    // `finalizeJournalTurn` refetches the authoritative transcript (full
+    // text) when the turn settles, washing this synthetic bubble out.
+    const userPreview = (latest.user_text_preview ?? "").trim();
+    if (userPreview) {
+      const userMsg: ChatMessage = {
+        id: `resume_user_${turnId}`,
+        turnId,
+        role: "user",
+        content: userPreview,
+        createdAt: latest.started_at_ms ?? Date.now(),
+      };
+      setMessages((prev) =>
+        prev.some((m) => m.id === userMsg.id) ? prev : [...prev, userMsg],
+      );
+    }
     const draft: ChatMessage = {
       id: `resume_${turnId}`,
       turnId,

@@ -72,6 +72,46 @@ async def test_in_progress_turn_excluded_from_transcript(tmp_path: Path) -> None
     assert all("tool_calls" not in m for m in transcript)
 
 
+async def test_older_stale_in_progress_turn_is_included(tmp_path: Path) -> None:
+    """L-103 — a crashed in-progress turn that is NOT the newest turn must
+    appear in the settled transcript. Only the NEWEST turn can be live (a
+    session runs one turn at a time), so an older ``in_progress`` row is a
+    crash artifact: skipping it silently vanished the user's message and
+    any partial answer from the thread forever."""
+    import asyncio
+
+    data_dir = tmp_path
+    session_key = "corlinman:sess-crashed"
+    journal = await AgentJournal.open(data_dir / "agent_journal.sqlite")
+    try:
+        # Crashed turn — journaled a user message + partial answer, never
+        # completed. Deliberately older than the next turn.
+        t_crash = await journal.begin_turn(session_key, "lost question")
+        await journal.append_message(t_crash, "user", "lost question")
+        await journal.append_message(t_crash, "assistant", "partial answer")
+        # Ensure a strictly-later started_at_ms for the next turn (the
+        # newest-turn detection orders by started_at_ms DESC).
+        await asyncio.sleep(0.01)
+        t_done = await journal.begin_turn(session_key, "later question")
+        await journal.append_message(t_done, "user", "later question")
+        await journal.append_message(t_done, "assistant", "later answer")
+        await journal.complete_turn(t_done)
+    finally:
+        await journal.close()
+
+    out = await _replay_from_journal(
+        data_dir, default_tenant(), session_key, ReplayMode.TRANSCRIPT
+    )
+    assert out is not None
+    contents = [m["content"] for m in out["transcript"]]
+    # The crashed turn's rows are real history now — both survive.
+    assert "lost question" in contents
+    assert "partial answer" in contents
+    assert "later question" in contents
+    # And chronological order holds: crashed turn precedes the newer one.
+    assert contents.index("lost question") < contents.index("later question")
+
+
 async def test_only_in_progress_turn_yields_empty_transcript(
     tmp_path: Path,
 ) -> None:

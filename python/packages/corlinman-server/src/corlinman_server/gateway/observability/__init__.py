@@ -25,6 +25,7 @@ from corlinman_server.gateway.observability.emitter import (
 from corlinman_server.gateway.observability.live_subagents import (
     LiveSubagentRegistry,
     LiveSubagentRow,
+    run_journal_subagent_tail,
 )
 
 __all__ = [
@@ -32,4 +33,5 @@ __all__ = [
     "JournalBackedEmitter",
     "LiveSubagentRegistry",
     "LiveSubagentRow",
+    "run_journal_subagent_tail",
 ]

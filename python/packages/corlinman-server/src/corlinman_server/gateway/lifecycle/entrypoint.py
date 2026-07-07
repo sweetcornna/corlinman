@@ -501,6 +501,7 @@ def build_app(
         # cost routes returning typed 503 ``observability_disabled``.
         observability_journal: Any | None = None
         observability_emitter: Any | None = None
+        live_subagent_registry: Any | None = None
         if resolved_data_dir is not None:
             try:
                 from corlinman_server.agent_journal import AgentJournal
@@ -1090,6 +1091,29 @@ def build_app(
             )
             background.append(sweep_task)
             logger.info("gateway.identity.sweep_scheduled")
+
+        # C1 (#108 item 2) — process-wide journal tail feeding the live
+        # subagent registry. In grpc_agent mode subagent lifecycle events
+        # reach the gateway only through the journal; before this task
+        # the sole journal→registry feed was the per-session SSE poll, so
+        # /admin/subagents stayed empty unless that session's chat page
+        # happened to be open. Cancelled + awaited by the lifespan-exit
+        # ``finally`` via ``background``.
+        if observability_journal is not None and live_subagent_registry is not None:
+            from corlinman_server.gateway.observability import (
+                run_journal_subagent_tail,
+            )
+
+            tail_task = asyncio.create_task(
+                run_journal_subagent_tail(
+                    observability_journal,
+                    live_subagent_registry,
+                    cancel=cancel,
+                ),
+                name="gateway.observability.subagent_journal_tail",
+            )
+            background.append(tail_task)
+            logger.info("gateway.observability.subagent_tail_scheduled")
 
         # Parcel P14: build + connect the external MCP client manager
         # *before* the sibling-bootstrap loop, so ``services.bootstrap``
