@@ -858,11 +858,31 @@ def build_app(
                 # bool) leaves the dispatcher on its default.
                 _subagent_cfg = _extract_section(cfg, "subagent")
                 _max_concurrent = _extract_section(_subagent_cfg, "max_concurrent_per_tenant")
+
+                # Dim 9 — the ``notification`` hook fires on subagent
+                # terminal states (claude-code "task completed"). Reads
+                # ``state.hook_runner`` lazily per fire so the wiring
+                # order (dispatcher installs before the C2 hook runner)
+                # is moot and hot-swaps are picked up.
+                async def _subagent_hook_notifier(
+                    payload: dict[str, Any],
+                ) -> None:
+                    _runner = getattr(state, "hook_runner", None)
+                    _run = getattr(_runner, "run_event_async", None)
+                    if _run is None:
+                        return
+                    await _run(
+                        "notification",
+                        payload,
+                        {"session_key": payload.get("parent_session_key")},
+                    )
+
                 _dispatcher_kwargs: dict[str, Any] = {
                     "store": subagent_store,
                     "run_child_factory": _unwired_run_child_factory,
                     "journal": observability_journal,
                     "audit_log": _audit_log,
+                    "hook_notifier": _subagent_hook_notifier,
                 }
                 if (
                     isinstance(_max_concurrent, int)
@@ -1578,6 +1598,17 @@ def build_app(
                 logger.info("gateway.scheduler.no_jobs")
         except Exception as exc:  # pragma: no cover — best-effort
             logger.warning("gateway.scheduler.spawn_failed", error=str(exc))
+
+        # Dim 9 — ``setup`` fires once per process after the whole boot
+        # sequence completed (every sibling bootstrap ran; the app is
+        # about to serve). Advisory + best-effort.
+        try:
+            _setup_runner = getattr(state, "hook_runner", None)
+            _setup_run = getattr(_setup_runner, "run_event_async", None)
+            if _setup_run is not None:
+                await _setup_run("setup", {"surface": "gateway"}, {})
+        except Exception as exc:  # noqa: BLE001 — advisory only
+            logger.warning("gateway.setup_hook_failed", error=str(exc))
 
         try:
             yield

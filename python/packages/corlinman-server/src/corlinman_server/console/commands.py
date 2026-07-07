@@ -71,10 +71,29 @@ def _reset_approval_cache(app: Any) -> None:
         reset()
 
 
+async def _fire_session_reset(app: Any) -> None:
+    """Dim 9 — advisory ``session_reset`` on the console's session
+    boundary (/new, /clear). Best-effort: no runner (attach mode) or a
+    hook error changes nothing."""
+    runner = _hooks_runner(app)
+    run_event = getattr(runner, "run_event_async", None)
+    if run_event is None:
+        return
+    try:
+        await run_event(
+            "session_reset",
+            {},
+            {"session_key": app.session.session_key},
+        )
+    except Exception:  # noqa: BLE001 — advisory only
+        pass
+
+
 async def _cmd_new(app: Any, args: str) -> str:
     _ = args
     app.session.reset()
     _reset_approval_cache(app)
+    await _fire_session_reset(app)
     return f"new session: {app.session.session_key}"
 
 
@@ -83,6 +102,7 @@ async def _cmd_clear(app: Any, args: str) -> str:
     app.renderer.console.clear()
     app.session.reset()
     _reset_approval_cache(app)
+    await _fire_session_reset(app)
     return f"cleared — new session: {app.session.session_key}"
 
 

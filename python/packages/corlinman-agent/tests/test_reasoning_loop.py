@@ -2541,3 +2541,77 @@ def test_retry_backoff_equal_jitter_range() -> None:
     assert _retry_backoff_seconds(6, 0.0, rand=lambda: 1.0) == 16.0
     # a mid-jitter value spreads off the fixed base (thundering-herd defence)
     assert _retry_backoff_seconds(4, 0.0, rand=lambda: 0.5) == 3.0  # base 4 → 2+2*0.5
+
+
+# ---------------------------------------------------------------------------
+# pre_compact hook emission (Dim 9 residuals)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_maybe_emit_pre_compact_fires_and_allows() -> None:
+    """The pre-compaction gate fires with the pressure figures and an
+    allowing hook lets compaction proceed."""
+    from corlinman_agent.reasoning_loop import ReasoningLoop
+
+    calls: list[tuple[str, dict, dict]] = []
+
+    class _Runner:
+        async def run_event_async(self, event, payload=None, ctx=None):
+            calls.append((event, dict(payload or {}), dict(ctx or {})))
+
+            class _D:
+                allow = True
+                reason = None
+
+            return _D()
+
+    loop = ReasoningLoop(provider=object())
+    loop.set_hook_runner(_Runner())
+    loop._session_key = "sess-pre"
+    allowed = await loop._maybe_emit_pre_compact(9000, 10000)
+    assert allowed is True
+    assert calls == [
+        (
+            "pre_compact",
+            {"estimated_tokens": 9000, "budget": 10000},
+            {"session_key": "sess-pre"},
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_maybe_emit_pre_compact_deny_defers() -> None:
+    """A denying hook returns False — the caller skips this round's
+    budget-path compaction (the overflow path stays unconditional)."""
+    from corlinman_agent.reasoning_loop import ReasoningLoop
+
+    class _Deny:
+        async def run_event_async(self, event, payload=None, ctx=None):
+            class _D:
+                allow = False
+                reason = "hold compaction"
+
+            return _D()
+
+    loop = ReasoningLoop(provider=object())
+    loop.set_hook_runner(_Deny())
+    loop._session_key = "s"
+    assert await loop._maybe_emit_pre_compact(9000, 10000) is False
+
+
+@pytest.mark.asyncio
+async def test_maybe_emit_pre_compact_defensive_allows() -> None:
+    """No runner / raising hook → allow (a broken hook can never brick
+    compaction)."""
+    from corlinman_agent.reasoning_loop import ReasoningLoop
+
+    loop = ReasoningLoop(provider=object())
+    assert await loop._maybe_emit_pre_compact(1, 2) is True
+
+    class _Boom:
+        async def run_event_async(self, event, payload=None, ctx=None):
+            raise RuntimeError("hook blew up")
+
+    loop.set_hook_runner(_Boom())
+    assert await loop._maybe_emit_pre_compact(1, 2) is True

@@ -499,7 +499,56 @@ async def _wire_c2_handles(
             _rule_matcher = match_hook_rule
         except ImportError:  # pragma: no cover — agent pkg absent in minimal installs
             pass
-        runner = HookRunner(hooks_cfg, hooks_dir=hooks_dir, rule_matcher=_rule_matcher)
+        # Dim 9 — production evaluators for prompt/agent-kind hooks. The
+        # prompt judge reads ``state.provider_registry`` LAZILY per fire
+        # (the providers bootstrap runs after this wiring; hot-reload
+        # swaps the handle); the agent evaluator reads the late-binding
+        # runner slot.
+        _prompt_eval: Any = None
+        _agent_eval: Any = None
+        try:
+            from corlinman_server.gateway.services.direct_backend import (
+                _alias_entries,
+            )
+            from corlinman_server.hooks_evaluators import (
+                build_agent_evaluator,
+                build_prompt_evaluator,
+                resolve_evaluator_model,
+            )
+
+            _models_cfg = _extract_section(cfg, "models")
+            _models_cfg = _models_cfg if isinstance(_models_cfg, dict) else {}
+            _eval_model = resolve_evaluator_model(
+                hooks_cfg, str(_models_cfg.get("default") or "")
+            )
+            if _eval_model:
+
+                def _resolve_for_eval(m: str) -> tuple[Any, str]:
+                    registry = getattr(state, "provider_registry", None)
+                    if registry is None:
+                        raise RuntimeError(
+                            "provider registry not wired yet"
+                        )
+                    provider, upstream, _params = registry.resolve(
+                        m, aliases=_alias_entries(_models_cfg)
+                    )
+                    return provider, upstream
+
+                _prompt_eval = build_prompt_evaluator(
+                    _resolve_for_eval, _eval_model
+                )
+            _agent_eval = build_agent_evaluator()
+        except Exception as exc:  # noqa: BLE001 — evaluators are optional
+            logger.warning(
+                "gateway.c2.hook_evaluators_failed", error=str(exc)
+            )
+        runner = HookRunner(
+            hooks_cfg,
+            hooks_dir=hooks_dir,
+            rule_matcher=_rule_matcher,
+            prompt_evaluator=_prompt_eval,
+            agent_evaluator=_agent_eval,
+        )
         state.hook_runner = runner
         app.state.corlinman_hook_runner = runner
         extras = getattr(state, "extras", None)

@@ -67,7 +67,9 @@ async def test_hooks_view_lists_all_layers() -> None:
         "PreToolUse": [
             {"matcher": "run_shell", "if": "run_shell(git:*)", "hooks": [{"kind": "command", "command": "true"}]}
         ],
-        "SessionStart": [{"hooks": [{"kind": "http", "url": "http://x/h"}]}],
+        # session_end is the one lifecycle event still without a live
+        # emitter (Dim 9 residuals lit up session_start & friends).
+        "SessionEnd": [{"hooks": [{"kind": "http", "url": "http://x/h"}]}],
     }
     runner = _runner_with(decl, pre_tool="legacy.sh")
     app = StubApp(_HookBrain(runner))
@@ -76,7 +78,7 @@ async def test_hooks_view_lists_all_layers() -> None:
     assert "matcher=run_shell" in text
     assert "if=run_shell(git:*)" in text
     assert "— live" in text  # pre_tool has a live emitter
-    assert "no live emitter yet" in text  # session_start does not
+    assert "no live emitter yet" in text  # session_end does not
     assert "/hooks [test" in text
 
 

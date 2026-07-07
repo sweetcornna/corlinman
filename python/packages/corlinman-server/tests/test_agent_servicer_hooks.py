@@ -248,3 +248,41 @@ async def test_chat_hook_subscriber_exception_does_not_break_stream() -> None:
     assert healthy_hits == ["turn_complete"], (
         f"healthy subscriber must still receive TurnComplete: {healthy_hits!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# session_start (Dim 9 residuals) — once per session_key per process
+# ---------------------------------------------------------------------------
+
+
+class _EventRecordingRunner:
+    """Hook-runner stand-in capturing ``run_event_async`` fires."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict, dict]] = []
+
+    async def run_event_async(self, event, payload=None, ctx=None):
+        from types import SimpleNamespace
+
+        self.events.append((event, dict(payload or {}), dict(ctx or {})))
+        return SimpleNamespace(allow=True, reason=None, inject_message=None)
+
+
+@pytest.mark.asyncio
+async def test_session_start_fires_once_per_session_key() -> None:
+    runner = _EventRecordingRunner()
+
+    def _resolver(_model: str) -> Any:
+        return _FakeProvider(_token_stream(["hi"]))
+
+    servicer = CorlinmanAgentServicer(
+        provider_resolver=_resolver,
+        hook_runner=runner,
+    )
+
+    await _drive_chat(servicer, user_text="one", session_key="sess-a")
+    await _drive_chat(servicer, user_text="two", session_key="sess-a")
+    await _drive_chat(servicer, user_text="three", session_key="sess-b")
+
+    starts = [e for e in runner.events if e[0] == "session_start"]
+    assert [e[2].get("session_key") for e in starts] == ["sess-a", "sess-b"]

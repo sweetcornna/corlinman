@@ -287,6 +287,8 @@ class HookRunner:
             "post_compact",
             "stop",
             "user_prompt_submit",
+            "file_changed",
+            "setup",
         ]
 
     def register_handler(self, event: str, handler: _Handler) -> None:

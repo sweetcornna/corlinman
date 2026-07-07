@@ -87,6 +87,7 @@ def _build_hook_runner() -> Any | None:
         # py-config drop the gateway writes; absent that we just discover
         # file-based HOOK.yaml hooks from the hooks dir.
         hooks_cfg: dict[str, Any] = {}
+        _default_model = ""
         path = os.environ.get("CORLINMAN_PY_CONFIG")
         if path:
             try:
@@ -94,6 +95,9 @@ def _build_hook_runner() -> Any | None:
                 section = data.get("hooks") if isinstance(data, dict) else None
                 if isinstance(section, dict):
                     hooks_cfg = {"hooks": section}
+                models = data.get("models") if isinstance(data, dict) else None
+                if isinstance(models, dict):
+                    _default_model = str(models.get("default") or "")
             except Exception as exc:  # noqa: BLE001 — config read is best-effort
                 logger.warning("hooks.runner.config_read_failed", error=str(exc))
         hooks_dir_env = os.environ.get("CORLINMAN_HOOKS_DIR")
@@ -112,11 +116,48 @@ def _build_hook_runner() -> Any | None:
             _rule_matcher = match_hook_rule
         except ImportError:  # pragma: no cover — agent pkg absent in minimal installs
             pass
-        runner = HookRunner(hooks_cfg, hooks_dir=hooks_dir, rule_matcher=_rule_matcher)
+        # Dim 9 — production evaluators for prompt/agent-kind hooks
+        # (previously never injected → those kinds silently failed open).
+        # The prompt judge resolves its provider lazily through a
+        # reloading resolver so admin config edits are picked up; the
+        # agent evaluator reads the late-binding runner slot.
+        _prompt_eval: Any = None
+        _agent_eval: Any = None
+        try:
+            from corlinman_server.hooks_evaluators import (
+                build_agent_evaluator,
+                build_prompt_evaluator,
+                resolve_evaluator_model,
+            )
+
+            _eval_model = resolve_evaluator_model(hooks_cfg, _default_model)
+            if _eval_model:
+                _eval_resolver = _ReloadingProviderResolver(path)
+
+                def _resolve_for_eval(m: str) -> tuple[Any, str]:
+                    provider, upstream, _params = _eval_resolver(
+                        alias_or_model=m
+                    )
+                    return provider, upstream
+
+                _prompt_eval = build_prompt_evaluator(
+                    _resolve_for_eval, _eval_model
+                )
+            _agent_eval = build_agent_evaluator()
+        except Exception as exc:  # noqa: BLE001 — evaluators are optional
+            logger.warning("hooks.evaluators.init_failed", error=str(exc))
+        runner = HookRunner(
+            hooks_cfg,
+            hooks_dir=hooks_dir,
+            rule_matcher=_rule_matcher,
+            prompt_evaluator=_prompt_eval,
+            agent_evaluator=_agent_eval,
+        )
         logger.info(
             "hooks.runner.ready",
             hooks_dir=str(hooks_dir) if hooks_dir else None,
             discovered=getattr(runner, "discovered_events", {}),
+            prompt_evaluator=_prompt_eval is not None,
         )
         return runner
     except Exception as exc:  # noqa: BLE001 — no hooks degrades fine
