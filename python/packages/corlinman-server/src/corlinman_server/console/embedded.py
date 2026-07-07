@@ -108,6 +108,28 @@ def _ensure_py_config_env(data_dir: Path, config: dict[str, Any] | None = None) 
         log.info("console.embedded.py_config path=%s", drop)
 
 
+def _mcp_policy_from_config(
+    config: dict[str, Any] | None,
+) -> tuple[frozenset[str] | None, frozenset[str]]:
+    """Read the ``[mcp]`` allow/deny server policy (claude-code
+    ``allowedMcpServers``/``deniedMcpServers``) — same semantics as the
+    gateway's ``_mcp_server_policy``: deny wins; a non-empty allow-list
+    is exclusive. Returns ``(allowed_or_None, denied)``."""
+    mcp_cfg = config.get("mcp") if isinstance(config, dict) else None
+    mcp_cfg = mcp_cfg if isinstance(mcp_cfg, dict) else {}
+    denied = frozenset(
+        str(s)
+        for s in (mcp_cfg.get("deniedMcpServers") or mcp_cfg.get("denied") or [])
+    )
+    allowed_raw = mcp_cfg.get("allowedMcpServers") or mcp_cfg.get("allowed")
+    allowed = (
+        frozenset(str(s) for s in allowed_raw)
+        if isinstance(allowed_raw, (list, tuple, set)) and allowed_raw
+        else None
+    )
+    return allowed, denied
+
+
 def _load_subagent_config() -> dict[str, Any] | None:
     """Read the ``subagent`` policy block from the py-config drop, if any."""
     path = os.environ.get("CORLINMAN_PY_CONFIG")
@@ -121,7 +143,11 @@ def _load_subagent_config() -> dict[str, Any] | None:
     return dict(block) if isinstance(block, dict) else None
 
 
-async def _build_plugin_tool_executor(data_dir: Path) -> Any | None:
+async def _build_plugin_tool_executor(
+    data_dir: Path,
+    mcp_manager: Any | None = None,
+    mcp_policy: tuple[frozenset[str] | None, frozenset[str]] | None = None,
+) -> tuple[Any | None, bytes, Any | None]:
     """Build the same plugin-tool executor the gateway wires.
 
     Production (``grpc_backend.build_tool_executor``) binds a
@@ -132,9 +158,17 @@ async def _build_plugin_tool_executor(data_dir: Path) -> Any | None:
     a console turn would be acknowledged with the
     ``awaiting_plugin_runtime`` placeholder instead of executing.
 
-    Best-effort: any failure returns ``None`` and the ChatService keeps
-    its PlaceholderExecutor default (builtin tools are unaffected — they
-    execute inside the servicer).
+    Dim 5 — when ``mcp_manager`` is live, the discovered MCP tools are
+    surfaced the same way the gateway does it (``register_mcp_tools``:
+    synthesized ``mcp``-kind registry entries for execution + a
+    ``tools_json`` array for advertisement). Returns
+    ``(executor_or_None, advertised_tools_json)``.
+
+    Best-effort: any failure returns ``(None, b"", None)`` and the
+    ChatService keeps its PlaceholderExecutor default (builtin tools are
+    unaffected — they execute inside the servicer). The third element is
+    the live :class:`PluginRegistry` so the ``/mcp`` hot-plug refresh can
+    re-run the advertisement pass against it.
     """
     try:
         from corlinman_grpc.agent_client import RegistryToolExecutor  # noqa: PLC0415
@@ -152,7 +186,7 @@ async def _build_plugin_tool_executor(data_dir: Path) -> Any | None:
         )
     except Exception as exc:  # noqa: BLE001 — degraded console still works
         log.info("console.embedded.plugin_runtime_unavailable err=%s", exc)
-        return None
+        return None, b"", None
 
     try:
         registry = PluginRegistry.from_roots(
@@ -169,18 +203,40 @@ async def _build_plugin_tool_executor(data_dir: Path) -> Any | None:
                 store = PluginStore(store_path)
                 enabled = {row.slug for row in store.list() if row.enabled}
         await sync_registry(registry, data_dir / "plugins", enabled)
+        # Dim 5 — surface the connected MCP servers' tools exactly like
+        # the gateway's ``_wire_mcp_tool_plane``: synthesized ``mcp``-kind
+        # entries route execution through the invoker's MCP bridge; the
+        # returned tools_json advertises them to the model.
+        mcp_tools_json = b""
+        if mcp_manager is not None:
+            with contextlib.suppress(Exception):
+                from corlinman_server.gateway.mcp.advertise import (  # noqa: PLC0415
+                    register_mcp_tools,
+                )
+
+                allowed, denied = mcp_policy or (None, frozenset())
+                _added, mcp_tools_json, _servers = await register_mcp_tools(
+                    registry,
+                    mcp_manager.discovered_tools(),
+                    allowed=allowed,
+                    denied=denied,
+                )
         # Same invoker production uses (grpc_backend.build_tool_executor);
-        # the console has no plugin supervisor / MCP manager, so those
-        # plugin kinds degrade exactly like a degraded gateway boot.
-        invoker = build_registry_invoker(registry, supervisor=None, mcp_manager=None)
+        # the console has no plugin supervisor, so that plugin kind
+        # degrades exactly like a degraded gateway boot.
+        invoker = build_registry_invoker(
+            registry, supervisor=None, mcp_manager=mcp_manager
+        )
         executor = RegistryToolExecutor(invoker)
         log.info(
-            "console.embedded.plugin_executor_wired plugins=%d", len(registry)
+            "console.embedded.plugin_executor_wired plugins=%d mcp_tools=%s",
+            len(registry),
+            bool(mcp_tools_json),
         )
-        return executor
+        return executor, mcp_tools_json, registry
     except Exception as exc:  # noqa: BLE001
         log.warning("console.embedded.plugin_executor_failed err=%s", exc)
-        return None
+        return None, b"", None
 
 
 class EmbeddedBrain:
@@ -194,12 +250,80 @@ class EmbeddedBrain:
         self._service: Any | None = None
         self._sock_path: Path | None = None
         self._tools_enabled = False
+        self._config: dict[str, Any] | None = None
+        self._mcp_manager: Any | None = None
+        self._plugin_registry: Any | None = None
 
     @property
     def tools_enabled(self) -> bool:
         """Whether the full agent path (builtin tools, subagents) is live —
         ``False`` means the direct-provider fallback is serving."""
         return self._tools_enabled
+
+    @property
+    def mcp_manager(self) -> Any | None:
+        """The live :class:`McpClientManager` (Dim 5 ``/mcp``), or ``None``
+        when no ``[mcp]`` servers are configured / the embedded MCP
+        bring-up degraded."""
+        return self._mcp_manager
+
+    async def ensure_mcp_manager(self) -> Any | None:
+        """Return the live MCP manager, lazily creating an empty one.
+
+        ``/mcp add`` must work on a console booted with no ``[mcp]``
+        config at all — an empty manager accepts ``add_server`` and the
+        refresh pass advertises whatever comes up.
+        """
+        if self._mcp_manager is None and self._service is not None:
+            try:
+                from corlinman_mcp_server import McpClientManager  # noqa: PLC0415
+
+                manager = McpClientManager.from_config(self._config or {})
+                # Flip the manager into its connected state (no-op on an
+                # empty spec list) so a subsequent ``add_server`` brings
+                # the new server up immediately instead of parking it
+                # until a connect_all that never comes.
+                await manager.connect_all()
+                self._mcp_manager = manager
+            except Exception as exc:  # noqa: BLE001 — package missing
+                log.warning("console.embedded.mcp_unavailable err=%s", exc)
+                return None
+        return self._mcp_manager
+
+    async def refresh_mcp_tools(self) -> bool:
+        """Re-advertise + re-route the MCP tool plane after ``/mcp``
+        hot-plug (mirrors the gateway's ``refresh_mcp_advertisement``).
+
+        Re-runs ``register_mcp_tools`` against the live plugin registry,
+        prunes synthesized entries for servers that dropped out, and
+        swaps the ChatService's advertised ``tools_json``. Returns
+        ``False`` when the embedded tool plane isn't wired (direct
+        fallback / degraded plugin runtime).
+        """
+        manager = self._mcp_manager
+        service = self._service
+        registry = self._plugin_registry
+        if manager is None or service is None or registry is None:
+            return False
+        try:
+            from corlinman_server.gateway.mcp.advertise import (  # noqa: PLC0415
+                prune_stale_mcp_entries,
+                register_mcp_tools,
+            )
+
+            allowed, denied = _mcp_policy_from_config(self._config)
+            _added, tools_json, advertised = await register_mcp_tools(
+                registry,
+                manager.discovered_tools(),
+                allowed=allowed,
+                denied=denied,
+            )
+            await prune_stale_mcp_entries(registry, advertised)
+            service.with_advertised_tools(tools_json)
+            return True
+        except Exception as exc:  # noqa: BLE001 — best-effort refresh
+            log.warning("console.embedded.mcp_refresh_failed err=%s", exc)
+            return False
 
     # ── construction ─────────────────────────────────────────────────
 
@@ -211,9 +335,11 @@ class EmbeddedBrain:
         the direct provider backend when gRPC is unavailable.
 
         ``config`` is the parsed ``config.toml`` — used to bootstrap the
-        provider drop on standalone hosts (see ``_ensure_py_config_env``).
+        provider drop on standalone hosts (see ``_ensure_py_config_env``)
+        and to bring up the ``[mcp]``-configured external servers.
         """
         self = cls()
+        self._config = config if isinstance(config, dict) else None
         _ensure_py_config_env(data_dir, config)
         try:
             await self._start_agent(data_dir)
@@ -222,6 +348,36 @@ class EmbeddedBrain:
             log.warning("console.embedded.agent_unavailable err=%s", exc)
             await self._start_direct(data_dir)
         return self
+
+    async def _connect_mcp(self) -> Any | None:
+        """Bring up ``[mcp]``-configured external servers (Dim 5).
+
+        Mirrors the gateway lifespan's MCP block: the console's Mode A
+        "full brain" contract includes the external MCP tool face, which
+        was previously gateway-only (``build_registry_invoker`` got
+        ``mcp_manager=None`` here, so every MCP tool call degraded).
+        Best-effort — no config / missing package / all servers down
+        yields ``None`` and the console boots exactly as before.
+        """
+        cfg = self._config
+        if not isinstance(cfg, dict):
+            return None
+        try:
+            from corlinman_mcp_server import McpClientManager  # noqa: PLC0415
+
+            manager = McpClientManager.from_config(cfg)
+            if manager.server_count == 0:
+                return None
+            await manager.connect_all()
+            log.info(
+                "console.embedded.mcp_connected servers=%d ready=%d",
+                manager.server_count,
+                len(manager.ready_servers()),
+            )
+            return manager
+        except Exception as exc:  # noqa: BLE001 — degraded console still works
+            log.warning("console.embedded.mcp_unavailable err=%s", exc)
+            return None
 
     async def _start_agent(self, data_dir: Path) -> None:
         """Full path: in-process servicer on a private UDS."""
@@ -313,8 +469,22 @@ class EmbeddedBrain:
         self._servicer = servicer
         self._channel = channel
         self._sock_path = sock
-        service = ChatService(GrpcAgentChatBackend(AgentClient(channel)))
-        tool_executor = await _build_plugin_tool_executor(data_dir)
+        # Dim 5 — external MCP servers come up in Mode A too (the "full
+        # brain" contract): connect, then advertise + route their tools
+        # through the same seams the gateway uses.
+        self._mcp_manager = await self._connect_mcp()
+        tool_executor, mcp_tools_json, plugin_registry = (
+            await _build_plugin_tool_executor(
+                data_dir,
+                mcp_manager=self._mcp_manager,
+                mcp_policy=_mcp_policy_from_config(self._config),
+            )
+        )
+        self._plugin_registry = plugin_registry
+        service = ChatService(
+            GrpcAgentChatBackend(AgentClient(channel)),
+            advertised_tools_json=mcp_tools_json,
+        )
         if tool_executor is not None:
             service.with_tool_executor(tool_executor)
         self._service = service
@@ -424,6 +594,10 @@ class EmbeddedBrain:
         return from_internal_events(self._service.run(req, cancel))
 
     async def aclose(self) -> None:
+        if self._mcp_manager is not None:
+            with contextlib.suppress(Exception):
+                await self._mcp_manager.aclose()
+            self._mcp_manager = None
         if self._channel is not None:
             with contextlib.suppress(Exception):
                 await self._channel.close()

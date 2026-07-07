@@ -170,6 +170,16 @@ grpc_backend.build_grpc_chat_service`) injects a
         self._tool_executor = executor
         return self
 
+    def with_advertised_tools(self, tools_json: bytes) -> ChatService:
+        """Replace the gateway-supplied advertised tools array.
+
+        Used by post-boot MCP refresh paths (``/mcp`` hot-plug in the
+        embedded console; the gateway instead rebuilds the service) so a
+        newly added/removed server's tools reach the model on the next
+        turn without a restart. Returns ``self`` for chaining."""
+        self._advertised_tools_json = tools_json
+        return self
+
     def run(
         self,
         req: InternalChatRequest,
