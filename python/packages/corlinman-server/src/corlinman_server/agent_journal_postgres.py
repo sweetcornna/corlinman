@@ -50,6 +50,7 @@ from typing import Any
 import structlog
 
 from corlinman_server.agent_journal_backend import (
+    DEFAULT_TENANT_ID,
     RESUME_MAX_AGE_MS,
     SESSION_SUMMARY_PREVIEW_LEN,
     TURN_COMPLETED,
@@ -89,6 +90,7 @@ CREATE TABLE IF NOT EXISTS journal_turns (
     user_text             TEXT,
     user_id               TEXT,
     channel               TEXT   NOT NULL DEFAULT '',
+    tenant_id             TEXT   NOT NULL DEFAULT '',
     pending_question_json TEXT,
     error                 TEXT
 );
@@ -96,6 +98,12 @@ CREATE TABLE IF NOT EXISTS journal_turns (
 ALTER TABLE journal_turns ADD COLUMN IF NOT EXISTS user_id TEXT;
 ALTER TABLE journal_turns ADD COLUMN IF NOT EXISTS channel TEXT NOT NULL DEFAULT '';
 ALTER TABLE journal_turns ADD COLUMN IF NOT EXISTS pending_question_json TEXT;
+-- W8 (tenant isolation) — additive tenant stamp; '' rows are legacy and
+-- belong to the default tenant on the read side.
+ALTER TABLE journal_turns ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT '';
+
+CREATE INDEX IF NOT EXISTS journal_turns_tenant_idx
+    ON journal_turns(tenant_id, session_key);
 
 CREATE INDEX IF NOT EXISTS journal_turns_session_status_idx
     ON journal_turns(session_key, status, started_at_ms DESC);
@@ -231,6 +239,7 @@ class PostgresJournalBackend:
         *,
         user_id: str | None = None,
         channel: str = "",
+        tenant_id: str = "",
         pending_question_json: str | None = None,
     ) -> int | None:
         """Insert an in-progress row; return the new ``turn_id``.
@@ -269,8 +278,8 @@ class PostgresJournalBackend:
             row = await conn.fetchrow(
                 "INSERT INTO journal_turns "
                 "(session_key, status, started_at_ms, user_text, user_id, "
-                "channel, pending_question_json) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7) "
+                "channel, tenant_id, pending_question_json) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) "
                 "ON CONFLICT DO NOTHING RETURNING turn_id",
                 session_key or "",
                 TURN_IN_PROGRESS,
@@ -278,6 +287,7 @@ class PostgresJournalBackend:
                 user_text,
                 user_id,
                 channel or "",
+                tenant_id or "",
                 pending_question_json,
             )
         if row is None:
@@ -629,7 +639,7 @@ class PostgresJournalBackend:
         ]
 
     async def list_session_summaries(
-        self, *, limit: int = 200
+        self, *, limit: int = 200, tenant_id: str | None = None
     ) -> list[SessionSummary]:
         """Aggregate ``journal_turns`` by ``session_key`` for the
         ``/admin/sessions`` UI.
@@ -638,9 +648,20 @@ class PostgresJournalBackend:
         most-recent turn's ``user_text`` + ``status`` come back in the
         same scan as the aggregate. One acquire per call, matching the
         other read methods.
+
+        W8 — ``tenant_id`` scopes every CTE's pass over
+        ``journal_turns`` (legacy ``''`` rows belong to the default
+        tenant); ``None`` keeps the pre-W8 unscoped query.
         """
         if limit <= 0:
             return []
+        # Numbered params are reusable in Postgres, so the guard binds
+        # one (tenant, default) pair referenced from all three CTEs.
+        guard = ""
+        params: list[Any] = [int(limit)]
+        if tenant_id is not None:
+            guard = "    WHERE (tenant_id = $2 OR (tenant_id = '' AND $2 = $3)) "
+            params.extend([tenant_id, DEFAULT_TENANT_ID])
         try:
             async with self._p.acquire() as conn:
                 rows = await conn.fetch(
@@ -661,19 +682,26 @@ class PostgresJournalBackend:
                     "    SELECT DISTINCT ON (session_key) "
                     "           session_key, user_text, status "
                     "    FROM journal_turns "
-                    "    ORDER BY session_key, started_at_ms DESC "
+                    + guard
+                    + "    ORDER BY session_key, started_at_ms DESC "
                     "), agg AS ( "
                     "    SELECT session_key, "
                     "           MIN(started_at_ms) AS first_seen, "
                     "           MAX(started_at_ms) AS last_seen, "
                     "           COUNT(*)           AS turn_count "
                     "    FROM journal_turns "
-                    "    GROUP BY session_key "
+                    + guard
+                    + "    GROUP BY session_key "
                     "), msg_counts AS ( "
                     "    SELECT t.session_key, COUNT(m.turn_id) AS message_count "
                     "    FROM journal_turns t "
                     "    LEFT JOIN journal_turn_messages m ON m.turn_id = t.turn_id "
-                    "    GROUP BY t.session_key "
+                    + (
+                        guard.replace("tenant_id =", "t.tenant_id =")
+                        if guard
+                        else ""
+                    )
+                    + "    GROUP BY t.session_key "
                     ") "
                     "SELECT a.session_key, a.first_seen, a.last_seen, "
                     "       a.turn_count, mc.message_count, "
@@ -687,7 +715,7 @@ class PostgresJournalBackend:
                     "LEFT JOIN journal_session_meta sm USING (session_key) "
                     "ORDER BY meta_pinned DESC, a.last_seen DESC "
                     "LIMIT $1",
-                    int(limit),
+                    *params,
                 )
         except Exception as exc:
             logger.warning(
@@ -722,7 +750,9 @@ class PostgresJournalBackend:
             )
         return out
 
-    async def delete_session(self, session_key: str) -> int:
+    async def delete_session(
+        self, session_key: str, *, tenant_id: str | None = None
+    ) -> int:
         """Delete every turn (and its cascading messages) for
         ``session_key``. Returns the count of ``journal_turns`` rows
         actually deleted, computed via ``RETURNING turn_id`` since
@@ -730,17 +760,21 @@ class PostgresJournalBackend:
 
         ``journal_turn_messages`` rows are removed by the schema's
         ``REFERENCES journal_turns(turn_id) ON DELETE CASCADE``.
+
+        W8 — ``tenant_id`` restricts the DELETE to turns owned by that
+        tenant; a cross-tenant delete matches nothing and returns 0.
         """
         if not session_key:
             return 0
+        sql = "DELETE FROM journal_turns WHERE session_key = $1 "
+        params: list[Any] = [session_key]
+        if tenant_id is not None:
+            sql += "AND (tenant_id = $2 OR (tenant_id = '' AND $2 = $3)) "
+            params.extend([tenant_id, DEFAULT_TENANT_ID])
+        sql += "RETURNING turn_id"
         try:
             async with self._p.acquire() as conn:
-                rows = await conn.fetch(
-                    "DELETE FROM journal_turns "
-                    "WHERE session_key = $1 "
-                    "RETURNING turn_id",
-                    session_key,
-                )
+                rows = await conn.fetch(sql, *params)
         except Exception as exc:
             logger.warning(
                 "agent.journal.delete_session_failed", error=str(exc)
@@ -748,7 +782,9 @@ class PostgresJournalBackend:
             return 0
         return len(rows)
 
-    async def session_exists(self, session_key: str) -> bool:
+    async def session_exists(
+        self, session_key: str, *, tenant_id: str | None = None
+    ) -> bool:
         """Cheap existence probe — used by ``PATCH /admin/sessions/{key}``
         to short-circuit the upsert with a 404 when the key is unknown.
 
@@ -756,16 +792,20 @@ class PostgresJournalBackend:
         row left behind by a mis-fired PATCH cannot resurrect a deleted
         session. See the SQLite peer's docstring for the lifecycle
         rationale.
+
+        W8 — ``tenant_id`` makes a cross-tenant session read as absent.
         """
         if not session_key:
             return False
+        sql = "SELECT 1 FROM journal_turns WHERE session_key = $1 "
+        params: list[Any] = [session_key]
+        if tenant_id is not None:
+            sql += "AND (tenant_id = $2 OR (tenant_id = '' AND $2 = $3)) "
+            params.extend([tenant_id, DEFAULT_TENANT_ID])
+        sql += "LIMIT 1"
         try:
             async with self._p.acquire() as conn:
-                row = await conn.fetchrow(
-                    "SELECT 1 FROM journal_turns "
-                    "WHERE session_key = $1 LIMIT 1",
-                    session_key,
-                )
+                row = await conn.fetchrow(sql, *params)
         except Exception as exc:
             logger.warning(
                 "agent.journal.session_exists_failed", error=str(exc)
@@ -780,6 +820,7 @@ class PostgresJournalBackend:
         title: str | None = None,
         pinned: bool | None = None,
         archived: bool | None = None,
+        tenant_id: str | None = None,
     ) -> SessionSummary | None:
         """Upsert title/pinned/archived for ``session_key``.
 
@@ -787,8 +828,11 @@ class PostgresJournalBackend:
         any field means "leave it alone" (COALESCE inside the ON
         CONFLICT update). First-touch INSERTs default booleans to
         FALSE / title to NULL.
+
+        W8 — ``tenant_id`` gates the exists-probe so a cross-tenant
+        PATCH reads as "no such session" (``None`` → 404).
         """
-        if not await self.session_exists(session_key):
+        if not await self.session_exists(session_key, tenant_id=tenant_id):
             return None
         pinned_param = pinned  # None or bool — asyncpg binds nulls natively
         archived_param = archived
@@ -818,7 +862,9 @@ class PostgresJournalBackend:
                 session_key=session_key,
             )
             return None
-        summaries = await self.list_session_summaries(limit=10_000)
+        summaries = await self.list_session_summaries(
+            limit=10_000, tenant_id=tenant_id
+        )
         for s in summaries:
             if s.session_key == session_key:
                 return s
@@ -987,6 +1033,7 @@ class PostgresJournalBackend:
         *,
         limit: int = 50,
         before_turn_id: str | None = None,
+        tenant_id: str | None = None,
     ) -> list[dict[str, Any]]:  # pragma: no cover
         # Postgres deployment doesn't yet wire the W1.2 UI surface; the
         # SQLite backend is the source of truth for the past-turns

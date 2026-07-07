@@ -25,11 +25,19 @@ class SessionRow:
     """One row in :class:`AdminSessionStore`. Mirrors the Rust
     ``Session`` struct: ``user`` (admin username), ``created_at``
     (wall-clock UTC at mint time), ``last_used`` (refreshed on every
-    successful ``validate``)."""
+    successful ``validate``).
+
+    ``tenant`` (W8) records the tenant the login was authenticated
+    for, so the cookie auth path scopes the principal to the tenant
+    that actually minted the session instead of assuming the
+    deployment default. ``""`` = pre-W8 row / unattributed — the
+    middleware falls back to its configured default tenant.
+    """
 
     user: str
     created_at: _dt.datetime
     last_used: _dt.datetime
+    tenant: str = ""
 
 
 class AdminSessionStore:
@@ -62,14 +70,19 @@ class AdminSessionStore:
 
     # ---- mutation ---------------------------------------------------
 
-    def create(self, user: str) -> str:
+    def create(self, user: str, tenant: str = "") -> str:
         """Mint a fresh token for ``user``. Returns the opaque token
-        string the caller stamps into the ``Set-Cookie`` header."""
+        string the caller stamps into the ``Set-Cookie`` header.
+
+        ``tenant`` (W8) is the tenant the credential was verified
+        against; it rides the session row so cookie-authenticated
+        requests inherit the correct principal tenant.
+        """
         token = uuid.uuid4().hex
         now = _dt.datetime.now(tz=_dt.UTC)
         with self._lock:
             self._sessions[token] = SessionRow(
-                user=user, created_at=now, last_used=now
+                user=user, created_at=now, last_used=now, tenant=tenant
             )
         return token
 
@@ -98,7 +111,10 @@ class AdminSessionStore:
                 return None
             row.last_used = now
             return SessionRow(
-                user=row.user, created_at=row.created_at, last_used=row.last_used
+                user=row.user,
+                created_at=row.created_at,
+                last_used=row.last_used,
+                tenant=row.tenant,
             )
 
 

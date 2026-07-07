@@ -499,6 +499,9 @@ def _build_chat_start(
         # is enabled (off by default), so read it tolerantly. The pydantic
         # ``InternalChatRequest`` from the web path always carries it.
         persona_id=getattr(req, "persona_id", None) or "",
+        # W8 — same tolerant read: channels carry no tenant (deployment
+        # scoped → ""), the HTTP paths stamp the authenticated tenant.
+        tenant_id=getattr(req, "tenant_id", None) or "",
     )
     if binding is not None:
         start.binding.CopyFrom(binding)

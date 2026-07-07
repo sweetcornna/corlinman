@@ -52,7 +52,15 @@ from corlinman_replay import (
     StoreLoadError,
     StoreOpenError,
 )
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
 
 from corlinman_server.gateway.routes_admin_a._auth_shim import (
     require_admin_dependency,
@@ -73,7 +81,7 @@ from corlinman_server.gateway.routes_admin_a._sessions_lib import (
     _replay_to_dict,
     _rerun_disabled,
     _resolve_data_dir,
-    _resolve_tenant,
+    _resolve_request_tenant,
     _session_exists_in_journal,
     _session_not_found,
     _sessions_disabled,
@@ -102,12 +110,13 @@ def router() -> APIRouter:
         summary="List sessions for the resolved tenant",
     )
     async def list_handler(
+        request: Request,
         state: Annotated[AdminState, Depends(get_admin_state)],
         tenant: Annotated[str | None, Query()] = None,
     ) -> SessionsListOut:
         if state.sessions_disabled:
             raise _sessions_disabled()
-        tenant_id = _resolve_tenant(state, tenant)
+        tenant_id = _resolve_request_tenant(state, request, tenant)
         data_dir = _resolve_data_dir(state)
 
         # Primary path: read from ``agent_journal.sqlite`` — that is
@@ -115,7 +124,7 @@ def router() -> APIRouter:
         # legacy ``sessions.sqlite`` file is no longer written by any
         # code path so reading from it always returns an empty list,
         # which is why this page looked broken.
-        journal_rows = await _list_from_journal(state, data_dir)
+        journal_rows = await _list_from_journal(state, data_dir, tenant_id)
         if journal_rows is not None and len(journal_rows) >= 1:
             return SessionsListOut(sessions=journal_rows)
 
@@ -149,12 +158,17 @@ def router() -> APIRouter:
     )
     async def delete_handler(
         session_key: str,
+        request: Request,
         state: Annotated[AdminState, Depends(get_admin_state)],
+        tenant: Annotated[str | None, Query()] = None,
     ) -> Response:
         if state.sessions_disabled:
             raise _sessions_disabled()
+        tenant_id = _resolve_request_tenant(state, request, tenant)
         data_dir = _resolve_data_dir(state)
-        deleted = await _delete_from_journal(state, data_dir, session_key)
+        deleted = await _delete_from_journal(
+            state, data_dir, session_key, tenant_id
+        )
         if deleted is None:
             # Journal unavailable — operator can't wipe a session we
             # have no read/write surface for. Distinct from "no rows
@@ -182,12 +196,15 @@ def router() -> APIRouter:
         summary="Wipe every session in the journal (operator nuke)",
     )
     async def delete_all_handler(
+        request: Request,
         state: Annotated[AdminState, Depends(get_admin_state)],
+        tenant: Annotated[str | None, Query()] = None,
     ) -> DeleteAllOut:
         if state.sessions_disabled:
             raise _sessions_disabled()
+        tenant_id = _resolve_request_tenant(state, request, tenant)
         data_dir = _resolve_data_dir(state)
-        deleted = await _delete_all_from_journal(state, data_dir)
+        deleted = await _delete_all_from_journal(state, data_dir, tenant_id)
         if deleted is None:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -206,7 +223,9 @@ def router() -> APIRouter:
     )
     async def cancel_handler(
         session_key: str,
+        request: Request,
         state: Annotated[AdminState, Depends(get_admin_state)],
+        tenant: Annotated[str | None, Query()] = None,
     ) -> SessionCancelOut:
         """Stop the in-flight :class:`ReasoningLoop` for ``session_key``.
 
@@ -254,9 +273,11 @@ def router() -> APIRouter:
         # No active loop — distinguish "session exists but is idle"
         # (200 not_running) from "session never existed" (404). We
         # only consult the journal here, so the happy path above
-        # avoids a sqlite open per cancel.
+        # avoids a sqlite open per cancel. W8 — the probe is tenant
+        # scoped so a cross-tenant key 404s like an unknown one.
+        tenant_id = _resolve_request_tenant(state, request, tenant)
         data_dir = _resolve_data_dir(state)
-        if await _session_exists_in_journal(data_dir, session_key):
+        if await _session_exists_in_journal(data_dir, session_key, tenant_id):
             return SessionCancelOut(status="not_running", turn_id=None)
         raise _session_not_found(session_key)
 
@@ -268,7 +289,9 @@ def router() -> APIRouter:
     async def patch_handler(
         session_key: str,
         body: SessionPatchBody,
+        request: Request,
         state: Annotated[AdminState, Depends(get_admin_state)],
+        tenant: Annotated[str | None, Query()] = None,
     ) -> SessionSummaryOut:
         """Upsert operator-supplied metadata for ``session_key``.
 
@@ -296,6 +319,7 @@ def router() -> APIRouter:
                     ),
                 },
             )
+        tenant_id = _resolve_request_tenant(state, request, tenant)
         data_dir = _resolve_data_dir(state)
         updated = await _update_session_meta_in_journal(
             data_dir,
@@ -303,6 +327,7 @@ def router() -> APIRouter:
             title=body.title,
             pinned=body.pinned,
             archived=body.archived,
+            tenant=tenant_id,
         )
         if updated is None:
             raise _session_not_found(session_key)
@@ -321,6 +346,7 @@ def router() -> APIRouter:
     )
     async def replay_handler(
         session_key: str,
+        request: Request,
         state: Annotated[AdminState, Depends(get_admin_state)],
         tenant: Annotated[str | None, Query()] = None,
         body: ReplayBody | None = None,
@@ -329,7 +355,7 @@ def router() -> APIRouter:
             raise _sessions_disabled()
 
         mode = _parse_mode(body.mode if body is not None else None)
-        tenant_id = _resolve_tenant(state, tenant)
+        tenant_id = _resolve_request_tenant(state, request, tenant)
         data_dir = _resolve_data_dir(state)
 
         # Always run the underlying replay in TRANSCRIPT mode — rerun

@@ -4,6 +4,50 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### W8: multi-tenant session isolation (security) (#114)
+
+> 修复 chat-perfect 审计（hunt-51）遗留的 **critical** 多租户隔离绕过：
+> journal 支撑的 `/admin/sessions*` 全部操作（list / delete / delete-all /
+> patch / replay / cancel）此前不做租户过滤，任何管理端都能按 session_key
+> 枚举、回放、改名、删除**所有**租户的会话。现在 journal turn 行带租户戳，
+> 全部路由按解析出的租户收窄，跨租户访问一律表现为 404 / 空 —— 与不存在的
+> key 不可区分。
+>
+> Fixes the **critical** multi-tenant isolation bypass from the
+> chat-perfect audit (hunt-51): journal-backed `/admin/sessions*`
+> operations were not tenant-scoped.
+
+### Added
+- **`turns.tenant_id` column** on both journal backends (SQLite gated
+  `ALTER`, Postgres `ADD COLUMN IF NOT EXISTS`) + covering index. Legacy
+  `''` rows are owned by the **default tenant** — never by other tenants.
+- **Write-path attribution** — `ChatStart.tenant_id` (proto field 14):
+  the OpenAI-compatible route stamps the authenticated tenant
+  (`request.state.tenant`, API-key auth or the admin-session bridge);
+  the servicer mirrors it into `extra["tenant_id"]` and `begin_turn`
+  journals it. Channels / scheduler / console stay unattributed (=
+  default tenant). Duck-typed channel contract untouched (tolerant
+  `getattr`, regression-tested).
+- **Tenant-scoped journal surface** — `list_session_summaries` /
+  `delete_session` / `session_exists` / `update_session_meta` /
+  `list_session_turns` accept an optional `tenant_id`; `None` keeps the
+  single-tenant fast path byte-identical.
+- **Principal capping** (`_resolve_request_tenant`) — a non-default
+  principal tenant hard-caps the scope (mismatched `?tenant=` → 403);
+  default-tenant operators keep the legacy any-tenant view selector.
+- **Session cookie carries its tenant** — `AdminSessionStore.create`
+  records the tenant the login verified against; the cookie auth path
+  prefers it over the deployment default (fixes the
+  `admin_auth.py` cookie-path tenant hardcode flagged in hunt-51).
+
+### Fixed
+- Cross-tenant `DELETE /admin/sessions/{key}` / `PATCH` / `replay` /
+  `cancel` now 404; `DELETE /admin/sessions` (nuke) only wipes the
+  resolved tenant's sessions; `GET /admin/sessions` no longer lists
+  other tenants' sessions.
+
 ## [1.34.0] — 2026-07-19 — QZone folded into the QQ channel page + reference-image descriptions
 
 ### Added

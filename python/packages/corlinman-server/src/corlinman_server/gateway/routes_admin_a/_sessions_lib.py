@@ -179,6 +179,51 @@ def _resolve_tenant(state: AdminState, tenant_q: str | None) -> TenantId:
     return default_tenant()
 
 
+def _resolve_request_tenant(
+    state: AdminState, request: Any, tenant_q: str | None
+) -> TenantId:
+    """W8 — resolve the tenant a session operation is scoped to,
+    capped by the authenticated principal.
+
+    Precedence:
+
+    1. A **non-default** principal tenant (``request.state.admin_tenant``,
+       stamped by the admin-auth middleware) hard-caps the scope — a
+       per-tenant admin can never select another tenant; an explicit
+       mismatching ``?tenant=`` is a 403.
+    2. Default-tenant principals (the operator) keep the legacy
+       behaviour: ``?tenant=`` selects the tenant to view, falling back
+       to the deployment default. This matches the per-tenant legacy
+       ``sessions.sqlite`` stores the same routes already scope by.
+    """
+    resolved = _resolve_tenant(state, tenant_q)
+    principal = getattr(
+        getattr(request, "state", None), "admin_tenant", None
+    )
+    if principal is None:
+        return resolved
+    principal_id: TenantId
+    if isinstance(principal, TenantId):
+        principal_id = principal
+    else:
+        try:
+            principal_id = TenantId.new(str(principal))
+        except TenantIdError:
+            return resolved
+    if principal_id.is_legacy_default():
+        # Operator / default-tenant admin — may view any tenant.
+        return resolved
+    if tenant_q and resolved != principal_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "tenant_forbidden",
+                "message": "principal is not scoped to the requested tenant",
+            },
+        )
+    return principal_id
+
+
 def _resolve_data_dir(state: AdminState) -> Path:
     """Mirror the Rust ``resolve_data_dir``: prefer the state override
     (used by tests pinning a tempdir), fall back to ``CORLINMAN_DATA_DIR``,
@@ -259,9 +304,13 @@ def _journal_path(data_dir: Path) -> Path:
 
 
 async def _list_from_journal(
-    state: AdminState, data_dir: Path
+    state: AdminState, data_dir: Path, tenant: TenantId
 ) -> list[SessionSummaryOut] | None:
     """Read the active sessions list from the per-turn journal.
+
+    W8 — scoped to ``tenant``: sessions whose turns belong to another
+    tenant are not listed (legacy unattributed rows belong to the
+    default tenant).
 
     Returns:
 
@@ -297,7 +346,9 @@ async def _list_from_journal(
         # servicer) would require plumbing the live journal handle
         # through ``AdminState``, which the bootstrapper does not own.
         journal = await AgentJournal.open(path)
-        summaries = await journal.list_session_summaries()
+        summaries = await journal.list_session_summaries(
+            tenant_id=tenant.as_str()
+        )
     except Exception as exc:  # noqa: BLE001 — degrade silently to legacy
         logger.debug(
             "admin.sessions.journal_list_failed", error=str(exc), path=str(path)
@@ -330,13 +381,15 @@ async def _list_from_journal(
 
 
 async def _session_exists_in_journal(
-    data_dir: Path, session_key: str
+    data_dir: Path, session_key: str, tenant: TenantId | None = None
 ) -> bool:
     """Cheap existence probe — returns ``True`` iff the journal has at
     least one turn for ``session_key``. Used by the cancel + patch
     routes to surface a 404 instead of silently no-opping on a typoed
     key. Returns ``False`` when the journal is unavailable (the route
     layer prefers a 404 to a 503 here — the operator's already lost).
+
+    W8 — ``tenant`` makes a cross-tenant session read as absent.
     """
     try:
         from corlinman_server.agent_journal import AgentJournal
@@ -348,7 +401,10 @@ async def _session_exists_in_journal(
     journal: Any | None = None
     try:
         journal = await AgentJournal.open(path)
-        return await journal.session_exists(session_key)
+        return await journal.session_exists(
+            session_key,
+            tenant_id=tenant.as_str() if tenant is not None else None,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "admin.sessions.session_exists_failed",
@@ -371,6 +427,7 @@ async def _update_session_meta_in_journal(
     title: str | None,
     pinned: bool | None,
     archived: bool | None,
+    tenant: TenantId | None = None,
 ) -> SessionSummaryOut | None:
     """Upsert ``session_meta`` for ``session_key`` and project the result
     back into a :class:`SessionSummaryOut`.
@@ -394,6 +451,7 @@ async def _update_session_meta_in_journal(
             title=title,
             pinned=pinned,
             archived=archived,
+            tenant_id=tenant.as_str() if tenant is not None else None,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning(
@@ -423,7 +481,10 @@ async def _update_session_meta_in_journal(
 
 
 async def _delete_from_journal(
-    state: AdminState, data_dir: Path, session_key: str
+    state: AdminState,
+    data_dir: Path,
+    session_key: str,
+    tenant: TenantId | None = None,
 ) -> int | None:
     """Delete ``session_key`` from the journal. Returns:
 
@@ -431,6 +492,9 @@ async def _delete_from_journal(
     * ``0`` when the journal opened cleanly but no turns matched
       (route maps to 404).
     * ``>0`` on success — the number of turn rows deleted.
+
+    W8 — ``tenant`` scopes the delete: a cross-tenant session matches
+    nothing (``0`` → 404, indistinguishable from an unknown key).
     """
     try:
         from corlinman_server.agent_journal import AgentJournal
@@ -444,7 +508,10 @@ async def _delete_from_journal(
     journal: Any | None = None
     try:
         journal = await AgentJournal.open(path)
-        return await journal.delete_session(session_key)
+        return await journal.delete_session(
+            session_key,
+            tenant_id=tenant.as_str() if tenant is not None else None,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "admin.sessions.journal_delete_failed",
@@ -461,10 +528,15 @@ async def _delete_from_journal(
 
 
 async def _delete_all_from_journal(
-    state: AdminState, data_dir: Path
+    state: AdminState, data_dir: Path, tenant: TenantId | None = None
 ) -> int | None:
     """Wipe every session from the journal. Returns ``None`` on
-    unavailable, otherwise the aggregate count of deleted turn rows."""
+    unavailable, otherwise the aggregate count of deleted turn rows.
+
+    W8 — ``tenant`` scopes the nuke to that tenant's sessions only;
+    other tenants' journal rows survive an operator "clear all" issued
+    from a tenant-scoped view.
+    """
     try:
         from corlinman_server.agent_journal import AgentJournal
     except ImportError:  # pragma: no cover
@@ -474,13 +546,18 @@ async def _delete_all_from_journal(
     if not path.exists():
         return 0
 
+    tenant_id = tenant.as_str() if tenant is not None else None
     journal: Any | None = None
     try:
         journal = await AgentJournal.open(path)
-        summaries = await journal.list_session_summaries(limit=10_000)
+        summaries = await journal.list_session_summaries(
+            limit=10_000, tenant_id=tenant_id
+        )
         total = 0
         for s in summaries:
-            total += await journal.delete_session(s.session_key)
+            total += await journal.delete_session(
+                s.session_key, tenant_id=tenant_id
+            )
         return total
     except Exception as exc:  # noqa: BLE001
         logger.warning(
@@ -584,10 +661,14 @@ async def _replay_from_journal(
         # replay in chronological order so bubble order is correct).
         # ``page_limit + 1`` over-fetch: the extra row only tells us
         # whether an older page exists — it is trimmed before replay.
+        # W8 — tenant-scoped: a session owned by another tenant returns
+        # zero rows here → ``None`` → the caller falls through to the
+        # legacy per-tenant stores, which naturally 404.
         turn_rows = await journal.list_session_turns(
             session_key,
             limit=page_limit + 1,
             before_turn_id=before_turn_id,
+            tenant_id=tenant.as_str(),
         )
         if not turn_rows:
             return None

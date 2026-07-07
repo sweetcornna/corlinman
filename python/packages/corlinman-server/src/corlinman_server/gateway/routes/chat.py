@@ -1140,6 +1140,18 @@ def router(state: ChatState | None = None) -> APIRouter:
                 except Exception as exc:  # noqa: BLE001 — binding is optional
                     _log.warning("web chat synthetic binding failed: %s", exc)
 
+            # W8 — stamp the authenticated tenant (API-key auth or the
+            # admin-session bridge; both set ``request.state.tenant`` in
+            # ApiKeyAuthMiddleware) so the journal turn row is
+            # tenant-attributed. Tolerant: auth disabled → no state → "".
+            _req_tenant = getattr(request.state, "tenant", None)
+            if _req_tenant is not None:
+                internal_req.tenant_id = (
+                    _req_tenant.as_str()
+                    if hasattr(_req_tenant, "as_str")
+                    else str(_req_tenant)
+                )
+
             # H19: inject the bound persona's system prompt so the in-app
             # ``/chat`` UI is in character, mirroring the 5 chat channels.
             # Reads ``[web].humanlike`` off the live config + an optional

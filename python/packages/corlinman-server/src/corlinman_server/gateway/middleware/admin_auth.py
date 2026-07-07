@@ -52,7 +52,12 @@ from corlinman_server.gateway.middleware.admin_session import (
     AdminSession,
     AdminSessionStore,
 )
-from corlinman_server.tenancy import AdminDb, TenantId, default_tenant
+from corlinman_server.tenancy import (
+    AdminDb,
+    TenantId,
+    TenantIdError,
+    default_tenant,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -229,9 +234,21 @@ async def _run_auth_chain(
             if token is not None:
                 session = state.session_store.validate(token)
                 if session is not None:
+                    # W8 — prefer the tenant recorded on the session
+                    # row at login time over the deployment default, so
+                    # a (future) per-tenant login yields a correctly
+                    # scoped principal. Pre-W8 rows carry ``""`` and
+                    # keep the legacy default-tenant behaviour.
+                    session_tenant = getattr(session, "tenant", "") or ""
+                    principal_tenant = state.default_tenant_id
+                    if session_tenant:
+                        try:
+                            principal_tenant = TenantId.new(session_tenant)
+                        except TenantIdError:
+                            principal_tenant = state.default_tenant_id
                     principal = AdminPrincipal(
                         user=session.user,
-                        tenant=state.default_tenant_id,
+                        tenant=principal_tenant,
                         session=session,
                     )
                     return _AuthResult(ok=principal)

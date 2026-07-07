@@ -60,6 +60,11 @@ message ChatStart {
   // mirrors this into ChatStart.extra["persona_id"] so persona.life_*
   // placeholders resolve against the same life-state row the persona tools use.
   string persona_id = 13;
+  // W8 — tenant the request was authenticated for. The servicer mirrors it
+  // into ChatStart.extra["tenant_id"] and stamps it on the journal turn row
+  // so admin session surfaces can scope list/delete/replay by tenant.
+  // "" = unattributed (legacy shape, owned by the default tenant).
+  string tenant_id = 14;
 }
 
 // Non-text input attached to a chat turn. Mirrors the Rust
