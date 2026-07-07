@@ -63,6 +63,29 @@ class McpToolBridge:
         # tool-name scan when the server name does not resolve.
         server = _mcp_server_name(manifest) or manifest.name
         target_tool = _strip_server_namespace(self._manager, server, tool)
+
+        # Dim 5 client-resources — the advertise side synthesizes a
+        # ``{server}_read_resource`` tool for servers exposing resources
+        # but no literal tool of that name. Such a call must route to
+        # ``resources/read``, not ``tools/call`` (the server has no such
+        # tool). Literal-wins: when the server DOES advertise a real
+        # ``read_resource`` tool, the normal tools/call path runs.
+        bare = _bare_tool_name(server, target_tool)
+        if (
+            bare == "read_resource"
+            and not _server_has_tool(self._manager, server, "read_resource")
+        ):
+            read = getattr(self._manager, "read_resource", None)
+            if callable(read):
+                uri = ""
+                if isinstance(args, dict):
+                    uri = str(args.get("uri") or "")
+                outcome = await read(server, uri)
+                return ToolInvocation(
+                    content=outcome.content,
+                    is_error=outcome.is_error,
+                )
+
         outcome = await self._manager.call_tool(server, target_tool, args)
         return ToolInvocation(
             content=outcome.content,
@@ -92,6 +115,25 @@ def _mcp_server_name(manifest: Any) -> str | None:
     if isinstance(value, str) and value:
         return value
     return None
+
+
+def _bare_tool_name(server: str, tool: str) -> str:
+    """The tool name with a ``{server}_`` prefix unconditionally removed
+    (for classification only — dispatch still uses the stripped-or-not
+    name from :func:`_strip_server_namespace`)."""
+    prefix = f"{server}_"
+    return tool[len(prefix) :] if tool.startswith(prefix) else tool
+
+
+def _server_has_tool(manager: Any, server: str, tool: str) -> bool:
+    """Best-effort ``manager.has_tool`` probe — missing/raising → False."""
+    has = getattr(manager, "has_tool", None)
+    if not callable(has):
+        return False
+    try:
+        return bool(has(server, tool))
+    except Exception:  # noqa: BLE001 — classification must not break dispatch
+        return False
 
 
 def _strip_server_namespace(manager: Any, server: str, tool: str) -> str:

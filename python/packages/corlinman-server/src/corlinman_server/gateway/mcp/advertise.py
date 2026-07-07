@@ -218,6 +218,76 @@ def build_mcp_registry_entries(
     return entries
 
 
+#: The synthetic per-server resource-reader tool name (bare form; advertised
+#: as ``{server}_read_resource``). Only synthesized when the server does NOT
+#: itself expose a literal ``read_resource`` tool — the literal always wins,
+#: matching the dispatch bridge's preference order.
+RESOURCE_READ_TOOL = "read_resource"
+
+#: How many resources the synthetic tool's description enumerates before
+#: eliding — keeps a resource-heavy server from bloating every chat turn.
+_RESOURCE_DESC_CAP = 10
+
+
+def _resource_read_tool(resources: list[Any]) -> Any:
+    """Synthesize the ``read_resource`` ToolDescriptor-shaped object for one
+    server's discovered resources (Dim 5 client-resources gap)."""
+    from types import SimpleNamespace  # noqa: PLC0415
+
+    lines: list[str] = []
+    for r in resources[:_RESOURCE_DESC_CAP]:
+        uri = str(getattr(r, "uri", "") or "")
+        label = str(getattr(r, "name", "") or "")
+        desc = str(getattr(r, "description", "") or "").strip()
+        note = " — ".join(x for x in (label, desc.splitlines()[0] if desc else "") if x)
+        lines.append(f"  {uri}" + (f" ({note})" if note else ""))
+    more = len(resources) - _RESOURCE_DESC_CAP
+    if more > 0:
+        lines.append(f"  … and {more} more")
+    return SimpleNamespace(
+        name=RESOURCE_READ_TOOL,
+        description=(
+            "Read a resource from this MCP server by URI. Available:\n"
+            + "\n".join(lines)
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "uri": {
+                    "type": "string",
+                    "description": "URI of the resource to read",
+                }
+            },
+            "required": ["uri"],
+        },
+    )
+
+
+def with_resource_tools(
+    discovered: DiscoveredTools | None,
+    resources: dict[str, list[Any]] | None,
+) -> DiscoveredTools:
+    """Merge a synthetic ``read_resource`` tool into each server's tool list.
+
+    A server already exposing a literal ``read_resource`` tool keeps it
+    untouched (the synthetic is skipped — same literal-wins rule the
+    dispatch bridge applies). A resources-only server (no tools at all)
+    gains an entry so its resources are still reachable.
+    """
+    out: DiscoveredTools = {s: list(ts) for s, ts in (discovered or {}).items()}
+    for server, res_list in (resources or {}).items():
+        if not server or not res_list:
+            continue
+        tools = out.setdefault(server, [])
+        if any(
+            str(getattr(t, "name", "") or "") == RESOURCE_READ_TOOL
+            for t in tools
+        ):
+            continue
+        tools.append(_resource_read_tool(list(res_list)))
+    return out
+
+
 def filter_servers_by_policy(
     discovered: DiscoveredTools | None,
     *,
@@ -247,6 +317,7 @@ async def register_mcp_tools(
     *,
     allowed: frozenset[str] | None = None,
     denied: frozenset[str] = frozenset(),
+    resources: dict[str, list[Any]] | None = None,
 ) -> tuple[int, bytes, frozenset[str]]:
     """Wire discovered MCP tools into the agent tool plane.
 
@@ -264,10 +335,20 @@ async def register_mcp_tools(
       (Codex #110) — it must NOT be inferred from the full registry, which
       still holds not-yet-pruned stale entries from a prior advertise.
 
+    ``resources`` (Dim 5 client-resources): per-server discovered resources —
+    each contributing server gains a synthetic ``{server}_read_resource``
+    tool (advertised + routed like any other; the bridge maps it to
+    ``resources/read``). The same allow/deny policy applies.
+
     No-op-safe on a ``None`` registry (bytes still returned). Never clobbers a
     real on-disk manifest of the same name.
     """
     discovered = filter_servers_by_policy(discovered, allowed=allowed, denied=denied)
+    if resources:
+        discovered = with_resource_tools(
+            discovered,
+            filter_servers_by_policy(resources, allowed=allowed, denied=denied),
+        )
     if registry is None:
         return 0, mcp_advertised_tools_json(discovered), frozenset(discovered)
     # The existing-name skip must block only REAL on-disk manifests, not
