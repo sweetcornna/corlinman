@@ -155,6 +155,7 @@ from corlinman_agent.permission import (
     PermissionContext,
     PermissionGate,
 )
+from corlinman_agent.permission_settings import build_permission_gate
 from corlinman_agent.persona import (
     PERSONA_ATTACH_ASSET_FROM_ATTACHMENT_TOOL,
     PERSONA_ATTACH_ASSET_FROM_DATA_TOOL,
@@ -328,6 +329,17 @@ SUBAGENT_STOP_TOOL = "subagent_stop"
 SKILL_TOOL = "Skill"
 
 
+#: claude-code parity — the model ends plan mode itself. In plan mode the
+#: permission gate denies every ``MUTATING_TOOLS`` call (read/plan only), so
+#: the model researches + drafts a plan and then calls this to hand control
+#: back for implementation. Dispatch flips the runtime permission mode from
+#: ``plan`` → ``default`` and resets the interactive approval cache so a
+#: grant given while planning can't leak past the mode boundary (Codex #104,
+#: mirrored from console/approval.py). Deliberately NOT in ``MUTATING_TOOLS``
+#: — it must stay callable *while* plan mode is denying the mutating surface.
+EXIT_PLAN_MODE_TOOL: str = "exit_plan_mode"
+
+
 #: Tool names dispatched in-process by the servicer rather than routed
 #: through the Rust plugin registry. These cover the v0.7 multi-agent
 #: surface (subagent fan-out + shared blackboard) plus the v0.8 web
@@ -354,6 +366,7 @@ BUILTIN_TOOLS: frozenset[str] = frozenset(
         QZONE_PUBLISH_TOOL,
         AGENT_STATUS_CARD_TOOL,
         SKILL_TOOL,
+        EXIT_PLAN_MODE_TOOL,
         # ``memory_write`` / ``memory_read`` also arrive via ``MEMORY_TOOLS``
         # once wire-B widens that frozenset; naming them here keeps the
         # dispatch gate correct independently of that re-export landing.
@@ -478,6 +491,44 @@ def _agent_status_card_tool_schema() -> dict[str, Any]:
     }
 
 
+def _exit_plan_mode_tool_schema() -> dict[str, Any]:
+    """OpenAI descriptor for the ``exit_plan_mode`` builtin (claude-code parity).
+
+    Advertised so the model can leave plan mode on its own once it has a
+    plan ready — plan mode denies every mutating tool, so without this the
+    model would be stuck researching forever. ``plan`` is optional: a short
+    summary echoed back to the user so they see what they're greenlighting.
+    """
+    return {
+        "type": "function",
+        "function": {
+            "name": EXIT_PLAN_MODE_TOOL,
+            "description": (
+                "Call this when you have finished planning in plan mode and "
+                "are ready to implement — it restores the default permission "
+                "mode so mutating tools (write_file, edit_file, run_shell, …) "
+                "work again. Only meaningful while in plan mode; a no-op "
+                "otherwise. Pass an optional `plan` summary of what you're "
+                "about to do so the user sees the plan you're proceeding with."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "plan": {
+                        "type": "string",
+                        "description": (
+                            "Optional short summary of the approved plan, "
+                            "echoed back to the user."
+                        ),
+                    },
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
 def _subagent_stop_tool_schema() -> dict[str, Any]:
     """OpenAI descriptor for the ``subagent_stop`` builtin.
 
@@ -579,6 +630,7 @@ def _builtin_tool_schemas() -> list[dict[str, Any]]:
         vision_analyze_tool_schema(),
         qzone_publish_tool_schema(),
         _agent_status_card_tool_schema(),
+        _exit_plan_mode_tool_schema(),
         _subagent_stop_tool_schema(),
         *qzone_comment_tool_schemas(),
         *persona_tool_schemas(),
@@ -1228,12 +1280,14 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # ``None`` means no shell hook enforcement (all tools proceed).
         self._hook_runner = hook_runner
         # T3.1 permission gate — declarative allow/deny/log per tool.
-        # Constructed from env when not explicitly supplied so a stock
-        # boot still gets one (default: allow-all).
+        # Constructed from the layered settings loader when not explicitly
+        # supplied (E1: <data_dir>/settings.json + ./.corlinman/
+        # settings.local.json + env, env still the final word; with no
+        # settings file this is byte-identical to the old from_env()).
         self._permission_gate = (
             permission_gate
             if permission_gate is not None
-            else PermissionGate.from_env()
+            else build_permission_gate()
         )
         # gap permissions-no-ask-action: the unified approval gate wraps the
         # permission gate + an optional prompt-and-wait resolver. Lazily
@@ -2651,6 +2705,21 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         async def _execute(child_event: ToolCallEvent) -> str:
             if child_event.tool in _SUBAGENT_SPAWN_TOOLS:
                 return json.dumps({"error": "subagent_no_recursive_spawn"})
+            # Permission mode is servicer-GLOBAL: a subagent spawned during
+            # plan mode (spawn tools aren't mutating, so plan mode allows
+            # them) could otherwise dispatch exit_plan_mode and flip the
+            # WHOLE servicer plan → default without the top-level model ever
+            # presenting a plan. Only the parent turn may end plan mode.
+            if child_event.tool == EXIT_PLAN_MODE_TOOL:
+                return json.dumps(
+                    {
+                        "error": (
+                            "exit_plan_mode_not_allowed_in_subagent: only the "
+                            "top-level turn may end plan mode"
+                        ),
+                        "tool": child_event.tool,
+                    }
+                )
             # A subagent child is a bounded, cancellable execution. A
             # detached run_shell(run_in_background=true) would register
             # under the PARENT session and outlive the child — escaping the
@@ -3243,6 +3312,14 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 return self._dispatch_subagent_stop(
                     event.args_json, start.session_key or ""
                 )
+            if event.tool == EXIT_PLAN_MODE_TOOL:
+                # claude-code parity: the model leaves plan mode itself once
+                # its plan is ready. Flip plan → default so the mutating
+                # surface unlocks, then drop any interactive "always" grants
+                # so a permission answered while planning can't carry into
+                # the implementation phase (Codex #104 — grants must never
+                # outlive their mode boundary). No-op outside plan mode.
+                return self._dispatch_exit_plan_mode(event.args_json)
             if event.tool == SKILL_TOOL:
                 # gap skills-no-progressive-disclosure: pull a skill body
                 # on demand after the model selects it from the narrowed
@@ -3963,6 +4040,72 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             ensure_ascii=False,
         )
 
+    def _dispatch_exit_plan_mode(self, args_json: bytes | str) -> str:
+        """Dispatch ``exit_plan_mode`` — flip plan → default (claude-code parity).
+
+        The model calls this once it has a plan ready and wants the mutating
+        surface unlocked. Semantics:
+
+        * Outside plan mode it is a clean no-op (the model may call it
+          defensively; we must not silently drop it into a different mode).
+        * In plan mode we switch to ``default`` and reset the interactive
+          approval cache. A grant answered "always" *while planning* must not
+          carry into the implementation phase (Codex #104 — the same reason
+          console/approval.py resets on every mode boundary). A broken /
+          missing resolver must never fail the mode switch, so the reset is
+          best-effort under a broad guard.
+
+        Never raises — folds every path into a JSON envelope the model reads,
+        matching the local ``_dispatch_subagent_stop`` return convention.
+        """
+        try:
+            decoded = (
+                args_json.decode("utf-8")
+                if isinstance(args_json, (bytes, bytearray))
+                else (args_json or "")
+            )
+            obj = json.loads(decoded or "{}")
+        except (ValueError, UnicodeDecodeError):
+            obj = {}
+        if not isinstance(obj, dict):
+            obj = {}
+        plan = obj.get("plan")
+        plan_str = plan.strip() if isinstance(plan, str) and plan.strip() else None
+
+        current = self.get_permission_mode()
+        if current != "plan":
+            return json.dumps(
+                {"status": "noop", "mode": current, "note": "not in plan mode"},
+                ensure_ascii=False,
+            )
+
+        new_mode = self.set_permission_mode("default")
+        # Drop mode-scoped interactive grants so nothing leaks across the
+        # plan → default boundary. Both resolver sources the approval gate
+        # can read (set_approval_resolver AND app_state.approval_resolver —
+        # see _get_approval_gate's CMP-04 fallback) are reset so a future
+        # gateway-side resolver can't dodge the Codex #104 boundary rule.
+        # Best-effort: a resolver without a ``reset`` (or one that throws)
+        # must not fail the mode switch.
+        app_state = getattr(self, "_app_state", None)
+        for resolver in (
+            getattr(self, "_approval_resolver", None),
+            getattr(app_state, "approval_resolver", None),
+        ):
+            reset = getattr(resolver, "reset", None)
+            if callable(reset):
+                try:
+                    reset()
+                except Exception as exc:  # noqa: BLE001 — reset must not fail the switch
+                    logger.warning(
+                        "agent.exit_plan_mode.reset_error", error=str(exc)
+                    )
+
+        result: dict[str, Any] = {"status": "ok", "mode": new_mode}
+        if plan_str is not None:
+            result["plan"] = plan_str
+        return json.dumps(result, ensure_ascii=False)
+
     def _dispatch_subagent_stop(
         self, args_json: bytes | str, current_session_key: str
     ) -> str:
@@ -4402,8 +4545,10 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # the operator. See ``corlinman_agent.tool_aliases`` (#108 item 3).
         warn_alias_collisions(raw_allowed, gate="skill_allowed_tools")
         # Control tools always pass — never let an active skill strand the
-        # model with no way to load another skill or stop the turn.
-        if tool in (SKILL_TOOL, SUBAGENT_STOP_TOOL):
+        # model with no way to load another skill, stop the turn, or leave
+        # plan mode (an ``exit_plan_mode`` a skill's allowed-tools happened
+        # not to list would otherwise trap the model in plan mode).
+        if tool in (SKILL_TOOL, SUBAGENT_STOP_TOOL, EXIT_PLAN_MODE_TOOL):
             return None
         if canonicalize_tool_name(tool) in union:
             return None

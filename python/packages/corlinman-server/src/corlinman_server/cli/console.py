@@ -141,6 +141,15 @@ def _load_config(data_dir: Path) -> dict[str, Any]:
     ),
 )
 @click.option(
+    "--fork-session",
+    "fork_session",
+    is_flag=True,
+    help=(
+        "Copy the resumed session's history to a fresh session key and "
+        "continue there (the source session is left untouched)."
+    ),
+)
+@click.option(
     "--system-prompt",
     "system_prompt",
     default=None,
@@ -179,6 +188,7 @@ def console(
     output_format: str,
     max_turns: int,
     continue_latest: bool,
+    fork_session: bool,
     system_prompt: str | None,
     append_system_prompt: str | None,
     permission_mode: str | None,
@@ -233,6 +243,7 @@ def console(
                 max_turns=max_turns,
                 attach_token=attach_token,
                 continue_latest=continue_latest,
+                fork_session=fork_session,
                 system_prompt=system_prompt,
                 append_system_prompt=append_system_prompt,
             )

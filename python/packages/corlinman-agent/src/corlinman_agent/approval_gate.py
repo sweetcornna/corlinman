@@ -126,11 +126,17 @@ class ApprovalGate:
         resolver: ApprovalResolver | None = None,
         ask_timeout_s: float | None = 300.0,
     ) -> None:
-        self._permission_gate = (
-            permission_gate
-            if permission_gate is not None
-            else PermissionGate.from_env()
-        )
+        if permission_gate is None:
+            # E1: stock gates come from the layered settings loader
+            # (settings.json + settings.local.json + env) instead of
+            # env-only. With no settings file present this is byte-
+            # identical to the old ``from_env()``.
+            from corlinman_agent.permission_settings import (  # noqa: PLC0415 — cycle guard
+                build_permission_gate,
+            )
+
+            permission_gate = build_permission_gate()
+        self._permission_gate = permission_gate
         self._resolver = resolver
         self._ask_timeout_s = ask_timeout_s
 

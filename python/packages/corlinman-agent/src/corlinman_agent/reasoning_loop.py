@@ -2053,6 +2053,10 @@ class ReasoningLoop:
                             to_model=effective_model,
                             error=str(exc),
                         )
+                        # E4: thinking-block signatures are minted per-model;
+                        # replaying them to the fallback model turns this
+                        # recoverable error into a hard 400.
+                        messages = _strip_reasoning_signatures(messages)
                         tool_calls_this_round = []
                         _streaming_started = False
                         continue  # retry with fallback model
@@ -2108,6 +2112,9 @@ class ReasoningLoop:
                             error=str(exc),
                             cause="sustained_overload",
                         )
+                        # E4: same cross-model signature strip as the
+                        # model-not-found fallback above.
+                        messages = _strip_reasoning_signatures(messages)
                         tool_calls_this_round = []
                         _streaming_started = False
                         continue  # replay turn on fallback model
@@ -3122,6 +3129,48 @@ def _append_user_turn(messages: Sequence[dict[str, Any]], text: str) -> list[dic
     """
     out = list(messages)
     out.append({"role": "user", "content": text})
+    return out
+
+
+def _strip_reasoning_signatures(
+    messages: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return a NEW message list safe to replay on a DIFFERENT model (E4).
+
+    ``thinking`` / ``redacted_thinking`` content blocks carry a
+    cryptographic ``signature`` minted by the model that produced them;
+    Anthropic-style backends reject a request whose history replays a
+    signature from another model, so the WP11 / sustained-overload
+    fallback swap would turn a recoverable error into a hard 400. History
+    assembled by this loop never stores such blocks (reasoning tokens are
+    render-only), but messages arriving through the OpenAI-compatible
+    ingress can carry them verbatim.
+
+    Thinking blocks are dropped wholesale (a signatureless thinking block
+    is just as invalid) and stray ``signature`` keys are removed from the
+    surviving blocks. Plain-string contents pass through untouched. A
+    content list left empty by the strip collapses to ``""`` — some
+    backends reject an empty block list outright.
+    """
+    out: list[dict[str, Any]] = []
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            out.append(msg)
+            continue
+        blocks: list[Any] = []
+        for block in content:
+            if not isinstance(block, dict):
+                blocks.append(block)
+                continue
+            if block.get("type") in ("thinking", "redacted_thinking"):
+                continue
+            if "signature" in block:
+                block = {k: v for k, v in block.items() if k != "signature"}
+            blocks.append(block)
+        new_msg = dict(msg)
+        new_msg["content"] = blocks if blocks else ""
+        out.append(new_msg)
     return out
 
 

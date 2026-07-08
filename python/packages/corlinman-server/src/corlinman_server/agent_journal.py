@@ -423,6 +423,91 @@ class AgentJournal:
             session_key, limit=limit, before_turn_id=before_turn_id
         )
 
+    async def fork_session(
+        self, source_key: str, new_key: str, *, limit: int = 500
+    ) -> int:
+        """Copy ``source_key``'s completed history onto ``new_key``.
+
+        claude-code ``--fork-session`` parity: branch a conversation
+        under a fresh session key so the user can explore an alternate
+        continuation *without contaminating the original* — the source
+        session is read-only here and keeps its own turn ledger intact.
+
+        Only ``status == "completed"`` turns are copied, and this is
+        deliberate, not an optimisation:
+
+        - an ``in_progress`` turn is live *somewhere else* (a gateway is
+          still streaming it); replaying its partial rows as settled
+          history would fork a half-finished thought, and
+        - an ``errored`` turn carries T4.4 breadcrumbs (a truncated
+          traceback stamped as an assistant/tool row) that must never
+          replay as if it were clean conversation.
+
+        Best-effort per turn: each source turn is copied inside its own
+        ``try/except`` so a single corrupt/unreadable turn is logged and
+        skipped rather than aborting the whole fork. The forked user text
+        is recovered from the turn's first real ``user`` message, falling
+        back to the row's ``user_text_preview`` (then ``""``) so
+        :meth:`begin_turn`'s resume race-guard still sees a stable label.
+
+        ``list_session_turns`` orders rows ``started_at_ms DESC``; we
+        iterate reversed for chronological (oldest-first) replay so the
+        new session reads in the same order the original did.
+
+        Returns the number of turns actually copied. A no-op guard
+        (empty ``source_key``/``new_key``, or ``source_key == new_key``)
+        returns ``0`` and writes nothing.
+
+        ``limit`` bounds the fork to the NEWEST ``limit`` turns: the DESC
+        listing keeps the most recent rows, so a source longer than
+        ``limit`` forks with its *oldest* history silently truncated (the
+        recent window is what the replayed context uses anyway). Raise
+        ``limit`` for a byte-faithful branch of a very long session.
+
+        NOTE: on the Postgres backend :meth:`list_session_turns` is a
+        ``[]`` stub (the past-turns UI is SQLite-only today, see
+        ``agent_journal_postgres.py``), so a Postgres-backed fork
+        degrades cleanly to a 0-turn fork rather than erroring — SQLite
+        deployments (the console's default) fork faithfully.
+        """
+        if not source_key or not new_key or source_key == new_key:
+            return 0
+        rows = await self.list_session_turns(source_key, limit=limit)
+        copied = 0
+        for row in reversed(rows):  # started_at_ms DESC → chronological
+            turn_id = row.get("turn_id")
+            if turn_id is None:
+                continue
+            try:
+                if str(row.get("status") or "") != TURN_COMPLETED:
+                    continue
+                msgs = await self._backend.load_messages(int(turn_id))
+                user_text = ""
+                for msg in msgs:
+                    if msg.get("role") == "user":
+                        content = msg.get("content")
+                        if isinstance(content, str) and content.strip():
+                            user_text = content
+                            break
+                if not user_text:
+                    user_text = str(row.get("user_text_preview") or "")
+                new_turn = await self.begin_turn(
+                    new_key, user_text, channel="fork"
+                )
+                if new_turn is None:
+                    continue
+                await self.append_messages(new_turn, msgs)
+                await self.complete_turn(new_turn)
+                copied += 1
+            except Exception as exc:  # noqa: BLE001 — one bad turn ≠ dead fork
+                logger.warning(
+                    "agent.journal.fork_turn_failed",
+                    turn_id=turn_id,
+                    error=str(exc),
+                )
+                continue
+        return copied
+
     async def update_turn_cost(
         self,
         turn_id: int,

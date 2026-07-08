@@ -193,6 +193,109 @@ async def test_gf_reasoning_loop_no_fallback_surfaces_error(
     assert events[-1].reason == "overloaded"
 
 
+class _MessageCapturingProvider(_ModelAwareProvider):
+    """Also records the ``messages`` payload each call was given."""
+
+    def __init__(self, overloaded_models: set[str]) -> None:
+        super().__init__(overloaded_models)
+        self.messages_seen: list[list[dict[str, Any]]] = []
+
+    async def chat_stream(
+        self, *, model: str, messages: list[dict[str, Any]] | None = None, **kw: Any
+    ) -> AsyncIterator[ProviderChunk]:  # type: ignore[override]
+        self.messages_seen.append(list(messages or []))
+        async for chunk in super().chat_stream(model=model, **kw):
+            yield chunk
+
+
+@pytest.mark.asyncio
+async def test_gf_reasoning_loop_fallback_strips_thinking_signatures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """E4: thinking blocks (and their model-minted signatures) must not be
+    replayed to a DIFFERENT model after a fallback swap — Anthropic-style
+    backends reject a signature minted by another model, turning a
+    recoverable overload into a hard 400 on the fallback."""
+
+    async def _no_sleep(_: float) -> None:
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+    prov = _MessageCapturingProvider(overloaded_models={"primary"})
+    loop = ReasoningLoop(prov, fallback_models=["secondary"])
+    history = [
+        {"role": "user", "content": "question"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "let me think", "signature": "sig-A"},
+                {"type": "text", "text": "prior answer"},
+            ],
+        },
+        {"role": "user", "content": "follow-up"},
+    ]
+    events = await _collect(loop, ChatStart(model="primary", messages=history))
+    assert isinstance(events[-1], DoneEvent)
+
+    # The primary attempts saw the history verbatim.
+    first_call = prov.messages_seen[0]
+    assert any(
+        isinstance(m.get("content"), list)
+        and any(b.get("type") == "thinking" for b in m["content"])
+        for m in first_call
+    )
+    # Every call on the fallback model carries neither a thinking block
+    # nor any stray ``signature`` key.
+    fallback_calls = [
+        msgs
+        for msgs, model in zip(prov.messages_seen, prov.models_seen, strict=True)
+        if model == "secondary"
+    ]
+    assert fallback_calls
+    for msgs in fallback_calls:
+        for m in msgs:
+            content = m.get("content")
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                assert block.get("type") not in ("thinking", "redacted_thinking")
+                assert "signature" not in block
+    # The non-thinking text block survives the strip.
+    assert any(
+        isinstance(m.get("content"), list)
+        and any(b.get("text") == "prior answer" for b in m["content"])
+        for m in fallback_calls[0]
+    )
+
+
+def test_gf_strip_reasoning_signatures_helper() -> None:
+    from corlinman_agent.reasoning_loop import _strip_reasoning_signatures
+
+    messages = [
+        {"role": "user", "content": "plain string untouched"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "t", "signature": "s1"},
+                {"type": "redacted_thinking", "data": "opaque"},
+                {"type": "text", "text": "keep me", "signature": "s2"},
+            ],
+        },
+        {
+            "role": "assistant",
+            # Only thinking blocks → content collapses to "" (an empty
+            # content-block list is rejected by some backends).
+            "content": [{"type": "thinking", "thinking": "t2", "signature": "s3"}],
+        },
+    ]
+    out = _strip_reasoning_signatures(messages)
+    assert out[0] == {"role": "user", "content": "plain string untouched"}
+    assert out[1]["content"] == [{"type": "text", "text": "keep me"}]
+    assert out[2]["content"] == ""
+    # Input untouched (the loop replays a NEW list).
+    assert messages[1]["content"][0]["signature"] == "s1"
+
+
 # ---------------------------------------------------------------------------
 # Context-overflow shrink-and-retry
 # ---------------------------------------------------------------------------
