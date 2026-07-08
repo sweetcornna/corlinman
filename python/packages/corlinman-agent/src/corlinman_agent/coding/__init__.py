@@ -23,6 +23,14 @@ from corlinman_agent.coding._snapshot import (
     revert_last,
     snapshot,
 )
+from corlinman_agent.coding.environment import (
+    ENV_SANDBOX_BACKEND,
+    DockerEnvironment,
+    Environment,
+    LocalEnvironment,
+    SpawnedProcess,
+    get_environment,
+)
 from corlinman_agent.coding.files import (
     EDIT_FILE_TOOL,
     LIST_FILES_TOOL,
@@ -138,6 +146,7 @@ __all__ = [
     "APPLY_PATCH_TOOL",
     "CODING_TOOLS",
     "EDIT_FILE_TOOL",
+    "ENV_SANDBOX_BACKEND",
     "EXECUTE_CODE_TOOL",
     "LIST_FILES_TOOL",
     "NOTEBOOK_EDIT_TOOL",
@@ -150,7 +159,11 @@ __all__ = [
     "SHELL_TASK_OUTPUT_TOOL",
     "TODO_WRITE_TOOL",
     "WRITE_FILE_TOOL",
+    "DockerEnvironment",
+    "Environment",
     "FileState",
+    "LocalEnvironment",
+    "SpawnedProcess",
     "TodoItem",
     "TodoStore",
     "apply_patch_tool_schema",
@@ -171,6 +184,7 @@ __all__ = [
     "edit_file_tool_schema",
     "ensure_repo",
     "execute_code_tool_schema",
+    "get_environment",
     "list_files_tool_schema",
     "list_snapshots",
     "notebook_edit_tool_schema",

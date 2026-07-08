@@ -56,7 +56,6 @@ import atexit
 import contextlib
 import json
 import os
-import sys
 import time
 import uuid
 from collections import deque
@@ -72,10 +71,18 @@ from corlinman_agent.coding._common import (
     resolve_workspace,
     workspace_rel,
 )
+from corlinman_agent.coding.environment import (
+    LocalSpawnedProcess,
+    SpawnedProcess,
+    get_environment,
+)
+
+# ``kill_process_group`` / ``reap_orphan_group`` are re-exported by
+# :mod:`.shell`; importing them here keeps them as module globals so the
+# terminal-path reap (:meth:`ShellTaskRegistry._reap`) and the tests that
+# spy on ``shell_tasks.reap_orphan_group`` still resolve the same names.
 from corlinman_agent.coding.shell import (
     _SHELL_LOG_DIR,
-    _build_child_env,
-    _preexec_apply_rlimits,
     kill_process_group,
     reap_orphan_group,
 )
@@ -224,6 +231,13 @@ class ShellTask:
     _proc: asyncio.subprocess.Process | None = field(default=None, repr=False)
     _pump: asyncio.Task[None] | None = field(default=None, repr=False)
     _log_abs: Path | None = field(default=None, repr=False)
+    # The task owns its sandbox handle for its whole lifetime. The terminal
+    # reap (:meth:`ShellTaskRegistry._reap_task`) runs the module-level
+    # ``kill_process_group`` / ``reap_orphan_group`` on ``_proc`` for the
+    # local backend (spied by the parity tests) and additionally calls
+    # ``_handle.reap()`` for a non-local backend, which owns container-native
+    # teardown.
+    _handle: SpawnedProcess | None = field(default=None, repr=False)
 
 
 class ShellTaskRegistry:
@@ -276,17 +290,6 @@ class ShellTaskRegistry:
         watchdog run in the background.
         """
         ws = resolve_workspace(workspace)
-        # POSIX-only: apply rlimits + setsid before exec. Same confinement
-        # as the foreground path — background tasks are not privileged.
-        spawn_kwargs: dict[str, Any] = {
-            "cwd": str(ws),
-            "stdout": asyncio.subprocess.PIPE,
-            "stderr": asyncio.subprocess.STDOUT,
-            "env": _build_child_env(),
-        }
-        if sys.platform != "win32":
-            spawn_kwargs["preexec_fn"] = _preexec_apply_rlimits
-
         max_lifetime = _env_max_lifetime_s()
         max_log_bytes = _env_max_log_bytes()
         async with self._lock:
@@ -295,7 +298,11 @@ class ShellTaskRegistry:
             if active >= ceiling:
                 raise ShellTaskQuotaExceeded(active=active, ceiling=ceiling)
 
-            proc = await asyncio.create_subprocess_shell(command, **spawn_kwargs)
+            # Spawn through the sandbox seam with the SAME confinement as the
+            # foreground path — background tasks are not privileged. The local
+            # default reproduces the historical detached spawn.
+            handle = await get_environment().spawn_shell(command, workspace=ws)
+            proc = handle.proc
             task_id = uuid.uuid4().hex[:16]
             log_abs = ws / _SHELL_LOG_DIR / f"shell_task_{task_id}.log"
             # Pre-create the (empty) spill file so log_path points at a real
@@ -318,6 +325,7 @@ class ShellTaskRegistry:
                 log_path=workspace_rel(ws, log_abs),
                 _proc=proc,
                 _log_abs=log_abs,
+                _handle=handle,
             )
             self._tasks[task_id] = task
             task._pump = asyncio.create_task(
@@ -354,9 +362,9 @@ class ShellTaskRegistry:
             # Lifetime watchdog fired — reap the whole group and stamp
             # expired. A daemonized child that outlived the wrapper is swept
             # here too, not just on the natural-exit path (Codex #112).
+            self._reap_task(task)
             proc = task._proc
             if proc is not None:
-                self._reap(proc)
                 try:
                     await proc.wait()
                 except ProcessLookupError:  # pragma: no cover — race
@@ -379,7 +387,7 @@ class ShellTaskRegistry:
             proc = task._proc
             if proc is not None:
                 try:
-                    self._reap(proc)
+                    self._reap_task(task)
                     await proc.wait()
                 except Exception:  # noqa: BLE001 — best-effort reap
                     pass
@@ -418,7 +426,7 @@ class ShellTaskRegistry:
                     break
         if capped:
             # Log cap tripped — reap the whole group and stamp log_capped.
-            self._reap(proc)
+            self._reap_task(task)
             try:
                 await proc.wait()
             except ProcessLookupError:  # pragma: no cover — race
@@ -440,7 +448,7 @@ class ShellTaskRegistry:
         # shell leader while a child lives on in the same group. Reap the
         # group before retiring the row, or that child escapes the watchdog
         # + kill controls forever (once terminal, nothing reaps it).
-        self._reap(proc)
+        self._reap_task(task)
         async with self._lock:
             # A kill / watchdog may have already stamped a terminal state;
             # only the natural-exit path claims a still-``running`` task.
@@ -476,6 +484,17 @@ class ShellTaskRegistry:
         """
         kill_process_group(proc)
         reap_orphan_group(proc)
+
+    def _reap_task(self, task: ShellTask) -> None:
+        # Non-local backends own container-native teardown; the historical
+        # module-global killpg pair below still runs for the local backend
+        # AND (safely, post-setsid) sweeps the docker client itself.
+        handle = task._handle
+        if handle is not None and not isinstance(handle, LocalSpawnedProcess):
+            handle.reap()
+        proc = task._proc
+        if proc is not None:
+            self._reap(proc)
 
     def _retire(self, task: ShellTask) -> None:
         """Record ``task`` in the bounded terminal window (caller holds the
@@ -586,7 +605,7 @@ class ShellTaskRegistry:
                 # already outlived the wrapper, which kill_process_group
                 # alone would miss (Codex #112), leaving future kills a
                 # no-op on an already-terminal row.
-                self._reap(proc)
+                self._reap_task(task)
             task.status = "killed"
             task.exit_code = None
             self._retire(task)
@@ -615,11 +634,10 @@ class ShellTaskRegistry:
         async with self._lock:
             running = [t for t in self._tasks.values() if t.status == "running"]
             for t in running:
-                if t._proc is not None:
-                    # Full group reap — a daemonized child that outlived the
-                    # wrapper would otherwise keep the pipe open and block the
-                    # awaited pump below indefinitely (Codex #112 r5).
-                    self._reap(t._proc)
+                # Full group reap — a daemonized child that outlived the
+                # wrapper would otherwise keep the pipe open and block the
+                # awaited pump below indefinitely (Codex #112 r5).
+                self._reap_task(t)
                 t.status = "killed"
                 t.exit_code = None
                 self._retire(t)
@@ -668,12 +686,12 @@ def _atexit_shutdown() -> None:
         return
     try:
         for task in list(reg._tasks.values()):
-            if task.status == "running" and task._proc is not None:
+            if task.status == "running":
                 try:
                     # Full group reap (both kill_process_group and the direct
                     # killpg-by-pid) so a daemonized child that outlived the
                     # wrapper doesn't survive interpreter exit (Codex #112 r6).
-                    reg._reap(task._proc)
+                    reg._reap_task(task)
                 except Exception:  # noqa: BLE001
                     pass
     except Exception:  # noqa: BLE001 — never raise at exit
