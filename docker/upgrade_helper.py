@@ -378,9 +378,34 @@ def _run_upgrade(req: dict[str, Any], started_at: int) -> int:
     # Clear the previous rollback slot — this upgrade mints a new one.
     _remove(previous)
 
+    # Guarded stop+rename: a failure between "stopped" and "renamed"
+    # (engine timeout on stop — an OSError, not EngineError — or a rename
+    # 409) previously escaped to the top-level handler with the service
+    # STOPPED and nothing to restart it. Restart the original in place
+    # and report; nothing has been replaced yet.
     LOG.add(f"[info] stopping {current}")
-    _stop(current)
-    _rename(current, previous)
+    try:
+        _stop(current)
+        _rename(current, previous)
+    except (EngineError, OSError) as exc:
+        LOG.add(f"[fail] stop/rename before swap: {exc}; restarting original")
+        restored = False
+        try:
+            # Whichever name the container ended up under, bring it back.
+            if _inspect(current) is not None:
+                _start(current)
+            elif _inspect(previous) is not None:
+                _rename(previous, current)
+                _start(current)
+            restored = _inspect(current) is not None
+        except (EngineError, OSError) as restart_exc:
+            LOG.add(f"[fail] restart of original failed: {restart_exc}")
+        write_status(
+            request_id, "failed",
+            error=f"swap_prepare_failed: {exc}"[:300],
+            started_at=started_at, rolled_back=restored,
+        )
+        return 1
     LOG.add(f"[ok] kept rollback slot: {previous}")
 
     try:
@@ -443,23 +468,53 @@ def _run_rollback_instant(req: dict[str, Any], started_at: int) -> int:
     LOG.add(f"[info] instant rollback: swapping {current} <-> {previous}")
     _remove(swap_tmp)
     _stop(current)
+    # Track how far the 3-rename swap got so a mid-way failure is judged
+    # by what actually happened, not blanket-failed: once the target has
+    # been promoted to ``current`` (step >= 2) the rollback is de-facto
+    # done even if the housekeeping rename of the old container failed.
+    step = 0
     try:
         _rename(current, swap_tmp)
+        step = 1
         _rename(previous, current)
+        step = 2
         _rename(swap_tmp, previous)
+        step = 3
         _start(current)
-    except EngineError as exc:
-        LOG.add(f"[fail] swap failed mid-way: {exc}; attempting restore")
-        # Best-effort un-tangle: whichever container holds the tmp name
-        # goes back to being current.
-        if _inspect(swap_tmp) is not None and _inspect(current) is None:
-            _rename(swap_tmp, current)
-        _start(current)
-        write_status(
-            request_id, "failed", error=f"rollback_swap_failed: {exc}"[:300],
-            started_at=started_at,
-        )
-        return 1
+    except (EngineError, OSError) as exc:
+        if step >= 2:
+            LOG.add(
+                f"[warn] housekeeping rename failed after promotion: {exc}; "
+                f"old container stranded as {swap_tmp} (reclaimed by the "
+                "next upgrade). Continuing with the promoted target."
+            )
+            try:
+                _start(current)
+            except (EngineError, OSError) as start_exc:
+                LOG.add(f"[fail] promoted target failed to start: {start_exc}")
+                write_status(
+                    request_id, "failed",
+                    error=f"rollback_swap_failed: {start_exc}"[:300],
+                    started_at=started_at,
+                )
+                return 1
+            # Fall through to the shared health/version verdict below.
+        else:
+            LOG.add(f"[fail] swap failed mid-way: {exc}; attempting restore")
+            # Best-effort un-tangle: whichever container holds the tmp
+            # name goes back to being current.
+            try:
+                if _inspect(swap_tmp) is not None and _inspect(current) is None:
+                    _rename(swap_tmp, current)
+                _start(current)
+            except (EngineError, OSError) as restore_exc:
+                LOG.add(f"[fail] restore failed: {restore_exc}")
+            write_status(
+                request_id, "failed",
+                error=f"rollback_swap_failed: {exc}"[:300],
+                started_at=started_at,
+            )
+            return 1
 
     time.sleep(_START_GRACE_S)
     if not _wait_healthy(current, health_timeout):

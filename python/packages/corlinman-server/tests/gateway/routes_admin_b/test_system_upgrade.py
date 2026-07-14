@@ -719,3 +719,51 @@ def test_rollback_with_no_body_at_all_targets_previous(
 
     assert resp.status_code == 202, resp.text
     assert resp.json()["tag"] == "v1.1.9"
+
+
+def test_rollback_slot_invalidated_by_newer_failed_attempt(
+    client: TestClient, admin_state: AdminState
+) -> None:
+    """A failed upgrade AFTER the succeeded one consumed/cleared the
+    instant slot — it must not be advertised, and an empty-body rollback
+    has no implicit target (self-review P2)."""
+    admin_state.update_checker = _StubChecker(current="1.2.0", latest="1.2.0")
+    ok = _succeeded_status("1.1.9")  # finished_at=1000
+    failed = _FakeUpgradeStatus(
+        request_id="later-fail", tag="1.2.1", state="failed"
+    )
+    failed.finished_at = 2000  # type: ignore[assignment]
+    upgrader = _KwargUpgrader(
+        available=True, mode="docker", store=_RollbackStubStore([ok, failed])
+    )
+    admin_state.upgrader = upgrader
+
+    versions = client.get("/admin/system/rollback-versions")
+    assert versions.status_code == 200
+    assert all(v["instant"] is False for v in versions.json()["versions"])
+
+    resp = client.post("/admin/system/rollback", json={})
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "no_rollback_target"
+
+
+def test_rollback_explicit_tag_never_instant_even_if_slot_matches(
+    client: TestClient, admin_state: AdminState
+) -> None:
+    """Explicit tags take the pull-based path even when equal to the
+    slot version — a vanished slot container must not make that version
+    unreachable (self-review P2)."""
+    admin_state.update_checker = _StubChecker(current="1.2.0", latest="1.2.0")
+    upgrader = _KwargUpgrader(
+        available=True,
+        mode="docker",
+        store=_RollbackStubStore([_succeeded_status("1.1.9")]),
+    )
+    admin_state.upgrader = upgrader
+
+    resp = client.post("/admin/system/rollback", json={"tag": "v1.1.9"})
+
+    assert resp.status_code == 202, resp.text
+    assert upgrader.start_kwargs == [
+        {"allow_downgrade": True, "action": "upgrade"}
+    ]

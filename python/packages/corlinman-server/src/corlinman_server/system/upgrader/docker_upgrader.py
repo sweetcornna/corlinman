@@ -580,16 +580,21 @@ class DockerUpgrader:
                 and entry.startswith("CORLINMAN_VERSION=")
             )
         ]
+        # Deliberately OMITTED: Cmd / Entrypoint / Healthcheck / User /
+        # WorkingDir. ``docker inspect`` merges image defaults into the
+        # container config (the Watchtower problem) — copying them would
+        # pin the OLD image's start script / healthcheck / user onto
+        # every future image, so a release that changes its Dockerfile
+        # CMD or HEALTHCHECK would crash-loop or probe the wrong thing
+        # and become one-click-uninstallable. Omitting them lets the NEW
+        # image's own defaults apply; corlinman's own compose file sets
+        # none of these at the container level. (Same rationale as the
+        # CORLINMAN_VERSION strip above, applied structurally.)
         payload: dict[str, Any] = {
             "Image": new_image,
             "Env": env,
-            "Cmd": config.get("Cmd"),
-            "Entrypoint": config.get("Entrypoint"),
             "Labels": config.get("Labels") or {},
             "ExposedPorts": config.get("ExposedPorts") or {},
-            "Healthcheck": config.get("Healthcheck"),
-            "User": config.get("User") or "",
-            "WorkingDir": config.get("WorkingDir") or "",
             "HostConfig": host_config,
         }
         networks = dict(

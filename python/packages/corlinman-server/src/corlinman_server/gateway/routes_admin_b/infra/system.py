@@ -652,10 +652,18 @@ def router() -> APIRouter:
                 f"already running {current}",
                 current=current,
             )
+        # Instant swap ONLY for the implicit "restore previous" request
+        # (empty body). An explicit tag always takes the pull-based
+        # downgrade path even when it equals the slot version — if the
+        # slot container turned out to be gone (consumed by a later
+        # failed upgrade, pruned manually), hard-wiring the instant
+        # action would make that version unreachable from the UI
+        # (helper: rollback_slot_missing) while a plain pull works.
         action = (
             "rollback_instant"
             if (
-                getattr(upgrader, "mode", None) == "docker"
+                requested_tag is None
+                and getattr(upgrader, "mode", None) == "docker"
                 and instant_tag is not None
                 and _strip_v(target) == instant_tag
             )
