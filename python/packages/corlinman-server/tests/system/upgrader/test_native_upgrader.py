@@ -473,3 +473,110 @@ async def _wait_for_state(
     raise AssertionError(
         f"state did not reach {state!r} within {timeout}s (last: {actual!r})"
     )
+
+
+# ---------------------------------------------------------------------------
+# allow_downgrade forwarding + cancel (rollback / abort support)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_start_forwards_allow_downgrade_to_helper_payload(
+    tmp_path: Path, store: UpgradeStateStore
+) -> None:
+    upgrader = nu.NativeUpgrader(
+        store=store,
+        data_dir=tmp_path,
+        unit_path=tmp_path / "u.service",
+        path_unit_path=tmp_path / "u.path",
+        stall_timeout_s=999,
+        overall_timeout_s=999,
+    )
+    try:
+        req = await upgrader.start(
+            target_tag="v1.1.0", actor="ops", allow_downgrade=True
+        )
+        payload = json.loads(
+            (tmp_path / nu.REQUEST_FILE_NAME).read_text(encoding="utf-8")
+        )
+        assert payload["allow_downgrade"] is True
+        request = store.get_request_sync(req.request_id)
+        assert request is not None
+        assert request.allow_downgrade is True
+        # Rollback context stamped on the status record.
+        snap = await store.get(req.request_id)
+        assert snap is not None
+        assert snap.before_version
+    finally:
+        for task in list(upgrader._background_tasks):
+            task.cancel()
+        await asyncio.gather(
+            *upgrader._background_tasks, return_exceptions=True
+        )
+
+
+@pytest.mark.asyncio
+async def test_cancel_before_helper_pickup(
+    tmp_path: Path, store: UpgradeStateStore
+) -> None:
+    """No helper status yet → cancel deletes the unread request file,
+    marks the record cancelled, and frees the single-flight slot."""
+    upgrader = nu.NativeUpgrader(
+        store=store,
+        data_dir=tmp_path,
+        unit_path=tmp_path / "u.service",
+        path_unit_path=tmp_path / "u.path",
+        stall_timeout_s=999,
+        overall_timeout_s=999,
+    )
+    req = await upgrader.start(target_tag="v1.2.1", actor="ops")
+
+    assert await upgrader.cancel(req.request_id) is True
+
+    assert not (tmp_path / nu.REQUEST_FILE_NAME).exists()
+    snap = await store.get(req.request_id)
+    assert snap is not None
+    assert snap.state == "cancelled"
+    assert await store.current_in_flight() is None
+    # The background poller must exit on the terminal store state rather
+    # than overwriting it with a timeout later.
+    await asyncio.gather(
+        *upgrader._background_tasks, return_exceptions=True
+    )
+    snap = await store.get(req.request_id)
+    assert snap is not None and snap.state == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_cancel_after_helper_pickup_returns_false(
+    tmp_path: Path, store: UpgradeStateStore
+) -> None:
+    """Once the helper has written ANY status for this request the swap
+    is in flight — cancel must refuse."""
+    upgrader = nu.NativeUpgrader(
+        store=store,
+        data_dir=tmp_path,
+        unit_path=tmp_path / "u.service",
+        path_unit_path=tmp_path / "u.path",
+        stall_timeout_s=999,
+        overall_timeout_s=999,
+    )
+    try:
+        req = await upgrader.start(target_tag="v1.2.1", actor="ops")
+        helper_rid = str(uuid.UUID(req.request_id))
+        (tmp_path / nu.STATUS_FILE_NAME).write_text(
+            json.dumps(
+                {"request_id": helper_rid, "state": "running",
+                 "started_at": 1}
+            ),
+            encoding="utf-8",
+        )
+
+        assert await upgrader.cancel(req.request_id) is False
+        assert (tmp_path / nu.REQUEST_FILE_NAME).exists()
+    finally:
+        for task in list(upgrader._background_tasks):
+            task.cancel()
+        await asyncio.gather(
+            *upgrader._background_tasks, return_exceptions=True
+        )

@@ -87,8 +87,11 @@ now_ms() {
 }
 
 # Write a status JSON atomically. Usage:
-#   write_status <request_id> <state> [error] [log_excerpt_file]
-# The status file always contains a single JSON object the gateway can
+#   write_status <request_id> <state> [error] [log_excerpt_file] \
+#                [rolled_back] [version_verified]
+# ``rolled_back`` / ``version_verified`` are optional "true"/"false"
+# strings; empty omits the field (tri-state: absent = unknown). The
+# status file always contains a single JSON object the gateway can
 # poll. We rewrite the whole file on every transition (no append) — the
 # polling reader expects a single fully-valid JSON document.
 write_status() {
@@ -96,6 +99,8 @@ write_status() {
     local state="$2"
     local error="${3:-}"
     local log_excerpt_file="${4:-}"
+    local rolled_back="${5:-}"
+    local version_verified="${6:-}"
 
     local started_at finished_at
     started_at="${UPGRADER_STARTED_AT:-$(now_ms)}"
@@ -119,6 +124,8 @@ write_status() {
         --arg error "$error" \
         --arg started_at "$started_at" \
         --arg finished_at "$finished_at" \
+        --arg rolled_back "$rolled_back" \
+        --arg version_verified "$version_verified" \
         --argjson log_excerpt "${log_excerpt:-null}" \
         '{
             request_id: $request_id,
@@ -127,7 +134,10 @@ write_status() {
             started_at: ($started_at | tonumber),
             finished_at: (if $finished_at == "" then null else ($finished_at | tonumber) end),
             log_excerpt: $log_excerpt
-        }' >"$tmp"
+        }
+        + (if $rolled_back == "" then {} else {rolled_back: ($rolled_back == "true")} end)
+        + (if $version_verified == "" then {} else {version_verified: ($version_verified == "true")} end)' \
+        >"$tmp"
     mv -f "$tmp" "$STATUS_FILE"
 }
 
@@ -177,6 +187,11 @@ fi
 REQUEST_ID=$(echo "$REQUEST_JSON" | jq -r '.request_id // empty')
 TAG=$(echo "$REQUEST_JSON" | jq -r '.tag // empty')
 REQUESTED_BY=$(echo "$REQUEST_JSON" | jq -r '.requested_by // empty')
+# Rollback requests relax the no-downgrade gate. This only loosens a
+# policy check (the tag still has to pass the regex + live releases
+# whitelist), so honouring it from the admin-written request file is
+# safe; the UPGRADER_ALLOW_DOWNGRADE env override remains for ops.
+ALLOW_DOWNGRADE_REQ=$(echo "$REQUEST_JSON" | jq -r 'if .allow_downgrade == true then "1" else "0" end')
 
 if [[ -z "$REQUEST_ID" || ! "$REQUEST_ID" =~ $UUID_REGEX ]]; then
     echo "fatal: request_id missing or malformed: ${REQUEST_ID:-<empty>}" >&2
@@ -209,6 +224,14 @@ write_status "$REQUEST_ID" "running"
 # ---------------------------------------------------------------------------
 # Skip in test mode (so unit tests don't hit the network). When the
 # UPGRADER_SKIP_TAG_CHECK env is set we trust the regex alone.
+# Optional outbound proxy for GitHub (CN networks). Trusted ONLY from
+# the systemd unit's Environment= (install.sh --gh-proxy), never from
+# the request file — the proxy sits in the root helper's network path.
+CURL_PROXY_ARGS=()
+if [[ -n "${UPGRADER_GH_PROXY:-}" ]]; then
+    CURL_PROXY_ARGS=(-x "$UPGRADER_GH_PROXY")
+fi
+
 if [[ -z "${UPGRADER_SKIP_TAG_CHECK:-}" ]]; then
     RELEASES_URL="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases?per_page=100"
     # ``-L`` matters: GitHub 301s old owner paths after a transfer/rename
@@ -216,7 +239,7 @@ if [[ -z "${UPGRADER_SKIP_TAG_CHECK:-}" ]]; then
     # tries to iterate as an array and dies with "Cannot iterate over
     # object" — surfacing as ``tag_not_in_releases`` even though the tag
     # exists at the new location.
-    if ! curl -fsSL -m 15 "$RELEASES_URL" \
+    if ! curl -fsSL -m 15 ${CURL_PROXY_ARGS[@]+"${CURL_PROXY_ARGS[@]}"} "$RELEASES_URL" \
             | jq -e --arg t "$TAG" '.[] | select(.tag_name==$t)' >/dev/null 2>&1; then
         fail "$REQUEST_ID" "tag_not_in_releases"
     fi
@@ -229,25 +252,31 @@ fi
 # comparison is via `sort -V` (GNU sort version-sort) which handles
 # semver correctly. macOS BSD sort lacks -V — but this script only runs
 # from a systemd unit on Linux, so that's fine.
-if [[ "${UPGRADER_ALLOW_DOWNGRADE:-0}" != "1" ]]; then
-    PYTHON_BIN="${INSTALL_PREFIX}/repo/.venv/bin/python"
-    if [[ -x "$PYTHON_BIN" ]]; then
-        # The `try/except` lives in a here-doc style -c argument so we
-        # can write real Python (not a one-liner). Empty string on
-        # PackageNotFoundError keeps the downgrade gate fail-open: if
-        # we can't determine current version, we don't block.
-        CURRENT_VERSION=$("$PYTHON_BIN" - <<'PYEOF' 2>/dev/null || echo ""
-from importlib.metadata import version, PackageNotFoundError
+# Current version — used by the downgrade gate AND the post-upgrade
+# version assertion (so compute it unconditionally). Routes through the
+# shared release-spaced resolver when available (>= v1.28); the legacy
+# sub-package metadata is only a fallback for older installed trees.
+PYTHON_BIN="${INSTALL_PREFIX}/repo/.venv/bin/python"
+if [[ -x "$PYTHON_BIN" ]]; then
+    # Empty string on any failure keeps the gates fail-open: if we
+    # can't determine the current version, we don't block.
+    CURRENT_VERSION=$("$PYTHON_BIN" - <<'PYEOF' 2>/dev/null || echo ""
 try:
-    print(version('corlinman-server'))
-except PackageNotFoundError:
-    print('')
+    from corlinman_server.system.app_version import resolve_app_version
+    print(resolve_app_version())
+except Exception:
+    from importlib.metadata import version, PackageNotFoundError
+    try:
+        print(version('corlinman-server'))
+    except PackageNotFoundError:
+        print('')
 PYEOF
 )
-    else
-        CURRENT_VERSION=""
-    fi
+else
+    CURRENT_VERSION=""
+fi
 
+if [[ "${UPGRADER_ALLOW_DOWNGRADE:-0}" != "1" && "$ALLOW_DOWNGRADE_REQ" != "1" ]]; then
     if [[ -n "$CURRENT_VERSION" ]]; then
         TARGET_STRIPPED="${TAG#v}"
         # printf + sort -V: if the highest sorted value isn't the target,
@@ -270,16 +299,68 @@ fi
 # Truncate the log file so we only capture this run's output.
 : >"$LOG_FILE"
 
+# Route install.sh's own network (git fetch, curl, uv) through the same
+# proxy when configured — the whole point is hosts that can't reach
+# GitHub directly.
+if [[ -n "${UPGRADER_GH_PROXY:-}" ]]; then
+    export HTTPS_PROXY="$UPGRADER_GH_PROXY" HTTP_PROXY="$UPGRADER_GH_PROXY"
+fi
+
 INSTALL_EXIT=0
 # Combine stdout+stderr, tee to a file (capped at 4 KiB on read in
 # write_status), and don't let pipefail mask install.sh's exit code.
 bash "$INSTALL_SH" --upgrade --version "$TAG" >>"$LOG_FILE" 2>&1 || INSTALL_EXIT=$?
 
 # ---------------------------------------------------------------------------
+# 7.5. Post-upgrade version assertion.
+# ---------------------------------------------------------------------------
+# install.sh exiting 0 proves the service came back HEALTHY — not that it
+# came back on the TARGET VERSION (sub2api posture: healthy-but-wrong-
+# version is a failure). /health carries a release-spaced `version` field
+# since v1.28; when it's absent (older gateway) or unreachable, the
+# assertion self-skips (tri-state: absent = unknown, never a false pass).
+VERSION_VERIFIED=""
+if [[ "$INSTALL_EXIT" -eq 0 && -z "${UPGRADER_SKIP_VERSION_ASSERT:-}" ]]; then
+    HEALTH_URL="${UPGRADER_HEALTH_URL:-http://127.0.0.1:6005/health}"
+    TARGET_STRIPPED="${TAG#v}"
+    REPORTED=""
+    for _attempt in 1 2 3 4 5; do
+        REPORTED=$(curl -fsS -m 5 "$HEALTH_URL" 2>/dev/null \
+            | jq -r '.version // empty' 2>/dev/null || echo "")
+        [[ -n "$REPORTED" ]] && break
+        sleep 2
+    done
+    REPORTED="${REPORTED#v}"
+    if [[ -z "$REPORTED" ]]; then
+        echo "[warn] /health has no version field — skipping assertion" >>"$LOG_FILE"
+    elif [[ "$REPORTED" == "$TARGET_STRIPPED" ]]; then
+        echo "[ok] version assertion: $REPORTED == $TARGET_STRIPPED" >>"$LOG_FILE"
+        VERSION_VERIFIED="true"
+    else
+        echo "[fail] version assertion: running $REPORTED, wanted $TARGET_STRIPPED" >>"$LOG_FILE"
+        # Roll back to the version we upgraded away from (explicit
+        # downgrade — install.sh's own health-fail rollback did NOT fire
+        # because the service is healthy, just wrong).
+        ROLLED_BACK="false"
+        if [[ -n "$CURRENT_VERSION" && "$CURRENT_VERSION" != "$TARGET_STRIPPED" ]]; then
+            echo "[info] rolling back to v${CURRENT_VERSION}" >>"$LOG_FILE"
+            if UPGRADER_ALLOW_DOWNGRADE=1 bash "$INSTALL_SH" --upgrade \
+                    --version "v${CURRENT_VERSION}" >>"$LOG_FILE" 2>&1; then
+                ROLLED_BACK="true"
+            fi
+        fi
+        write_status "$REQUEST_ID" "failed" "version_assertion_failed" \
+            "$LOG_FILE" "$ROLLED_BACK" "false"
+        mv -f "$REQUEST_FILE" "$PROCESSED_FILE" || true
+        exit 1
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # 8/9. Write terminal status.
 # ---------------------------------------------------------------------------
 if [[ "$INSTALL_EXIT" -eq 0 ]]; then
-    write_status "$REQUEST_ID" "succeeded" "" "$LOG_FILE"
+    write_status "$REQUEST_ID" "succeeded" "" "$LOG_FILE" "" "$VERSION_VERIFIED"
     # Success: remove the request entirely (and the processed marker).
     rm -f "$REQUEST_FILE" "$PROCESSED_FILE" 2>/dev/null || true
     exit 0
