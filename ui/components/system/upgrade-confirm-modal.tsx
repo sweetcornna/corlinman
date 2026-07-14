@@ -1,19 +1,18 @@
 "use client";
 
 /**
- * `<UpgradeConfirmModal>` — typed-confirmation dialog that gates the
- * one-click upgrade behind explicit operator intent.
+ * `<UpgradeConfirmModal>` — one-click confirm dialog for the upgrade
+ * (sub2api-style: a single "Update now" button, no typed-tag friction;
+ * the audit log records who clicked).
  *
  * Layout:
  *   - Title with the target tag substituted
- *   - Current version line
+ *   - Current → target line
  *   - Amber warning callout (restart impending)
  *   - Optional release-notes excerpt (2 lines max)
- *   - Text input — operator must type the tag exactly; submit stays
- *     disabled otherwise
- *   - Cancel + Upgrade buttons; mid-flight POST renders a "Starting…"
- *     state; 409 surfaces the in-flight info inline and leaves the
- *     modal open
+ *   - Cancel + Update now buttons; mid-flight POST renders a
+ *     "Starting…" state; 409 surfaces the in-flight info inline and
+ *     leaves the modal open
  *
  * On a 202 the caller's `onUpgradeStarted(request_id)` fires and the
  * modal closes. The page that mounted it typically routes the user to
@@ -34,7 +33,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import {
   CorlinmanApiError,
   startSystemUpgrade,
@@ -81,7 +79,6 @@ export function UpgradeConfirmModal({
   onUpgradeStarted,
 }: UpgradeConfirmModalProps) {
   const { t } = useTranslation();
-  const [typed, setTyped] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
   const [inFlight, setInFlight] = React.useState<InFlightInfo | null>(null);
   const [unavailable, setUnavailable] = React.useState(false);
@@ -89,23 +86,19 @@ export function UpgradeConfirmModal({
   // Reset transient state when the modal toggles open.
   React.useEffect(() => {
     if (open) {
-      setTyped("");
       setSubmitting(false);
       setInFlight(null);
       setUnavailable(false);
     }
   }, [open]);
 
-  const matches = typed === tag;
-  const submitDisabled = !matches || submitting;
-
   async function handleSubmit() {
-    if (!matches || submitting) return;
+    if (submitting) return;
     setSubmitting(true);
     setInFlight(null);
     setUnavailable(false);
     try {
-      const res = await startSystemUpgrade(tag, typed);
+      const res = await startSystemUpgrade(tag);
       onUpgradeStarted(res);
       onOpenChange(false);
     } catch (err) {
@@ -153,26 +146,6 @@ export function UpgradeConfirmModal({
           </p>
         ) : null}
 
-        <div className="space-y-1.5">
-          <label
-            htmlFor="upgrade-confirm-input"
-            className="text-xs font-medium uppercase tracking-wide text-sg-ink-3"
-          >
-            {t("system.upgrade.confirm.typeLabel", { tag })}
-          </label>
-          <Input
-            id="upgrade-confirm-input"
-            data-testid="upgrade-confirm-input"
-            value={typed}
-            onChange={(e) => setTyped(e.target.value)}
-            placeholder={t("system.upgrade.confirm.typePlaceholder", { tag })}
-            autoFocus
-            autoComplete="off"
-            spellCheck={false}
-            className="font-mono"
-          />
-        </div>
-
         {inFlight ? (
           <Alert variant="danger" data-testid="upgrade-confirm-conflict">
             {t("system.upgrade.confirm.alreadyRunning", {
@@ -206,7 +179,8 @@ export function UpgradeConfirmModal({
             type="button"
             data-testid="upgrade-confirm-submit"
             onClick={handleSubmit}
-            disabled={submitDisabled}
+            disabled={submitting}
+            autoFocus
           >
             {submitting
               ? t("system.upgrade.confirm.submitting")

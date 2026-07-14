@@ -16,19 +16,26 @@
  *     best-effort source of the live phase/log and, crucially, of an
  *     *early* failure (validation / download) reported while the gateway
  *     is still up (no restart happens on those).
- *   - A reconnect poll of `GET /admin/system/info` — the authoritative
- *     *success* signal. When the gateway comes back reporting a version
- *     different from the pre-upgrade one (or, after we saw it go down,
- *     reports no update available) the new code is running → reload.
+ *   - A reconnect poll of the UNAUTHENTICATED `GET /health` — the
+ *     authoritative *success* signal since v1.28: the gateway reports a
+ *     release-spaced `version`, and we only reload once it EQUALS the
+ *     target tag (healthy-but-wrong-version keeps waiting; the backend
+ *     finalizer will flip the record to failed). Pre-v1.28 backends have
+ *     no `version` on `/health` → fall back to the `/admin/system/info`
+ *     "version changed / came back with no update" heuristic.
  */
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2, RefreshCcw } from "lucide-react";
+import { toast } from "sonner";
 
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
+  cancelUpgrade,
+  CorlinmanApiError,
+  fetchHealthRaw,
   fetchSystemInfo,
   fetchUpgradeStatus,
   streamUpgradeEvents,
@@ -67,6 +74,39 @@ export function detectUpgradeOutcome(args: {
   return "pending";
 }
 
+function stripV(version: string): string {
+  return version.startsWith("v") || version.startsWith("V")
+    ? version.slice(1)
+    : version;
+}
+
+/**
+ * Strict restart-window verdict. Pure + exported for unit tests.
+ *
+ * When the (unauthenticated) `/health` probe reports a `version` AND we
+ * know the target tag, ONLY an exact match (modulo the leading `v`)
+ * counts as success — a healthy gateway on the wrong version keeps the
+ * spinner (the backend's boot finalizer will fail the record). Without
+ * both strict inputs, defer to the legacy `/info` heuristic
+ * (`detectUpgradeOutcome`).
+ */
+export function resolveRestartOutcome(args: {
+  healthVersion?: string | null;
+  targetTag?: string | null;
+  infoCurrent?: string | null;
+  infoAvailable?: boolean | null;
+  currentBefore?: string | null;
+  sawServerDown: boolean;
+}): "succeeded" | "pending" {
+  const { healthVersion, targetTag } = args;
+  if (healthVersion && targetTag) {
+    return stripV(healthVersion) === stripV(targetTag)
+      ? "succeeded"
+      : "pending";
+  }
+  return detectUpgradeOutcome(args);
+}
+
 const RECONNECT_POLL_MS = 2500;
 /** After this long with no terminal, surface a "taking longer" hint +
  * manual reload affordance (but keep polling). */
@@ -80,6 +120,10 @@ export interface UpgradeProgressProps {
    * `/admin/system/info`). Lets us detect the server returning on a new
    * version. */
   currentVersion?: string | null;
+  /** Target release tag (e.g. `v1.28.0`). Enables the strict
+   * health-version assertion; when omitted it's learned from the first
+   * status frame carrying `target_tag`/`tag`. */
+  targetTag?: string | null;
   /** Fires once with the terminal outcome (not for `cancelled`). */
   onTerminal?: (outcome: UpgradeOutcome) => void;
 }
@@ -87,6 +131,7 @@ export interface UpgradeProgressProps {
 export function UpgradeProgress({
   requestId,
   currentVersion,
+  targetTag,
   onTerminal,
 }: UpgradeProgressProps) {
   const { t } = useTranslation();
@@ -116,6 +161,18 @@ export function UpgradeProgress({
       currentBeforeRef.current = currentVersion;
     }
   }, [currentVersion]);
+
+  // Target tag for the strict health-version assertion — prop first,
+  // else learned from the first status frame that carries it.
+  const targetTagRef = React.useRef<string | null>(targetTag ?? null);
+  React.useEffect(() => {
+    if (targetTagRef.current == null && targetTag != null) {
+      targetTagRef.current = targetTag;
+    }
+  }, [targetTag]);
+  const [targetLabel, setTargetLabel] = React.useState<string | null>(
+    targetTag ?? null,
+  );
 
   const finish = React.useCallback(
     (next: "succeeded" | "failed", err?: string | null) => {
@@ -175,10 +232,19 @@ export function UpgradeProgress({
     const ingestStatus = (s: UpgradeStatusResponse) => {
       if (doneRef.current || cancelledRef.current) return;
       if (s.log_excerpt) setLogExcerpt(s.log_excerpt);
+      const learnedTarget = s.target_tag ?? s.tag ?? null;
+      if (targetTagRef.current == null && learnedTarget) {
+        targetTagRef.current = learnedTarget;
+        setTargetLabel(learnedTarget);
+      }
       if (s.state === "failed" || s.state === "stalled") {
         finish("failed", s.error ?? null);
       } else if (s.state === "succeeded") {
         finish("succeeded");
+      } else if (s.state === "cancelled") {
+        cancelledRef.current = true;
+        stopAllRef.current?.();
+        setCancelled(true);
       }
     };
 
@@ -210,20 +276,42 @@ export function UpgradeProgress({
         /* mid-restart / not found — the /info probe below is the signal */
       }
 
-      // Liveness + version: the authoritative success signal.
+      // Liveness + version: the authoritative success signal. The
+      // unauthenticated /health probe survives the restart window's
+      // cookie churn; only an exact version match reloads (strict mode).
       try {
-        const info = await fetchSystemInfo();
+        const health = await fetchHealthRaw();
         if (doneRef.current || cancelledRef.current) return;
-        const verdict = detectUpgradeOutcome({
-          infoCurrent: info.current,
-          infoAvailable: info.available,
-          currentBefore: currentBeforeRef.current,
-          sawServerDown: sawServerDownRef.current,
-        });
-        if (verdict === "succeeded") finish("succeeded");
+        if (health.version && targetTagRef.current) {
+          if (
+            resolveRestartOutcome({
+              healthVersion: health.version,
+              targetTag: targetTagRef.current,
+              sawServerDown: sawServerDownRef.current,
+            }) === "succeeded"
+          ) {
+            finish("succeeded");
+          }
+          return; // strict signal available — never fall to the heuristic
+        }
+        // Pre-v1.28 backend (no version on /health) → legacy heuristic.
+        try {
+          const info = await fetchSystemInfo();
+          if (doneRef.current || cancelledRef.current) return;
+          const verdict = detectUpgradeOutcome({
+            infoCurrent: info.current,
+            infoAvailable: info.available,
+            currentBefore: currentBeforeRef.current,
+            sawServerDown: sawServerDownRef.current,
+          });
+          if (verdict === "succeeded") finish("succeeded");
+        } catch {
+          /* /info needs auth mid-restart — /health above is the liveness
+             marker, so nothing to record here */
+        }
       } catch {
-        // /info unreachable → the gateway is restarting. Record it so the
-        // next successful probe is read as "came back up".
+        // /health unreachable → the gateway is restarting. Record it so
+        // the next successful probe is read as "came back up".
         if (!sawServerDownRef.current) {
           sawServerDownRef.current = true;
           setRestarting(true);
@@ -243,11 +331,24 @@ export function UpgradeProgress({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requestId, finish]);
 
-  const handleCancel = React.useCallback(() => {
+  // Real abort first (v1.28 backend cancels queued/pulling work); when
+  // the upgrade is past the point of no return (409) — or the backend
+  // predates the endpoint — degrade to stop-watching, as before.
+  const handleCancel = React.useCallback(async () => {
+    try {
+      await cancelUpgrade(requestId);
+      toast.success(t("system.upgrade.cancelled.aborted"));
+    } catch (err) {
+      if (err instanceof CorlinmanApiError && err.status === 409) {
+        toast.info(t("system.upgrade.cancelled.tooLate"));
+      }
+      /* any other error (404 fresh process, old backend) → just stop
+         watching, matching the pre-v1.28 behaviour */
+    }
     cancelledRef.current = true;
     stopAllRef.current?.();
     setCancelled(true);
-  }, []);
+  }, [requestId, t]);
 
   const elapsed = Math.max(0, Math.floor((now - startedAt) / 1000));
   const pending = outcome === "pending" && !cancelled;
@@ -289,7 +390,11 @@ export function UpgradeProgress({
           <div className="space-y-0.5">
             <p className="text-sm font-medium text-sg-ink">
               {restarting
-                ? t("system.upgrade.progress.restarting")
+                ? targetLabel
+                  ? t("system.upgrade.progress.waitingVersion", {
+                      version: stripV(targetLabel),
+                    })
+                  : t("system.upgrade.progress.restarting")
                 : t("system.upgrade.progress.title")}
             </p>
             <p className="text-xs text-sg-ink-3">

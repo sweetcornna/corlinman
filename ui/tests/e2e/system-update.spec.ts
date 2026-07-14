@@ -213,11 +213,14 @@ async function installDashboardStubs(page: Page): Promise<void> {
   });
   // Command palette + sidebar accent queries — the palette lazy-loads
   // some lists; if those fire we don't want unmatched-route failures.
+  // NOTE: the backend returns a BARE ARRAY here (lib/api's listProfiles
+  // wraps it into {profiles} itself) — an envelope-shaped stub crashes
+  // <ProfileSwitcher> with `profiles.find is not a function`.
   await page.route("**/admin/profiles*", async (route: Route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ profiles: [], active: null }),
+      body: JSON.stringify([]),
     });
   });
   await page.route("**/admin/tenants*", async (route: Route) => {
@@ -270,6 +273,28 @@ async function installSystemStubs(
       });
     },
   );
+  // The system page's <RollbackPanel> queries this on mount; an empty
+  // list makes the panel self-hide (this spec doesn't exercise rollback,
+  // it just must not trip the strict listeners).
+  await page.route(
+    "**/admin/system/rollback-versions*",
+    async (route: Route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ current: info.current, versions: [] }),
+      });
+    },
+  );
+  // <AuditCard> tails this on the system page — unstubbed it 404s
+  // against the dev server and trips the no-console-errors listener.
+  await page.route("**/admin/system/audit*", async (route: Route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ entries: [], next_before_ts: null }),
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -284,28 +309,29 @@ test.describe("auto-update flow — stubs only", () => {
     await installDashboardStubs(page);
   });
 
-  test("no update — bubble silent + system page says up-to-date", async ({
+  test("no update — badge shows current version without a dot + system page says up-to-date", async ({
     page,
   }) => {
     test.setTimeout(TEST_TIMEOUT_MS);
     const verify = attachStrictListeners(page);
     await installSystemStubs(page, INFO_NO_UPDATE);
 
-    // Land on the dashboard so the TopNav (and therefore the bubble)
-    // mounts. The bubble polls /admin/system/info on mount.
+    // Land on the dashboard so the TopNav (and therefore the badge)
+    // mounts. The badge polls /admin/system/info on mount.
     await page.goto("/");
 
-    // Wait for the layout to settle + the first /info poll to resolve
-    // so the absence assertion isn't observing a pre-fetch state.
+    // Wait for the layout to settle before asserting. The badge renders
+    // only after the first /info poll resolves, so its visibility IS the
+    // "poll landed" signal.
     await expect(page.getByTestId("mobile-nav-trigger")).toBeAttached({
       timeout: 10_000,
     });
-    await page.waitForResponse((res) =>
-      res.url().includes("/admin/system/info"),
-    );
-    // The bubble component returns `null` when no update is available —
-    // no element with `data-testid="update-bubble"` should ever render.
-    await expect(page.getByTestId("update-bubble")).toHaveCount(0);
+    // The badge is ALWAYS visible (v{current}); the amber dot only
+    // appears when an update exists.
+    const badge = page.getByTestId("version-badge");
+    await expect(badge).toBeVisible({ timeout: 10_000 });
+    await expect(badge).toContainText(`v${INFO_NO_UPDATE.current}`);
+    await expect(page.getByTestId("version-badge-dot")).toHaveCount(0);
 
     // Navigate to /system to assert the page-side surface.
     await page.goto("/system");
@@ -327,7 +353,7 @@ test.describe("auto-update flow — stubs only", () => {
     verify();
   });
 
-  test("update available — bubble + page banner + release notes", async ({
+  test("update available — badge dot + panel + page banner + release notes", async ({
     page,
   }) => {
     test.setTimeout(TEST_TIMEOUT_MS);
@@ -336,14 +362,18 @@ test.describe("auto-update flow — stubs only", () => {
 
     await page.goto("/");
 
-    // Bubble lights up with the latest tag.
-    const bubble = page.getByTestId("update-bubble");
-    await expect(bubble).toBeVisible({ timeout: 10_000 });
-    await expect(bubble).toContainText(INFO_UPDATE_AVAILABLE.latest);
+    // Badge lights up: amber pulsing dot next to the CURRENT version.
+    const badge = page.getByTestId("version-badge");
+    await expect(badge).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByTestId("version-badge-dot")).toBeVisible();
 
-    // Clicking the chip navigates to /system. The chip is a
-    // `next/link`, so a normal click is enough.
-    await bubble.click();
+    // Clicking the chip opens the panel in its update-available state,
+    // naming the latest tag; the details link navigates to /system.
+    await badge.click();
+    const updateCard = page.getByTestId("version-badge-update");
+    await expect(updateCard).toBeVisible();
+    await expect(updateCard).toContainText(INFO_UPDATE_AVAILABLE.latest);
+    await updateCard.getByRole("link").click();
     await expect(page).toHaveURL(/\/system$/);
     await expect(page.getByTestId("system-page")).toBeVisible({
       timeout: 10_000,
@@ -378,6 +408,11 @@ test.describe("auto-update flow — stubs only", () => {
     // No inline script under the release-notes container at all.
     await expect(notes.locator("script")).toHaveCount(0);
 
+    // The manual-commands accordion defaults COLLAPSED when a one-click
+    // path is available — open it before poking the tabs inside.
+    await page
+      .locator("details:has([data-testid='system-upgrade-tabs']) > summary")
+      .click();
     // Switch to the "Docker" tab → CopyUpgradeCommand updates.
     await page.getByTestId("system-upgrade-tab-docker").click();
     const dockerPanel = page.getByTestId("system-upgrade-panel-docker");
@@ -389,60 +424,44 @@ test.describe("auto-update flow — stubs only", () => {
     verify();
   });
 
-  test("dismissed via localStorage — bubble silent across reload", async ({
+  test("dismiss via the panel — dot hidden (chip stays) across reload", async ({
     page,
   }) => {
     test.setTimeout(TEST_TIMEOUT_MS);
     const verify = attachStrictListeners(page);
     await installSystemStubs(page, INFO_UPDATE_AVAILABLE);
 
-    // Pre-seed the dismiss slot BEFORE the page loads. `addInitScript`
-    // runs in every new document context (initial nav + reloads), so
-    // the bubble's initial `useState(() => localStorage.get…)` reads
-    // the dismissed tag synchronously on first render.
-    const dismissedTag = INFO_UPDATE_AVAILABLE.latest;
-    await page.addInitScript((tag) => {
-      try {
-        window.localStorage.setItem("corlinman_update_dismissed_tag", tag);
-      } catch {
-        /* private mode — ignore */
-      }
-    }, dismissedTag);
-
     await page.goto("/");
 
-    // The bubble should not render at all (component returns null when
-    // dismissedTag === data.latest). Wait for the TopNav to mount (the
-    // mobile-nav-trigger lives in it) before asserting the absence —
-    // a too-eager assertion would race the layout's auth check.
-    await expect(page.getByTestId("mobile-nav-trigger")).toBeAttached({
-      timeout: 10_000,
-    });
-    // Allow the bubble's first poll to resolve so we're not asserting
-    // on a pre-fetch state.
-    await page.waitForResponse((res) =>
-      res.url().includes("/admin/system/info"),
-    );
-    await expect(page.getByTestId("update-bubble")).toHaveCount(0);
+    // Update available → dot visible.
+    const badge = page.getByTestId("version-badge");
+    await expect(badge).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByTestId("version-badge-dot")).toBeVisible();
 
-    // Reload → still silent (state persists in localStorage).
+    // Dismiss through the panel (the real user flow — it stashes the
+    // tag in localStorage). The DOT hides; the version chip stays.
+    await badge.click();
+    await page.getByTestId("version-badge-dismiss").click();
+    await expect(page.getByTestId("version-badge-dot")).toHaveCount(0);
+    await expect(badge).toBeVisible();
+
+    // Reload → dot still hidden (state persists in localStorage). The
+    // chip renders only after the first /info poll resolves, so its
+    // visibility IS the "poll landed" signal.
     await page.reload();
-    await expect(page.getByTestId("mobile-nav-trigger")).toBeAttached({
+    await expect(page.getByTestId("version-badge")).toBeVisible({
       timeout: 10_000,
     });
-    await page.waitForResponse((res) =>
-      res.url().includes("/admin/system/info"),
-    );
-    await expect(page.getByTestId("update-bubble")).toHaveCount(0);
+    await expect(page.getByTestId("version-badge-dot")).toHaveCount(0);
 
-    // Clear the slot in-page and reload — the bubble should now appear
-    // because the dismissed tag is gone. `evaluate` runs in the page's
-    // origin so it can mutate the same storage the component reads.
+    // Clear the stash in-page and reload — the dot returns because the
+    // dismissed tag is gone. `evaluate` runs in the page's origin so it
+    // mutates the same storage the component reads.
     await page.evaluate(() => {
       window.localStorage.removeItem("corlinman_update_dismissed_tag");
     });
     await page.reload();
-    await expect(page.getByTestId("update-bubble")).toBeVisible({
+    await expect(page.getByTestId("version-badge-dot")).toBeVisible({
       timeout: 10_000,
     });
 
