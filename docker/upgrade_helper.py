@@ -51,9 +51,13 @@ REQUEST_FILE = DATA_DIR / ".upgrade-request"
 PROCESSED_FILE = DATA_DIR / ".upgrade-request.processed"
 STATUS_FILE = DATA_DIR / ".upgrade-status"
 
-# Engine API version prefix. v1.41 (Docker 20.10) is old enough to be
-# universally available and new enough for everything used here.
-API = "/v1.41"
+# Engine API version prefix. Negotiated at startup against the running
+# daemon (see _negotiate_api_version): a hard-pinned version FAILS on
+# modern engines — Docker 25+/29 sets MinAPIVersion 1.44 and rejects an
+# older pin with 400 "client version X is too old". Empty prefix =
+# unversioned request, which the daemon serves with its own current
+# version and is the safe fallback across every engine.
+API = ""
 
 _LOG_CAP_BYTES = 4096
 _STOP_TIMEOUT_S = 30
@@ -100,6 +104,26 @@ class EngineError(RuntimeError):
     def __init__(self, status: int, message: str) -> None:
         super().__init__(f"engine {status}: {message}")
         self.status = status
+
+
+def _negotiate_api_version() -> None:
+    """Pin :data:`API` to the daemon's own API version.
+
+    Sets the module-global ``API`` to ``/v{ApiVersion}`` read from an
+    unversioned ``GET /version``. Leaves it unversioned (``""``) on any
+    failure — unversioned requests are served with the daemon's current
+    version, so the helper always speaks something the daemon accepts.
+    """
+    global API
+    try:
+        info = _engine("GET", "/version", timeout=10.0)
+        version = (info or {}).get("ApiVersion")
+        if isinstance(version, str) and version:
+            API = f"/v{version}"
+            LOG.add(f"[info] negotiated Docker API v{version}")
+    except Exception as exc:  # noqa: BLE001 — unversioned fallback is fine
+        API = ""  # reset to unversioned (safe on every daemon)
+        LOG.add(f"[warn] API version negotiation failed ({exc}); unversioned")
 
 
 def _engine(
@@ -569,6 +593,7 @@ def main() -> int:
         REQUEST_FILE.replace(PROCESSED_FILE)
         return 1
 
+    _negotiate_api_version()
     write_status(request_id, "running", started_at=started_at)
     try:
         if req.get("action") == "rollback_instant":
