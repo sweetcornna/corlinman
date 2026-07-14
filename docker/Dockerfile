@@ -159,6 +159,18 @@ COPY --from=py-builder /build/python /app/python
 COPY --from=py-builder /build/proto /app/proto
 RUN mkdir -p /build && ln -s /app/python /build/python && ln -s /app/proto /build/proto
 
+# Root workspace pyproject so resolve_app_version() finds the release-spaced
+# ``corlinman`` [project].version inside the container (the sub-package
+# metadata is NOT bumped per release — see system/app_version.py).
+COPY pyproject.toml /app/pyproject.toml
+
+# Release stamp escape hatch (highest precedence in resolve_app_version()).
+# Empty by default so local builds fall through to /app/pyproject.toml; CI
+# passes the tag ref (release-image.yml). A non-version ref like ``main``
+# is ignored by the resolver, so passing github.ref_name is always safe.
+ARG CORLINMAN_VERSION=
+ENV CORLINMAN_VERSION=${CORLINMAN_VERSION}
+
 # Activate the venv.
 ENV PATH=/opt/venv/bin:$PATH
 ENV PYTHONUNBUFFERED=1

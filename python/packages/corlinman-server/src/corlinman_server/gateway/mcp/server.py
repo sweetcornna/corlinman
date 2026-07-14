@@ -33,7 +33,6 @@ TODO (matches the Rust comment, plus Python-specific gaps):
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from importlib import metadata as _pkg_metadata
 
 from corlinman_mcp_server import (
     AdapterDispatcher,
@@ -197,12 +196,9 @@ def build_mcp_server(
 
 
 def _pkg_version() -> str:
-    """Resolve the corlinman-server package version. Mirrors the Rust
-    ``env!("CARGO_PKG_VERSION")`` lookup — we hit installed package
-    metadata first and fall back to a hardcoded sentinel so this is
-    safe to call from a fresh repo without an editable install.
-    """
-    try:
-        return _pkg_metadata.version("corlinman-server")
-    except _pkg_metadata.PackageNotFoundError:
-        return "0.0.0+local"
+    """Resolve the running app version via the shared resolver so the MCP
+    ``ServerInfo`` version matches the updater / ``/healthz`` (see
+    :mod:`corlinman_server.system.app_version`)."""
+    from corlinman_server.system.app_version import resolve_app_version
+
+    return resolve_app_version()

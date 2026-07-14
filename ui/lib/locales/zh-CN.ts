@@ -3359,7 +3359,11 @@ export const zhCN = {
           "该部署需手动升级（例如 root 拥有的原生部署）。请关闭本对话框，使用下方「手动升级」中的命令复制执行。",
       },
       progress: {
-        title: "升级中…",
+        title: "更新中…",
+        subtitle: "正在应用更新——网关会自动重启，通常不到一分钟。",
+        restarting: "正在重启网关…",
+        slow: "耗时比平常长。可以继续等待，或立即重新加载。",
+        reloadNow: "立即重新加载",
         elapsed: "已用时 {{seconds}}秒",
         cancel: "停止观察",
         cancelHint: "关闭此视图；升级在后台继续。",
@@ -3372,10 +3376,15 @@ export const zhCN = {
         done: "完成",
       },
       succeeded: {
-        title: "升级完成",
+        title: "更新完成",
         subtitle: "网关已运行 {{tag}}。",
+        reloading: "更新完成——正在重新加载…",
         reload: "重新加载页面",
         autoReload: "{{seconds}}秒后自动加载",
+      },
+      cancelled: {
+        title: "已停止观察",
+        subtitle: "升级在后台继续。重新加载页面即可查看版本。",
       },
       failed: {
         title: "升级失败",

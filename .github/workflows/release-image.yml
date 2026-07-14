@@ -58,6 +58,12 @@ jobs:
           file: docker/Dockerfile
           target: runtime
           platforms: linux/amd64,linux/arm64
+          # Bake the release version into the image so resolve_app_version()
+          # never falls back to stale sub-package metadata in containers. On
+          # main pushes ref_name is "main", which the resolver ignores (it
+          # then reads the baked /app/pyproject.toml instead).
+          build-args: |
+            CORLINMAN_VERSION=${{ github.ref_name }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

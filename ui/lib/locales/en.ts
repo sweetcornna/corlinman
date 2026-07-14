@@ -3427,7 +3427,12 @@ export const en = {
           "This deployment upgrades manually (e.g. a root-owned native box). Close this dialog and run the copy-paste commands under “Manual upgrade” below.",
       },
       progress: {
-        title: "Upgrading…",
+        title: "Updating…",
+        subtitle:
+          "Applying the update — the gateway restarts automatically. This usually takes under a minute.",
+        restarting: "Restarting the gateway…",
+        slow: "This is taking longer than usual. You can keep waiting or reload now.",
+        reloadNow: "Reload now",
         elapsed: "Elapsed {{seconds}}s",
         cancel: "Stop watching",
         cancelHint:
@@ -3441,10 +3446,16 @@ export const en = {
         done: "Done",
       },
       succeeded: {
-        title: "Upgrade complete",
+        title: "Update complete",
         subtitle: "The gateway is now running {{tag}}.",
+        reloading: "Update complete — reloading…",
         reload: "Reload page",
         autoReload: "Auto-reload in {{seconds}}s",
+      },
+      cancelled: {
+        title: "Stopped watching",
+        subtitle:
+          "The upgrade continues in the background. Reload the page to check the version.",
       },
       failed: {
         title: "Upgrade failed",

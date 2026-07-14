@@ -1,214 +1,256 @@
 "use client";
 
 /**
- * `<UpgradeProgress>` — live, SSE-driven panel that follows a running
- * one-click upgrade.
+ * `<UpgradeProgress>` — follows a running one-click upgrade.
  *
- * Sources truth from `GET /admin/system/upgrade/{id}/events` (SSE);
- * falls back to polling `fetchUpgradeStatus(id)` every 2s if the
- * EventSource never opens. Closes on terminal state.
+ * Why a spinner and not a progress bar: on the native (systemd) deploy the
+ * upgrade **restarts the gateway** mid-flight, which drops the SSE stream
+ * and orphans the in-memory status store, so a determinate bar keyed to
+ * backend phases can never fill (the NativeUpgrader also emits no
+ * sub-phases). We instead show an indeterminate "updating…" spinner and
+ * detect completion the way sub2api does — by watching the server go down
+ * and come back **on a new version**, then reloading the page.
  *
- * Backend TODO — cancel is currently "stop watching" only; the
- * upgrade itself continues in the background. Mid-flight abort
- * is not yet supported by the protocol layer.
+ * Signals:
+ *   - SSE `GET /admin/system/upgrade/{id}/events` + a status poll — a
+ *     best-effort source of the live phase/log and, crucially, of an
+ *     *early* failure (validation / download) reported while the gateway
+ *     is still up (no restart happens on those).
+ *   - A reconnect poll of `GET /admin/system/info` — the authoritative
+ *     *success* signal. When the gateway comes back reporting a version
+ *     different from the pre-upgrade one (or, after we saw it go down,
+ *     reports no update available) the new code is running → reload.
  */
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { CheckCircle2, Circle, Loader2, XCircle } from "lucide-react";
+import { Loader2, RefreshCcw } from "lucide-react";
 
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
+  fetchSystemInfo,
   fetchUpgradeStatus,
   streamUpgradeEvents,
   type UpgradeStatusResponse,
 } from "@/lib/api";
-import { cn } from "@/lib/utils";
 
-/** Phase progression we know about. The current phase is whatever
- * `status.phase` says, even if it falls outside this list — in that
- * case the unknown phase renders as the leading pill verbatim. */
-const PHASE_ORDER = [
-  "validating",
-  "pulling",
-  "recreating",
-  "healthcheck",
-  "done",
-] as const;
+/** Terminal outcome of the upgrade as this component understands it. */
+export type UpgradeOutcome = "pending" | "succeeded" | "failed";
 
-type Phase = (typeof PHASE_ORDER)[number];
-
-function isKnownPhase(p: string): p is Phase {
-  return (PHASE_ORDER as readonly string[]).includes(p);
+/**
+ * Decide, from the reconnect-poll signals, whether the upgrade has
+ * completed successfully. Pure + exported for unit tests.
+ *
+ * Success is inferred from `/admin/system/info` coming back after the
+ * restart:
+ *   - the reported `current` differs from the version we captured before
+ *     the upgrade (the new code is running), OR
+ *   - we observed the server go unreachable (a restart) and it now
+ *     reports no update available.
+ */
+export function detectUpgradeOutcome(args: {
+  infoCurrent?: string | null;
+  infoAvailable?: boolean | null;
+  currentBefore?: string | null;
+  sawServerDown: boolean;
+}): "succeeded" | "pending" {
+  const { infoCurrent, infoAvailable, currentBefore, sawServerDown } = args;
+  if (
+    infoCurrent != null &&
+    currentBefore != null &&
+    infoCurrent !== currentBefore
+  ) {
+    return "succeeded";
+  }
+  if (sawServerDown && infoAvailable === false) return "succeeded";
+  return "pending";
 }
 
-/** Target fill % for the determinate progress bar, keyed by phase. The
- * bar eases toward the current phase's mark; a succeeded terminal snaps
- * to 100, a failed terminal holds at the phase it died on (in red). */
-const PHASE_PERCENT: Record<Phase, number> = {
-  validating: 12,
-  pulling: 45,
-  recreating: 72,
-  healthcheck: 90,
-  done: 100,
-};
-
-/** Determinate fill % for the progress bar. Snaps to 100 on a succeeded
- * terminal; otherwise returns the current phase's mark, but never below
- * ``floor`` — the high-water % the caller has already shown. The floor
- * matters on FAILURE: a failed/stalled terminal often carries a backend
- * failure code as its ``phase`` (``image_pull_failed``, ``recreate_failed``,
- * ``healthcheck_timeout``, native ``timeout``) which isn't in
- * ``PHASE_ORDER`` — without the floor the bar would snap back to the
- * near-empty start instead of holding (in red) near where it died.
- * Exported for unit tests. */
-export function phaseProgressPercent(
-  status: UpgradeStatusResponse | null,
-  floor = 3,
-): number {
-  if (!status) return floor;
-  if (status.state === "succeeded") return 100;
-  const known =
-    status.phase && isKnownPhase(status.phase) ? PHASE_PERCENT[status.phase] : 0;
-  return Math.max(known, floor);
-}
-
-const TERMINAL_STATES = new Set([
-  "succeeded",
-  "failed",
-  "stalled",
-  "cancelled",
-]);
-
-const AUTO_RELOAD_SECONDS = 5;
+const RECONNECT_POLL_MS = 2500;
+/** After this long with no terminal, surface a "taking longer" hint +
+ * manual reload affordance (but keep polling). */
+const SLOW_AFTER_MS = 5 * 60_000;
+/** Small grace so the success banner is visible before the reload. */
+const RELOAD_GRACE_MS = 1800;
 
 export interface UpgradeProgressProps {
   requestId: string;
-  /** Fires once the stream reaches a terminal state. The parent typically
-   * schedules a window.location.reload() ~5s later on success. */
-  onTerminal?: (status: UpgradeStatusResponse) => void;
+  /** The "current" version shown before the upgrade started (from
+   * `/admin/system/info`). Lets us detect the server returning on a new
+   * version. */
+  currentVersion?: string | null;
+  /** Fires once with the terminal outcome (not for `cancelled`). */
+  onTerminal?: (outcome: UpgradeOutcome) => void;
 }
 
 export function UpgradeProgress({
   requestId,
+  currentVersion,
   onTerminal,
 }: UpgradeProgressProps) {
   const { t } = useTranslation();
-  const [status, setStatus] = React.useState<UpgradeStatusResponse | null>(
-    null,
-  );
+
+  const [outcome, setOutcome] = React.useState<UpgradeOutcome>("pending");
+  const [error, setError] = React.useState<string | null>(null);
+  const [logExcerpt, setLogExcerpt] = React.useState<string>("");
+  const [restarting, setRestarting] = React.useState(false);
+  const [slow, setSlow] = React.useState(false);
+  const [cancelled, setCancelled] = React.useState(false);
+  const [startedAt] = React.useState(() => Date.now());
   const [now, setNow] = React.useState(() => Date.now());
-  const [reloadIn, setReloadIn] = React.useState<number | null>(null);
-  const closedRef = React.useRef(false);
-  // High-water of the bar fill: only ever advances (per known phase) so a
-  // failed/stalled terminal holds where it reached instead of snapping
-  // back. Reset when a new upgrade (requestId) starts.
-  const floorRef = React.useRef(3);
+
+  const doneRef = React.useRef(false);
+  const cancelledRef = React.useRef(false);
+  const sawServerDownRef = React.useRef(false);
+  const stopAllRef = React.useRef<(() => void) | null>(null);
   const onTerminalRef = React.useRef(onTerminal);
   onTerminalRef.current = onTerminal;
 
-  // Elapsed tick every 1s while pre-terminal.
+  // Capture the pre-upgrade version once; never let a later re-render
+  // (e.g. a background /info refetch that already shows the new version)
+  // overwrite the baseline we compare against.
+  const currentBeforeRef = React.useRef<string | null>(currentVersion ?? null);
   React.useEffect(() => {
-    if (status && TERMINAL_STATES.has(status.state)) return;
+    if (currentBeforeRef.current == null && currentVersion != null) {
+      currentBeforeRef.current = currentVersion;
+    }
+  }, [currentVersion]);
+
+  const finish = React.useCallback(
+    (next: "succeeded" | "failed", err?: string | null) => {
+      if (doneRef.current || cancelledRef.current) return;
+      doneRef.current = true;
+      setOutcome(next);
+      if (err) setError(err);
+      stopAllRef.current?.();
+      onTerminalRef.current?.(next);
+      if (next === "succeeded") {
+        window.setTimeout(() => window.location.reload(), RELOAD_GRACE_MS);
+      }
+    },
+    [],
+  );
+
+  // Elapsed-time tick while pending.
+  React.useEffect(() => {
+    if (outcome !== "pending" || cancelled) return;
     const id = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(id);
-  }, [status]);
+  }, [outcome, cancelled]);
 
-  // SSE + polling fallback.
+  // SSE (phase/log + early failure) + reconnect poll (success signal).
   React.useEffect(() => {
-    closedRef.current = false;
-    floorRef.current = 3; // new upgrade — reset the high-water fill
-    let es: EventSource | null = null;
-    let pollHandle: number | null = null;
-    let sseOpened = false;
+    doneRef.current = false;
+    cancelledRef.current = false;
+    sawServerDownRef.current = false;
+    setOutcome("pending");
+    setError(null);
+    setLogExcerpt("");
+    setRestarting(false);
+    setSlow(false);
+    setCancelled(false);
 
-    function handleStatus(next: UpgradeStatusResponse) {
-      if (closedRef.current) return;
-      // Advance the high-water as known phases land so the bar never
-      // regresses (esp. on a failure whose phase is a backend code).
-      if (next.phase && isKnownPhase(next.phase)) {
-        floorRef.current = Math.max(floorRef.current, PHASE_PERCENT[next.phase]);
+    let es: EventSource | null = null;
+    let pollTimer: number | null = null;
+    let slowTimer: number | null = null;
+
+    const stopAll = () => {
+      es?.close();
+      es = null;
+      if (pollTimer !== null) {
+        window.clearInterval(pollTimer);
+        pollTimer = null;
       }
-      setStatus(next);
-      if (TERMINAL_STATES.has(next.state)) {
-        closedRef.current = true;
-        if (next.state === "succeeded") setReloadIn(AUTO_RELOAD_SECONDS);
-        onTerminalRef.current?.(next);
-        es?.close();
-        if (pollHandle !== null) window.clearInterval(pollHandle);
+      if (slowTimer !== null) {
+        window.clearTimeout(slowTimer);
+        slowTimer = null;
       }
-    }
+    };
+    stopAllRef.current = stopAll;
+
+    // Fold an SSE / status snapshot into local state. Only failures (and a
+    // rare same-process success) are terminal here; the success path is
+    // usually driven by the reconnect poll below.
+    const ingestStatus = (s: UpgradeStatusResponse) => {
+      if (doneRef.current || cancelledRef.current) return;
+      if (s.log_excerpt) setLogExcerpt(s.log_excerpt);
+      if (s.state === "failed" || s.state === "stalled") {
+        finish("failed", s.error ?? null);
+      } else if (s.state === "succeeded") {
+        finish("succeeded");
+      }
+    };
 
     try {
       es = streamUpgradeEvents(requestId);
       es.addEventListener("status", (ev) => {
-        sseOpened = true;
         try {
-          const data = JSON.parse((ev as MessageEvent).data);
-          handleStatus(data as UpgradeStatusResponse);
+          ingestStatus(JSON.parse((ev as MessageEvent).data));
         } catch {
           /* malformed frame — ignore */
         }
       });
-      es.addEventListener("error", () => {
-        // Browser handles auto-reconnect; if we never opened, fall
-        // through to polling below.
-      });
+      // Browser auto-reconnects the EventSource; a permanent drop (the
+      // restart) is handled by the reconnect poll, so no error handler.
     } catch {
-      // EventSource unsupported / blocked — polling fallback only.
+      /* EventSource unsupported / blocked — poll-only. */
     }
 
-    // Start polling immediately as a belt-and-suspenders. If the SSE
-    // opens and starts emitting, the polling effectively just
-    // produces redundant snapshots — handleStatus is idempotent.
-    pollHandle = window.setInterval(async () => {
-      if (closedRef.current) return;
-      // If the SSE is alive (we've seen at least one frame), skip
-      // the polling beat to reduce load.
-      if (sseOpened && status && !TERMINAL_STATES.has(status.state)) {
-        return;
-      }
+    pollTimer = window.setInterval(async () => {
+      if (doneRef.current || cancelledRef.current) return;
+
+      // Status snapshot: surfaces phase/log while the gateway is up and
+      // catches a persisted terminal after restart. 404 (request gone
+      // from a fresh process) is expected — swallow it.
       try {
-        const snap = await fetchUpgradeStatus(requestId);
-        handleStatus(snap);
+        ingestStatus(await fetchUpgradeStatus(requestId));
+        if (doneRef.current) return;
       } catch {
-        /* swallow — the next tick or the SSE will recover */
+        /* mid-restart / not found — the /info probe below is the signal */
       }
-    }, 2000);
+
+      // Liveness + version: the authoritative success signal.
+      try {
+        const info = await fetchSystemInfo();
+        if (doneRef.current || cancelledRef.current) return;
+        const verdict = detectUpgradeOutcome({
+          infoCurrent: info.current,
+          infoAvailable: info.available,
+          currentBefore: currentBeforeRef.current,
+          sawServerDown: sawServerDownRef.current,
+        });
+        if (verdict === "succeeded") finish("succeeded");
+      } catch {
+        // /info unreachable → the gateway is restarting. Record it so the
+        // next successful probe is read as "came back up".
+        if (!sawServerDownRef.current) {
+          sawServerDownRef.current = true;
+          setRestarting(true);
+        }
+      }
+    }, RECONNECT_POLL_MS);
+
+    slowTimer = window.setTimeout(() => {
+      if (!doneRef.current && !cancelledRef.current) setSlow(true);
+    }, SLOW_AFTER_MS);
 
     return () => {
-      closedRef.current = true;
-      es?.close();
-      if (pollHandle !== null) window.clearInterval(pollHandle);
+      cancelledRef.current = true;
+      stopAll();
+      stopAllRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [requestId]);
+  }, [requestId, finish]);
 
-  // Auto-reload countdown on success.
-  React.useEffect(() => {
-    if (reloadIn === null) return;
-    if (reloadIn <= 0) {
-      window.location.reload();
-      return;
-    }
-    const id = window.setTimeout(() => setReloadIn(reloadIn - 1), 1000);
-    return () => window.clearTimeout(id);
-  }, [reloadIn]);
+  const handleCancel = React.useCallback(() => {
+    cancelledRef.current = true;
+    stopAllRef.current?.();
+    setCancelled(true);
+  }, []);
 
-  const elapsed =
-    status?.started_at != null
-      ? Math.max(0, Math.floor((now - status.started_at) / 1000))
-      : null;
-  const terminal = status ? TERMINAL_STATES.has(status.state) : false;
-  const succeeded = terminal && status?.state === "succeeded";
-  // failed AND stalled are error terminals (stalled = the helper status
-  // file never appeared on the native path) — both render red, not the
-  // in-flight gradient. cancelled is a neutral "stopped watching" stop.
-  const errored =
-    terminal && (status?.state === "failed" || status?.state === "stalled");
-  const cancelled = terminal && status?.state === "cancelled";
-  const percent = phaseProgressPercent(status, floorRef.current);
+  const elapsed = Math.max(0, Math.floor((now - startedAt) / 1000));
+  const pending = outcome === "pending" && !cancelled;
 
   return (
     <section
@@ -217,195 +259,108 @@ export function UpgradeProgress({
     >
       <header className="flex items-center justify-between">
         <h2 className="text-lg font-semibold tracking-tight">
-          {terminal && status?.state === "succeeded"
+          {outcome === "succeeded"
             ? t("system.upgrade.succeeded.title")
-            : terminal && status?.state === "failed"
+            : outcome === "failed"
               ? t("system.upgrade.failed.title")
-              : terminal && status?.state === "stalled"
-                ? t("system.upgrade.stalled.title")
+              : cancelled
+                ? t("system.upgrade.cancelled.title")
                 : t("system.upgrade.progress.title")}
         </h2>
-        {!terminal && elapsed !== null ? (
+        {pending ? (
           <span className="font-mono text-xs text-sg-ink-3">
             {t("system.upgrade.progress.elapsed", { seconds: elapsed })}
           </span>
         ) : null}
       </header>
 
-      {/* Determinate progress bar — fills through the phases to 100%. */}
-      <div className="space-y-1.5" data-testid="upgrade-progress-bar">
-        <div className="h-2 w-full overflow-hidden rounded-full border border-sg-border bg-sg-inset">
-          <div
-            role="progressbar"
-            aria-valuenow={percent}
-            aria-valuemin={0}
-            aria-valuemax={100}
-            data-testid="upgrade-progress-bar-fill"
-            data-state={
-              errored
-                ? "failed"
-                : succeeded
-                  ? "succeeded"
-                  : cancelled
-                    ? "cancelled"
-                    : "running"
-            }
-            className={cn(
-              "h-full rounded-full transition-[width] duration-700 ease-out",
-              errored
-                ? "bg-sg-err"
-                : succeeded
-                  ? "bg-sg-ok"
-                  : cancelled
-                    ? "bg-sg-ink-4"
-                    : "bg-gradient-to-r from-sg-accent to-sg-accent-2",
-            )}
-            style={{ width: `${percent}%` }}
+      {/* Indeterminate spinner — no progress bar. */}
+      {pending ? (
+        <div
+          role="status"
+          aria-live="polite"
+          data-testid="upgrade-progress-spinner"
+          className="flex items-center gap-3"
+        >
+          <Loader2
+            className="h-5 w-5 shrink-0 animate-spin text-sg-accent"
+            aria-hidden
           />
+          <div className="space-y-0.5">
+            <p className="text-sm font-medium text-sg-ink">
+              {restarting
+                ? t("system.upgrade.progress.restarting")
+                : t("system.upgrade.progress.title")}
+            </p>
+            <p className="text-xs text-sg-ink-3">
+              {slow
+                ? t("system.upgrade.progress.slow")
+                : t("system.upgrade.progress.subtitle")}
+            </p>
+          </div>
         </div>
-        <div className="flex items-center justify-between text-[11px] text-sg-ink-3">
-          <span>
-            {succeeded
-              ? t("system.upgrade.phases.done")
-              : status?.phase
-                ? isKnownPhase(status.phase)
-                  ? t(`system.upgrade.phases.${status.phase}`)
-                  : status.phase
-                : t("system.upgrade.phases.validating")}
-          </span>
-          <span
-            className="font-mono tabular-nums"
-            data-testid="upgrade-progress-percent"
-          >
-            {percent}%
-          </span>
-        </div>
-      </div>
+      ) : null}
 
-      {/* Phase pills */}
-      <div
-        className="flex flex-wrap gap-2"
-        data-testid="upgrade-progress-phases"
-      >
-        {PHASE_ORDER.map((p) => {
-          const currentPhase = status?.phase;
-          const currentIdx =
-            currentPhase && isKnownPhase(currentPhase)
-              ? PHASE_ORDER.indexOf(currentPhase)
-              : -1;
-          const thisIdx = PHASE_ORDER.indexOf(p);
-          const isCurrent = currentPhase === p && !terminal;
-          const isPast = currentIdx > thisIdx || (terminal && status?.state === "succeeded");
-          const isFailed =
-            terminal && status?.state === "failed" && currentPhase === p;
-          return (
-            <span
-              key={p}
-              data-testid={`upgrade-progress-phase-${p}`}
-              data-state={
-                isFailed
-                  ? "failed"
-                  : isPast
-                    ? "past"
-                    : isCurrent
-                      ? "current"
-                      : "pending"
-              }
-              className={cn(
-                "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs",
-                isFailed && "border-sg-err/60 bg-sg-err-soft text-sg-err",
-                isPast && "border-sg-ok/40 bg-sg-ok-soft text-sg-ok",
-                isCurrent && "border-sg-accent/60 bg-sg-accent-soft text-sg-accent",
-                !isFailed && !isPast && !isCurrent && "border-sg-border text-sg-ink-4",
-              )}
-            >
-              {isCurrent ? (
-                <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
-              ) : isPast ? (
-                <CheckCircle2 className="h-3 w-3" aria-hidden />
-              ) : isFailed ? (
-                <XCircle className="h-3 w-3" aria-hidden />
-              ) : (
-                <Circle className="h-3 w-3" aria-hidden />
-              )}
-              {t(`system.upgrade.phases.${p}`)}
-            </span>
-          );
-        })}
-        {/* Unknown phase fallback — show as leading pill verbatim */}
-        {status?.phase && !isKnownPhase(status.phase) && !terminal ? (
-          <span className="inline-flex items-center gap-1 rounded-full border border-sg-accent/60 bg-sg-accent-soft px-2.5 py-1 text-xs text-sg-accent">
-            <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
-            {status.phase}
-          </span>
-        ) : null}
-      </div>
-
-      {/* Log tail */}
-      {status?.log_excerpt ? (
+      {/* Log tail (best-effort). */}
+      {logExcerpt ? (
         <pre
           data-testid="upgrade-progress-log"
           className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md border border-sg-border bg-sg-inset p-3 font-mono text-[11px] text-sg-ink-2"
         >
-          {status.log_excerpt}
+          {logExcerpt}
         </pre>
       ) : null}
 
       {/* Terminal banners */}
-      {terminal && status?.state === "succeeded" ? (
+      {outcome === "succeeded" ? (
         <Alert
           variant="success"
           title={t("system.upgrade.succeeded.title")}
-          className="items-center justify-between gap-3"
         >
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="text-xs">
-                {t("system.upgrade.succeeded.subtitle", { tag: status.tag })}
-              </p>
-              {reloadIn !== null ? (
-                <p className="mt-1 text-xs opacity-80">
-                  {t("system.upgrade.succeeded.autoReload", {
-                    seconds: reloadIn,
-                  })}
-                </p>
-              ) : null}
-            </div>
-            <Button
-              type="button"
-              onClick={() => window.location.reload()}
-              size="sm"
-            >
-              {t("system.upgrade.succeeded.reload")}
-            </Button>
-          </div>
+          <p className="text-xs">
+            {t("system.upgrade.succeeded.reloading")}
+          </p>
         </Alert>
       ) : null}
 
-      {terminal && status?.state === "failed" ? (
+      {outcome === "failed" ? (
         <Alert variant="danger" title={t("system.upgrade.failed.title")}>
           <p className="break-words text-xs">
             {t("system.upgrade.failed.subtitle", {
-              error: status.error ?? "unknown",
+              error: error ?? "unknown",
             })}
           </p>
         </Alert>
       ) : null}
 
-      {/* Cancel-as-stop-watching */}
-      {!terminal ? (
-        <div className="flex items-center justify-end">
+      {cancelled ? (
+        <p className="text-xs text-sg-ink-3">
+          {t("system.upgrade.cancelled.subtitle")}
+        </p>
+      ) : null}
+
+      {/* Footer actions while pending: reload-now (after slow) + stop-watching. */}
+      {pending ? (
+        <div className="flex items-center justify-end gap-2">
+          {slow ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="gap-1.5"
+              onClick={() => window.location.reload()}
+              data-testid="upgrade-progress-reload"
+            >
+              <RefreshCcw className="h-3.5 w-3.5" aria-hidden />
+              {t("system.upgrade.progress.reloadNow")}
+            </Button>
+          ) : null}
           <Button
             type="button"
             variant="ghost"
             size="sm"
             title={t("system.upgrade.progress.cancelHint")}
-            onClick={() => {
-              closedRef.current = true;
-              setStatus((s) =>
-                s ? { ...s, state: "cancelled" } : s,
-              );
-            }}
+            onClick={handleCancel}
             data-testid="upgrade-progress-cancel"
           >
             {t("system.upgrade.progress.cancel")}

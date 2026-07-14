@@ -166,6 +166,12 @@ def test_build_app_degraded_mode_serves_health(tmp_path: Path) -> None:
         # Either degraded or ok depending on what siblings landed; both
         # are acceptable here.
         assert body["mode"] in {"degraded", "ok"}
+        # Release-spaced version for the upgrade restart-window poller —
+        # must match the shared resolver so it can never disagree with
+        # the updater (see system/app_version.py).
+        from corlinman_server.system.app_version import resolve_app_version
+
+        assert body["version"] == resolve_app_version()
 
 
 def test_build_app_wires_admin_b_py_config_path(

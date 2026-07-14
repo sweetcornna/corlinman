@@ -746,10 +746,25 @@ def build_app(
                 # disabled the native upgrader in prod. ``data_dir`` is routed
                 # to the native upgrader only (DockerUpgrader derives its paths
                 # from the container) inside resolve_upgrader.
+                #
+                # Docker-only env overrides: forks / private registries can
+                # point the puller at their own image without a code change.
+                # Guarded by mode because NativeUpgrader rejects these kwargs.
+                upgrader_extra: dict[str, Any] = {}
+                if mode == "docker":
+                    repo_override = os.environ.get("CORLINMAN_UPGRADE_REPO", "").strip()
+                    if repo_override:
+                        upgrader_extra["repo"] = repo_override
+                    container_override = os.environ.get(
+                        "CORLINMAN_UPGRADE_CONTAINER", ""
+                    ).strip()
+                    if container_override:
+                        upgrader_extra["container_name"] = container_override
                 upgrader = resolve_upgrader(
                     mode,
                     store=upgrade_state_store,
                     data_dir=resolved_data_dir,
+                    **upgrader_extra,
                 )
                 if upgrader is not None:
                     if admin_b_state is not None:
@@ -1773,6 +1788,8 @@ def build_app(
 
         @app.get("/health")
         async def _health() -> dict[str, str]:
+            from corlinman_server.system.app_version import resolve_app_version
+
             rt = getattr(app.state, "corlinman", None)
             wired = (
                 rt is not None
@@ -1782,6 +1799,11 @@ def build_app(
             return {
                 "status": "ok",
                 "mode": "ok" if wired else "degraded",
+                # Release-spaced version. Unauthenticated on purpose: the
+                # upgrade restart window polls this to confirm the target
+                # version actually came up (docker HEALTHCHECK and
+                # install.sh's wait_for_health hit this route too).
+                "version": resolve_app_version(),
             }
 
     _mount_ui_static(app)
