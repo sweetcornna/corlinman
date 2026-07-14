@@ -5,8 +5,8 @@ Port of ``rust/crates/corlinman-gateway/src/routes/admin/models.rs``.
 Three routes:
 
 * ``GET    /admin/models``                  — provider + alias snapshot.
-* ``POST   /admin/models/aliases``          — single upsert *or* bulk
-  replace (untagged union body).
+* ``POST   /admin/models/aliases``          — single upsert, bulk
+  replace, *or* default-only update (untagged union body).
 * ``DELETE /admin/models/aliases/{name}``   — drop one alias.
 
 Mutation routes atomic-write the active config TOML — requires
@@ -80,6 +80,19 @@ class AliasUpsert(BaseModel):
 class BulkAliases(BaseModel):
     aliases: dict[str, str]
     default: str | None = None
+
+
+class DefaultOnly(BaseModel):
+    """``{"default": "<alias>"}`` — update ``models.default`` WITHOUT
+    touching the alias table.
+
+    The bulk shape drops every alias name omitted from its payload, so a
+    "set default only" client that posted ``{aliases: {}, default}`` would
+    wipe the whole routing table. This shape is the non-destructive way to
+    move the default (used by the guided provider-setup flow's last step).
+    """
+
+    default: str
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +231,18 @@ def router() -> APIRouter:
             except Exception as exc:  # noqa: BLE001
                 return _bad("invalid_body", str(exc))
             return await _apply_bulk(bulk)
-        return _bad("invalid_body", "body must be either {name, model} or {aliases}")
+        if "default" in body:
+            # Default-only update — the body carries NO ``aliases`` key, so
+            # the alias table must be left untouched (see DefaultOnly).
+            try:
+                default_only = DefaultOnly.model_validate(body)
+            except Exception as exc:  # noqa: BLE001
+                return _bad("invalid_body", str(exc))
+            return await _apply_default_only(default_only)
+        return _bad(
+            "invalid_body",
+            "body must be one of {name, model}, {aliases}, or {default}",
+        )
 
     @r.delete("/admin/models/aliases/{name}")
     async def delete_alias(name: str):
@@ -306,6 +330,28 @@ def router() -> APIRouter:
         return {
             "status": "ok",
             "default": models_cfg.get("default", ""),
+            "aliases": dict(models_cfg.get("aliases") or {}),
+        }
+
+    async def _apply_default_only(body: DefaultOnly) -> Any:
+        """Move ``models.default`` and NOTHING else.
+
+        Unlike ``_apply_bulk`` the alias table is copied through verbatim
+        (full dict entries included), so provider bindings — e.g. the ones
+        OAuth login just provisioned — survive a default switch.
+        """
+        if not body.default:
+            return _bad("invalid_default", "default model must be non-empty")
+        state = get_admin_state()
+        cfg = dict(config_snapshot())
+        models_cfg = dict(cfg.get("models") or {})
+        models_cfg["default"] = body.default
+        err = await _persist_alias_swap(state, models_cfg)
+        if err is not None:
+            return err
+        return {
+            "status": "ok",
+            "default": body.default,
             "aliases": dict(models_cfg.get("aliases") or {}),
         }
 

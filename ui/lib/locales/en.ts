@@ -475,7 +475,7 @@ export const en = {
     schedulerQzone: "QZone publishing",
     approvals: "Approvals",
     evolution: "Evolution",
-    models: "Models",
+    models: "Models & Keys",
     persona: "Persona",
     providers: "Providers",
     credentials: "Credentials",
@@ -1620,6 +1620,126 @@ export const en = {
       fail: "Failed",
       testing: "Testing…",
     },
+    // W-B2 custom providers section (i18n-ified in the PR4 model-hub merge)
+    custom: {
+      title: "Custom providers",
+      subtitle:
+        "Operator-defined providers registered via /admin/providers/custom. The transport kind picks which built-in protocol (OpenAI-compatible, Anthropic, etc.) ferries the requests.",
+      add: "Add custom provider",
+      loadFailed: "Load failed: {{msg}}",
+      emptyTitle: "No custom providers yet.",
+      emptyHint:
+        'Click "Add custom provider" to register an OpenAI-compatible endpoint or any other supported transport against a slug of your choice.',
+      colSlug: "Slug",
+      colKind: "Kind",
+      colBaseUrl: "Base URL",
+      colKey: "API key",
+      keySet: "set",
+      keyUnset: "unset",
+      deleteAria: "Delete {{slug}}",
+      deleteTitle: "Delete {{slug}}?",
+      deleteBody:
+        "This removes the [providers.{{slug}}] block from config.toml and cannot be undone.",
+      deleteSuccess: 'Custom provider "{{slug}}" deleted',
+      deleteFailed: "Delete failed: {{msg}}",
+    },
+  },
+
+  // PR4 model-hub consolidation — /models is the canonical page hosting the
+  // providers / routing / advanced tabs; /providers and /credentials are
+  // redirect stubs.
+  modelHub: {
+    title: "Models & Keys",
+    subtitle: "Connect providers, manage keys, and route model aliases in one place.",
+    moved: "This page moved to Models & Keys",
+    tabs: {
+      providers: "Providers & Keys",
+      routing: "Model routing",
+      advanced: "Advanced credentials",
+    },
+    advanced: {
+      warning:
+        "Keys saved here don't register a provider or make models routable — use the Providers tab for that.",
+    },
+  },
+
+  // PR5 guided setup flow — shared by the /models quick-setup dialog,
+  // onboarding step 1, and the dashboard getting-started card.
+  setupFlow: {
+    quickSetup: "Quick setup",
+    dialogTitle: "Quick model setup",
+    dialogDesc:
+      "Five steps: pick a provider → authenticate → test → pick models → set default.",
+    emptyStateTitle: "No model provider connected yet",
+    emptyStateBody: "Follow the guided setup to start chatting.",
+    onboardSubtitle:
+      "Connect a model provider to continue — or skip for now.",
+    loading: "Checking current configuration…",
+    backendPending:
+      "Gateway not reachable yet — skip for now and finish setup in the console later.",
+    configuredTitle: "Configured ✓",
+    configuredSummary: "Connected to {{provider}}, default model {{model}}.",
+    step1Title: "Choose a provider",
+    step2Title: "Authenticate",
+    step3Title: "Test connection",
+    step4Title: "Pick models",
+    step5Title: "Set default model",
+    oauthBadge: "OAuth available",
+    keyBadge: "API key",
+    preset: {
+      anthropic: "Anthropic (Claude)",
+      openai: "OpenAI",
+      deepseek: "DeepSeek",
+      qwen: "Qwen (DashScope)",
+      glm: "Zhipu GLM",
+      google: "Google Gemini",
+      xai: "xAI (Grok)",
+      custom: "OpenAI-compatible / custom",
+    },
+    fieldName: "Provider name",
+    fieldBaseUrl: "Base URL",
+    fieldKey: "API key",
+    fieldKeyPlaceholder: "sk-… (stored in the gateway config only)",
+    fieldEnv: "Environment variable",
+    useEnvVar: "Use an environment variable instead",
+    useLiteralKey: "Type the key directly instead",
+    oauthHint:
+      "Got a subscription? OAuth login auto-connects models and sets a default.",
+    oauthLogin: "OAuth login",
+    oauthProvisioned: "OAuth login succeeded — models were auto-connected.",
+    next: "Continue",
+    back: "Back",
+    probeHint:
+      "Test the connection and fetch the provider's available models.",
+    probeBtn: "Test & fetch models",
+    probing: "Connecting…",
+    probeFailedHint: "Check the API key / base URL and try again.",
+    probeEmpty: "Connected, but no models were found.",
+    selectAll: "Select all",
+    selectedCount: "{{n}} selected",
+    addModels: "Add selected models ({{n}})",
+    adding: "Adding…",
+    defaultHint: "Pick the model chat should use by default.",
+    currentDefault: "current default",
+    noAliases: "No model aliases available yet.",
+    saveDefault: "Save default model",
+    saving: "Saving…",
+    defaultSaveFailed: "Saving the default model failed: {{msg}}",
+    doneTitle: "Setup complete",
+    doneBody:
+      "Connected to {{provider}} with default model {{model}}. You're ready to chat.",
+    finish: "Done",
+  },
+
+  // PR5 dashboard getting-started card.
+  gettingStarted: {
+    title: "Getting started",
+    body: "Three steps to connect a model provider and start chatting.",
+    itemProvider: "Connect a provider",
+    itemModels: "Add models",
+    itemDefault: "Set a default model",
+    goToModels: "Go to Models & Keys",
+    dismiss: "Dismiss",
   },
 
   tenants: {

@@ -24,14 +24,12 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
 import { useTranslation } from "react-i18next";
 import { motion } from "framer-motion";
 import {
   ArrowRight,
   Check,
   Image as ImageIcon,
-  KeyRound,
   Lock,
   Plug,
   Sparkles,
@@ -64,6 +62,12 @@ import {
 } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { springs, useMotionVariants } from "@/lib/motion";
+import {
+  ProviderSetupFlow,
+  type SetupFlowStatus,
+} from "@/components/model-hub/provider-setup-flow";
+import { BackendPendingBanner } from "@/components/model-hub/shared";
+import { useSetupStatus } from "@/lib/hooks/use-setup-status";
 
 const MIN_PASSWORD_LEN = 8;
 
@@ -207,6 +211,12 @@ function OnboardWizard() {
   const [lockedPastPassword, setLockedPastPassword] = useState(false);
   /** Deferred redirect from persona step 4 — fires after step 6. */
   const [pendingRedirect, setPendingRedirect] = useState<string | null>(null);
+  /**
+   * Provider name configured in step 1 (via the inline setup flow or an
+   * already-configured gateway). Step 5's image-provider "reuse" choice
+   * passes it explicitly instead of the old empty-string fallback.
+   */
+  const [apiProviderName, setApiProviderName] = useState("");
 
   // One-shot session probe — same approach as the legacy onboard page. Lets
   // us short-circuit when the gateway already has a customized admin.
@@ -293,6 +303,7 @@ function OnboardWizard() {
           <ApiConfigStep
             onSkip={() => advance(1)}
             onContinue={() => advance(1)}
+            onProviderConfigured={setApiProviderName}
           />
         )}
         {step === 2 && <UsernameStep onDone={() => advance(2)} />}
@@ -312,7 +323,12 @@ function OnboardWizard() {
             }}
           />
         )}
-        {step === 5 && <ImageProviderStep onDone={() => advance(5)} />}
+        {step === 5 && (
+          <ImageProviderStep
+            onDone={() => advance(5)}
+            configuredProviderName={apiProviderName}
+          />
+        )}
         {step === 6 && <DoneStep onFinish={handleFinish} />}
       </motion.div>
 
@@ -427,43 +443,45 @@ function StepIndicator({
 }
 
 // ---------------------------------------------------------------------------
-// Step 1 — API config (skippable). Reuses the existing /admin/credentials
-// + /admin/providers + OAuth surfaces. No backend call from this page; the
-// user comes back here when done (we just need them to acknowledge or skip).
+// Step 1 — API config (skippable). PR5: the guided ProviderSetupFlow runs
+// INLINE here (no more new-tab hand-off to /credentials + /providers).
+// "下一步" unlocks once the deployment is chat-ready — either the flow just
+// finished, or useSetupStatus() says the gateway was already configured.
+// "暂时跳过" stays a PURE skip (no finalize-skip / mock bootstrap call).
 // ---------------------------------------------------------------------------
-
-interface HandoffCardDef {
-  href: string;
-  testid: string;
-  icon: React.ComponentType<{ className?: string }>;
-  title: string;
-  body: string;
-}
 
 function ApiConfigStep({
   onContinue,
   onSkip,
+  onProviderConfigured,
 }: {
   onContinue: () => void;
   onSkip: () => void;
+  onProviderConfigured: (name: string) => void;
 }) {
   const { t } = useTranslation();
-  const cards: HandoffCardDef[] = [
-    {
-      href: "/credentials",
-      testid: "onboard-handoff-credentials",
-      icon: KeyRound,
-      title: t("auth.onboardHandoffCredentialsTitle"),
-      body: t("auth.onboardHandoffCredentialsBody"),
-    },
-    {
-      href: "/providers",
-      testid: "onboard-handoff-providers",
-      icon: Plug,
-      title: t("auth.onboardHandoffProvidersTitle"),
-      body: t("auth.onboardHandoffProvidersBody"),
-    },
-  ];
+  const setupStatus = useSetupStatus();
+  const [flowStatus, setFlowStatus] = useState<SetupFlowStatus | null>(null);
+
+  const flowConfigured =
+    !!flowStatus &&
+    flowStatus.providerRegistered &&
+    flowStatus.modelsAdded &&
+    flowStatus.defaultSet;
+  const configured = setupStatus.configured || flowConfigured;
+
+  // Bubble the provider that actually serves the chat default up to the
+  // wizard so step 5's image-provider "reuse" binds image generation to
+  // the SAME provider the chat uses — not just the first usable one,
+  // which on a multi-provider gateway can be unrelated (self-review P2).
+  const knownProvider =
+    flowStatus?.providerName ??
+    setupStatus.defaultProviderName ??
+    setupStatus.providerName ??
+    "";
+  useEffect(() => {
+    if (knownProvider) onProviderConfigured(knownProvider);
+  }, [knownProvider, onProviderConfigured]);
 
   return (
     <>
@@ -472,41 +490,40 @@ function ApiConfigStep({
           {t("onboard.step.api.title", { defaultValue: "配置 API" })}
         </h1>
         <p className="text-sm text-sg-ink-3">
-          {t("auth.onboardHandoffSubtitle")}
+          {t("setupFlow.onboardSubtitle")}
         </p>
       </div>
-      <div className="space-y-3" data-testid="onboard-handoff-cards">
-        {cards.map((c) => {
-          const Icon = c.icon;
-          return (
-            <Card key={c.href} data-testid={c.testid}>
-              <CardHeader className="pb-2">
-                <div className="flex items-center gap-2">
-                  <Icon className="h-4 w-4 text-sg-accent" aria-hidden />
-                  <CardTitle className="text-base">{c.title}</CardTitle>
-                </div>
-                <CardDescription>{c.body}</CardDescription>
-              </CardHeader>
-              <CardContent className="pt-0">
-                <Button
-                  asChild
-                  variant="outline"
-                  size="sm"
-                  data-testid={`${c.testid}-go`}
-                >
-                  <Link
-                    href={c.href as never}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    {t("auth.onboardHandoffGo")}
-                  </Link>
-                </Button>
-              </CardContent>
-            </Card>
-          );
-        })}
-      </div>
+
+      {setupStatus.loading ? (
+        <p className="text-sm text-sg-ink-4" data-testid="onboard-setup-loading">
+          {t("setupFlow.loading")}
+        </p>
+      ) : setupStatus.errored ? (
+        // Gateway unreachable (or the config surface 503'd) — the flow
+        // can't run, but skipping must stay possible.
+        <BackendPendingBanner label={t("setupFlow.backendPending")} />
+      ) : setupStatus.configured && !flowStatus ? (
+        <Card data-testid="onboard-setup-summary">
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-base text-sg-ok">
+              <Check className="h-4 w-4" aria-hidden />
+              {t("setupFlow.configuredTitle")}
+            </CardTitle>
+            <CardDescription>
+              {t("setupFlow.configuredSummary", {
+                provider: setupStatus.providerName ?? "?",
+                model: setupStatus.defaultModel ?? "?",
+              })}
+            </CardDescription>
+          </CardHeader>
+        </Card>
+      ) : (
+        <ProviderSetupFlow
+          variant="onboarding"
+          onStatusChange={setFlowStatus}
+        />
+      )}
+
       <div className="flex gap-2">
         <Button
           type="button"
@@ -520,6 +537,7 @@ function ApiConfigStep({
         <Button
           type="button"
           onClick={onContinue}
+          disabled={!configured}
           data-testid="onboard-api-continue"
           className="flex-1"
         >
@@ -903,7 +921,14 @@ function PersonaStep({
 
 type ImageSubview = "choices" | "reuseUnsupported" | "separateForm";
 
-function ImageProviderStep({ onDone }: { onDone: () => void }) {
+function ImageProviderStep({
+  onDone,
+  configuredProviderName = "",
+}: {
+  onDone: () => void;
+  /** Provider registered in step 1 — "" when step 1 was skipped. */
+  configuredProviderName?: string;
+}) {
   const { t } = useTranslation();
   const [submitting, setSubmitting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -925,15 +950,19 @@ function ImageProviderStep({ onDone }: { onDone: () => void }) {
 
   async function pickReuse() {
     setError(null);
+    // The backend requires a non-empty provider_name for choice=reuse
+    // (it 422s otherwise — there is NO server-side fallback). When step 1
+    // was skipped we have no name, so steer the user to "separate"
+    // instead of firing a request that can only fail.
+    if (!configuredProviderName) {
+      setSubview("separateForm");
+      return;
+    }
     setSubmitting("reuse");
     try {
-      // The wizard does not know which provider was just configured in step 1
-      // (the user may have skipped). The backend resolves "current" itself:
-      // we pass an empty string so the server falls back to the active
-      // chat-default provider.
       await finalizeOnboardImageProvider({
         choice: "reuse",
-        provider_name: "",
+        provider_name: configuredProviderName,
       });
       onDone();
     } catch (err) {

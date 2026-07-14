@@ -206,3 +206,115 @@ def test_bulk_alias_save_preserves_provider_and_params(tmp_path: Path) -> None:
     assert aliases["newone"] == "gpt-4o"
     # Omitted alias is dropped (row deletion is honoured, not silently restored).
     assert "stale" not in aliases
+
+
+def test_default_only_write_updates_default_and_preserves_aliases(
+    tmp_path: Path,
+) -> None:
+    # PR5 provider-setup flow: the last wizard step posts ``{"default": ...}``
+    # with NO ``aliases`` key. Before the default-only branch existed that
+    # shape 400'd as invalid_body, and the "obvious" workaround (bulk write
+    # with ``aliases: {}``) would drop every alias — a routing-table wipe.
+    # This test locks in the non-destructive contract: default moves, every
+    # alias (including its provider binding + params) survives verbatim.
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("", encoding="utf-8")
+
+    for _state, snapshot, client in _with_models_client(config_path):
+        snapshot.update(
+            {
+                "providers": {
+                    "relay": {
+                        "kind": "openai_compatible",
+                        "enabled": True,
+                        "api_key": {"value": "sk-test"},
+                    },
+                },
+                "models": {
+                    "default": "chat",
+                    "aliases": {
+                        "chat": {
+                            "provider": "relay",
+                            "model": "gpt-5.5",
+                            "params": {"reasoning_effort": "high"},
+                        },
+                        "legacy": "gpt-4o",
+                    },
+                },
+            }
+        )
+
+        resp = client.post("/admin/models/aliases", json={"default": "legacy"})
+
+        # Empty default is rejected without touching anything.
+        bad = client.post("/admin/models/aliases", json={"default": ""})
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["default"] == "legacy"
+    # Aliases pass through VERBATIM — full dict entry incl. provider binding
+    # and params, plain-string shorthand untouched, nothing dropped.
+    assert body["aliases"] == {
+        "chat": {
+            "provider": "relay",
+            "model": "gpt-5.5",
+            "params": {"reasoning_effort": "high"},
+        },
+        "legacy": "gpt-4o",
+    }
+
+    # The atomic write landed on disk with the same preserved alias table.
+    import tomllib
+
+    on_disk = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert on_disk["models"]["default"] == "legacy"
+    assert on_disk["models"]["aliases"]["chat"]["provider"] == "relay"
+    assert on_disk["models"]["aliases"]["legacy"] == "gpt-4o"
+
+    assert bad.status_code == 400, bad.text
+    assert bad.json()["error"] == "invalid_default"
+
+
+def test_bulk_shape_with_default_still_replaces_alias_table(tmp_path: Path) -> None:
+    # Guard: adding the default-only branch must NOT change how a body that
+    # DOES carry ``aliases`` behaves — the Models page "Save all" contract
+    # (merge provider bindings, drop omitted names, honour ``default``).
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("", encoding="utf-8")
+
+    for _state, snapshot, client in _with_models_client(config_path):
+        snapshot.update(
+            {
+                "providers": {
+                    "relay": {
+                        "kind": "openai_compatible",
+                        "enabled": True,
+                        "api_key": {"value": "sk-test"},
+                    },
+                },
+                "models": {
+                    "default": "chat",
+                    "aliases": {
+                        "chat": {
+                            "provider": "relay",
+                            "model": "gpt-5.5",
+                            "params": {},
+                        },
+                        "gone": "gpt-4o",
+                    },
+                },
+            }
+        )
+
+        resp = client.post(
+            "/admin/models/aliases",
+            json={"aliases": {"chat": "gpt-5.5"}, "default": "chat"},
+        )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["default"] == "chat"
+    # Bulk semantics unchanged: kept name preserves its binding, omitted
+    # name is dropped.
+    assert body["aliases"]["chat"]["provider"] == "relay"
+    assert "gone" not in body["aliases"]
