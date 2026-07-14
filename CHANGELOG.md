@@ -4,6 +4,29 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.28.1] — 2026-07-15 — provider key hygiene + de-duplicated Providers tab
+
+> Patch for a prod report: a provider saved without a usable key looked
+> configured (it showed key source "value"/字面量), so requests went out
+> unauthenticated and the upstream rejected them ("blocked"); and the
+> Providers & Keys tab showed two overlapping add-provider surfaces.
+
+### Fixed
+- An empty / valueless `api_key` (`{}`, `{value: ""}`, `{env: ""}`) now
+  reports `api_key_source = "unset"` instead of "value", so the key field
+  reads as empty and the operator is prompted to enter one. `POST
+  /admin/providers` also refuses to persist a valueless key table, so an
+  accidental `{}` can't recreate the misleading "looks configured, isn't"
+  state.
+
+### Changed
+- Removed the redundant "Custom providers" section from the `/models`
+  Providers & Keys tab. It was a parallel add-flow writing the same
+  `[providers.*]` registry (only tagged `params.custom = true`), and every
+  custom provider already appears in the main Providers table — so it
+  duplicated the table. The main table + editor manage every provider;
+  `/admin/providers/custom` stays for back-compat.
+
 ## [1.28.0] — 2026-07-15 — sub2api-style upgrade system + Models & Keys consolidation + nav registry
 
 > Web UX + self-update overhaul. The one-click upgrade path is rebuilt on
