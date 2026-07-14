@@ -167,14 +167,22 @@ def _params_schema_for(kind: str) -> dict[str, Any]:
 
 def _view_from_entry(name: str, entry: dict[str, Any]) -> ProviderView:
     api_key = entry.get("api_key")
-    if api_key is None:
-        source, env_name = "unset", None
-    elif isinstance(api_key, dict) and "env" in api_key:
+    # Classify the key SOURCE, but only when a USABLE key is actually
+    # present. An empty ``{}`` table (or ``{value: ""}`` / ``{env: ""}``)
+    # used to fall through to "value" — the UI then showed "字面量"/
+    # literal for a provider with NO key, hiding the fact that requests
+    # go out unauthenticated (upstream then rejects with "blocked").
+    # Report "unset" so the key field reads as empty and prompts entry.
+    if (
+        isinstance(api_key, dict)
+        and "env" in api_key
+        and str(api_key.get("env") or "")
+    ):
         source, env_name = "env", str(api_key["env"])
-    elif isinstance(api_key, dict) and "value" in api_key:
+    elif _has_api_key(entry):
         source, env_name = "value", None
     else:
-        source, env_name = "value", None
+        source, env_name = "unset", None
     kind = _normalize_kind(str(entry.get("kind") or "openai_compatible"))
     return ProviderView(
         name=name,

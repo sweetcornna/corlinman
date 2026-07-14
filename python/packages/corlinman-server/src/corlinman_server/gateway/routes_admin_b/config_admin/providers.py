@@ -67,6 +67,7 @@ from corlinman_server.gateway.routes_admin_b.config_admin._providers_lib import 
     _custom_view_from_entry,
     _find_alias_refs,
     _fish_tts_reference_id,
+    _has_api_key,
     _is_known_kind,
     _kind_capabilities,
     _normalize_kind,
@@ -191,7 +192,14 @@ def router() -> APIRouter:
                 existing["enabled"] = True
             if body.base_url is not None:
                 existing["base_url"] = body.base_url
-            if body.api_key is not None:
+            # Only persist a key that actually carries a value/env — an
+            # empty ``{}`` or ``{value: ""}`` would masquerade as a
+            # configured literal key (see _view_from_entry) and send
+            # unauthenticated requests. A None/empty body leaves any
+            # already-stored key untouched (the reuse-on-edit path).
+            if body.api_key is not None and _has_api_key(
+                {"api_key": body.api_key}
+            ):
                 existing["api_key"] = body.api_key
             if body.params is not None:
                 existing["params"] = body.params
