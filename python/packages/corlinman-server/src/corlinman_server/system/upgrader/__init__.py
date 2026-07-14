@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from corlinman_server.system.upgrader.docker_upgrader import DockerUpgrader
+from corlinman_server.system.upgrader.finalizer import finalize_boot
 from corlinman_server.system.upgrader.native_upgrader import NativeUpgrader
 from corlinman_server.system.upgrader.protocol import (
     UpgradeAlreadyRunning,
@@ -40,6 +41,7 @@ __all__ = [
     "UpgradeStatus",
     "UpgraderProtocol",
     "UpgraderUnavailable",
+    "finalize_boot",
     "resolve_upgrader",
 ]
 

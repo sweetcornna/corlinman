@@ -736,10 +736,20 @@ def build_app(
             try:
                 from corlinman_server.system.upgrader import (  # type: ignore[import-not-found]
                     UpgradeStateStore,
+                    finalize_boot,
                     resolve_upgrader,
                 )
 
-                upgrade_state_store = UpgradeStateStore(resolved_data_dir / ".upgrade-state.json")
+                # Defer the blanket stall-flip: the boot finalizer makes a
+                # smarter terminal call for records orphaned by the upgrade
+                # restart (version assertion → succeeded; helper status
+                # mirror → failed) and falls back to the same flip, so
+                # single-flight can never be wedged (BUG-02 posture kept).
+                upgrade_state_store = UpgradeStateStore(
+                    resolved_data_dir / ".upgrade-state.json",
+                    defer_boot_reconcile=True,
+                )
+                finalize_boot(upgrade_state_store, data_dir=resolved_data_dir)
                 # NOTE: no upgrader __init__ accepts ``audit_log`` (the audit
                 # log is installed separately on app.state / admin_b_state
                 # above); passing it here raised a TypeError that silently
