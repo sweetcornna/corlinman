@@ -436,6 +436,13 @@ export const zhCN = {
         gilded: "鎏金",
       },
     },
+    sections: {
+      chat: "对话",
+      ops: "运营",
+      config: "配置",
+      system: "系统",
+      developer: "开发者",
+    },
     dashboard: "仪表盘",
     marketplace: "市场",
     marketplaceAcceleration: "加速",
@@ -2829,6 +2836,14 @@ export const zhCN = {
       plugins: {
         title: "插件",
         description: "已加载的同步/异步/预处理插件清单。",
+      },
+      marketplaceAcceleration: {
+        title: "市场加速",
+        description: "市场安装的 GitHub 镜像与下载加速。",
+      },
+      marketplaceContribute: {
+        title: "市场贡献",
+        description: "打包并提交技能、MCP 服务器与插件。",
       },
       hooks: {
         title: "Hooks",

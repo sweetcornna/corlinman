@@ -70,6 +70,7 @@ vi.mock("sonner", () => ({
 }));
 
 import { CommandPaletteProvider } from "./cmdk-palette";
+import { DEV_MODE_KEY, __resetDevModeForTests } from "@/lib/dev-mode";
 
 function mockMatchMedia(reduce: boolean) {
   const mm = vi.fn().mockImplementation((query: string) => ({
@@ -122,12 +123,14 @@ beforeEach(() => {
   } catch {
     /* ignore */
   }
+  __resetDevModeForTests();
   mockMatchMedia(false);
 });
 
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  __resetDevModeForTests();
 });
 
 describe("CommandPalette hotkeys", () => {
@@ -215,6 +218,48 @@ describe("CommandPalette filtering + selection", () => {
         // First call arg should be a real admin href.
         const firstArg = pushMock.mock.calls[0]?.[0];
         expect(typeof firstArg).toBe("string");
+        resolve();
+      });
+    });
+  });
+});
+
+describe("CommandPalette dev-mode gating (nav registry)", () => {
+  it("hides developer pages while dev mode is off", () => {
+    renderProvider();
+    pressKey("k", { metaKey: true });
+
+    const input = screen.getByPlaceholderText(/.+/) as HTMLInputElement;
+    // Tenants is developer-gated; its zh label is 租户.
+    fireEvent.change(input, { target: { value: "租户" } });
+
+    expect(screen.getByText(/no results|无结果/i)).toBeInTheDocument();
+  });
+
+  it("surfaces developer pages when dev mode is on", () => {
+    window.localStorage.setItem(DEV_MODE_KEY, "1");
+    renderProvider();
+    pressKey("k", { metaKey: true });
+
+    const input = screen.getByPlaceholderText(/.+/) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "租户" } });
+
+    expect(screen.getByText(/租户|Tenants/)).toBeInTheDocument();
+    expect(screen.queryByText(/no results|无结果/i)).not.toBeInTheDocument();
+  });
+
+  it("keeps /credentials muscle memory: legacy alias lands on /models", () => {
+    renderProvider();
+    pressKey("k", { metaKey: true });
+
+    const input = screen.getByPlaceholderText(/.+/) as HTMLInputElement;
+    // 凭证 only matches the legacy credentials alias (label + keywords).
+    fireEvent.change(input, { target: { value: "凭证" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    return new Promise<void>((resolve) => {
+      requestAnimationFrame(() => {
+        expect(pushMock).toHaveBeenCalledWith("/models");
         resolve();
       });
     });

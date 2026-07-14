@@ -6,42 +6,11 @@ import { usePathname, useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import { useTranslation } from "react-i18next";
 import {
-  AtSign,
-  Beaker,
-  Bot,
-  Boxes,
-  Building2,
   ChevronRight,
   ChevronsLeft,
   ChevronsRight,
-  ClipboardCheck,
-  Database,
-  FileTerminal,
-  Fingerprint,
-  GitFork,
-  Hash,
   KeyRound,
-  Leaf,
   LogOut,
-  MessageCircle,
-  MessageSquare,
-  MessageSquareText,
-  MessagesSquare,
-  MonitorCog,
-  Network,
-  Newspaper,
-  Plug,
-  Radio,
-  Route,
-  Send,
-  Settings,
-  Sparkles,
-  Store,
-  Terminal,
-  Timer,
-  Users,
-  Wrench,
-  Zap,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -49,201 +18,30 @@ import { cn } from "@/lib/utils";
 import { logout } from "@/lib/auth";
 import { springs } from "@/lib/motion";
 import { useDevMode } from "@/lib/dev-mode";
+import {
+  navHrefs,
+  sidebarSections,
+  type NavPageDef,
+  type SidebarEntry,
+} from "@/lib/nav-registry";
 import { useMotion } from "@/components/ui/motion-safe";
 import { useMobileDrawer } from "./mobile-drawer-context";
 import { BrandMark } from "./brand-mark";
 import { ChangePasswordDialog } from "./change-password-dialog";
 
-interface NavItem {
-  kind?: "item";
-  href: string;
-  labelKey: string;
-  icon: React.ComponentType<{ className?: string }>;
-  /**
-   * When `true`, the item is hidden in the default Operator sidebar and only
-   * appears when `useDevMode().enabled === true`. Power-user pages — raw
-   * config TOML, tenants, credentials, agents, skills, plugins, hooks, RAG,
-   * profiles, nodes, evolution — set this flag so a fresh install isn't
-   * drowning the operator in 25+ entries.
-   */
-  isDeveloper?: boolean;
-}
-
-interface NavGroup {
-  kind: "group";
-  /** Stable id (used for local-storage + keyboard nav). */
-  id: string;
-  labelKey: string;
-  icon: React.ComponentType<{ className?: string }>;
-  children: NavItem[];
-  /** Mirrors `NavItem.isDeveloper` for the whole group. */
-  isDeveloper?: boolean;
-}
-
-type NavEntry = NavItem | NavGroup;
-
 /**
- * Visible-by-default Operator surface (with Channels as a collapsible
- * group exposing 7 channel leaves — QQ, Telegram, Discord, Slack, Feishu,
- * WeChat-Official, QQ-Official) + the always-visible Developer Settings
- * link at the bottom.
- *
- * Order: top-down by frequency of use during a normal operator shift
- * (chat → approvals → audit) then configuration (models & keys /
- * channels / scheduler / identity). The old Credentials row is gone —
- * /credentials is now a redirect stub into /models (PR4 model-hub
- * consolidation).
+ * The page inventory lives in `@/lib/nav-registry` (single source of truth
+ * shared with the command palette, the dev-settings grid and breadcrumbs).
+ * This component only renders `sidebarSections(devMode)`: uppercase
+ * non-collapsible section headers (对话/运营/配置/系统 + 开发者 in dev
+ * mode) with Channels as the sole collapsible group. The old Credentials
+ * row is gone — /credentials is a redirect stub into /models (PR4
+ * model-hub consolidation).
  */
-const OPERATOR_ITEMS: NavEntry[] = [
-  { href: "/chat", labelKey: "nav.chat", icon: MessageSquareText },
-  { href: "/playground", labelKey: "nav.playground", icon: Beaker },
-  { href: "/approvals", labelKey: "nav.approvals", icon: ClipboardCheck },
-  { href: "/sessions", labelKey: "nav.sessions", icon: MessagesSquare },
-  { href: "/logs", labelKey: "nav.logs", icon: FileTerminal },
-  // W2.2 — live activity panel for background sub-agents. Operational
-  // adjacency to logs (auditing the in-flight surface) sits it above
-  // credentials.
-  { href: "/subagents", labelKey: "subagents.sidebarLabel", icon: GitFork },
-  { href: "/models", labelKey: "nav.models", icon: Route },
-  // Persona — humanlike-mode operator surface; sits between Models and
-  // Scheduler because it's a chat-personality knob that pairs with model
-  // configuration, not a developer concern.
-  { href: "/persona", labelKey: "nav.persona", icon: Sparkles },
-  // Marketplace — unified browse + install hub for skills, MCP servers, and
-  // plugins (all GitHub-backed). Operator-facing discovery surface, so it
-  // lives in the default sidebar rather than behind dev-mode.
-  { href: "/marketplace", labelKey: "nav.marketplace", icon: Store },
-  {
-    kind: "group",
-    id: "channels",
-    labelKey: "nav.channels",
-    icon: Radio,
-    children: [
-      {
-        href: "/channels/qq",
-        labelKey: "nav.channelQq",
-        icon: MessageCircle,
-      },
-      {
-        href: "/channels/telegram",
-        labelKey: "nav.channelTelegram",
-        icon: Send,
-      },
-      {
-        href: "/channels/discord",
-        labelKey: "nav.channelDiscord",
-        icon: Hash,
-      },
-      {
-        href: "/channels/slack",
-        labelKey: "nav.channelSlack",
-        icon: AtSign,
-      },
-      {
-        href: "/channels/feishu",
-        labelKey: "nav.channelFeishu",
-        icon: MessageSquareText,
-      },
-      {
-        href: "/channels/wechat_official",
-        labelKey: "nav.channelWechatOfficial",
-        icon: MessageSquare,
-      },
-      {
-        href: "/channels/qq_official",
-        labelKey: "nav.channelQqOfficial",
-        icon: Bot,
-      },
-    ],
-  },
-  { href: "/scheduler", labelKey: "nav.scheduler", icon: Timer },
-  // QZone daily-publishing scheduler surface — operator-facing companion to
-  // the persona life layer (a persona's daily 说说 pipeline), so it sits
-  // right under the generic Scheduler entry.
-  {
-    href: "/scheduler/qzone",
-    labelKey: "nav.schedulerQzone",
-    icon: Newspaper,
-  },
-  { href: "/identity", labelKey: "nav.identity", icon: Fingerprint },
-];
-
-/**
- * Developer-only entries — hidden until `useDevMode().enabled === true`.
- * Always reachable through `/admin/dev-settings` regardless of the flag.
- */
-const DEV_ITEMS: NavEntry[] = [
-  { href: "/config", labelKey: "nav.config", icon: Settings, isDeveloper: true },
-  { href: "/tenants", labelKey: "nav.tenants", icon: Building2, isDeveloper: true },
-  { href: "/agents", labelKey: "nav.agents", icon: Bot, isDeveloper: true },
-  { href: "/skills", labelKey: "nav.skills", icon: Wrench, isDeveloper: true },
-  { href: "/plugins", labelKey: "nav.plugins", icon: Boxes, isDeveloper: true },
-  {
-    href: "/marketplace/acceleration",
-    labelKey: "nav.marketplaceAcceleration",
-    icon: Zap,
-    isDeveloper: true,
-  },
-  {
-    href: "/marketplace/contribute",
-    labelKey: "nav.marketplaceContribute",
-    icon: GitFork,
-    isDeveloper: true,
-  },
-  { href: "/hooks", labelKey: "nav.hooks", icon: Zap, isDeveloper: true },
-  { href: "/rag", labelKey: "nav.rag", icon: Database, isDeveloper: true },
-  { href: "/profiles", labelKey: "nav.profiles", icon: Users, isDeveloper: true },
-  { href: "/nodes", labelKey: "nav.nodes", icon: Network, isDeveloper: true },
-  { href: "/evolution", labelKey: "nav.evolution", icon: Leaf, isDeveloper: true },
-];
-
-/**
- * Always-visible "Updates" entry — /admin/system surfaces version info,
- * update banner, and copy-paste upgrade commands (W2.1). The URL keeps the
- * `/system` slug for back-compat with existing routes/bookmarks; only the
- * sidebar label is renamed to "更新 / Updates" to make it crystal clear
- * this is the version-update surface, not a generic settings page (W3
- * first-run-wizard polish). Placed alongside the dev-settings footer link
- * so it's reachable in operator mode too.
- */
-const SYSTEM_ENTRY: NavItem = {
-  href: "/system",
-  labelKey: "sidebar.updatesLabel",
-  icon: MonitorCog,
-};
-
-/** Always-visible footer link to the dev-settings dashboard. */
-const DEV_SETTINGS_ENTRY: NavItem = {
-  href: "/dev-settings",
-  labelKey: "nav.devSettings",
-  icon: Terminal,
-};
-
-/**
- * Returns the ordered sidebar entries for the current dev-mode state.
- * Operator mode = OPERATOR_ITEMS + dev-settings link; dev mode appends the
- * full DEV_ITEMS list above the dev-settings link.
- */
-export function resolveSidebarEntries(devModeEnabled: boolean): NavEntry[] {
-  if (devModeEnabled) {
-    return [...OPERATOR_ITEMS, ...DEV_ITEMS, SYSTEM_ENTRY, DEV_SETTINGS_ENTRY];
-  }
-  return [...OPERATOR_ITEMS, SYSTEM_ENTRY, DEV_SETTINGS_ENTRY];
-}
-
-/** Exposed for tests + the dev-settings dashboard's card grid. */
-export const SIDEBAR_OPERATOR_ITEMS = OPERATOR_ITEMS;
-export const SIDEBAR_DEV_ITEMS = DEV_ITEMS;
-export const SIDEBAR_SYSTEM_ENTRY = SYSTEM_ENTRY;
-export const SIDEBAR_DEV_SETTINGS_ENTRY = DEV_SETTINGS_ENTRY;
+type SidebarGroupEntry = Extract<SidebarEntry, { kind: "group" }>;
 
 /** Every navigable href in the rail — used for longest-match arbitration. */
-const ALL_NAV_HREFS: string[] = [
-  ...OPERATOR_ITEMS.flatMap((i) => ("children" in i ? i.children.map((c) => c.href) : [i.href])),
-  ...DEV_ITEMS.flatMap((i) => ("children" in i ? i.children.map((c) => c.href) : [i.href])),
-  SYSTEM_ENTRY.href,
-  DEV_SETTINGS_ENTRY.href,
-];
+const ALL_NAV_HREFS: string[] = navHrefs();
 
 function matchesHref(pathname: string, href: string): boolean {
   if (href === "/") return pathname === "/";
@@ -311,8 +109,8 @@ export function Sidebar({ user }: SidebarProps) {
   const { open: drawerOpen } = useMobileDrawer();
   const mobileDrawerHidden = useIsMobileSidebar() && !drawerOpen;
   const { enabled: devModeEnabled } = useDevMode();
-  const entries = React.useMemo(
-    () => resolveSidebarEntries(devModeEnabled),
+  const sections = React.useMemo(
+    () => sidebarSections(devModeEnabled),
     [devModeEnabled],
   );
 
@@ -403,26 +201,53 @@ export function Sidebar({ user }: SidebarProps) {
       </div>
 
       <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto p-2">
-        {entries.map((entry) => {
-          if (entry.kind === "group") {
-            return (
-              <SidebarGroup
-                key={entry.id}
-                group={entry}
-                pathname={pathname}
-                collapsed={collapsed && hydrated}
-              />
-            );
-          }
-          return (
-            <SidebarItem
-              key={entry.href}
-              item={entry}
-              pathname={pathname}
-              collapsed={collapsed && hydrated}
-            />
-          );
-        })}
+        {sections.map((section, sectionIdx) => (
+          <div
+            key={section.id}
+            role="group"
+            aria-label={t(section.labelKey)}
+            data-testid={`sidebar-section-${section.id}`}
+            className="flex flex-col gap-0.5"
+          >
+            {collapsed && hydrated ? (
+              sectionIdx > 0 ? (
+                <div
+                  aria-hidden
+                  className="mx-2 my-1.5 h-px shrink-0 bg-sg-border"
+                />
+              ) : null
+            ) : (
+              <div
+                className={cn(
+                  "px-2.5 pb-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-sg-ink-3",
+                  sectionIdx === 0 ? "pt-1" : "pt-3",
+                )}
+              >
+                {t(section.labelKey)}
+              </div>
+            )}
+            {section.entries.map((entry) => {
+              if (entry.kind === "group") {
+                return (
+                  <SidebarGroup
+                    key={entry.id}
+                    group={entry}
+                    pathname={pathname}
+                    collapsed={collapsed && hydrated}
+                  />
+                );
+              }
+              return (
+                <SidebarItem
+                  key={entry.page.href}
+                  item={entry.page}
+                  pathname={pathname}
+                  collapsed={collapsed && hydrated}
+                />
+              );
+            })}
+          </div>
+        ))}
       </nav>
 
       {/* user chip + footer */}
@@ -512,7 +337,7 @@ function SidebarItem({
   onRef,
   onKeyDown,
 }: {
-  item: NavItem;
+  item: NavPageDef;
   pathname: string;
   collapsed: boolean;
   nested?: boolean;
@@ -581,7 +406,7 @@ function SidebarGroup({
   pathname,
   collapsed,
 }: {
-  group: NavGroup;
+  group: SidebarGroupEntry;
   pathname: string;
   collapsed: boolean;
 }) {

@@ -3,12 +3,13 @@
  *   1. Collapsible "Channels" group (default-collapsed, click+keyboard
  *      expansion, auto-expand on matching route).
  *   2. Operator-vs-Developer mode filtering: by default only the operator
- *      entries + a "Developer Settings" link appear; flipping
- *      `useDevMode()` reveals the hidden power-user pages.
- *
- * PR4 model-hub consolidation removed the Credentials row (its page is a
- * redirect stub into /models now); the counts below derive from
- * SIDEBAR_OPERATOR_ITEMS so they track the source of truth.
+ *      sections render; flipping `useDevMode()` appends the Developer
+ *      section.
+ *   3. Registry-driven sections (PR6): every assertion about counts and
+ *      membership derives from `sidebarSections()` in `@/lib/nav-registry`
+ *      so the test tracks the single source of truth instead of magic
+ *      numbers. PR4 removed the Credentials row (/credentials is a
+ *      redirect stub into /models now).
  */
 
 import {
@@ -25,6 +26,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import React from "react";
 
@@ -32,6 +34,7 @@ import {
   DEV_MODE_KEY,
   __resetDevModeForTests,
 } from "@/lib/dev-mode";
+import { sidebarSections } from "@/lib/nav-registry";
 
 let mockPathname = "/";
 
@@ -40,14 +43,14 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
 }));
 
-import {
-  SIDEBAR_DEV_ITEMS,
-  SIDEBAR_DEV_SETTINGS_ENTRY,
-  SIDEBAR_OPERATOR_ITEMS,
-  SIDEBAR_SYSTEM_ENTRY,
-  Sidebar,
-  resolveSidebarEntries,
-} from "./sidebar";
+import { Sidebar } from "./sidebar";
+
+/** Flat (non-group) sidebar link count for the given dev-mode state. */
+function flatItemCount(devMode: boolean): number {
+  return sidebarSections(devMode)
+    .flatMap((s) => s.entries)
+    .filter((e) => e.kind === "item").length;
+}
 
 function installMatchMedia(matches = false) {
   const mm = vi.fn().mockImplementation((query: string) => ({
@@ -117,34 +120,59 @@ describe("Sidebar", () => {
     expect(screen.getByRole("link", { name: /开发者设置|Developer Settings/i })).toBeInTheDocument();
   });
 
-  it("resolveSidebarEntries returns operator+system+dev-settings in operator mode", () => {
-    const entries = resolveSidebarEntries(false);
-    // OPERATOR_ITEMS (13 entries — 1 is the Channels group; the old
-    // Credentials row is gone) + system + dev-settings.
-    expect(entries).toHaveLength(SIDEBAR_OPERATOR_ITEMS.length + 2);
-    expect(SIDEBAR_OPERATOR_ITEMS).toHaveLength(13);
-    // The Credentials row was removed in the PR4 model-hub consolidation.
-    expect(
-      SIDEBAR_OPERATOR_ITEMS.some(
-        (e) => "href" in e && e.href === "/credentials",
-      ),
-    ).toBe(false);
-    expect(entries[entries.length - 1]).toBe(SIDEBAR_DEV_SETTINGS_ENTRY);
-    expect(entries[entries.length - 2]).toBe(SIDEBAR_SYSTEM_ENTRY);
+  it("renders a header + wrapper for every operator section", () => {
+    const { container } = render(<Sidebar user="admin" />);
+    const nav = container.querySelector("nav");
+    expect(nav).not.toBeNull();
+    const sections = sidebarSections(false);
+    expect(sections.map((s) => s.id)).toEqual([
+      "chat",
+      "ops",
+      "config",
+      "system",
+    ]);
+    for (const section of sections) {
+      expect(
+        screen.getByTestId(`sidebar-section-${section.id}`),
+      ).toBeInTheDocument();
+    }
+    // No developer section wrapper in operator mode.
+    expect(screen.queryByTestId("sidebar-section-developer")).toBeNull();
   });
 
-  it("resolveSidebarEntries appends all dev pages when devMode is on", () => {
-    const entries = resolveSidebarEntries(true);
-    // OPERATOR + DEV + system + dev-settings.
-    expect(entries).toHaveLength(
-      SIDEBAR_OPERATOR_ITEMS.length + SIDEBAR_DEV_ITEMS.length + 2,
+  it("renders one link per flat registry entry (groups collapsed)", () => {
+    const { container } = render(<Sidebar user="admin" />);
+    const nav = container.querySelector("nav") as HTMLElement;
+    // Channels stays collapsed by default, so only kind:"item" entries
+    // render as links.
+    expect(within(nav).getAllByRole("link")).toHaveLength(flatItemCount(false));
+    // The Credentials row was removed in the PR4 model-hub consolidation.
+    expect(
+      within(nav)
+        .getAllByRole("link")
+        .some((a) => a.getAttribute("href") === "/credentials"),
+    ).toBe(false);
+  });
+
+  it("dev mode appends the developer section with all developer pages", async () => {
+    window.localStorage.setItem(DEV_MODE_KEY, "1");
+    const { container } = render(<Sidebar user="admin" />);
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("sidebar-section-developer"),
+      ).toBeInTheDocument();
+    });
+    const nav = container.querySelector("nav") as HTMLElement;
+    expect(within(nav).getAllByRole("link")).toHaveLength(flatItemCount(true));
+    // Every developer page renders inside the developer section wrapper.
+    const devSection = screen.getByTestId("sidebar-section-developer");
+    const devEntries = sidebarSections(true).find(
+      (s) => s.id === "developer",
+    )?.entries;
+    expect(devEntries?.length).toBeGreaterThan(0);
+    expect(within(devSection).getAllByRole("link")).toHaveLength(
+      devEntries?.filter((e) => e.kind === "item").length ?? -1,
     );
-    // 10 original dev pages + the Marketplace Acceleration & Contribute sub-links.
-    expect(SIDEBAR_DEV_ITEMS).toHaveLength(12);
-    // All dev items carry the isDeveloper flag.
-    for (const entry of SIDEBAR_DEV_ITEMS) {
-      expect("isDeveloper" in entry && entry.isDeveloper === true).toBe(true);
-    }
   });
 
   it("renders the Channels group collapsed by default (no child links visible)", () => {

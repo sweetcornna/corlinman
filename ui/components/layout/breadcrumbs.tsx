@@ -6,27 +6,7 @@ import { usePathname } from "next/navigation";
 import { useTranslation } from "react-i18next";
 import { ChevronRight } from "lucide-react";
 
-// Maps URL segments to i18n keys under the `breadcrumbs.*` namespace.
-const SEGMENT_KEY: Record<string, string> = {
-  plugins: "breadcrumbs.plugins",
-  detail: "breadcrumbs.detail",
-  agents: "breadcrumbs.agents",
-  rag: "breadcrumbs.rag",
-  channels: "breadcrumbs.channels",
-  qq: "breadcrumbs.qq",
-  scheduler: "breadcrumbs.scheduler",
-  approvals: "breadcrumbs.approvals",
-  models: "breadcrumbs.models",
-  providers: "breadcrumbs.providers",
-  credentials: "breadcrumbs.credentials",
-  config: "breadcrumbs.config",
-  logs: "breadcrumbs.logs",
-  tenants: "breadcrumbs.tenants",
-  sessions: "breadcrumbs.sessions",
-  account: "breadcrumbs.account",
-  security: "breadcrumbs.security",
-  persona: "breadcrumbs.persona",
-};
+import { segmentLabelKey } from "@/lib/nav-registry";
 
 const NON_LINKABLE_HREFS = new Set(["/account"]);
 
@@ -48,7 +28,9 @@ export function Breadcrumbs() {
   let acc = "";
   for (const seg of segments) {
     acc += `/${seg}`;
-    const key = SEGMENT_KEY[seg];
+    // Segment labels derive from the nav registry (page labels + a small
+    // extras map for non-page segments like detail/account/security).
+    const key = segmentLabelKey(seg);
     crumbs.push({ href: acc, label: key ? t(key) : seg });
   }
 
