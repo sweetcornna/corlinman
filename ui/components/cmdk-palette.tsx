@@ -182,8 +182,14 @@ function CommandPalette({
   );
 
   const navByHref = React.useMemo(() => {
+    // FIRST-wins: commandEntries() lists real pages before the legacy
+    // /providers//credentials aliases, and three entries share
+    // href="/models" — last-wins made a visit to /models show up in
+    // Recents labeled "Credentials" (self-review P2).
     const m = new Map<string, CommandEntry>();
-    for (const n of navCmds) m.set(n.href, n);
+    for (const n of navCmds) {
+      if (!m.has(n.href)) m.set(n.href, n);
+    }
     return m;
   }, [navCmds]);
   const navById = React.useMemo(() => {
@@ -197,18 +203,24 @@ function CommandPalette({
   const recentEntries = React.useMemo(() => {
     const out: { key: string; nav: CommandEntry }[] = [];
     const seen = new Set<string>();
+    const seenHrefs = new Set<string>();
     for (const href of recentRoutes) {
       const n = navByHref.get(href);
       if (n && !seen.has(n.id)) {
         out.push({ key: `route-${href}`, nav: n });
         seen.add(n.id);
+        seenHrefs.add(n.href);
       }
     }
     for (const rid of recent) {
       const n = navById.get(rid);
-      if (n && !seen.has(n.id)) {
+      // Dedup by href too: a legacy persisted alias id (nav.credentials)
+      // and the /models route both resolve to the same destination —
+      // without this a user could see two Recent rows for one page.
+      if (n && !seen.has(n.id) && !seenHrefs.has(n.href)) {
         out.push({ key: `id-${rid}`, nav: n });
         seen.add(n.id);
+        seenHrefs.add(n.href);
       }
     }
     return out.slice(0, 5);

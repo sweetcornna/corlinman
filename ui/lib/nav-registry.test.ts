@@ -213,3 +213,23 @@ describe("segmentLabelKey", () => {
     expect(segmentLabelKey("no-such-segment")).toBeUndefined();
   });
 });
+
+describe("alias href shadowing", () => {
+  it("every alias href is preceded by a real page entry with that href", () => {
+    // The palette's navByHref map is built FIRST-wins, so a route visit
+    // must resolve to the real page, never a legacy alias label
+    // (a /models visit once showed up in Recents as "Credentials").
+    const entries = commandEntries(true);
+    const aliasIds = new Set(NAV_ALIASES.map((a) => a.id));
+    for (const [index, entry] of entries.entries()) {
+      if (!aliasIds.has(entry.id)) continue;
+      const earlierPage = entries
+        .slice(0, index)
+        .find((e) => e.href === entry.href && !aliasIds.has(e.id));
+      expect(
+        earlierPage,
+        `alias ${entry.id} (${entry.href}) has no preceding page entry`,
+      ).toBeTruthy();
+    }
+  });
+});
