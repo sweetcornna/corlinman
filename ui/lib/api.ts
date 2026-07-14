@@ -536,6 +536,25 @@ export function updateAliases(
   });
 }
 
+/**
+ * Non-destructive default-model update — POST `/admin/models/aliases`
+ * with a `{default}` body and NO `aliases` key.
+ *
+ * NEVER fold this into {@link updateAliases}: the bulk shape drops every
+ * alias name omitted from its payload, so a "set default only" write that
+ * carried a partial (or empty) alias map would wipe the routing table.
+ * The gateway treats the aliases-free body as default-only (PR5
+ * provider-setup flow prerequisite).
+ */
+export function setDefaultModel(
+  model: string,
+): Promise<{ status: string; default: string; aliases: Record<string, unknown> }> {
+  return apiFetch("/admin/models/aliases", {
+    method: "POST",
+    body: { default: model },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // S6 T6 — Plugin invoke + Agent editor
 // ---------------------------------------------------------------------------
