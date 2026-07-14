@@ -62,6 +62,13 @@ function ModelHub() {
   const tab = resolveTab(searchParams?.get("tab") ?? null);
   const setupStatus = useSetupStatus();
   const [quickSetupOpen, setQuickSetupOpen] = React.useState(false);
+  // Bumped when a quick-setup run adds providers/aliases so the routing
+  // table remounts and re-seeds from fresh server data. Without this its
+  // one-time local snapshot stays stale, and a later "Save" would post
+  // the stale full alias map — the backend bulk path drops omitted names,
+  // silently wiping the just-added aliases (self-review P2). Safe because
+  // the dialog is modal: the routing table has no concurrent edits.
+  const [routingSeed, setRoutingSeed] = React.useState(0);
 
   const setTab = React.useCallback(
     (next: TabId) => {
@@ -158,7 +165,7 @@ function ModelHub() {
         </div>
       ) : tab === "routing" ? (
         <div className="flex flex-col gap-6" data-testid="model-hub-panel-routing">
-          <RoutingSection />
+          <RoutingSection key={routingSeed} />
         </div>
       ) : (
         <div className="flex flex-col gap-6" data-testid="model-hub-panel-advanced">
@@ -173,6 +180,9 @@ function ModelHub() {
             <DialogDescription>{t("setupFlow.dialogDesc")}</DialogDescription>
           </DialogHeader>
           <ProviderSetupFlow
+            onStatusChange={(s) => {
+              if (s.modelsAdded) setRoutingSeed((n) => n + 1);
+            }}
             variant="dialog"
             onComplete={() => setQuickSetupOpen(false)}
           />

@@ -111,8 +111,36 @@ describe("useSetupStatus", () => {
       hasDefault: true,
       providerCount: 1,
       providerName: "openai",
+      defaultProviderName: "openai",
       defaultModel: "gpt-4o",
     });
+  });
+
+  it("resolves defaultProviderName to the DEFAULT alias's provider, not the first usable one", async () => {
+    // Two providers: 'azure-relay' sorts first (first usable), but the
+    // chat default routes through 'anthropic'. Image-gen 'reuse' must
+    // bind to the latter (self-review P2).
+    fetchProvidersMock.mockResolvedValue([
+      provider({ name: "azure-relay", kind: "openai_compatible" }),
+      provider({ name: "anthropic", kind: "anthropic" }),
+    ]);
+    fetchModelsMock.mockResolvedValue({
+      default: "claude",
+      aliases: [
+        {
+          name: "claude",
+          provider: "anthropic",
+          model: "claude-sonnet-4-5",
+          params: {},
+          effective_params_schema: {},
+        },
+      ],
+      providers: [],
+    });
+    const { result } = renderHook(() => useSetupStatus(), { wrapper });
+    await waitFor(() => expect(result.current.configured).toBe(true));
+    expect(result.current.providerName).toBe("azure-relay"); // first usable
+    expect(result.current.defaultProviderName).toBe("anthropic"); // default's
   });
 
   it("treats a keyless OAuth-provisioned provider with alias bindings as usable", async () => {

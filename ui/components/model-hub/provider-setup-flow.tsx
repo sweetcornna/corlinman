@@ -360,7 +360,30 @@ export function ProviderSetupFlow({
     5: t("setupFlow.step5Title"),
   };
 
-  const canGoBack = !done && step > 1 && !(step === 5);
+  // Step 5 normally has no back (the key path already committed the
+  // provider + aliases). But the OAuth path jumps straight to step 5 and
+  // can land there with an empty option list if provisioning yielded
+  // nothing — without an escape the save button is permanently disabled
+  // and the only way out is closing the dialog (self-review P3). Allow
+  // back on the OAuth step 5 to retreat to the preset choice.
+  const canGoBack =
+    !done && step > 1 && (step !== 5 || oauthDone);
+  const handleBack = React.useCallback(() => {
+    if (step === 5 && oauthDone) {
+      // OAuth session is orphaned on retreat — reset so a fresh attempt
+      // (or a different preset) starts clean.
+      setOauthDone(false);
+      updateStatus({
+        providerRegistered: false,
+        testPassed: false,
+        modelsAdded: false,
+        defaultSet: false,
+      });
+      setStep(1);
+      return;
+    }
+    setStep((s) => Math.max(1, s - 1) as StepId);
+  }, [step, oauthDone, updateStatus]);
 
   return (
     <div
@@ -377,7 +400,7 @@ export function ProviderSetupFlow({
         {canGoBack ? (
           <button
             type="button"
-            onClick={() => setStep((s) => Math.max(1, s - 1) as StepId)}
+            onClick={handleBack}
             className="inline-flex h-6 w-6 items-center justify-center rounded-md text-sg-ink-3 transition-colors hover:bg-sg-inset-hover hover:text-sg-ink"
             aria-label={t("setupFlow.back")}
             data-testid="setup-back"

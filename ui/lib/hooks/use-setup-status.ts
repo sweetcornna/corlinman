@@ -37,6 +37,10 @@ export interface SetupStatus {
   providerCount: number;
   /** Name of the first usable provider (for summary cards). */
   providerName: string | null;
+  /** Provider that actually serves `models.default` (resolved via the
+   * default alias's binding). Distinct from `providerName` when several
+   * providers exist — this is the one image-gen "reuse" should bind to. */
+  defaultProviderName: string | null;
   /** Current default model alias ("" → null). */
   defaultModel: string | null;
 }
@@ -88,6 +92,14 @@ export function useSetupStatus(): SetupStatus {
   const hasProvider = !!usable;
   const hasAliases = aliases.length > 0;
 
+  // The provider bound to the default alias — the one chat actually
+  // routes through. Falls back to the first usable provider when the
+  // default is a bare model id with no explicit alias binding.
+  const defaultBinding = hasDefault
+    ? aliases.find((a) => a.name === rawDefault)?.provider ?? null
+    : null;
+  const defaultProviderName = defaultBinding ?? usable?.name ?? null;
+
   return {
     loading,
     errored,
@@ -97,6 +109,7 @@ export function useSetupStatus(): SetupStatus {
     hasDefault,
     providerCount: providers.length,
     providerName: usable?.name ?? null,
+    defaultProviderName,
     defaultModel: hasDefault ? rawDefault : null,
   };
 }

@@ -470,10 +470,15 @@ function ApiConfigStep({
     flowStatus.defaultSet;
   const configured = setupStatus.configured || flowConfigured;
 
-  // Bubble the configured provider name up to the wizard so step 5's
-  // image-provider "reuse" choice can name it explicitly.
+  // Bubble the provider that actually serves the chat default up to the
+  // wizard so step 5's image-provider "reuse" binds image generation to
+  // the SAME provider the chat uses — not just the first usable one,
+  // which on a multi-provider gateway can be unrelated (self-review P2).
   const knownProvider =
-    flowStatus?.providerName ?? setupStatus.providerName ?? "";
+    flowStatus?.providerName ??
+    setupStatus.defaultProviderName ??
+    setupStatus.providerName ??
+    "";
   useEffect(() => {
     if (knownProvider) onProviderConfigured(knownProvider);
   }, [knownProvider, onProviderConfigured]);
@@ -945,12 +950,16 @@ function ImageProviderStep({
 
   async function pickReuse() {
     setError(null);
+    // The backend requires a non-empty provider_name for choice=reuse
+    // (it 422s otherwise — there is NO server-side fallback). When step 1
+    // was skipped we have no name, so steer the user to "separate"
+    // instead of firing a request that can only fail.
+    if (!configuredProviderName) {
+      setSubview("separateForm");
+      return;
+    }
     setSubmitting("reuse");
     try {
-      // PR5: step 1's inline setup flow reports the provider it registered,
-      // so name it explicitly. When step 1 was skipped the name is "" and
-      // the server falls back to the active chat-default provider (the old
-      // behaviour).
       await finalizeOnboardImageProvider({
         choice: "reuse",
         provider_name: configuredProviderName,

@@ -46,7 +46,12 @@ export function GettingStartedCard() {
   );
   const [flowOpen, setFlowOpen] = React.useState(false);
 
-  if (dismissed || status.loading || status.configured) return null;
+  // Also hide on `errored`: when the config surface is unreachable/503,
+  // useSetupStatus reports configured=false with empty data, which would
+  // otherwise show a permanently-uncompletable checklist whose CTA opens
+  // a flow that can only fail at probe (self-review P3).
+  if (dismissed || status.loading || status.errored || status.configured)
+    return null;
 
   const items: Array<{ key: string; label: string; done: boolean }> = [
     {
