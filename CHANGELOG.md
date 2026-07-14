@@ -4,6 +4,19 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.28.2] — 2026-07-15 — neutral User-Agent for OpenAI-compatible relays
+
+> Patch: an OpenAI-compatible relay behind Cloudflare (Sub2API) blocked
+> chat requests with "your request was blocked" (403) purely because of
+> the OpenAI Python SDK's default `User-Agent` — a common WAF rule on
+> such relays.
+
+### Fixed
+- The OpenAI-wire provider client now sends a neutral `corlinman-gateway`
+  User-Agent instead of the SDK default `OpenAI/Python <ver>`, so relays
+  that block the SDK's fingerprint accept the request. An operator custom
+  `User-Agent` header still overrides it; harmless against real OpenAI.
+
 ## [1.28.1] — 2026-07-15 — provider key hygiene + de-duplicated Providers tab
 
 > Patch for a prod report: a provider saved without a usable key looked
