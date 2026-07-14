@@ -328,6 +328,23 @@ def router() -> APIRouter:
                 "upgrader_unavailable",
                 "one-click upgrade is not available on this gateway",
             )
+        # Lazy late-verdict mirror: when the boot finalizer observed the
+        # privileged helper still mid-flight it parked the record as
+        # ``stalled/helper_still_running``; a terminal verdict the helper
+        # wrote AFTER that boot gets mirrored here on read. No-op (one
+        # store.get) for every other record; never raises.
+        lazy_store = getattr(upgrader, "_store", None) or getattr(
+            upgrader, "store", None
+        )
+        if lazy_store is not None and hasattr(lazy_store, "get"):
+            try:
+                from corlinman_server.system.upgrader.finalizer import (
+                    refresh_late_helper_verdict,
+                )
+
+                await refresh_late_helper_verdict(lazy_store, request_id)
+            except Exception:  # noqa: BLE001 — read-path convenience only
+                pass
         # Read order, all duck-typed against the W1.1 surface:
         #
         # 1. ``upgrader.status(request_id)`` — newer/simpler API; some
@@ -567,15 +584,16 @@ def router() -> APIRouter:
         status_code=202,
     )
     async def start_rollback(
-        body: RollbackStartBody, request: Request
+        request: Request, body: RollbackStartBody | None = None
     ) -> UpgradeStartResponse | JSONResponse:
         """Roll back to an older release.
 
-        Empty body → the version the last successful upgrade replaced
-        (docker restores the kept ``corlinman-previous`` container
-        without a pull; native re-installs the tag). Explicit ``tag`` →
-        a validated downgrade install. Reuses the upgrade status/SSE
-        endpoints for progress.
+        NO body / empty body → the version the last successful upgrade
+        replaced (docker restores the kept ``corlinman-previous``
+        container without a pull; native re-installs the tag). Explicit
+        ``tag`` → a validated downgrade install. Reuses the upgrade
+        status/SSE endpoints for progress. (``body`` is Optional so a
+        bare POST doesn't 422 before reaching this handler.)
         """
         state = get_admin_state()
         upgrader = _resolve_upgrader(state)
@@ -599,7 +617,8 @@ def router() -> APIRouter:
             )
 
         instant_tag = await _rollback_slot(upgrader)
-        target = body.tag or (f"v{instant_tag}" if instant_tag else None)
+        requested_tag = body.tag if body is not None else None
+        target = requested_tag or (f"v{instant_tag}" if instant_tag else None)
         if not target:
             return _upgrade_error(
                 400,

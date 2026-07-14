@@ -63,7 +63,15 @@ class FakeContainer:
             "Image": image_id,
             "Config": {
                 "Image": image_ref,
-                "Env": env or ["CORLINMAN_DATA_DIR=/data", "PORT=6005"],
+                "Env": env
+                or [
+                    "CORLINMAN_DATA_DIR=/data",
+                    "PORT=6005",
+                    # The OLD image's baked release stamp — must NOT be
+                    # copied into the new container (it would defeat the
+                    # helper's version assertion).
+                    "CORLINMAN_VERSION=1.0.0",
+                ],
                 "Labels": {"com.docker.compose.service": "corlinman"},
                 "ExposedPorts": {"6005/tcp": {}},
                 "Healthcheck": {"Test": ["CMD", "curl", "-fsS", "/health"]},
@@ -367,6 +375,12 @@ async def test_happy_path_hands_off_to_helper_and_mirrors_success(
     create = payload["create_payload"]
     assert create["Image"] == "ghcr.io/sweetcornna/corlinman:1.2.0"
     assert create["HostConfig"]["RestartPolicy"] == {"Name": "unless-stopped"}
+    # The old image's baked CORLINMAN_VERSION must be stripped (it would
+    # override the new image's stamp and fail the version assertion);
+    # runtime env survives.
+    assert "CORLINMAN_VERSION=1.0.0" not in create["Env"]
+    assert "CORLINMAN_DATA_DIR=/data" in create["Env"]
+    assert "PORT=6005" in create["Env"]
     # Primary network with the auto-generated hex alias stripped…
     endpoints = create["NetworkingConfig"]["EndpointsConfig"]
     assert endpoints == {"compose_default": {"Aliases": ["corlinman"]}}

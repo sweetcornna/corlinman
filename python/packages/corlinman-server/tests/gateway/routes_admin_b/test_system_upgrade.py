@@ -700,3 +700,22 @@ def test_legacy_positional_start_signature_still_works(
 
     assert resp.status_code == 202
     assert upgrader.started == [("v1.2.1", "admin")]
+
+
+def test_rollback_with_no_body_at_all_targets_previous(
+    client: TestClient, admin_state: AdminState
+) -> None:
+    """A bare POST (no JSON body) must reach the handler and resolve the
+    recorded previous version — not 422 at validation (Codex #122)."""
+    admin_state.update_checker = _StubChecker(current="1.2.0", latest="1.2.0")
+    upgrader = _KwargUpgrader(
+        available=True,
+        mode="docker",
+        store=_RollbackStubStore([_succeeded_status("1.1.9")]),
+    )
+    admin_state.upgrader = upgrader
+
+    resp = client.post("/admin/system/rollback")
+
+    assert resp.status_code == 202, resp.text
+    assert resp.json()["tag"] == "v1.1.9"
