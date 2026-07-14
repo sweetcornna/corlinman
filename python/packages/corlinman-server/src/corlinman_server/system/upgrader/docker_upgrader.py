@@ -361,14 +361,19 @@ class DockerUpgrader:
             self._check_cancelled(req.request_id)
 
             # --- 3. Launch the detached helper ----------------------------
+            # Mark the handoff BEFORE launching: cancel() must start
+            # refusing the moment the helper could exist, or an operator
+            # cancelling during the (slow) containers.run call would get a
+            # false "cancelled" while the helper proceeds with the swap
+            # (Codex #122 review). Rolled back on launch failure.
+            self._handoff_done.add(req.request_id)
             try:
                 await asyncio.to_thread(self._launch_helper, client, context)
             except Exception as exc:  # noqa: BLE001
+                self._handoff_done.discard(req.request_id)
                 self._delete_request_file()
                 await self._fail(req.request_id, "helper_launch_failed", exc)
                 return
-            # Point of no return — the helper owns the swap now.
-            self._handoff_done.add(req.request_id)
             await self._store.update(req.request_id, phase="handoff")
             await self._append_log(
                 req.request_id,
@@ -560,9 +565,24 @@ class DockerUpgrader:
         endpoint)."""
         config = attrs.get("Config") or {}
         host_config = dict(attrs.get("HostConfig") or {})
+        # ``docker inspect``'s Config.Env is the MERGE of runtime env and
+        # the OLD image's baked ENV — including its CORLINMAN_VERSION
+        # release stamp. Copying that verbatim would pin the new container
+        # to the old version string (env has highest precedence in
+        # resolve_app_version), so /health reports the old version and the
+        # helper's assertion rolls back every valid upgrade (Codex #122
+        # review). Strip it; the NEW image's own baked ENV then applies.
+        env = [
+            entry
+            for entry in (config.get("Env") or [])
+            if not (
+                isinstance(entry, str)
+                and entry.startswith("CORLINMAN_VERSION=")
+            )
+        ]
         payload: dict[str, Any] = {
             "Image": new_image,
-            "Env": config.get("Env") or [],
+            "Env": env,
             "Cmd": config.get("Cmd"),
             "Entrypoint": config.get("Entrypoint"),
             "Labels": config.get("Labels") or {},

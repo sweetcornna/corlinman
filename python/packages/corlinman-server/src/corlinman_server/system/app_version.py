@@ -71,11 +71,26 @@ def _normalize(value: str) -> str:
 
 
 def _looks_like_version(value: str) -> bool:
-    """True when ``value`` looks like a real version (starts with a digit,
-    optionally ``v``-prefixed) rather than a git ref such as ``main`` or a
-    commit sha."""
+    """True when ``value`` IS a real version (PEP 440-parseable, optionally
+    ``v``-prefixed) rather than a git ref such as ``main`` or a commit sha.
+
+    The first-character digit check alone is not enough: a sha like
+    ``1234abc`` or a ref like ``1.x-fixes`` starts with a digit but does
+    not parse — accepting it would beat the baked pyproject version and
+    make ``_compare_versions`` silently report ``available=False``
+    forever. Parse-validate with the same :class:`packaging.version.Version`
+    the comparisons use so acceptance and comparability can't diverge.
+    """
     normalized = _normalize(value)
-    return bool(normalized) and normalized[0].isdigit()
+    if not normalized or not normalized[0].isdigit():
+        return False
+    try:
+        from packaging.version import Version
+
+        Version(normalized)
+    except Exception:  # noqa: BLE001 — InvalidVersion + any parse quirk
+        return False
+    return True
 
 
 def _read_root_version_from(start: Path) -> str | None:

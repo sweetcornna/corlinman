@@ -463,9 +463,26 @@ def _run_rollback_instant(req: dict[str, Any], started_at: int) -> int:
 
     time.sleep(_START_GRACE_S)
     if not _wait_healthy(current, health_timeout):
+        # The rollback target never came up — swap BACK so the version
+        # that was serving before this request keeps serving, instead of
+        # leaving the box on an unhealthy container (Codex #122 review).
+        LOG.add(
+            f"[fail] rollback target unhealthy after {health_timeout:.0f}s; "
+            "restoring the previously running container"
+        )
+        restored = False
+        try:
+            _stop(current)
+            _rename(current, swap_tmp)
+            _rename(previous, current)
+            _rename(swap_tmp, previous)
+            _start(current)
+            restored = _wait_healthy(current, health_timeout)
+        except EngineError as exc:
+            LOG.add(f"[fail] restore swap failed: {exc}")
         write_status(
             request_id, "failed", error="healthcheck_timeout",
-            started_at=started_at,
+            started_at=started_at, rolled_back=restored,
         )
         return 1
     verified = _assert_version(current, target, port) if target else None

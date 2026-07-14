@@ -422,7 +422,11 @@ class UpdateChecker:
 
         try:
             resp = await self._client().get(url, headers=headers)
-        except httpx.HTTPError as exc:
+        except Exception as exc:  # noqa: BLE001 — poll() must never raise:
+            # besides httpx.HTTPError this covers client-CONSTRUCTION
+            # failures (malformed proxy_url, socks scheme without socksio
+            # on an old environment) so a bad proxy config degrades to the
+            # stale cache instead of crashing the caller.
             logger.warning(
                 "update_check.network_error",
                 repo=self._config.repo,

@@ -265,3 +265,70 @@ def test_additive_fields_roundtrip_and_legacy_files_load(
     assert legacy_req is not None
     assert legacy_req.allow_downgrade is False
     assert legacy_req.action == "upgrade"
+
+
+def test_live_helper_parks_record_and_late_verdict_is_mirrored(
+    tmp_path: Path,
+) -> None:
+    """Helper observed alive at boot → stalled/helper_still_running; a
+    terminal verdict the helper writes LATER is mirrored on read via
+    refresh_late_helper_verdict (Codex #122)."""
+    from corlinman_server.system.upgrader.finalizer import (
+        refresh_late_helper_verdict,
+    )
+
+    rid = _seed_running_upgrade(tmp_path, tag="v1.28.0")
+    _write_helper_status(
+        tmp_path,
+        {"request_id": str(uuid.UUID(rid)), "state": "running", "started_at": 1},
+    )
+
+    store = _reload_and_finalize(tmp_path, current_version="1.27.0")
+    parked = _get(store, rid)
+    assert parked is not None
+    assert parked.state == "stalled"
+    assert parked.error == "helper_still_running"
+    # Single-flight slot is free (stalled is terminal).
+    assert asyncio.run(store.current_in_flight()) is None
+
+    # Helper finishes AFTER our boot: failed + rolled back.
+    _write_helper_status(
+        tmp_path,
+        {
+            "request_id": str(uuid.UUID(rid)),
+            "state": "failed",
+            "error": "version_assertion_failed",
+            "rolled_back": True,
+            "finished_at": 9000,
+        },
+    )
+    asyncio.run(refresh_late_helper_verdict(store, rid))
+
+    refreshed = _get(store, rid)
+    assert refreshed is not None
+    assert refreshed.state == "failed"
+    assert refreshed.error == "version_assertion_failed"
+    assert refreshed.rolled_back is True
+    assert refreshed.finished_at == 9000
+
+
+def test_late_refresh_ignores_ordinary_stalled_records(tmp_path: Path) -> None:
+    from corlinman_server.system.upgrader.finalizer import (
+        refresh_late_helper_verdict,
+    )
+
+    rid = _seed_running_upgrade(tmp_path, tag="v1.28.0")
+    store = _reload_and_finalize(tmp_path, current_version="1.27.0")
+    before = _get(store, rid)
+    assert before is not None and before.error == "gateway_restarted_mid_upgrade"
+
+    # Even if a matching status file appears later, an ordinary stalled
+    # record (helper was NOT observed alive at boot) is left alone.
+    _write_helper_status(
+        tmp_path,
+        {"request_id": str(uuid.UUID(rid)), "state": "succeeded"},
+    )
+    asyncio.run(refresh_late_helper_verdict(store, rid))
+    after = _get(store, rid)
+    assert after is not None
+    assert after.state == "stalled"

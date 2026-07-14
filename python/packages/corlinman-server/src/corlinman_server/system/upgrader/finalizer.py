@@ -45,7 +45,7 @@ from corlinman_server.system.upgrader.state import (
 
 logger = structlog.get_logger(__name__)
 
-__all__ = ["finalize_boot"]
+__all__ = ["finalize_boot", "refresh_late_helper_verdict"]
 
 # Mirrors NativeUpgrader.STATUS_FILE_NAME / the docker helper contract.
 _STATUS_FILE_NAME = ".upgrade-status"
@@ -153,16 +153,27 @@ def _finalize_one(
     # (3) Inconclusive — helper may still be mid-flight (install.sh
     # restarts the gateway *before* it writes its terminal status, and a
     # health-fail rollback restarts it twice). Keep the legacy stall flip
-    # with a more honest hint; a helper that finishes later has no live
-    # mirror, so the operator retries or checks journalctl.
+    # (single-flight must stay safe) but mark the live-helper case with a
+    # distinct error so the status route can lazily mirror the helper's
+    # LATE verdict via :func:`refresh_late_helper_verdict` — otherwise a
+    # rollback that finishes after this boot would never be recorded
+    # (Codex #122 review).
+    helper_alive = payload is not None and str(payload.get("state")) in (
+        "queued",
+        "running",
+    )
     store.finalize_status_sync(
         status.request_id,
         state="stalled",
         phase="stalled",
-        error="gateway_restarted_mid_upgrade",
+        error=(
+            "helper_still_running"
+            if helper_alive
+            else "gateway_restarted_mid_upgrade"
+        ),
         finished_at=status.finished_at or _now_ms(),
     )
-    return "stalled"
+    return "stalled_helper_alive" if helper_alive else "stalled"
 
 
 def _coerce_ms(raw: object) -> int:
@@ -171,6 +182,73 @@ def _coerce_ms(raw: object) -> int:
     if isinstance(raw, int):
         return raw
     return _now_ms()
+
+
+async def refresh_late_helper_verdict(
+    store: UpgradeStateStore, request_id: str
+) -> None:
+    """Mirror a helper verdict that arrived AFTER the boot finalizer ran.
+
+    Only touches records the finalizer marked ``stalled`` with
+    ``error="helper_still_running"`` (the helper was observed alive at
+    boot). If the helper's status file now carries a terminal verdict for
+    this request, mirror it — including a late ``succeeded`` that the
+    version assertion contradicts (→ ``version_assertion_failed``, same
+    rule as the boot pass). Called lazily from the status route on read;
+    never raises.
+    """
+    try:
+        status = await store.get(request_id)
+        if (
+            status is None
+            or status.state != "stalled"
+            or status.error != "helper_still_running"
+        ):
+            return
+        data_dir = store._persist_path.parent  # noqa: SLF001 — same package
+        payload = _read_helper_status(data_dir, request_id)
+        if payload is None:
+            return
+        helper_state = str(payload.get("state") or "")
+        if helper_state not in ("succeeded", "failed"):
+            return  # still running — keep waiting
+        fields: dict = {"finished_at": _coerce_ms(payload.get("finished_at"))}
+        if helper_state == "succeeded":
+            from corlinman_server.system.app_version import resolve_app_version
+
+            if _normalize(resolve_app_version()) == _normalize(status.tag):
+                fields.update(
+                    state="succeeded", phase="done", error=None,
+                    version_verified=True,
+                )
+            else:
+                fields.update(
+                    state="failed", phase="version_assertion",
+                    error="version_assertion_failed", version_verified=False,
+                )
+        else:
+            fields.update(
+                state="failed", phase="failed",
+                error=str(payload.get("error") or "helper_reported_failure"),
+            )
+            rolled_back = payload.get("rolled_back")
+            if isinstance(rolled_back, bool):
+                fields["rolled_back"] = rolled_back
+            log_excerpt = payload.get("log_excerpt")
+            if isinstance(log_excerpt, str) and log_excerpt:
+                fields["log_excerpt"] = log_excerpt
+        await store.update(request_id, **fields)
+        logger.info(
+            "upgrade_finalizer.late_verdict_mirrored",
+            request_id=request_id,
+            state=fields.get("state"),
+        )
+    except Exception as exc:  # noqa: BLE001 — read-path convenience only
+        logger.warning(
+            "upgrade_finalizer.late_refresh_failed",
+            request_id=request_id,
+            error=str(exc),
+        )
 
 
 def finalize_boot(
