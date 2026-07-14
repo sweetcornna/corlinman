@@ -808,6 +808,15 @@ repo = "sweetcornna/corlinman"
 # read-only; classic: empty scopes).
 # github_token = { env = "CORLINMAN_GITHUB_TOKEN" }
 
+# Optional outbound proxy for reaching api.github.com (http / https /
+# socks5), e.g. hosts behind restrictive networks. FAIL-CLOSED: when
+# set, every update-check request goes through the proxy — a broken
+# proxy degrades to the cached release info, it never silently falls
+# back to a direct connection. (The native upgrade helper has its own
+# knob: `install.sh --gh-proxy` writes UPGRADER_GH_PROXY into the
+# systemd unit.)
+# proxy_url = "http://127.0.0.1:7890"
+
 # ---------------------------------------------------------------------------
 # [meta] — maintained by `corlinman config set` / `save`. Do not edit by hand.
 # ---------------------------------------------------------------------------

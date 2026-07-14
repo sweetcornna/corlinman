@@ -87,6 +87,10 @@ class UpdateStatus:
     published_at: int | None
     last_checked_at: int
     prerelease_seen: list[str] = field(default_factory=list)
+    # Most-recent releases observed (newest first, drafts excluded):
+    # ``[{"tag": "v1.27.0", "published_at": <ms|None>, "prerelease": bool}]``.
+    # Feeds the rollback-version picker without extra API round-trips.
+    recent_releases: list[dict[str, Any]] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
         """Pydantic-free serialiser the admin routes can pass through."""
@@ -113,6 +117,13 @@ class SystemUpdateCheckConfig:
     # proxy strips 3xx.
     repo: str = "sweetcornna/corlinman"
     github_token: str | None = None
+    # Optional outbound proxy for the GitHub API (http/https/socks5),
+    # e.g. ``http://127.0.0.1:7890`` — lets hosts behind restrictive
+    # networks (typically CN) reach api.github.com. FAIL-CLOSED: when
+    # set, every request goes through the proxy; there is no silent
+    # direct-connection fallback (a broken proxy degrades to the stale
+    # cache exactly like any other network error).
+    proxy_url: str | None = None
 
     @classmethod
     def from_mapping(cls, raw: dict[str, Any] | None) -> SystemUpdateCheckConfig:
@@ -146,6 +157,10 @@ class SystemUpdateCheckConfig:
             tok = raw["github_token"]
             if isinstance(tok, str) and tok:
                 kwargs["github_token"] = tok
+        if "proxy_url" in raw:
+            proxy = raw["proxy_url"]
+            if isinstance(proxy, str) and proxy.strip():
+                kwargs["proxy_url"] = proxy.strip()
         return cls(**kwargs)
 
 
@@ -243,10 +258,17 @@ class UpdateChecker:
             # it the poll always returns 301 → ``unexpected_status`` →
             # cache is never refreshed → UI freezes on whatever
             # ``latest_tag`` was current at the moment of the rename.
-            self._http_client = httpx.AsyncClient(
-                timeout=_HTTP_TIMEOUT_SECONDS,
-                follow_redirects=True,
-            )
+            client_kwargs: dict[str, Any] = {
+                "timeout": _HTTP_TIMEOUT_SECONDS,
+                "follow_redirects": True,
+            }
+            # Fail-closed proxy: when configured, ALL checker traffic uses
+            # it — a dead proxy degrades to the stale cache rather than
+            # silently connecting direct (the operator opted into the
+            # proxy for a reason; see SystemUpdateCheckConfig.proxy_url).
+            if self._config.proxy_url:
+                client_kwargs["proxy"] = self._config.proxy_url
+            self._http_client = httpx.AsyncClient(**client_kwargs)
         return self._http_client
 
     # ------------------------------------------------------------------
@@ -340,6 +362,9 @@ class UpdateChecker:
         prerelease_seen = cache.get("prerelease_seen") or []
         if not isinstance(prerelease_seen, list):
             prerelease_seen = []
+        recent_releases = cache.get("recent_releases") or []
+        if not isinstance(recent_releases, list):
+            recent_releases = []
         return UpdateStatus(
             current=current,
             latest=latest,
@@ -349,6 +374,11 @@ class UpdateChecker:
             published_at=cache.get("published_at"),
             last_checked_at=last_checked,
             prerelease_seen=list(prerelease_seen),
+            recent_releases=[
+                dict(entry)
+                for entry in recent_releases
+                if isinstance(entry, dict)
+            ],
         )
 
     # ------------------------------------------------------------------
@@ -373,7 +403,13 @@ class UpdateChecker:
                 if now_ms - last_checked < interval_ms:
                     return self._status_from_cache(cache, now_ms=now_ms)
 
-        url = f"https://api.github.com/repos/{self._config.repo}/releases/latest"
+        # Releases *list* (not ``/releases/latest``): one call yields both
+        # the newest acceptable release AND the recent history the
+        # rollback-version picker needs. ETag/304 semantics are identical.
+        url = (
+            f"https://api.github.com/repos/{self._config.repo}"
+            "/releases?per_page=10"
+        )
         headers: dict[str, str] = {
             "Accept": "application/vnd.github+json",
             "User-Agent": f"corlinman/{self.current_version()}",
@@ -448,35 +484,53 @@ class UpdateChecker:
                 cache, now_ms=now_ms, last_checked_override=now_ms
             )
 
-        if not isinstance(body, dict):
+        if not isinstance(body, list):
             cache["last_checked_at"] = now_ms
             self._save_cache(cache)
             return self._status_from_cache(
                 cache, now_ms=now_ms, last_checked_override=now_ms
             )
 
-        tag_name = body.get("tag_name")
-        is_prerelease = bool(body.get("prerelease"))
-        is_draft = bool(body.get("draft"))
+        # Walk the list (GitHub orders newest first): accumulate the
+        # recent-release history + prerelease sightings, and pick the
+        # first acceptable entry as "latest". Drafts are always skipped;
+        # prereleases only count as "latest" when opted in.
         prerelease_seen: list[str] = list(cache.get("prerelease_seen") or [])
-        if (
-            isinstance(tag_name, str)
-            and is_prerelease
-            and tag_name not in prerelease_seen
-        ):
-            prerelease_seen.append(tag_name)
-            # Trim to a sane size; we never want to balloon the cache.
-            if len(prerelease_seen) > 20:
-                prerelease_seen = prerelease_seen[-20:]
+        recent_releases: list[dict[str, Any]] = []
+        chosen: dict[str, Any] | None = None
+        for entry in body:
+            if not isinstance(entry, dict) or bool(entry.get("draft")):
+                continue
+            tag_name = entry.get("tag_name")
+            if not isinstance(tag_name, str) or not tag_name:
+                continue
+            is_prerelease = bool(entry.get("prerelease"))
+            if is_prerelease and tag_name not in prerelease_seen:
+                prerelease_seen.append(tag_name)
+            recent_releases.append(
+                {
+                    "tag": tag_name,
+                    "published_at": _parse_published_at(
+                        entry.get("published_at")
+                    ),
+                    "prerelease": is_prerelease,
+                }
+            )
+            if chosen is None and (
+                self._config.include_prereleases or not is_prerelease
+            ):
+                chosen = entry
+        # Trim to a sane size; we never want to balloon the cache.
+        if len(prerelease_seen) > 20:
+            prerelease_seen = prerelease_seen[-20:]
 
-        # Skip prerelease/draft unless explicitly opted in.
-        if (is_prerelease and not self._config.include_prereleases) or is_draft:
-            # Persist the discovery (etag + prerelease_seen) but DO NOT
-            # update latest_tag — we want the next "release" release to
-            # remain the canonical "latest" target.
+        if chosen is None:
+            # Nothing acceptable in the window (all prerelease/draft) —
+            # keep the previous latest_tag; persist etag + discoveries.
             new_cache: dict[str, Any] = dict(cache)
             new_cache["last_checked_at"] = now_ms
             new_cache["prerelease_seen"] = prerelease_seen
+            new_cache["recent_releases"] = recent_releases
             etag = resp.headers.get("ETag")
             if etag:
                 new_cache["etag"] = etag
@@ -486,18 +540,20 @@ class UpdateChecker:
             )
 
         # 200 OK + acceptable release → refresh everything.
+        chosen_tag = chosen.get("tag_name")
         new_cache = {
             "etag": resp.headers.get("ETag") or cache.get("etag"),
             "last_checked_at": now_ms,
-            "latest_tag": tag_name if isinstance(tag_name, str) else None,
-            "release_notes_md": body.get("body")
-            if isinstance(body.get("body"), str)
+            "latest_tag": chosen_tag if isinstance(chosen_tag, str) else None,
+            "release_notes_md": chosen.get("body")
+            if isinstance(chosen.get("body"), str)
             else None,
-            "release_url": body.get("html_url")
-            if isinstance(body.get("html_url"), str)
+            "release_url": chosen.get("html_url")
+            if isinstance(chosen.get("html_url"), str)
             else None,
-            "published_at": _parse_published_at(body.get("published_at")),
+            "published_at": _parse_published_at(chosen.get("published_at")),
             "prerelease_seen": prerelease_seen,
+            "recent_releases": recent_releases,
         }
         self._save_cache(new_cache)
         return self._status_from_cache(new_cache, now_ms=now_ms)
