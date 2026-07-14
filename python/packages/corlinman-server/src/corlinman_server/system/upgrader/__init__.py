@@ -58,18 +58,14 @@ def resolve_upgrader(
 
     * ``mode="docker"`` → :class:`DockerUpgrader`. ``kwargs`` are forwarded
       so the gateway lifecycle can override ``repo``, ``container_name``,
-      ``compose_file`` (mounted compose path), or ``docker_client_factory``.
-    * ``mode="native"`` → currently returns ``None`` (W1.2 will plug
-      ``NativeUpgrader`` in here).
+      ``data_dir`` (shared request/status files) or
+      ``docker_client_factory``.
+    * ``mode="native"`` → :class:`NativeUpgrader` (systemd path-watcher).
     * Any other / unknown mode → ``None``. The admin route maps ``None``
       to a UI state that disables the one-click button and surfaces the
       copy-paste fallback.
     """
     if mode == "docker":
-        # DockerUpgrader derives all paths from the container; it does not
-        # accept ``data_dir`` (a native-only kwarg). Drop it so a caller can
-        # uniformly pass data_dir without breaking the docker path.
-        kwargs.pop("data_dir", None)
         return DockerUpgrader(store=store, **kwargs)
     if mode == "native":
         return NativeUpgrader(store=store, **kwargs)
