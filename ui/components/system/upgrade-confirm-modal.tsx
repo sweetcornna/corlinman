@@ -1,19 +1,18 @@
 "use client";
 
 /**
- * `<UpgradeConfirmModal>` — typed-confirmation dialog that gates the
- * one-click upgrade behind explicit operator intent.
+ * `<UpgradeConfirmModal>` — one-click confirm dialog for the upgrade
+ * (sub2api-style: a single "Update now" button, no typed-tag friction;
+ * the audit log records who clicked).
  *
  * Layout:
  *   - Title with the target tag substituted
- *   - Current version line
+ *   - Current → target line
  *   - Amber warning callout (restart impending)
  *   - Optional release-notes excerpt (2 lines max)
- *   - Text input — operator must type the tag exactly; submit stays
- *     disabled otherwise
- *   - Cancel + Upgrade buttons; mid-flight POST renders a "Starting…"
- *     state; 409 surfaces the in-flight info inline and leaves the
- *     modal open
+ *   - Cancel + Update now buttons; mid-flight POST renders a
+ *     "Starting…" state; 409 surfaces the in-flight info inline and
+ *     leaves the modal open
  *
  * On a 202 the caller's `onUpgradeStarted(request_id)` fires and the
  * modal closes. The page that mounted it typically routes the user to
@@ -34,7 +33,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import {
   CorlinmanApiError,
   startSystemUpgrade,
@@ -57,14 +55,32 @@ interface InFlightInfo {
 }
 
 function parseInFlight(err: CorlinmanApiError): InFlightInfo | null {
-  // The 409 body shape: { detail?, in_flight: { request_id, tag, state } }.
+  // The backend 409 body is FLAT (`_upgrade_error` in _system_lib.py):
+  //   { error, message, request_id, in_flight_tag, in_flight_state }
   // `CorlinmanApiError` stores the raw response body in `err.message` —
-  // try to JSON-parse it; tolerate failure (some backends return plain text).
+  // JSON-parse it; tolerate plain-text bodies. A nested { in_flight }
+  // shape is accepted too for forward-compat. (The flat shape was
+  // previously ignored, so the "already running" alert never rendered —
+  // self-review P2.)
   try {
     const parsed: unknown = JSON.parse(err.message);
     if (parsed && typeof parsed === "object") {
-      const inflight = (parsed as { in_flight?: InFlightInfo }).in_flight;
-      if (inflight && typeof inflight === "object") return inflight;
+      const flat = parsed as {
+        request_id?: string;
+        in_flight_tag?: string;
+        in_flight_state?: string;
+        in_flight?: InFlightInfo;
+      };
+      if (flat.in_flight && typeof flat.in_flight === "object") {
+        return flat.in_flight;
+      }
+      if (flat.request_id || flat.in_flight_tag || flat.in_flight_state) {
+        return {
+          request_id: flat.request_id,
+          tag: flat.in_flight_tag,
+          state: flat.in_flight_state,
+        };
+      }
     }
   } catch {
     /* not JSON — fall through to null */
@@ -81,7 +97,6 @@ export function UpgradeConfirmModal({
   onUpgradeStarted,
 }: UpgradeConfirmModalProps) {
   const { t } = useTranslation();
-  const [typed, setTyped] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
   const [inFlight, setInFlight] = React.useState<InFlightInfo | null>(null);
   const [unavailable, setUnavailable] = React.useState(false);
@@ -89,28 +104,26 @@ export function UpgradeConfirmModal({
   // Reset transient state when the modal toggles open.
   React.useEffect(() => {
     if (open) {
-      setTyped("");
       setSubmitting(false);
       setInFlight(null);
       setUnavailable(false);
     }
   }, [open]);
 
-  const matches = typed === tag;
-  const submitDisabled = !matches || submitting;
-
   async function handleSubmit() {
-    if (!matches || submitting) return;
+    if (submitting) return;
     setSubmitting(true);
     setInFlight(null);
     setUnavailable(false);
     try {
-      const res = await startSystemUpgrade(tag, typed);
+      const res = await startSystemUpgrade(tag);
       onUpgradeStarted(res);
       onOpenChange(false);
     } catch (err) {
       if (err instanceof CorlinmanApiError && err.status === 409) {
-        setInFlight(parseInFlight(err));
+        // Never silent: even an unparseable 409 body renders the
+        // "already running" alert (with an unknown tag).
+        setInFlight(parseInFlight(err) ?? {});
       } else if (
         err instanceof CorlinmanApiError &&
         err.status === 503 &&
@@ -153,26 +166,6 @@ export function UpgradeConfirmModal({
           </p>
         ) : null}
 
-        <div className="space-y-1.5">
-          <label
-            htmlFor="upgrade-confirm-input"
-            className="text-xs font-medium uppercase tracking-wide text-sg-ink-3"
-          >
-            {t("system.upgrade.confirm.typeLabel", { tag })}
-          </label>
-          <Input
-            id="upgrade-confirm-input"
-            data-testid="upgrade-confirm-input"
-            value={typed}
-            onChange={(e) => setTyped(e.target.value)}
-            placeholder={t("system.upgrade.confirm.typePlaceholder", { tag })}
-            autoFocus
-            autoComplete="off"
-            spellCheck={false}
-            className="font-mono"
-          />
-        </div>
-
         {inFlight ? (
           <Alert variant="danger" data-testid="upgrade-confirm-conflict">
             {t("system.upgrade.confirm.alreadyRunning", {
@@ -206,7 +199,8 @@ export function UpgradeConfirmModal({
             type="button"
             data-testid="upgrade-confirm-submit"
             onClick={handleSubmit}
-            disabled={submitDisabled}
+            disabled={submitting}
+            autoFocus
           >
             {submitting
               ? t("system.upgrade.confirm.submitting")

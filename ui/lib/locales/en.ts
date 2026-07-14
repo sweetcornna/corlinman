@@ -3415,10 +3415,8 @@ export const en = {
         subtitle: "Current version: {{current}}",
         warning:
           "The gateway will restart. Make sure no critical in-flight requests.",
-        typeLabel: "Type {{tag}} to confirm",
-        typePlaceholder: "Type exactly: {{tag}}",
         cancel: "Cancel",
-        submit: "Upgrade",
+        submit: "Update now",
         submitting: "Starting…",
         alreadyRunning:
           "An upgrade to {{tag}} is already running",
@@ -3431,12 +3429,13 @@ export const en = {
         subtitle:
           "Applying the update — the gateway restarts automatically. This usually takes under a minute.",
         restarting: "Restarting the gateway…",
+        waitingVersion: "Restarting — waiting for v{{version}}…",
         slow: "This is taking longer than usual. You can keep waiting or reload now.",
         reloadNow: "Reload now",
         elapsed: "Elapsed {{seconds}}s",
         cancel: "Stop watching",
         cancelHint:
-          "Closes this view; the upgrade continues in the background.",
+          "Cancels the upgrade if it hasn't started applying; otherwise just closes this view.",
       },
       phases: {
         validating: "Validating",
@@ -3456,6 +3455,9 @@ export const en = {
         title: "Stopped watching",
         subtitle:
           "The upgrade continues in the background. Reload the page to check the version.",
+        aborted: "Upgrade cancelled",
+        tooLate:
+          "The upgrade is already applying and can't be cancelled — stopped watching instead.",
       },
       failed: {
         title: "Upgrade failed",
@@ -3469,6 +3471,32 @@ export const en = {
         title: "Manual upgrade — copy these commands",
         subtitle: "For air-gapped or hardened deploys.",
       },
+    },
+    badge: {
+      currentLabel: "corlinman v{{version}}",
+      checkNow: "Check for updates",
+      throttled: "Update checks are limited to once per minute.",
+      updateAvailable: "{{tag}} is available",
+      updateNow: "Update now",
+      starting: "Starting…",
+      details: "Details",
+      manage: "Updates & rollback",
+      unavailable:
+        "One-click upgrade isn't available here — use the manual commands.",
+    },
+    rollback: {
+      title: "Roll back",
+      subtitle: "Currently running v{{current}}. Restore an earlier release.",
+      action: "Roll back",
+      instant: "instant",
+      instantHint:
+        "The previous container is still on this machine — restoring it needs no download.",
+      confirmTitle: "Roll back to {{tag}}?",
+      confirmBody:
+        "The gateway will restart on {{tag}} (currently v{{current}}). Data is preserved; you can upgrade again afterwards.",
+      confirm: "Roll back",
+      cancel: "Cancel",
+      alreadyRunning: "Another upgrade is already in flight.",
     },
     audit: {
       title: "Upgrade history",

@@ -2450,6 +2450,15 @@ export interface UpdateStatus {
   last_checked_at: number | null;
   /** Prerelease tags the checker has seen but suppressed (per config). */
   prerelease_seen: string[];
+  /** Recent release history (newest first, drafts excluded) — feeds the
+   * rollback picker. Absent on pre-v1.28 backends. */
+  recent_releases?: RecentRelease[];
+}
+
+export interface RecentRelease {
+  tag: string;
+  published_at: number | null;
+  prerelease: boolean;
 }
 
 /** Copy-pasta blobs surfaced on `/admin/system`. Strings only — no
@@ -2621,20 +2630,93 @@ export interface UpgradeStatusResponse {
   finished_at: number | null;
   log_excerpt: string;
   error: string | null;
+  /** Normalized target version (no leading `v`) — compare against
+   * `/health`'s `version` verbatim. Absent on pre-v1.28 backends. */
+  target_tag?: string | null;
+  /** Version running when the upgrade started (rollback context). */
+  before_version?: string | null;
+  /** Tri-state: true = the restarted gateway asserted it runs the
+   * target; false = assertion ran and failed; null/absent = unknown. */
+  version_verified?: boolean | null;
+  /** True when a failed upgrade was auto-rolled-back to the previous
+   * version by the helper. */
+  rolled_back?: boolean | null;
 }
 
-/** POST /admin/system/upgrade — body `{tag, typed_confirmation,
- * allow_downgrade?}`. Backend enforces typed_confirmation === tag,
- * tag-in-releases-whitelist, no-downgrade, single-flight (409). */
+/** POST /admin/system/upgrade — body `{tag, typed_confirmation?,
+ * allow_downgrade?}`. `typed_confirmation` is optional since v1.28 (the
+ * UI uses a one-click confirm; the audit log records the actor) — when
+ * sent it must equal `tag`. Backend enforces tag-in-releases-whitelist,
+ * no-downgrade, single-flight (409). */
 export function startSystemUpgrade(
   tag: string,
-  typed_confirmation: string,
+  typed_confirmation?: string,
   opts?: { allow_downgrade?: boolean },
 ): Promise<UpgradeStartResponse> {
   return apiFetch<UpgradeStartResponse>("/admin/system/upgrade", {
     method: "POST",
     body: { tag, typed_confirmation, allow_downgrade: opts?.allow_downgrade },
   });
+}
+
+/** Unauthenticated `GET /health` — the restart-window poll target.
+ * Distinct from `fetchHealth` above: a plain fetch with no auth wrapper
+ * and no JSON-error envelope, because during the upgrade restart the
+ * admin session cookie may not round-trip yet (this route never requires
+ * it). `version` is release-spaced (no leading `v`); absent on pre-v1.28
+ * backends. */
+export async function fetchHealthRaw(): Promise<{
+  status: string;
+  mode?: string;
+  version?: string;
+}> {
+  const resp = await fetch(`${GATEWAY_BASE_URL}/health`, {
+    cache: "no-store",
+  });
+  if (!resp.ok) throw new Error(`health ${resp.status}`);
+  return (await resp.json()) as { status: string; mode?: string; version?: string };
+}
+
+export interface RollbackVersionEntry {
+  tag: string;
+  published_at: number | null;
+  prerelease: boolean;
+  /** True when this tag matches the kept previous version (docker:
+   * the `corlinman-previous` container) — restoring needs no download. */
+  instant: boolean;
+}
+
+export interface RollbackVersionsResponse {
+  current: string;
+  versions: RollbackVersionEntry[];
+}
+
+/** GET /admin/system/rollback-versions — up to 3 releases strictly older
+ * than the running version. */
+export function fetchRollbackVersions(): Promise<RollbackVersionsResponse> {
+  return apiFetch<RollbackVersionsResponse>("/admin/system/rollback-versions");
+}
+
+/** POST /admin/system/rollback — `tag` omitted rolls back to the version
+ * the last successful upgrade replaced (docker: instant container swap).
+ * Reuses the upgrade status/SSE endpoints for progress. */
+export function startRollback(tag?: string): Promise<UpgradeStartResponse> {
+  return apiFetch<UpgradeStartResponse>("/admin/system/rollback", {
+    method: "POST",
+    body: tag ? { tag } : {},
+  });
+}
+
+/** POST /admin/system/upgrade/{id}/cancel — 200 only when the work was
+ * actually stopped; 409 `not_cancellable` past the point of no return
+ * (the UI then falls back to stop-watching); 404 unknown id. */
+export function cancelUpgrade(
+  request_id: string,
+): Promise<{ request_id: string; state: string }> {
+  return apiFetch<{ request_id: string; state: string }>(
+    `/admin/system/upgrade/${encodeURIComponent(request_id)}/cancel`,
+    { method: "POST", body: {} },
+  );
 }
 
 /** GET /admin/system/upgrade/{request_id}/status — read-once snapshot. */

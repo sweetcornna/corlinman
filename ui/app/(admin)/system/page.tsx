@@ -57,6 +57,7 @@ import { DISMISS_KEY } from "@/components/system/update-bubble";
 import { ReleaseNotes } from "@/components/system/release-notes";
 import { CopyUpgradeCommand } from "@/components/system/copy-upgrade-command";
 import { AuditCard } from "@/components/system/audit-card";
+import { RollbackPanel } from "@/components/system/rollback-panel";
 import { UpgradeConfirmModal } from "@/components/system/upgrade-confirm-modal";
 import { UpgradeProgress } from "@/components/system/upgrade-progress";
 import { useSearchParams, useRouter } from "next/navigation";
@@ -114,8 +115,20 @@ export default function SystemPage() {
     deepLinkUpgradeId,
   );
   React.useEffect(() => {
-    setActiveUpgradeId(deepLinkUpgradeId);
+    // Only sync REAL deep links into state. onTerminal clears the URL
+    // (router.replace("/system")) purely to stop driving it — syncing
+    // the resulting null back would unmount <UpgradeProgress> in the
+    // same tick a failure banner appears, leaving the user with no
+    // error, no log, nothing (self-review P2).
+    if (deepLinkUpgradeId) setActiveUpgradeId(deepLinkUpgradeId);
   }, [deepLinkUpgradeId]);
+
+  // Target tag of the ACTIVE request (upgrade → latest; rollback → the
+  // older tag). Null on deep-links — <UpgradeProgress> then learns it
+  // from the first status frame carrying `target_tag`.
+  const [activeTargetTag, setActiveTargetTag] = React.useState<string | null>(
+    null,
+  );
 
   const [confirmOpen, setConfirmOpen] = React.useState(false);
 
@@ -328,6 +341,7 @@ export default function SystemPage() {
         <UpgradeProgress
           requestId={activeUpgradeId}
           currentVersion={info?.current ?? null}
+          targetTag={activeTargetTag}
           onTerminal={() => {
             // Stop driving the URL once the upgrade lands; let the user
             // come back to a clean page if they refresh post-reload.
@@ -385,6 +399,21 @@ export default function SystemPage() {
         </div>
       </details>
 
+      {/* Rollback — restore one of the recent older releases. Hidden
+          while an upgrade is in flight and on deploys without a wired
+          upgrader (the panel self-hides on 503). */}
+      {!activeUpgradeId ? (
+        <RollbackPanel
+          onRollbackStarted={(res) => {
+            setActiveTargetTag(res.tag || null);
+            setActiveUpgradeId(res.request_id);
+            router.replace(
+              `/system?upgrade=${encodeURIComponent(res.request_id)}`,
+            );
+          }}
+        />
+      ) : null}
+
       {/* Audit log — past upgrade events. Self-contained. */}
       <AuditCard />
 
@@ -401,6 +430,7 @@ export default function SystemPage() {
             info.release_notes_md?.split("\n").slice(0, 2).join(" ") ?? null
           }
           onUpgradeStarted={(res) => {
+            setActiveTargetTag(res.tag || null);
             setActiveUpgradeId(res.request_id);
             // NOTE: the page route is /system — the (admin) route group does
             // NOT contribute a URL segment; /admin/* is the backend API
