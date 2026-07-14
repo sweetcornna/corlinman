@@ -32,6 +32,7 @@ import { MiniSparkline, type SparkBar } from "@/components/ui/mini-sparkline";
 import { UptimeStreak, type DayBar } from "@/components/admin/uptime-streak";
 import { useCommandPalette } from "@/components/cmdk-palette";
 import { useAdminSession } from "@/components/admin/admin-session-context";
+import { GettingStartedCard } from "@/components/admin/getting-started-card";
 
 /**
  * Dashboard — Tidepool cutover.
@@ -188,6 +189,9 @@ export default function DashboardPage() {
       initial="hidden"
       animate="visible"
     >
+      {/* ─── GETTING STARTED (only until a chat model is usable) ── */}
+      <GettingStartedCard />
+
       {/* ─── HERO ──────────────────────────────────────────── */}
       <GlassPanel variant="strong" lively as="section" className="relative overflow-hidden p-5 md:p-8">
         {/* nebula accent glows behind hero copy — cyan + violet, drifting */}

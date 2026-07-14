@@ -24,11 +24,22 @@ import * as React from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useTranslation } from "react-i18next";
+import { Zap } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { ProvidersAdminContent } from "@/components/model-hub/providers-admin-content";
 import { OAuthPanel } from "@/components/model-hub/oauth-panel";
 import { RoutingSection } from "@/components/model-hub/routing-section";
 import { CredentialsAdvanced } from "@/components/model-hub/credentials-advanced";
+import { ProviderSetupFlow } from "@/components/model-hub/provider-setup-flow";
+import { useSetupStatus } from "@/lib/hooks/use-setup-status";
 
 const TABS = ["providers", "routing", "advanced"] as const;
 type TabId = (typeof TABS)[number];
@@ -49,6 +60,15 @@ function ModelHub() {
   const qc = useQueryClient();
   const searchParams = useSearchParams();
   const tab = resolveTab(searchParams?.get("tab") ?? null);
+  const setupStatus = useSetupStatus();
+  const [quickSetupOpen, setQuickSetupOpen] = React.useState(false);
+  // Bumped when a quick-setup run adds providers/aliases so the routing
+  // table remounts and re-seeds from fresh server data. Without this its
+  // one-time local snapshot stays stale, and a later "Save" would post
+  // the stale full alias map — the backend bulk path drops omitted names,
+  // silently wiping the just-added aliases (self-review P2). Safe because
+  // the dialog is modal: the routing table has no concurrent edits.
+  const [routingSeed, setRoutingSeed] = React.useState(0);
 
   const setTab = React.useCallback(
     (next: TabId) => {
@@ -58,13 +78,31 @@ function ModelHub() {
     [router],
   );
 
+  // No provider registered at all → the providers tab leads with the
+  // guided setup flow instead of an empty table.
+  const showInlineFlow =
+    !setupStatus.loading &&
+    !setupStatus.errored &&
+    setupStatus.providerCount === 0;
+
   return (
     <>
-      <header className="space-y-1">
-        <h1 className="text-2xl font-semibold tracking-tight">
-          {t("modelHub.title")}
-        </h1>
-        <p className="text-sm text-sg-ink-3">{t("modelHub.subtitle")}</p>
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div className="space-y-1">
+          <h1 className="text-2xl font-semibold tracking-tight">
+            {t("modelHub.title")}
+          </h1>
+          <p className="text-sm text-sg-ink-3">{t("modelHub.subtitle")}</p>
+        </div>
+        <Button
+          type="button"
+          size="sm"
+          onClick={() => setQuickSetupOpen(true)}
+          data-testid="model-hub-quick-setup-btn"
+        >
+          <Zap className="h-3.5 w-3.5" aria-hidden />
+          {t("setupFlow.quickSetup")}
+        </Button>
       </header>
 
       <nav
@@ -100,6 +138,22 @@ function ModelHub() {
           once. */}
       {tab === "providers" ? (
         <div className="flex flex-col gap-6" data-testid="model-hub-panel-providers">
+          {showInlineFlow ? (
+            <section
+              className="flex flex-col gap-3 rounded-sg-lg border border-sg-accent/25 bg-sg-card p-4 shadow-sg-2"
+              data-testid="model-hub-inline-setup"
+            >
+              <div className="space-y-0.5">
+                <h2 className="text-sm font-semibold">
+                  {t("setupFlow.emptyStateTitle")}
+                </h2>
+                <p className="text-xs text-sg-ink-3">
+                  {t("setupFlow.emptyStateBody")}
+                </p>
+              </div>
+              <ProviderSetupFlow variant="page" />
+            </section>
+          ) : null}
           <ProvidersAdminContent
             onCustomProvidersChanged={() =>
               // The advanced tab's credential cards derive from the same
@@ -111,13 +165,29 @@ function ModelHub() {
         </div>
       ) : tab === "routing" ? (
         <div className="flex flex-col gap-6" data-testid="model-hub-panel-routing">
-          <RoutingSection />
+          <RoutingSection key={routingSeed} />
         </div>
       ) : (
         <div className="flex flex-col gap-6" data-testid="model-hub-panel-advanced">
           <CredentialsAdvanced />
         </div>
       )}
+
+      <Dialog open={quickSetupOpen} onOpenChange={setQuickSetupOpen}>
+        <DialogContent className="max-w-md" data-testid="model-hub-quick-setup-dialog">
+          <DialogHeader>
+            <DialogTitle>{t("setupFlow.dialogTitle")}</DialogTitle>
+            <DialogDescription>{t("setupFlow.dialogDesc")}</DialogDescription>
+          </DialogHeader>
+          <ProviderSetupFlow
+            onStatusChange={(s) => {
+              if (s.modelsAdded) setRoutingSeed((n) => n + 1);
+            }}
+            variant="dialog"
+            onComplete={() => setQuickSetupOpen(false)}
+          />
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

@@ -5,7 +5,8 @@
  * chains six sequential steps; the indicator gates forward motion and (once
  * the password rotation lands) locks steps 1 + 2.
  *
- *   1. API config        (skippable, hands off to /admin/credentials + providers)
+ *   1. API config        (skippable; PR5 — the guided ProviderSetupFlow runs
+ *                         INLINE, replacing the old new-tab hand-off cards)
  *   2. Change username   (POST /admin/onboard/finalize-account)
  *   3. Change password   (POST /admin/onboard/finalize-password, gated)
  *   4. Persona           (POST /admin/onboard/finalize-persona — default/custom/skip)
@@ -14,22 +15,30 @@
  *
  * Covered here:
  *   1. After the /admin/me probe settles the wizard renders Step 1 (API
- *      config) with the two handoff cards + skip / next buttons.
- *   2. A mismatched password on Step 3 surfaces an inline error WITHOUT
+ *      config) with the inline setup flow + skip / next buttons; "下一步"
+ *      is disabled until the deployment is configured.
+ *   2. A gateway that is already configured swaps the flow for a summary
+ *      card and enables "下一步".
+ *   3. A failing config surface (503-style) swaps the flow for the
+ *      BackendPendingBanner while keeping the pure skip available.
+ *   4. A mismatched password on Step 3 surfaces an inline error WITHOUT
  *      calling finalize-password.
- *   3. The Step-2 username form POSTs finalize-account with the new username
+ *   5. The Step-2 username form POSTs finalize-account with the new username
  *      and advances to Step 3 (password).
- *   4. The full happy path walks all six steps and pushes the operator at
- *      /admin, calling each finalize endpoint exactly once.
- *   5. A persona "custom" choice records a deferred /persona redirect that
+ *   6. The full happy path walks all six steps and pushes the operator at
+ *      /admin, calling each finalize endpoint exactly once — and never
+ *      calls finalize-skip (the "暂时跳过" button is a PURE skip).
+ *   7. A persona "custom" choice records a deferred /persona redirect that
  *      fires at the end of the wizard (after the image step), not immediately.
  *
  * Locale stays zh-CN (matches login + account/security suites): "下一步" is
  * the shared "next" CTA, "两次密码不一致" the mismatch error.
  */
 
+import * as React from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 const replaceMock = vi.fn();
 const pushMock = vi.fn();
@@ -41,6 +50,22 @@ vi.mock("next/navigation", () => ({
 }));
 
 import OnboardPage from "./page";
+
+/** PR5: step 1 mounts react-query consumers (useSetupStatus + the setup
+ * flow), so the page needs a QueryClient like the real Providers shell. */
+function renderOnboard() {
+  const client = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false, refetchOnWindowFocus: false },
+      mutations: { retry: false },
+    },
+  });
+  return render(
+    <QueryClientProvider client={client}>
+      <OnboardPage />
+    </QueryClientProvider>,
+  );
+}
 
 /**
  * Build a fetch stub that lets each test wire up the route table.
@@ -113,13 +138,19 @@ describe("OnboardPage", () => {
     vi.unstubAllGlobals();
   });
 
-  it("renders Step 1 (API config handoff) once /admin/me settles", async () => {
+  it("renders Step 1 with the inline setup flow once /admin/me settles", async () => {
     stubFetch((url) => {
       if (url.includes("/admin/me")) return unauthMeHandler();
+      if (url.includes("/admin/providers")) {
+        return jsonResponse({ providers: [] });
+      }
+      if (url.includes("/admin/models")) {
+        return jsonResponse({ default: "", aliases: [], providers: [] });
+      }
       return jsonResponse({ status: "ok" });
     });
 
-    render(<OnboardPage />);
+    renderOnboard();
     // Wait for the /admin/me probe to settle so the wizard renders the
     // resolved step rather than the optimistic pre-probe mount.
     await waitFor(() => {
@@ -129,21 +160,103 @@ describe("OnboardPage", () => {
       );
     });
 
-    // Step 1 is the API-config handoff: two provider-setup cards + a
-    // skip / continue button pair. No account form here anymore.
-    expect(screen.getByTestId("onboard-handoff-cards")).toBeInTheDocument();
+    // Step 1 hosts the guided setup flow INLINE (PR5) — no more
+    // new-tab hand-off cards.
+    await waitFor(() => {
+      expect(screen.getByTestId("provider-setup-flow")).toBeInTheDocument();
+    });
     expect(
-      screen.getByTestId("onboard-handoff-credentials"),
-    ).toBeInTheDocument();
-    expect(screen.getByTestId("onboard-handoff-providers")).toBeInTheDocument();
+      screen.getByTestId("provider-setup-flow"),
+    ).toHaveAttribute("data-variant", "onboarding");
+    expect(screen.queryByTestId("onboard-handoff-cards")).toBeNull();
+    // The preset grid is step 1 of the flow.
+    expect(screen.getByTestId("setup-preset-anthropic")).toBeInTheDocument();
     expect(screen.getByTestId("onboard-api-skip")).toBeInTheDocument();
-    expect(screen.getByTestId("onboard-api-continue")).toBeInTheDocument();
+    // "下一步" stays gated until the deployment is configured.
+    expect(screen.getByTestId("onboard-api-continue")).toBeDisabled();
     // The stepper exposes all six steps with step 1 current.
     expect(screen.getByTestId("onboard-step-1")).toHaveAttribute(
       "data-state",
       "current",
     );
     expect(screen.getByTestId("onboard-step-6")).toBeInTheDocument();
+  });
+
+  it("shows a configured summary and enables 下一步 when the gateway is already set up", async () => {
+    stubFetch((url) => {
+      if (url.includes("/admin/me")) return unauthMeHandler();
+      if (url.includes("/admin/providers")) {
+        return jsonResponse({
+          providers: [
+            {
+              name: "anthropic",
+              kind: "anthropic",
+              enabled: true,
+              base_url: null,
+              api_key_source: "env",
+              api_key_env_name: "ANTHROPIC_API_KEY",
+              params: {},
+              params_schema: { type: "object", properties: {} },
+            },
+          ],
+        });
+      }
+      if (url.includes("/admin/models")) {
+        return jsonResponse({
+          default: "claude-opus-4-8",
+          aliases: [
+            {
+              name: "claude-opus-4-8",
+              provider: "anthropic",
+              model: "claude-opus-4-8",
+              params: {},
+              effective_params_schema: {},
+            },
+          ],
+          providers: [],
+        });
+      }
+      return jsonResponse({ status: "ok" });
+    });
+
+    renderOnboard();
+
+    const summary = await screen.findByTestId("onboard-setup-summary");
+    expect(summary).toHaveTextContent("anthropic");
+    expect(summary).toHaveTextContent("claude-opus-4-8");
+    // The flow itself is NOT mounted — nothing left to configure.
+    expect(screen.queryByTestId("provider-setup-flow")).toBeNull();
+    await waitFor(() => {
+      expect(screen.getByTestId("onboard-api-continue")).toBeEnabled();
+    });
+  });
+
+  it("falls back to the backend-pending banner (skip stays available) on 503s", async () => {
+    stubFetch((url) => {
+      if (url.includes("/admin/me")) return unauthMeHandler();
+      if (url.includes("/admin/providers") || url.includes("/admin/models")) {
+        return jsonResponse({ error: "backend_pending" }, 503);
+      }
+      return jsonResponse({ status: "ok" });
+    });
+
+    renderOnboard();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("backend-pending")).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId("provider-setup-flow")).toBeNull();
+    // The pure skip is still there and still advances the wizard.
+    fireEvent.click(screen.getByTestId("onboard-api-skip"));
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("onboard-username-input"),
+      ).toBeInTheDocument();
+    });
+    // Pure skip — no finalize-skip / mock bootstrap call fired.
+    for (const call of fetchMock().mock.calls) {
+      expect(String(call[0])).not.toContain("finalize-skip");
+    }
   });
 
   it("surfaces an inline mismatch error on Step 3 without calling finalize-password", async () => {
@@ -159,7 +272,7 @@ describe("OnboardPage", () => {
       return jsonResponse({ status: "ok" });
     });
 
-    render(<OnboardPage />);
+    renderOnboard();
     await advanceToPasswordStep();
 
     // Clear the call log so we can assert finalize-password never fires.
@@ -198,7 +311,7 @@ describe("OnboardPage", () => {
       return jsonResponse({ status: "ok" });
     });
 
-    render(<OnboardPage />);
+    renderOnboard();
     await waitFor(() => {
       expect(screen.getByTestId("onboard-api-skip")).toBeInTheDocument();
     });
@@ -254,7 +367,7 @@ describe("OnboardPage", () => {
       return jsonResponse({ status: "ok" });
     });
 
-    render(<OnboardPage />);
+    renderOnboard();
     await advanceToPasswordStep();
 
     // Step 3 → password.
@@ -324,7 +437,7 @@ describe("OnboardPage", () => {
       return jsonResponse({ status: "ok" });
     });
 
-    render(<OnboardPage />);
+    renderOnboard();
     await advanceToPasswordStep();
 
     fireEvent.change(screen.getByTestId("onboard-old-password"), {
