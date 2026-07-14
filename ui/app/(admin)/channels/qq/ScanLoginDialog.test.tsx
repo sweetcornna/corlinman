@@ -58,9 +58,11 @@ describe("ScanLoginDialog", () => {
         expect.objectContaining({ credentials: "include" }),
       );
     });
-    expect(screen.getByTestId("qq-napcat-diagnostics-mode")).toHaveTextContent(
-      "external",
-    );
+    // findBy: the fetch being CALLED (above) races the state flush that
+    // renders the diagnostics — a sync getBy flaked on slow CI runners.
+    expect(
+      await screen.findByTestId("qq-napcat-diagnostics-mode"),
+    ).toHaveTextContent("external");
     expect(screen.getByTestId("qq-napcat-diagnostics-qrcode")).toHaveTextContent(
       "ok",
     );
