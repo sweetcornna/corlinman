@@ -56,6 +56,16 @@ logger = structlog.get_logger(__name__)
 # leaks the credential — see :meth:`OpenAIProvider._make_client`.
 _HEADER_AUTH_SENTINEL = "header-auth-no-bearer"
 
+# Neutral User-Agent sent instead of the OpenAI SDK's default
+# ``OpenAI/Python <ver>``. Many OpenAI-compatible relays sit behind a
+# Cloudflare WAF (or their own anti-abuse rule) that BLOCKS the official
+# SDK's User-Agent outright — the request then fails with a generic
+# "your request was blocked" 403 even though the key is valid. Sending a
+# neutral UA sidesteps that footgun; it's harmless against real OpenAI.
+# An operator who needs a specific UA can still set one via a custom
+# ``User-Agent`` header (it wins over this default).
+_NEUTRAL_USER_AGENT = "corlinman-gateway"
+
 
 # Endpoint suffixes operators sometimes paste as a "base URL". The OpenAI SDK
 # appends ``/chat/completions`` itself, so any of these must be trimmed back to
@@ -287,6 +297,11 @@ class OpenAIProvider:
         client_kwargs: dict[str, Any] = {"api_key": self._api_key}
         if self._base_url:
             client_kwargs["base_url"] = self._base_url
+        # Merge headers: a neutral User-Agent by default (see
+        # _NEUTRAL_USER_AGENT — the OpenAI SDK's default UA is blocked by
+        # some Cloudflare-fronted relays), overlaid with any operator
+        # custom headers (their explicit ``User-Agent`` wins).
+        headers: dict[str, str] = {"User-Agent": _NEUTRAL_USER_AGENT}
         if self._default_headers:
             # Custom-header auth: the real credential rides in the declared
             # header (already baked into ``_default_headers``). The openai SDK
@@ -294,9 +309,10 @@ class OpenAIProvider:
             # non-credential sentinel rather than the real key — the resulting
             # ``Authorization: Bearer`` then carries the sentinel, never the
             # secret. Gateways keyed on the custom header ignore it.
-            client_kwargs["default_headers"] = dict(self._default_headers)
+            headers.update(self._default_headers)
             if not self._api_key:
                 client_kwargs["api_key"] = _HEADER_AUTH_SENTINEL
+        client_kwargs["default_headers"] = headers
         return AsyncOpenAI(**client_kwargs)
 
     async def chat_stream(
