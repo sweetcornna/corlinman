@@ -4,6 +4,73 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.28.0] — 2026-07-15 — sub2api-style upgrade system + Models & Keys consolidation + nav registry
+
+> Web UX + self-update overhaul. The one-click upgrade path is rebuilt on
+> sub2api's design (supervisor-delegated restart, atomic swap with a kept
+> rollback slot, health-poll-until-version reload); the sticky "update
+> available" badge is fixed at the root; and the admin UI collapses four
+> overlapping provider/key surfaces into one guided "Models & Keys" page,
+> with a single navigation registry driving the sidebar, command palette,
+> dev-settings grid and breadcrumbs. Merged as PRs #121–#128; verified
+> live on prod.
+
+### Added
+- **sub2api-style one-click upgrade** (`system/upgrader/*`, `docker/upgrade_helper.py`).
+  - Docker mode rebuilt around a **detached helper container** that performs
+    the swap from outside the container being replaced (the old in-container
+    recreate stopped its own orchestration mid-swap and had no rollback).
+    It keeps the previous container as `corlinman-previous` — an instant
+    rollback slot — and asserts the new container reports the target version
+    on `/health` before declaring success; any failure restores the previous
+    container. The helper negotiates the daemon's Engine API version (a
+    pinned `/v1.41` 400s on Docker 25+).
+  - A **boot finalizer** settles upgrade records the restart interrupts:
+    version-match → succeeded, helper-succeeded-but-wrong-version →
+    `version_assertion_failed`, helper failure mirrored (with `rolled_back`),
+    else stalled. Live-helper records are parked and settled lazily.
+  - New admin endpoints: `GET /admin/system/rollback-versions`,
+    `POST /admin/system/rollback` (empty body = restore previous; docker
+    does an instant container swap), `POST /admin/system/upgrade/{id}/cancel`.
+  - Native helper (`deploy/corlinman-upgrader.sh`) gains a post-upgrade
+    `/health` version assertion with git rollback on mismatch, request-level
+    `allow_downgrade`, and an optional `UPGRADER_GH_PROXY`.
+  - `[system.update_check] proxy_url` (fail-closed) for GitHub access behind
+    restrictive networks; the checker now caches recent releases for the
+    rollback picker.
+- **Version badge** in the top bar (sub2api's `VersionBadge`): always-visible
+  `v{current}` chip, amber pulse on an update, a one-click "Update now" confirm
+  (no typed-tag friction; the audit log records the actor), a restart window
+  that polls the unauthenticated `/health` and reloads only when the reported
+  version equals the target, and a rollback panel on `/system`.
+- **Guided provider setup flow** (`model-hub/provider-setup-flow.tsx`): a
+  5-step preset → auth (API key / env / OAuth) → probe → pick models → set
+  default flow, reused as the `/models` empty state + "Quick setup" dialog,
+  the onboarding step-1 inline embed (replacing the new-tab hand-off), and a
+  dashboard getting-started card.
+
+### Changed
+- **`/models` is the canonical "Models & Keys" page** — a three-tab
+  (Providers & Keys / Model routing / Advanced credentials) consolidation of
+  the old `/providers`, `/credentials` and `/models` surfaces, which now
+  redirect to it. The `Credentials` sidebar row is removed.
+- **Single navigation registry** (`ui/lib/nav-registry.ts`) is the one source
+  for the sectioned sidebar (Chat / Operations / Configuration / System /
+  Developer), the ⌘K command palette (developer pages now gated on dev mode),
+  the dev-settings discovery grid and breadcrumbs — replacing four drifting
+  hardcoded lists.
+- `POST /admin/system/upgrade` `typed_confirmation` is now optional;
+  `POST /admin/models/aliases` accepts a `{default}`-only body without wiping
+  the alias table.
+
+### Fixed
+- **Sticky "update available" badge** — `resolve_app_version()` (new
+  `system/app_version.py`) resolves one release-spaced version from the root
+  `pyproject` for every reader (updater, `/health`, telemetry, MCP), so the
+  updater no longer compares the never-bumped sub-package version against the
+  release tag and report an update forever. Docker images now bake the version
+  and expose it on `/health`.
+
 ## [1.27.0] — 2026-07-04 — Wave 4: compaction breaker (Dim 2) + background shell (Dim 4) + #108 backend
 
 > Closes claude-code parity Wave 4: the summary-LLM compactor now degrades
