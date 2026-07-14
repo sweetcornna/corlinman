@@ -83,14 +83,16 @@ interface NavGroup {
 type NavEntry = NavItem | NavGroup;
 
 /**
- * Visible-by-default Operator surface. 9 page entries (with Channels as a
- * collapsible group exposing 7 channel leaves — QQ, Telegram, Discord,
- * Slack, Feishu, WeChat-Official, QQ-Official) + the always-visible
- * Developer Settings link at the bottom — 10 sidebar rows total.
+ * Visible-by-default Operator surface (with Channels as a collapsible
+ * group exposing 7 channel leaves — QQ, Telegram, Discord, Slack, Feishu,
+ * WeChat-Official, QQ-Official) + the always-visible Developer Settings
+ * link at the bottom.
  *
  * Order: top-down by frequency of use during a normal operator shift
- * (chat → approvals → audit) then configuration (providers / models /
- * channels / scheduler / identity).
+ * (chat → approvals → audit) then configuration (models & keys /
+ * channels / scheduler / identity). The old Credentials row is gone —
+ * /credentials is now a redirect stub into /models (PR4 model-hub
+ * consolidation).
  */
 const OPERATOR_ITEMS: NavEntry[] = [
   { href: "/chat", labelKey: "nav.chat", icon: MessageSquareText },
@@ -102,7 +104,6 @@ const OPERATOR_ITEMS: NavEntry[] = [
   // adjacency to logs (auditing the in-flight surface) sits it above
   // credentials.
   { href: "/subagents", labelKey: "subagents.sidebarLabel", icon: GitFork },
-  { href: "/credentials", labelKey: "nav.credentials", icon: KeyRound },
   { href: "/models", labelKey: "nav.models", icon: Route },
   // Persona — humanlike-mode operator surface; sits between Models and
   // Scheduler because it's a chat-personality knob that pairs with model

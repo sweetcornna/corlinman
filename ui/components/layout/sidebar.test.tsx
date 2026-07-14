@@ -2,9 +2,13 @@
  * Sidebar tests — covers:
  *   1. Collapsible "Channels" group (default-collapsed, click+keyboard
  *      expansion, auto-expand on matching route).
- *   2. Operator-vs-Developer mode filtering: by default only 9 operator
+ *   2. Operator-vs-Developer mode filtering: by default only the operator
  *      entries + a "Developer Settings" link appear; flipping
- *      `useDevMode()` reveals the 11 hidden power-user pages.
+ *      `useDevMode()` reveals the hidden power-user pages.
+ *
+ * PR4 model-hub consolidation removed the Credentials row (its page is a
+ * redirect stub into /models now); the counts below derive from
+ * SIDEBAR_OPERATOR_ITEMS so they track the source of truth.
  */
 
 import {
@@ -115,8 +119,16 @@ describe("Sidebar", () => {
 
   it("resolveSidebarEntries returns operator+system+dev-settings in operator mode", () => {
     const entries = resolveSidebarEntries(false);
-    // OPERATOR_ITEMS (9 entries — 1 is the Channels group) + system + dev-settings = 11 NavEntries.
+    // OPERATOR_ITEMS (13 entries — 1 is the Channels group; the old
+    // Credentials row is gone) + system + dev-settings.
     expect(entries).toHaveLength(SIDEBAR_OPERATOR_ITEMS.length + 2);
+    expect(SIDEBAR_OPERATOR_ITEMS).toHaveLength(13);
+    // The Credentials row was removed in the PR4 model-hub consolidation.
+    expect(
+      SIDEBAR_OPERATOR_ITEMS.some(
+        (e) => "href" in e && e.href === "/credentials",
+      ),
+    ).toBe(false);
     expect(entries[entries.length - 1]).toBe(SIDEBAR_DEV_SETTINGS_ENTRY);
     expect(entries[entries.length - 2]).toBe(SIDEBAR_SYSTEM_ENTRY);
   });
