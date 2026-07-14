@@ -105,6 +105,11 @@ USE_CHINA=""
 ENABLE_DOCKER_SANDBOX="${CORLINMAN_ENABLE_DOCKER_SANDBOX:-}"
 ENABLE_ONE_CLICK_UPGRADE="${CORLINMAN_ENABLE_ONE_CLICK_UPGRADE:-}"
 UPGRADE_MODE=""
+# Optional outbound proxy the one-click upgrader helper uses to reach
+# GitHub (api + git). Written into corlinman-upgrader.service as
+# Environment=UPGRADER_GH_PROXY= — root-trusted config, never read from
+# the request file. Set via --gh-proxy or the UPGRADER_GH_PROXY env.
+GH_PROXY="${UPGRADER_GH_PROXY:-}"
 # QQ (NapCat) is ON BY DEFAULT in both docker and native mode. docker layers
 # the NapCat sidecar (docker-compose.qq.yml); native provisions a pinned
 # NapCat AppImage + corlinman-napcat.service. Opt out with --without-qq.
@@ -126,6 +131,8 @@ while [[ $# -gt 0 ]]; do
         --enable-docker-sandbox) ENABLE_DOCKER_SANDBOX="1"; shift ;;
         --enable-one-click-upgrade) ENABLE_ONE_CLICK_UPGRADE="1"; shift ;;
         --upgrade) UPGRADE_MODE="1"; shift ;;
+        --gh-proxy) GH_PROXY="$2"; shift 2 ;;
+        --gh-proxy=*) GH_PROXY="${1#--gh-proxy=}"; shift ;;
         --with-qq) WITH_QQ="1"; shift ;;        # explicit (now the default)
         --without-qq) WITH_QQ=""; shift ;;      # opt out of NapCat / QQ
         --skip-ui) SKIP_UI="1"; shift ;;
@@ -850,6 +857,16 @@ write_upgrader_units() {
     # PATH explicitly extends systemd's restrictive default so `require uv`
     # (and pnpm lookups in build_and_place_ui) find tools under
     # /root/.local/bin without depending on the operator's interactive shell.
+    #
+    # UPGRADER_HEALTH_URL feeds the helper's post-upgrade version
+    # assertion; UPGRADER_GH_PROXY (only when --gh-proxy was given)
+    # routes the helper's GitHub traffic through an outbound proxy —
+    # root-trusted unit config, deliberately NOT read from the
+    # admin-writable request file.
+    local gh_proxy_env=""
+    if [[ -n "$GH_PROXY" ]]; then
+        gh_proxy_env="Environment=UPGRADER_GH_PROXY=${GH_PROXY}"
+    fi
     sudo tee /etc/systemd/system/corlinman-upgrader.service >/dev/null <<EOF
 [Unit]
 Description=corlinman one-shot upgrader
@@ -861,6 +878,8 @@ Type=oneshot
 User=root
 Environment=CORLINMAN_DATA_DIR=${DATA_DIR}
 Environment=INSTALL_PREFIX=${PREFIX}
+Environment=UPGRADER_HEALTH_URL=http://127.0.0.1:${PORT}/health
+${gh_proxy_env}
 Environment=PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/bin/bash ${PREFIX}/repo/deploy/corlinman-upgrader.sh
 StandardOutput=journal

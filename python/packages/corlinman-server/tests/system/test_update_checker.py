@@ -32,7 +32,9 @@ from corlinman_server.system import (
 # ---------------------------------------------------------------------------
 
 
-_RELEASES_URL = "https://api.github.com/repos/ymylive/corlinman/releases/latest"
+# Releases *list* endpoint (the checker fetches ``?per_page=10``; respx
+# treats pattern query params as "contains", so the bare path matches).
+_RELEASES_URL = "https://api.github.com/repos/ymylive/corlinman/releases"
 
 
 def _make_checker(
@@ -59,7 +61,7 @@ def _make_checker(
     return UpdateChecker(config=config, cache_path=cache_path)
 
 
-def _release_body(
+def _release_entry(
     *,
     tag: str = "v1.1.2",
     body: str = "## What's new\n\n- thing",
@@ -76,6 +78,12 @@ def _release_body(
         "prerelease": prerelease,
         "draft": draft,
     }
+
+
+def _release_body(**kwargs) -> list[dict]:
+    """Single-entry releases-list payload (the wire shape of
+    ``GET /releases?per_page=10``)."""
+    return [_release_entry(**kwargs)]
 
 
 @pytest.fixture(autouse=True)
@@ -328,3 +336,90 @@ async def test_poll_sends_if_none_match_when_etag_cached(tmp_path: Path) -> None
 
     assert captured["If-None-Match"] == 'W/"xyz"'
     assert captured["User-Agent"].startswith("corlinman/")
+
+
+@pytest.mark.asyncio
+async def test_poll_populates_recent_releases_newest_first(
+    tmp_path: Path,
+) -> None:
+    """The list endpoint yields the rollback-picker history: drafts are
+    dropped, prereleases kept (flagged), and ``latest`` is the first
+    non-prerelease entry even when a prerelease sits above it."""
+    checker = _make_checker(tmp_path)
+    payload = [
+        _release_entry(tag="v1.3.0-rc.1", prerelease=True),
+        _release_entry(tag="v1.2.9-draft", draft=True),
+        _release_entry(tag="v1.2.0", body="stable notes"),
+        _release_entry(tag="v1.1.2"),
+    ]
+    with respx.mock(assert_all_called=False) as mock:
+        mock.get(_RELEASES_URL).respond(200, json=payload)
+        status = await checker.poll(force=True)
+
+    assert status.latest == "1.2.0"
+    assert status.available is True
+    assert status.release_notes_md == "stable notes"
+    tags = [entry["tag"] for entry in status.recent_releases]
+    assert tags == ["v1.3.0-rc.1", "v1.2.0", "v1.1.2"]  # draft dropped
+    assert status.recent_releases[0]["prerelease"] is True
+    assert status.recent_releases[1]["prerelease"] is False
+    # Persisted for the TTL fast-path.
+    on_disk = json.loads((tmp_path / ".update_check.json").read_text())
+    assert [e["tag"] for e in on_disk["recent_releases"]] == tags
+    # And served back from cache without a network hit.
+    cached = await checker.poll(force=False)
+    assert [e["tag"] for e in cached.recent_releases] == tags
+
+
+@pytest.mark.asyncio
+async def test_proxy_url_is_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When ``proxy_url`` is configured the lazily-built client must be
+    handed the proxy (httpx routes ALL traffic through it — no silent
+    direct fallback), and a dead proxy degrades to the stale cache."""
+    captured_kwargs: dict = {}
+    real_async_client = httpx.AsyncClient
+
+    def _capturing_client(**kwargs):
+        captured_kwargs.update(kwargs)
+        kwargs.pop("proxy", None)  # respx can't intercept through a proxy
+        return real_async_client(**kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", _capturing_client)
+
+    seed = {
+        "etag": 'W/"old"',
+        "last_checked_at": 1,
+        "latest_tag": "v1.2.0",
+        "release_notes_md": "stale",
+        "release_url": None,
+        "published_at": 100,
+        "prerelease_seen": [],
+    }
+    cache_path = tmp_path / ".update_check.json"
+    cache_path.write_text(json.dumps(seed), encoding="utf-8")
+    config = SystemUpdateCheckConfig(
+        repo="ymylive/corlinman",
+        proxy_url="http://127.0.0.1:59999",
+    )
+    checker = UpdateChecker(config=config, cache_path=cache_path)
+
+    with respx.mock(assert_all_called=False) as mock:
+        mock.get(_RELEASES_URL).mock(
+            side_effect=httpx.ProxyError("proxy down")
+        )
+        status = await checker.poll(force=True)  # MUST NOT raise
+
+    assert captured_kwargs.get("proxy") == "http://127.0.0.1:59999"
+    assert status.latest == "1.2.0"
+    assert status.release_notes_md == "stale"
+
+
+def test_config_from_mapping_parses_proxy_url() -> None:
+    cfg = SystemUpdateCheckConfig.from_mapping(
+        {"proxy_url": "  socks5://127.0.0.1:1080  "}
+    )
+    assert cfg.proxy_url == "socks5://127.0.0.1:1080"
+    assert SystemUpdateCheckConfig.from_mapping({"proxy_url": ""}).proxy_url is None
+    assert SystemUpdateCheckConfig.from_mapping({}).proxy_url is None

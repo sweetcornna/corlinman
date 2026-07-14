@@ -192,7 +192,14 @@ class NativeUpgrader:
         """
         return self._unit_path.exists() and self._path_unit_path.exists()
 
-    async def start(self, target_tag: str, actor: str) -> UpgradeRequest:
+    async def start(
+        self,
+        target_tag: str,
+        actor: str,
+        *,
+        allow_downgrade: bool = False,
+        action: str = "upgrade",
+    ) -> UpgradeRequest:
         """Write the request file + register the in-flight slot.
 
         Single-flight: reads the store first, raises
@@ -200,7 +207,14 @@ class NativeUpgrader:
         Returns immediately after writing the request — the privileged
         helper does the actual work; the background poller mirrors its
         status writes into the store.
+
+        ``allow_downgrade`` is forwarded to the helper (rollback flow),
+        which relaxes only its no-downgrade policy gate — tag regex +
+        live releases whitelist still apply. ``action`` is accepted for
+        protocol parity with the docker impl; native has no instant
+        slot, a rollback is just a downgrade install.
         """
+        del action  # native rollback == downgrade install
         in_flight = await self._store.current_in_flight()
         if in_flight is not None:
             raise UpgradeAlreadyRunning(in_flight)
@@ -226,6 +240,7 @@ class NativeUpgrader:
             requested_at=requested_at,
             requested_by=actor,
             mode="native",
+            allow_downgrade=allow_downgrade,
         )
 
         # The helper expects a UUID-with-dashes; the W1.1 convention is
@@ -240,6 +255,7 @@ class NativeUpgrader:
             "requested_at": requested_at,
             "requested_by": actor,
             "mode": "native",
+            "allow_downgrade": allow_downgrade,
         }
         request_path = self._data_dir / REQUEST_FILE_NAME
         _atomic_write_json(request_path, payload)
@@ -247,6 +263,15 @@ class NativeUpgrader:
         # Persist the in-flight slot in the store so /admin/system/audit
         # + /status see something immediately.
         await self._store.begin(req)
+        # Rollback context: the version we're upgrading AWAY from.
+        try:
+            from corlinman_server.system.app_version import resolve_app_version
+
+            await self._store.update(
+                request_id, before_version=resolve_app_version()
+            )
+        except Exception:  # noqa: BLE001 — cosmetic metadata only
+            pass
 
         # Kick off the background poller. start() returns immediately.
         task = asyncio.create_task(
@@ -264,6 +289,56 @@ class NativeUpgrader:
             path=str(request_path),
         )
         return req
+
+    async def cancel(self, request_id: str) -> bool:
+        """Abort iff the privileged helper hasn't picked the request up.
+
+        Cancellable window: the request file still exists with OUR
+        request_id and the helper has written no status for it yet. We
+        delete the request file and mark the record ``cancelled``. Once
+        the helper reports (it writes ``running`` before any real work),
+        return ``False`` — the route maps that to ``409 not_cancellable``.
+
+        Benign races, by the helper's own contract: the path unit firing
+        on our deletion finds no file and exits 0; a helper that already
+        read the file proceeds regardless — the boot finalizer only
+        touches non-terminal records, so the ``cancelled`` verdict
+        stands and the operator sees the (rare) version flip anyway.
+        """
+        status = await self._store.get(request_id)
+        if status is None or status.is_terminal():
+            return False
+        try:
+            helper_request_id = str(uuid.UUID(request_id))
+        except ValueError:
+            return False
+        status_path = self._data_dir / STATUS_FILE_NAME
+        if self._read_status_file(status_path, helper_request_id) is not None:
+            return False  # helper already picked it up
+        request_path = self._data_dir / REQUEST_FILE_NAME
+        try:
+            payload = json.loads(request_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, ValueError):
+            return False
+        if not isinstance(payload, dict) or payload.get("request_id") != (
+            helper_request_id
+        ):
+            return False
+        try:
+            request_path.unlink()
+        except OSError:
+            return False
+        await self._safe_update(
+            request_id,
+            state="cancelled",
+            phase="cancelled",
+            error=None,
+            finished_at=_now_ms(),
+        )
+        logger.info(
+            "native_upgrader.cancelled", request_id=request_id
+        )
+        return True
 
     async def progress(
         self, request_id: str
@@ -336,6 +411,13 @@ class NativeUpgrader:
                         error="overall_timeout",
                         finished_at=_now_ms(),
                     )
+                    return
+
+                # Stop when the store record went terminal out-of-band
+                # (operator cancel) — otherwise this loop would later
+                # overwrite the ``cancelled`` verdict with a timeout.
+                current = await self._store.get(req.request_id)
+                if current is None or current.is_terminal():
                     return
 
                 payload = self._read_status_file(
@@ -420,6 +502,12 @@ class NativeUpgrader:
             # overwrite via `update()` rather than `append_log()` to
             # keep last-write-wins semantics.
             kwargs["log_excerpt"] = log_excerpt
+        rolled_back = payload.get("rolled_back")
+        if isinstance(rolled_back, bool):
+            kwargs["rolled_back"] = rolled_back
+        version_verified = payload.get("version_verified")
+        if isinstance(version_verified, bool):
+            kwargs["version_verified"] = version_verified
         await self._safe_update(req.request_id, **kwargs)
 
     async def _safe_update(self, request_id: str, **fields: Any) -> None:

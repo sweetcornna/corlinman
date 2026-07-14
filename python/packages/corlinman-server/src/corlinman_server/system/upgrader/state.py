@@ -52,12 +52,15 @@ __all__ = [
 _LOG_EXCERPT_MAX_BYTES = 4 * 1024
 
 
-UpgradeState = Literal["queued", "running", "succeeded", "failed", "stalled"]
+UpgradeState = Literal[
+    "queued", "running", "succeeded", "failed", "stalled", "cancelled"
+]
 """Terminal vs in-flight discriminator for :class:`UpgradeStatus`.
 
 ``queued`` — request accepted, background task not yet started.
 ``running`` — pull / recreate / healthcheck in progress.
 ``stalled`` — operator-visible warning; gateway restarted mid-upgrade.
+``cancelled`` — operator aborted before the point of no return.
 ``succeeded`` / ``failed`` — terminal.
 """
 
@@ -83,6 +86,13 @@ class UpgradeRequest:
     requested_at: int
     requested_by: str
     mode: Literal["docker", "native"]
+    # ``True`` for rollback requests — relaxes the no-downgrade gate in
+    # the privileged helper. Additive (old persisted files load with the
+    # default).
+    allow_downgrade: bool = False
+    # ``"upgrade"`` (default) or ``"rollback_instant"`` (docker-only:
+    # swap back to the kept ``corlinman-previous`` container, no pull).
+    action: str = "upgrade"
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
@@ -100,12 +110,23 @@ class UpgradeStatus:
     finished_at: int | None = None
     log_excerpt: str = ""
     error: str | None = None
+    # Release-spaced version running when the upgrade started — the
+    # rollback target for the "restore previous" flow.
+    before_version: str | None = None
+    # Tri-state: ``True`` once the (restarted) gateway asserted
+    # ``resolve_app_version() == tag``; ``False`` when the assertion ran
+    # and failed; ``None`` when it never ran (legacy records, failures
+    # before the swap).
+    version_verified: bool | None = None
+    # ``True`` when a failed upgrade was automatically rolled back to
+    # the previous version by the helper.
+    rolled_back: bool | None = None
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
 
     def is_terminal(self) -> bool:
-        return self.state in ("succeeded", "failed", "stalled")
+        return self.state in ("succeeded", "failed", "stalled", "cancelled")
 
     def is_in_flight(self) -> bool:
         # ``stalled`` is intentionally NOT in-flight: it is a terminal,
@@ -134,18 +155,29 @@ class UpgradeStateStore:
     :meth:`current_in_flight` forever and lock out all future upgrades.
     """
 
-    def __init__(self, persist_path: Path) -> None:
+    def __init__(
+        self, persist_path: Path, *, defer_boot_reconcile: bool = False
+    ) -> None:
+        """``defer_boot_reconcile=True`` loads orphaned ``queued``/
+        ``running`` records verbatim instead of stall-flipping them — for
+        callers that immediately run the boot finalizer
+        (:mod:`corlinman_server.system.upgrader.finalizer`), which makes a
+        smarter terminal decision (version assertion / helper status
+        mirror) and falls back to the same stall flip. Default ``False``
+        keeps the safe legacy behaviour for every other constructor so a
+        skipped finalizer can never wedge single-flight (BUG-02).
+        """
         self._persist_path = persist_path
         self._lock = asyncio.Lock()
         self._requests: dict[str, UpgradeRequest] = {}
         self._statuses: dict[str, UpgradeStatus] = {}
-        self._load_from_disk()
+        self._load_from_disk(reconcile=not defer_boot_reconcile)
 
     # ------------------------------------------------------------------
     # Persistence helpers
     # ------------------------------------------------------------------
 
-    def _load_from_disk(self) -> None:
+    def _load_from_disk(self, *, reconcile: bool = True) -> None:
         """Best-effort hydrate from the persisted JSON. Never raises."""
         try:
             raw = self._persist_path.read_text(encoding="utf-8")
@@ -182,6 +214,10 @@ class UpgradeStateStore:
                         requested_at=int(raw_req["requested_at"]),
                         requested_by=str(raw_req["requested_by"]),
                         mode=raw_req["mode"],
+                        allow_downgrade=bool(
+                            raw_req.get("allow_downgrade", False)
+                        ),
+                        action=str(raw_req.get("action") or "upgrade"),
                     )
                 except (KeyError, TypeError, ValueError):
                     continue
@@ -200,6 +236,9 @@ class UpgradeStateStore:
                         finished_at=raw_status.get("finished_at"),
                         log_excerpt=str(raw_status.get("log_excerpt") or ""),
                         error=raw_status.get("error"),
+                        before_version=raw_status.get("before_version"),
+                        version_verified=raw_status.get("version_verified"),
+                        rolled_back=raw_status.get("rolled_back"),
                     )
                 except (KeyError, TypeError, ValueError):
                     continue
@@ -210,7 +249,10 @@ class UpgradeStateStore:
                 # return it forever and lock out all future upgrades
                 # (BUG-02). Flip it to the terminal ``stalled`` warning so
                 # operators see what happened and a retry is allowed.
-                if status.state in ("queued", "running"):
+                # (Skipped under ``defer_boot_reconcile`` — the boot
+                # finalizer then owns the terminal decision and falls back
+                # to this same flip.)
+                if reconcile and status.state in ("queued", "running"):
                     status.state = "stalled"
                     status.phase = "stalled"
                     status.error = "gateway_restarted_mid_upgrade"
@@ -229,6 +271,9 @@ class UpgradeStateStore:
     def _flush_locked(self) -> None:
         """Atomically persist current state. Caller MUST hold ``self._lock``."""
         payload = {
+            # Additive-fields marker for future readers; loaders tolerate
+            # both absent (schema 1) and present.
+            "schema": 2,
             "requests": {
                 rid: req.to_json() for rid, req in self._requests.items()
             },
@@ -252,6 +297,61 @@ class UpgradeStateStore:
                 path=str(self._persist_path),
                 error=str(exc),
             )
+
+    # ------------------------------------------------------------------
+    # Boot-finalizer surface (sync, single-threaded __init__-time only)
+    # ------------------------------------------------------------------
+
+    def pending_boot_statuses(self) -> list[UpgradeStatus]:
+        """Snapshot of non-terminal records right after construction.
+
+        Only meaningful when constructed with ``defer_boot_reconcile=True``
+        (otherwise `_load_from_disk` already flipped them). Sync by design:
+        it runs before the event loop serves anything.
+        """
+        return [
+            UpgradeStatus(**asdict(s))
+            for s in self._statuses.values()
+            if s.state in ("queued", "running")
+        ]
+
+    def get_request_sync(self, request_id: str) -> UpgradeRequest | None:
+        """Sync request lookup for the boot finalizer."""
+        return self._requests.get(request_id)
+
+    def finalize_status_sync(self, request_id: str, **fields: Any) -> None:
+        """Boot-time sync variant of :meth:`update` (mutate + flush).
+
+        MUST only be called before the app starts serving (same
+        single-threaded window as ``_load_from_disk``); the asyncio lock
+        is deliberately not taken.
+        """
+        current = self._statuses.get(request_id)
+        if current is None:
+            return
+        for key, value in fields.items():
+            if not hasattr(current, key):
+                raise AttributeError(f"UpgradeStatus has no field {key!r}")
+            setattr(current, key, value)
+        self._flush_locked()
+
+    def reconcile_orphans_sync(self) -> None:
+        """Stall-flip any remaining non-terminal record (legacy behaviour).
+
+        The boot finalizer calls this as its fallback branch; it is also
+        the safety net when the finalizer itself errors.
+        """
+        reconciled = False
+        for status in self._statuses.values():
+            if status.state in ("queued", "running"):
+                status.state = "stalled"
+                status.phase = "stalled"
+                status.error = "gateway_restarted_mid_upgrade"
+                if status.finished_at is None:
+                    status.finished_at = _now_ms()
+                reconciled = True
+        if reconciled:
+            self._flush_locked()
 
     # ------------------------------------------------------------------
     # Public API
@@ -304,6 +404,19 @@ class UpgradeStateStore:
             if current is None:
                 return None
             return UpgradeStatus(**asdict(current))
+
+    async def list_statuses(self) -> list[UpgradeStatus]:
+        """Snapshot of every tracked status (copies, unordered).
+
+        Consumers sort by ``finished_at``/``started_at`` as needed — the
+        rollback route uses this to find the most recent succeeded
+        upgrade's ``before_version``.
+        """
+        async with self._lock:
+            return [
+                UpgradeStatus(**asdict(status))
+                for status in self._statuses.values()
+            ]
 
     async def current_in_flight(self) -> UpgradeStatus | None:
         """Return any status with state in ``{queued, running}``.

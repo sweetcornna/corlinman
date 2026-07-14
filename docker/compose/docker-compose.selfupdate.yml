@@ -1,0 +1,39 @@
+# Opt-in overlay: enable in-app one-click upgrade for docker deploys.
+#
+#   cd docker/compose
+#   docker compose -f docker-compose.yml -f docker-compose.selfupdate.yml up -d
+#
+# Mounts the Docker socket read-write into the corlinman container so the
+# gateway can pull the new image and launch the detached upgrade-helper
+# container (docker/upgrade_helper.py), which performs the swap from
+# OUTSIDE the container being replaced and keeps the old container as
+# `corlinman-previous` — the instant-rollback slot.
+#
+# SECURITY TRADE-OFF (read before enabling): a read-write docker socket
+# is root-equivalent on the host. Without this overlay the upgrade
+# button degrades to copy-paste `install.sh --upgrade` commands — the
+# safer default. Enable only when you trust every admin account on this
+# gateway with host-level access.
+#
+# Manual recovery if an upgrade dies mid-swap (old container stopped,
+# new one never came up):
+#   docker start corlinman-previous
+#   docker rename corlinman corlinman-broken || true
+#   docker rename corlinman-previous corlinman
+
+# PERMISSIONS: the socket is typically root:docker 0660 on the host while
+# the image runs as the unprivileged `corlinman` user, so the container
+# must also join the host's docker group. Export its numeric gid first:
+#
+#   export DOCKER_GID=$(getent group docker | cut -d: -f3)
+#
+# (install.sh's --enable-one-click-upgrade path does the same probe.)
+# The "0" fallback keeps compose happy when the variable is unset, but
+# socket access will then fail on standard hosts — set DOCKER_GID.
+
+services:
+  corlinman:
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    group_add:
+      - "${DOCKER_GID:-0}"

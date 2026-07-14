@@ -43,8 +43,12 @@ from corlinman_server.gateway.routes_admin_b.infra._system_lib import (
     _UPGRADE_SSE_HEARTBEAT_SECONDS,
     AuditEntryResponse,
     AuditTailResponse,
+    RollbackStartBody,
+    RollbackVersionEntry,
+    RollbackVersionsResponse,
     SystemInfoResponse,
     UpgradeAlreadyRunning,
+    UpgradeCancelResponse,
     UpgradeCommandsResponse,
     UpgraderUnavailable,
     UpgradeStartBody,
@@ -56,8 +60,11 @@ from corlinman_server.gateway.routes_admin_b.infra._system_lib import (
     _resolve_audit_log,
     _resolve_checker,
     _resolve_upgrader,
+    _rollback_slot,
     _safe_audit,
+    _start_upgrader,
     _status_to_response,
+    _strip_v,
     _too_many_requests,
     _upgrade_commands,
     _upgrade_error,
@@ -147,7 +154,8 @@ def router() -> APIRouter:
 
         Validation order (matches PLAN_ONE_CLICK_UPGRADE.md §1 W1.3):
 
-        1. ``typed_confirmation`` mismatch → 400
+        1. ``typed_confirmation`` present but ≠ tag → 400 (the field is
+           optional since v1.28 — the UI moved to a one-click confirm)
         2. no upgrader wired → 503 ``upgrader_unavailable``
         3. ``upgrader.is_available()`` false → 503 ``upgrader_unavailable``
         4. tag not in observed releases / not semver-shaped → 400
@@ -157,8 +165,11 @@ def router() -> APIRouter:
         """
         state = get_admin_state()
 
-        # (1) typed confirmation
-        if body.typed_confirmation != body.tag:
+        # (1) typed confirmation — optional, but never wrong when present.
+        if (
+            body.typed_confirmation is not None
+            and body.typed_confirmation != body.tag
+        ):
             return _upgrade_error(
                 400,
                 "typed_confirmation_mismatch",
@@ -227,7 +238,12 @@ def router() -> APIRouter:
         # (6) single-flight + (7) happy path
         actor = _resolve_actor(request)
         try:
-            upgrade_request = await upgrader.start(body.tag, actor)
+            upgrade_request = await _start_upgrader(
+                upgrader,
+                body.tag,
+                actor,
+                allow_downgrade=body.allow_downgrade,
+            )
         except UpgradeAlreadyRunning as exc:
             # The W1.1 contract puts the in-flight UpgradeStatus on the
             # ``in_flight`` attribute. Some test doubles / future variants
@@ -312,6 +328,23 @@ def router() -> APIRouter:
                 "upgrader_unavailable",
                 "one-click upgrade is not available on this gateway",
             )
+        # Lazy late-verdict mirror: when the boot finalizer observed the
+        # privileged helper still mid-flight it parked the record as
+        # ``stalled/helper_still_running``; a terminal verdict the helper
+        # wrote AFTER that boot gets mirrored here on read. No-op (one
+        # store.get) for every other record; never raises.
+        lazy_store = getattr(upgrader, "_store", None) or getattr(
+            upgrader, "store", None
+        )
+        if lazy_store is not None and hasattr(lazy_store, "get"):
+            try:
+                from corlinman_server.system.upgrader.finalizer import (
+                    refresh_late_helper_verdict,
+                )
+
+                await refresh_late_helper_verdict(lazy_store, request_id)
+            except Exception:  # noqa: BLE001 — read-path convenience only
+                pass
         # Read order, all duck-typed against the W1.1 surface:
         #
         # 1. ``upgrader.status(request_id)`` — newer/simpler API; some
@@ -474,6 +507,290 @@ def router() -> APIRouter:
                 "X-Event-Id-Format": "request_id:sequence",
             },
         )
+
+    # ------------------------------------------------------------------
+    # v1.28 — rollback + cancel (sub2api parity)
+    # ------------------------------------------------------------------
+
+    @r.get(
+        "/admin/system/rollback-versions",
+        response_model=RollbackVersionsResponse,
+    )
+    async def get_rollback_versions() -> (
+        RollbackVersionsResponse | JSONResponse
+    ):
+        """Up to 3 releases strictly older than the running version.
+
+        ``instant: true`` marks the tag matching the kept previous
+        version (docker: the ``corlinman-previous`` container) —
+        restoring it needs no download. Advisory only; the helper
+        re-verifies the slot at execution time.
+        """
+        state = get_admin_state()
+        checker = _resolve_checker(state)
+        if checker is None:
+            return _disabled_503()
+        status = await checker.poll(force=False)
+        current = (
+            checker.current_version()
+            if hasattr(checker, "current_version")
+            else status.current
+        )
+        upgrader = _resolve_upgrader(state)
+        instant_tag = (
+            await _rollback_slot(upgrader) if upgrader is not None else None
+        )
+        entries: list[RollbackVersionEntry] = []
+        for entry in getattr(status, "recent_releases", None) or []:
+            if not isinstance(entry, dict):
+                continue
+            tag = entry.get("tag")
+            if not isinstance(tag, str) or not tag:
+                continue
+            if bool(entry.get("prerelease")):
+                continue
+            stripped = _strip_v(tag)
+            if stripped == _strip_v(current):
+                continue
+            if not _is_downgrade(current, tag):
+                continue  # newer than current — not a rollback target
+            published = entry.get("published_at")
+            entries.append(
+                RollbackVersionEntry(
+                    tag=tag,
+                    published_at=published
+                    if isinstance(published, int)
+                    else None,
+                    prerelease=False,
+                    instant=instant_tag == stripped,
+                )
+            )
+            if len(entries) >= 3:
+                break
+        # The instant slot always deserves a row, even when it fell out
+        # of the recent-releases window.
+        if instant_tag and not any(
+            _strip_v(e.tag) == instant_tag for e in entries
+        ):
+            entries.insert(
+                0, RollbackVersionEntry(tag=f"v{instant_tag}", instant=True)
+            )
+            entries = entries[:3]
+        return RollbackVersionsResponse(current=current, versions=entries)
+
+    @r.post(
+        "/admin/system/rollback",
+        response_model=UpgradeStartResponse,
+        status_code=202,
+    )
+    async def start_rollback(
+        request: Request, body: RollbackStartBody | None = None
+    ) -> UpgradeStartResponse | JSONResponse:
+        """Roll back to an older release.
+
+        NO body / empty body → the version the last successful upgrade
+        replaced (docker restores the kept ``corlinman-previous``
+        container without a pull; native re-installs the tag). Explicit
+        ``tag`` → a validated downgrade install. Reuses the upgrade
+        status/SSE endpoints for progress. (``body`` is Optional so a
+        bare POST doesn't 422 before reaching this handler.)
+        """
+        state = get_admin_state()
+        upgrader = _resolve_upgrader(state)
+        if upgrader is None:
+            return _upgrade_error(
+                503,
+                "upgrader_unavailable",
+                "one-click rollback is not available on this gateway",
+            )
+        try:
+            available = bool(await upgrader.is_available())
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            return _upgrade_error(
+                503, "upgrader_unavailable", f"upgrader self-check failed: {exc}"
+            )
+        if not available:
+            return _upgrade_error(
+                503,
+                "upgrader_unavailable",
+                "upgrader self-check returned not-available",
+            )
+
+        instant_tag = await _rollback_slot(upgrader)
+        requested_tag = body.tag if body is not None else None
+        target = requested_tag or (f"v{instant_tag}" if instant_tag else None)
+        if not target:
+            return _upgrade_error(
+                400,
+                "no_rollback_target",
+                (
+                    "no previous version recorded — pass an explicit tag "
+                    "from /admin/system/rollback-versions"
+                ),
+            )
+        # Whitelist: the recorded previous version is always acceptable;
+        # anything else must pass the releases/semver validation.
+        if _strip_v(target) != instant_tag and not (
+            await _validate_tag_against_releases(state, target)
+        ):
+            return _upgrade_error(
+                400,
+                "tag_not_whitelisted",
+                f"tag {target!r} is not in the observed releases",
+                tag=target,
+            )
+        checker = _resolve_checker(state)
+        current = (
+            checker.current_version()
+            if checker is not None and hasattr(checker, "current_version")
+            else "0.0.0"
+        )
+        if _strip_v(target) == _strip_v(current):
+            return _upgrade_error(
+                400,
+                "rollback_to_current",
+                f"already running {current}",
+                current=current,
+            )
+        # Instant swap ONLY for the implicit "restore previous" request
+        # (empty body). An explicit tag always takes the pull-based
+        # downgrade path even when it equals the slot version — if the
+        # slot container turned out to be gone (consumed by a later
+        # failed upgrade, pruned manually), hard-wiring the instant
+        # action would make that version unreachable from the UI
+        # (helper: rollback_slot_missing) while a plain pull works.
+        action = (
+            "rollback_instant"
+            if (
+                requested_tag is None
+                and getattr(upgrader, "mode", None) == "docker"
+                and instant_tag is not None
+                and _strip_v(target) == instant_tag
+            )
+            else "upgrade"
+        )
+
+        actor = _resolve_actor(request)
+        try:
+            upgrade_request = await _start_upgrader(
+                upgrader, target, actor, allow_downgrade=True, action=action
+            )
+        except UpgradeAlreadyRunning as exc:
+            in_flight = getattr(exc, "in_flight", None)
+            return _upgrade_error(
+                409,
+                "upgrade_already_running",
+                "another upgrade is already in flight",
+                request_id=getattr(in_flight, "request_id", None),
+                in_flight_tag=getattr(in_flight, "tag", None),
+                in_flight_state=getattr(in_flight, "state", None),
+            )
+        except UpgraderUnavailable as exc:
+            return _upgrade_error(
+                503, "upgrader_unavailable", str(exc) or "upgrader unavailable"
+            )
+        except Exception as exc:  # noqa: BLE001 — surface as 500
+            raise HTTPException(
+                status_code=500,
+                detail={"error": "rollback_start_failed", "message": str(exc)},
+            ) from exc
+
+        audit_log = _resolve_audit_log(state)
+        await _safe_audit(
+            audit_log,
+            AuditEntry(
+                ts=utcnow_iso(),
+                event="system.rollback.requested",
+                request_id=str(
+                    getattr(upgrade_request, "request_id", "") or ""
+                ),
+                tag=str(getattr(upgrade_request, "tag", target) or target),
+                actor=actor,
+                details={
+                    "mode": str(getattr(upgrade_request, "mode", "unknown")),
+                    "action": action,
+                },
+            ),
+        )
+        return UpgradeStartResponse(
+            request_id=str(getattr(upgrade_request, "request_id", "")),
+            state="queued",
+            mode=str(getattr(upgrade_request, "mode", "unknown")),
+            tag=str(getattr(upgrade_request, "tag", target) or target),
+        )
+
+    @r.post(
+        "/admin/system/upgrade/{request_id}/cancel",
+        response_model=UpgradeCancelResponse,
+    )
+    async def cancel_upgrade(
+        request: Request,
+        request_id: str = Path(..., description="Upgrade request id."),
+    ) -> UpgradeCancelResponse | JSONResponse:
+        """Abort an upgrade that hasn't passed the point of no return.
+
+        Honest semantics: 200 only when the work was actually stopped
+        (docker: pre-handoff; native: request file still unread). 409
+        ``not_cancellable`` once the swap is in someone else's hands —
+        the UI then falls back to "stop watching".
+        """
+        state = get_admin_state()
+        upgrader = _resolve_upgrader(state)
+        if upgrader is None:
+            return _upgrade_error(
+                503,
+                "upgrader_unavailable",
+                "one-click upgrade is not available on this gateway",
+            )
+        cancel_fn = getattr(upgrader, "cancel", None)
+        if not callable(cancel_fn):
+            return _upgrade_error(
+                503,
+                "cancel_unsupported",
+                "this upgrader does not support cancellation",
+            )
+        try:
+            cancelled = bool(await cancel_fn(request_id))
+        except Exception as exc:  # noqa: BLE001 — surface as 500
+            raise HTTPException(
+                status_code=500,
+                detail={"error": "cancel_failed", "message": str(exc)},
+            ) from exc
+        if not cancelled:
+            # Distinguish "unknown request" from "past the point of no
+            # return" for a precise client error.
+            store = getattr(upgrader, "_store", None) or getattr(
+                upgrader, "store", None
+            )
+            known = False
+            if store is not None and hasattr(store, "get"):
+                try:
+                    known = (await store.get(request_id)) is not None
+                except Exception:  # noqa: BLE001
+                    known = False
+            if not known:
+                return _upgrade_error(
+                    404,
+                    "upgrade_request_not_found",
+                    f"no upgrade request with id {request_id!r}",
+                )
+            return _upgrade_error(
+                409,
+                "not_cancellable",
+                "the upgrade has passed the point of no return",
+            )
+        await _safe_audit(
+            _resolve_audit_log(state),
+            AuditEntry(
+                ts=utcnow_iso(),
+                event="system.upgrade.cancelled",
+                request_id=request_id,
+                tag=None,
+                actor=_resolve_actor(request),
+                details={},
+            ),
+        )
+        return UpgradeCancelResponse(request_id=request_id)
 
     @r.get("/admin/system/audit", response_model=AuditTailResponse)
     async def list_audit(

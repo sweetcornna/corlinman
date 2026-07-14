@@ -180,6 +180,12 @@ COPY --from=ui-builder /build/ui/out /app/ui-static
 
 # Default supervisor: launch agent sidecar + gateway in parallel.
 COPY docker/start.sh /app/start.sh
+
+# One-shot self-upgrade helper. The gateway launches it as a detached
+# container (running THIS image) with the docker socket + data volume
+# mounted; it swaps the corlinman container from outside so the swap
+# survives the gateway's own restart. Stdlib-only by design.
+COPY docker/upgrade_helper.py /app/upgrade_helper.py
 RUN mkdir -p /data \
     && sed -i 's/\r$//' /app/start.sh \
     && chmod +x /app/start.sh \

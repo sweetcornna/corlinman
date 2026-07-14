@@ -1,39 +1,52 @@
-"""Docker SDK + ``docker compose`` shell-out impl of :class:`UpgraderProtocol`.
+"""Docker-mode :class:`UpgraderProtocol` implementation.
 
-W1.1 of ``docs/PLAN_ONE_CLICK_UPGRADE.md`` §2 Wave 1/W1.1.
+Architecture (rebuilt — v2, sub2api-modeled)
+--------------------------------------------
 
-Design contract
----------------
+The original implementation stopped/recreated the ``corlinman`` container
+*from inside that same container*: stopping the old container killed the
+orchestration mid-swap, and the SDK path had already removed the old
+container — a failed upgrade left the box with nothing running and no
+rollback. The rebuild converges on the native systemd-helper pattern:
 
-The orchestration runs *inside* the gateway container against the
-mounted ``/var/run/docker.sock`` (W3.1 wires the bind). For the
-container-recreate step we prefer shelling out to ``docker compose``
-when the binary is on ``$PATH``: it preserves env/volume parity with the
-operator's compose file at zero plumbing cost. When the compose CLI is
-missing (e.g. minimal host) we fall back to the SDK by introspecting the
-existing ``corlinman`` container and calling
-:meth:`docker.client.containers.run` with the same spec but the new
-image. Both paths are documented inline.
+1. **Gateway (this class)** — pulls the new image (streamed progress),
+   captures the running container's spec, persists rollback context
+   (``before_version`` on the status record), writes
+   ``$DATA_DIR/.upgrade-request`` and launches ``docker/upgrade_helper.py``
+   as a **detached one-shot container** (running the gateway's *current*
+   image, docker socket + data volume mounted). Then it just mirrors the
+   helper's status file until the helper kills this very container.
+2. **Helper (outside the doomed container)** — stop → rename to
+   ``corlinman-previous`` (kept: the instant-rollback slot) → create/start
+   the new container → wait healthy → **assert the reported ``/health``
+   version equals the target** → terminal status. Any failure restores
+   ``corlinman-previous`` and reports ``rolled_back: true``.
+3. **Boot finalizer** (``finalizer.py``) — the restarted gateway settles
+   the record: version assertion → ``succeeded``, helper verdict mirror,
+   stall fallback.
 
-The ``docker`` SDK import is deferred to method bodies so this module
-imports cleanly in test environments that don't have ``docker-py``
-installed (see ``tests/system/upgrader/test_docker_upgrader.py``).
+``is_available`` still gates on a read-write docker socket — without the
+opt-in socket mount (``docker-compose.selfupdate.yml``) the admin routes
+degrade to the copy-paste commands exactly as before.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import os
-import shutil
+import threading
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable
+from pathlib import Path
 from typing import Any
 
 import structlog
 
 from corlinman_server.system.upgrader.protocol import (
     UpgradeAlreadyRunning,
+    UpgraderProtocol,
     UpgraderUnavailable,
 )
 from corlinman_server.system.upgrader.state import (
@@ -48,29 +61,46 @@ logger = structlog.get_logger(__name__)
 __all__ = ["DockerUpgrader"]
 
 
-# How long ``is_available`` caches a successful daemon ping. The admin
-# UI polls aggressively while the upgrade page is open; without a cache
-# every poll hits the docker socket which is wasteful.
+# How long a cached is_available() verdict lives. The socket appearing /
+# vanishing is rare; 30s keeps the admin poll cheap.
 _AVAILABILITY_CACHE_TTL_SECONDS = 30.0
 
 # Poll interval for :meth:`DockerUpgrader.progress`. 500ms is the upper
 # bound of "feels live" without flooding the SSE stream.
 _PROGRESS_POLL_SECONDS = 0.5
 
-# Healthcheck window. The orchestration declares success when the new
-# container reports ``healthy`` (or ``running`` for >= the sustain
-# window) within ``_HEALTH_TIMEOUT_SECONDS``.
-_HEALTH_TIMEOUT_SECONDS = 60.0
-_HEALTH_SUSTAIN_SECONDS = 10.0
-_HEALTH_POLL_SECONDS = 1.0
+# Helper handoff windows: the helper should write its first status within
+# the stall timeout (it starts in seconds); the overall cap matches the
+# native helper's systemd TimeoutStartSec.
+_HELPER_STALL_TIMEOUT_SECONDS = 60.0
+_HELPER_OVERALL_TIMEOUT_SECONDS = 600.0
+_STATUS_POLL_INTERVAL_SECONDS = 1.0
+
+# Passed to the helper: window for the NEW container to become healthy.
+_HELPER_HEALTH_TIMEOUT_SECONDS = 120.0
 
 # Default upstream repo + container name (mirrors docker-compose.yml).
 _DEFAULT_REPO = "ghcr.io/sweetcornna/corlinman"
 _DEFAULT_CONTAINER_NAME = "corlinman"
 
+_HELPER_CONTAINER_NAME = "corlinman-upgrade-helper"
+_HELPER_SCRIPT_PATH = "/app/upgrade_helper.py"
+_HELPER_PYTHON = "/opt/venv/bin/python"
+
+_REQUEST_FILE_NAME = ".upgrade-request"
+_STATUS_FILE_NAME = ".upgrade-status"
+
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def _strip_v(tag: str) -> str:
+    return tag[1:] if tag[:1] in ("v", "V") else tag
+
+
+class _UpgradeCancelled(Exception):
+    """Internal: the operator aborted before the point of no return."""
 
 
 # ---------------------------------------------------------------------------
@@ -79,9 +109,8 @@ def _now_ms() -> int:
 
 
 class DockerUpgrader:
-    """Implements :class:`UpgraderProtocol` via docker-py + ``docker compose``.
-
-    Behaviour summary (full contract in module docstring):
+    """Implements :class:`UpgraderProtocol` via docker-py + a detached
+    helper container (see module docstring for the full architecture).
 
     1. :meth:`is_available` — ``docker.from_env().ping()`` with a 30s
        success-cache. Returns ``False`` (no raise) on any error so the
@@ -89,12 +118,18 @@ class DockerUpgrader:
     2. :meth:`start` — single-flight guard via the store, mint request,
        spawn background task, return immediately so the HTTP handler can
        reply ``202``.
-    3. The background task: pull → recreate → healthcheck → terminal.
-       Every error path lands in ``state="failed"`` with an
-       operator-readable ``error`` message — nothing bubbles up.
+    3. The background task: pull → capture spec → write request file →
+       launch helper → mirror its status file. The helper stops this
+       container mid-mirror by design; the boot finalizer settles the
+       record afterwards.
     4. :meth:`progress` — poll the store every 500ms, yield snapshots,
        terminate on terminal state.
+    5. :meth:`cancel` — abort while still on this side of the handoff
+       (queued / pulling / preparing). After the helper launches there is
+       no safe abort.
     """
+
+    mode = "docker"
 
     def __init__(
         self,
@@ -102,13 +137,19 @@ class DockerUpgrader:
         store: UpgradeStateStore,
         repo: str = _DEFAULT_REPO,
         container_name: str = _DEFAULT_CONTAINER_NAME,
-        compose_file: str | None = None,
+        data_dir: Path | None = None,
+        compose_file: str | None = None,  # legacy kwarg, no longer used
         docker_client_factory: Callable[[], Any] | None = None,
     ) -> None:
         self._store = store
         self._repo = repo
         self._container_name = container_name
-        self._compose_file = compose_file
+        self._data_dir = Path(
+            data_dir
+            if data_dir is not None
+            else os.environ.get("CORLINMAN_DATA_DIR", "/data")
+        )
+        del compose_file  # accepted for wiring back-compat only
         # Allow tests to inject a fake client without monkeypatching the
         # docker module — keeps the import lazy and the surface explicit.
         self._client_factory = docker_client_factory
@@ -117,6 +158,11 @@ class DockerUpgrader:
         # mid-flight (CPython logs a "Task was destroyed" warning when an
         # unawaited task is gc'd).
         self._background_tasks: set[asyncio.Task[None]] = set()
+        # Cancellation flags per request; threading.Event because the pull
+        # loop runs inside asyncio.to_thread.
+        self._cancel_events: dict[str, threading.Event] = {}
+        # Requests that already handed off to the helper — no safe abort.
+        self._handoff_done: set[str] = set()
 
     # ------------------------------------------------------------------
     # Client factory
@@ -165,7 +211,14 @@ class DockerUpgrader:
             self._availability_cache = (False, now)
             return False
 
-    async def start(self, target_tag: str, actor: str) -> UpgradeRequest:
+    async def start(
+        self,
+        target_tag: str,
+        actor: str,
+        *,
+        allow_downgrade: bool = False,
+        action: str = "upgrade",
+    ) -> UpgradeRequest:
         """Mint a request + spawn the background upgrade task.
 
         Single-flight is enforced here: if any status in the store is
@@ -173,24 +226,58 @@ class DockerUpgrader:
         and the route maps to ``409``. Terminal states (``succeeded`` /
         ``failed`` / ``stalled``) do NOT block a fresh request — a
         ``stalled`` upgrade is retryable, not a permanent lock (BUG-02).
+
+        GHCR image tags carry no ``v`` (release-image.yml semver pattern
+        ``{{version}}``), so the tag is normalized to the stripped form.
         """
         in_flight = await self._store.current_in_flight()
         if in_flight is not None:
             raise UpgradeAlreadyRunning(in_flight)
         req = UpgradeRequest(
             request_id=uuid.uuid4().hex,
-            tag=target_tag,
+            tag=_strip_v(target_tag),
             requested_at=_now_ms(),
             requested_by=actor,
             mode="docker",
+            allow_downgrade=allow_downgrade,
+            action=action,
         )
         await self._store.begin(req)
+        # Rollback context: the version we're upgrading AWAY from.
+        try:
+            from corlinman_server.system.app_version import resolve_app_version
+
+            await self._store.update(
+                req.request_id, before_version=resolve_app_version()
+            )
+        except Exception:  # noqa: BLE001 — cosmetic metadata only
+            pass
+        self._cancel_events[req.request_id] = threading.Event()
         task = asyncio.create_task(
             self._run_upgrade(req), name=f"docker-upgrade-{req.request_id}"
         )
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
         return req
+
+    async def cancel(self, request_id: str) -> bool:
+        """Abort iff the request is still on this side of the handoff.
+
+        Honest semantics: once the helper container is launched the swap
+        is out of our hands — return ``False`` (the route maps that to
+        ``409 not_cancellable``). Cancelling during pull interrupts the
+        layer stream at the next chunk.
+        """
+        status = await self._store.get(request_id)
+        if status is None or status.is_terminal():
+            return False
+        if request_id in self._handoff_done:
+            return False
+        event = self._cancel_events.get(request_id)
+        if event is None:
+            return False
+        event.set()
+        return True
 
     async def progress(
         self, request_id: str
@@ -225,7 +312,7 @@ class DockerUpgrader:
     # ------------------------------------------------------------------
 
     async def _run_upgrade(self, req: UpgradeRequest) -> None:
-        """End-to-end upgrade orchestration. Never raises."""
+        """End-to-end orchestration up to the helper handoff. Never raises."""
         await self._store.update(
             req.request_id,
             state="running",
@@ -238,86 +325,84 @@ class DockerUpgrader:
             await self._fail(req.request_id, "docker_sock_unavailable", exc)
             return
 
-        # --- 1. Pull ----------------------------------------------------
-        await self._store.update(
-            req.request_id, phase="pulling", error=None
-        )
-        # Capture the running loop here (we ARE on the loop's thread);
-        # the worker thread can't look it up itself.
-        loop = asyncio.get_running_loop()
         try:
-            await asyncio.to_thread(
-                self._pull_with_progress, client, req, loop
-            )
-        except Exception as exc:  # noqa: BLE001
-            await self._fail(req.request_id, "image_pull_failed", exc)
-            return
+            self._check_cancelled(req.request_id)
 
-        # --- 2. Inspect old container -----------------------------------
-        await self._store.update(req.request_id, phase="inspecting")
-        old_spec: dict[str, Any] | None
-        try:
-            old_spec = await asyncio.to_thread(
-                self._inspect_container, client
-            )
-        except Exception as exc:  # noqa: BLE001
-            # Inspect failing is non-fatal IF compose CLI is available
-            # (compose will recreate from scratch). Otherwise we can't
-            # mirror the spec so we fail.
-            if not self._compose_cli_available():
-                await self._fail(req.request_id, "inspect_failed", exc)
+            # --- 1. Pull (skipped for instant rollback) -------------------
+            if req.action != "rollback_instant":
+                await self._store.update(
+                    req.request_id, phase="pulling", error=None
+                )
+                # Capture the running loop here (we ARE on the loop's
+                # thread); the worker thread can't look it up itself.
+                loop = asyncio.get_running_loop()
+                try:
+                    await asyncio.to_thread(
+                        self._pull_with_progress, client, req, loop
+                    )
+                except _UpgradeCancelled:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    await self._fail(req.request_id, "image_pull_failed", exc)
+                    return
+
+            self._check_cancelled(req.request_id)
+
+            # --- 2. Capture spec + write the helper request ---------------
+            await self._store.update(req.request_id, phase="preparing")
+            try:
+                context = await asyncio.to_thread(
+                    self._prepare_handoff, client, req
+                )
+            except Exception as exc:  # noqa: BLE001
+                await self._fail(req.request_id, "prepare_failed", exc)
                 return
-            old_spec = None
+
+            self._check_cancelled(req.request_id)
+
+            # --- 3. Launch the detached helper ----------------------------
+            # Mark the handoff BEFORE launching: cancel() must start
+            # refusing the moment the helper could exist, or an operator
+            # cancelling during the (slow) containers.run call would get a
+            # false "cancelled" while the helper proceeds with the swap
+            # (Codex #122 review). Rolled back on launch failure.
+            self._handoff_done.add(req.request_id)
+            try:
+                await asyncio.to_thread(self._launch_helper, client, context)
+            except Exception as exc:  # noqa: BLE001
+                self._handoff_done.discard(req.request_id)
+                self._delete_request_file()
+                await self._fail(req.request_id, "helper_launch_failed", exc)
+                return
+            await self._store.update(req.request_id, phase="handoff")
             await self._append_log(
                 req.request_id,
-                f"[warn] inspect failed, relying on compose: {exc}\n",
+                "[ok] handed off to upgrade helper container; this gateway "
+                "will restart shortly\n",
             )
-
-        # --- 3. Recreate ------------------------------------------------
-        await self._store.update(req.request_id, phase="recreating")
-        try:
-            if self._compose_cli_available():
-                await self._recreate_via_compose(req)
-            else:
-                if old_spec is None:
-                    raise RuntimeError(
-                        "compose CLI missing and old container spec "
-                        "unavailable — cannot recreate"
-                    )
-                await asyncio.to_thread(
-                    self._recreate_via_sdk, client, old_spec, req.tag
-                )
-        except Exception as exc:  # noqa: BLE001
-            await self._fail(req.request_id, "recreate_failed", exc)
-            return
-
-        # --- 4. Healthcheck ---------------------------------------------
-        await self._store.update(req.request_id, phase="healthcheck")
-        try:
-            ok = await self._wait_healthy(client)
-        except Exception as exc:  # noqa: BLE001
-            await self._fail(req.request_id, "healthcheck_error", exc)
-            return
-        if not ok:
-            await self._fail(
+        except _UpgradeCancelled:
+            self._delete_request_file()
+            await self._store.update(
                 req.request_id,
-                "healthcheck_timeout",
-                RuntimeError(
-                    f"container did not become healthy within "
-                    f"{_HEALTH_TIMEOUT_SECONDS:.0f}s"
-                ),
+                state="cancelled",
+                phase="cancelled",
+                error=None,
+                finished_at=_now_ms(),
+            )
+            await self._append_log(
+                req.request_id, "[ok] upgrade cancelled by operator\n"
             )
             return
+        finally:
+            self._cancel_events.pop(req.request_id, None)
 
-        # --- 5. Success -------------------------------------------------
-        await self._store.update(
-            req.request_id,
-            state="succeeded",
-            phase="done",
-            finished_at=_now_ms(),
-            error=None,
-        )
-        await self._append_log(req.request_id, "[ok] upgrade complete\n")
+        # --- 4. Mirror the helper's status file until we die ---------------
+        await self._mirror_helper_status(req)
+
+    def _check_cancelled(self, request_id: str) -> None:
+        event = self._cancel_events.get(request_id)
+        if event is not None and event.is_set():
+            raise _UpgradeCancelled
 
     # ------------------------------------------------------------------
     # Pull + progress folding
@@ -345,8 +430,10 @@ class DockerUpgrader:
         This method runs synchronously inside ``asyncio.to_thread``; the
         caller passes the running loop so we can push log updates to the
         (asyncio-locked) store via :func:`asyncio.run_coroutine_threadsafe`
-        — there is NO event loop in the worker thread itself.
+        — there is NO event loop in the worker thread itself. The
+        per-request cancel event is checked once per stream chunk.
         """
+        cancel_event = self._cancel_events.get(req.request_id)
         stream = client.api.pull(
             self._repo, tag=req.tag, stream=True, decode=True
         )
@@ -355,6 +442,8 @@ class DockerUpgrader:
         layer_state: dict[str, str] = {}
         last_emit = 0.0
         for raw in stream:
+            if cancel_event is not None and cancel_event.is_set():
+                raise _UpgradeCancelled
             if not isinstance(raw, dict):
                 continue
             err = raw.get("error") or raw.get("errorDetail", {}).get("message")
@@ -405,154 +494,305 @@ class DockerUpgrader:
             pass
 
     # ------------------------------------------------------------------
-    # Inspect + recreate
+    # Handoff preparation
     # ------------------------------------------------------------------
 
-    def _inspect_container(self, client: Any) -> dict[str, Any]:
-        """Capture the running container's config so the SDK fallback
-        can mirror env/ports/volumes/healthcheck when compose is absent.
+    def _prepare_handoff(
+        self, client: Any, req: UpgradeRequest
+    ) -> dict[str, Any]:
+        """Capture the running container's spec + write ``.upgrade-request``.
+
+        Returns the launch context for :meth:`_launch_helper`:
+        ``{"own_image": ..., "data_mount_source": ...}``.
         """
         container = client.containers.get(self._container_name)
         attrs = container.attrs or {}
-        host_cfg = attrs.get("HostConfig") or {}
+        own_image = (attrs.get("Image") or "").strip()
+        if not own_image:
+            raise RuntimeError("could not resolve the running image id")
+
         config = attrs.get("Config") or {}
+        create_payload, extra_networks = self._build_create_payload(
+            attrs, f"{self._repo}:{req.tag}"
+        )
+        data_mount_source = self._find_data_mount_source(attrs)
+
+        request_payload: dict[str, Any] = {
+            # Helper files carry the dashed UUID form (native-helper
+            # convention); the store keeps the dashless one. The boot
+            # finalizer matches either.
+            "request_id": str(uuid.UUID(req.request_id)),
+            "mode": "docker",
+            "action": req.action,
+            "tag": req.tag,
+            "image_ref": f"{self._repo}:{req.tag}",
+            "container_name": self._container_name,
+            "previous_name": f"{self._container_name}-previous",
+            "before_image": own_image,
+            "target_version": _strip_v(req.tag),
+            "health_port": self._health_port(config),
+            "health_timeout_s": _HELPER_HEALTH_TIMEOUT_SECONDS,
+            "requested_by": req.requested_by,
+            "requested_at": req.requested_at,
+            "create_payload": create_payload,
+            "extra_networks": extra_networks,
+        }
+        self._atomic_write_json(
+            self._data_dir / _REQUEST_FILE_NAME, request_payload
+        )
         return {
-            "image": config.get("Image"),
-            "env": config.get("Env") or [],
-            "labels": config.get("Labels") or {},
-            "ports": config.get("ExposedPorts") or {},
-            "port_bindings": host_cfg.get("PortBindings") or {},
-            "binds": host_cfg.get("Binds") or [],
-            "restart_policy": host_cfg.get("RestartPolicy") or {},
-            "network_mode": host_cfg.get("NetworkMode"),
-            "healthcheck": config.get("Healthcheck"),
-            "old_container": container,
+            "own_image": own_image,
+            "data_mount_source": data_mount_source,
         }
 
-    def _compose_cli_available(self) -> bool:
-        """``docker compose version`` exits 0 *and* the binary is on PATH."""
-        if shutil.which("docker") is None:
-            return False
-        try:
-            import subprocess  # noqa: PLC0415 — narrow scope
+    @staticmethod
+    def _health_port(config: dict[str, Any]) -> int:
+        for env_entry in config.get("Env") or []:
+            if isinstance(env_entry, str) and env_entry.startswith("PORT="):
+                try:
+                    return int(env_entry.split("=", 1)[1])
+                except ValueError:
+                    break
+        return 6005
 
-            result = subprocess.run(
-                ["docker", "compose", "version"],
-                capture_output=True,
-                timeout=5,
-                check=False,
+    @staticmethod
+    def _build_create_payload(
+        attrs: dict[str, Any], new_image: str
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Turn ``docker inspect`` output into a ``POST /containers/create``
+        body targeting ``new_image``, plus the secondary networks the
+        helper re-connects after start (the create API takes only one
+        endpoint)."""
+        config = attrs.get("Config") or {}
+        host_config = dict(attrs.get("HostConfig") or {})
+        # ``docker inspect``'s Config.Env is the MERGE of runtime env and
+        # the OLD image's baked ENV — including its CORLINMAN_VERSION
+        # release stamp. Copying that verbatim would pin the new container
+        # to the old version string (env has highest precedence in
+        # resolve_app_version), so /health reports the old version and the
+        # helper's assertion rolls back every valid upgrade (Codex #122
+        # review). Strip it; the NEW image's own baked ENV then applies.
+        env = [
+            entry
+            for entry in (config.get("Env") or [])
+            if not (
+                isinstance(entry, str)
+                and entry.startswith("CORLINMAN_VERSION=")
             )
-            return result.returncode == 0
-        except (OSError, ValueError):
-            return False
-
-    async def _recreate_via_compose(self, req: UpgradeRequest) -> None:
-        """Shell out to ``docker compose up -d --no-deps corlinman``.
-
-        We pass ``CORLINMAN_TAG`` as the env override so the compose
-        file's ``image: ghcr.io/ymylive/corlinman:${CORLINMAN_TAG:-latest}``
-        picks up the new tag. The compose file path is configurable via
-        the ``compose_file`` ctor arg (deploy mounts ``/app/compose``).
-        """
-        import subprocess  # noqa: PLC0415
-
-        env = dict(os.environ)
-        env["CORLINMAN_TAG"] = req.tag
-        argv = ["docker", "compose"]
-        if self._compose_file:
-            argv.extend(["-f", self._compose_file])
-        argv.extend(["up", "-d", "--no-deps", self._container_name])
-        proc = await asyncio.to_thread(
-            subprocess.run,
-            argv,
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=180,
-            check=False,
+        ]
+        # Deliberately OMITTED: Cmd / Entrypoint / Healthcheck / User /
+        # WorkingDir. ``docker inspect`` merges image defaults into the
+        # container config (the Watchtower problem) — copying them would
+        # pin the OLD image's start script / healthcheck / user onto
+        # every future image, so a release that changes its Dockerfile
+        # CMD or HEALTHCHECK would crash-loop or probe the wrong thing
+        # and become one-click-uninstallable. Omitting them lets the NEW
+        # image's own defaults apply; corlinman's own compose file sets
+        # none of these at the container level. (Same rationale as the
+        # CORLINMAN_VERSION strip above, applied structurally.)
+        payload: dict[str, Any] = {
+            "Image": new_image,
+            "Env": env,
+            "Labels": config.get("Labels") or {},
+            "ExposedPorts": config.get("ExposedPorts") or {},
+            "HostConfig": host_config,
+        }
+        networks = dict(
+            ((attrs.get("NetworkSettings") or {}).get("Networks")) or {}
         )
-        log = (proc.stdout or "") + (proc.stderr or "")
-        if log:
-            await self._append_log(req.request_id, log)
-        if proc.returncode != 0:
-            raise RuntimeError(
-                f"docker compose exited with {proc.returncode}: "
-                f"{(proc.stderr or proc.stdout or '').strip()[:500]}"
-            )
-
-    def _recreate_via_sdk(
-        self, client: Any, old_spec: dict[str, Any], target_tag: str
-    ) -> None:
-        """Fallback path: remove old container + ``containers.run`` new one.
-
-        Mirrors env / ports / volumes / restart policy / healthcheck
-        from the inspect snapshot. Less-perfect than compose recreate
-        (e.g. networks aliases not perfectly preserved) but adequate
-        when the operator hasn't installed the compose CLI in the host.
-        """
-        new_image = f"{self._repo}:{target_tag}"
-        old = old_spec.get("old_container")
-        if old is not None:
-            try:
-                old.stop(timeout=30)
-            except Exception:  # noqa: BLE001 — already stopped is fine
-                pass
-            try:
-                old.remove(force=True)
-            except Exception:  # noqa: BLE001
-                pass
-        client.containers.run(
-            image=new_image,
-            name=self._container_name,
-            detach=True,
-            environment=old_spec.get("env") or [],
-            labels=old_spec.get("labels") or {},
-            ports=old_spec.get("port_bindings") or {},
-            volumes=old_spec.get("binds") or [],
-            restart_policy=old_spec.get("restart_policy")
-            or {"Name": "unless-stopped"},
-            network_mode=old_spec.get("network_mode"),
-            healthcheck=old_spec.get("healthcheck"),
-        )
-
-    # ------------------------------------------------------------------
-    # Healthcheck
-    # ------------------------------------------------------------------
-
-    async def _wait_healthy(self, client: Any) -> bool:
-        """Poll the new container; pass when ``healthy`` or sustained ``running``.
-
-        Returns ``True`` on success, ``False`` on timeout. The caller
-        translates ``False`` into ``state="failed"`` with
-        ``error="healthcheck_timeout"``.
-        """
-        deadline = time.monotonic() + _HEALTH_TIMEOUT_SECONDS
-        running_since: float | None = None
-        while time.monotonic() < deadline:
-            try:
-                container = await asyncio.to_thread(
-                    client.containers.get, self._container_name
-                )
-                attrs = await asyncio.to_thread(getattr, container, "attrs")
-            except Exception:  # noqa: BLE001 — container may be mid-recreate
-                await asyncio.sleep(_HEALTH_POLL_SECONDS)
-                continue
-            state = (attrs or {}).get("State") or {}
-            health = state.get("Health") or {}
-            health_status = health.get("Status")
-            running = bool(state.get("Running"))
-            if health_status == "healthy":
-                return True
-            if health_status is None and running:
-                # No healthcheck defined — accept after sustain window.
-                if running_since is None:
-                    running_since = time.monotonic()
-                elif time.monotonic() - running_since >= _HEALTH_SUSTAIN_SECONDS:
-                    return True
+        networking_config: dict[str, Any] = {}
+        extra_networks: dict[str, Any] = {}
+        for index, (net_name, endpoint) in enumerate(networks.items()):
+            endpoint = endpoint or {}
+            aliases = [
+                alias
+                for alias in (endpoint.get("Aliases") or [])
+                # Drop the auto-generated short-container-id alias.
+                if not (len(alias) == 12 and all(c in "0123456789abcdef" for c in alias))
+            ]
+            endpoint_config: dict[str, Any] = {}
+            if aliases:
+                endpoint_config["Aliases"] = aliases
+            if index == 0:
+                networking_config = {
+                    "EndpointsConfig": {net_name: endpoint_config}
+                }
             else:
-                running_since = None
-            await asyncio.sleep(_HEALTH_POLL_SECONDS)
-        return False
+                extra_networks[net_name] = endpoint_config
+        if networking_config:
+            payload["NetworkingConfig"] = networking_config
+        return payload, extra_networks
+
+    def _find_data_mount_source(self, attrs: dict[str, Any]) -> str:
+        """Host-side source (bind path or volume name) of the data dir.
+
+        The helper container mounts the same source at ``/data`` so both
+        processes share ``.upgrade-request`` / ``.upgrade-status``.
+        """
+        wanted = str(self._data_dir)
+        for mount in attrs.get("Mounts") or []:
+            if not isinstance(mount, dict):
+                continue
+            if mount.get("Destination") != wanted:
+                continue
+            source = mount.get("Name") or mount.get("Source")
+            if isinstance(source, str) and source:
+                return source
+        raise RuntimeError(
+            f"no mount found for data dir {wanted!r} — is the data volume "
+            "mounted into this container?"
+        )
+
+    def _launch_helper(self, client: Any, context: dict[str, Any]) -> None:
+        """Fire the detached one-shot helper container."""
+        # Clear any stale helper from a previous attempt.
+        try:
+            stale = client.containers.get(_HELPER_CONTAINER_NAME)
+            stale.remove(force=True)
+        except Exception:  # noqa: BLE001 — not found / already gone
+            pass
+        volumes = {
+            "/var/run/docker.sock": {
+                "bind": "/var/run/docker.sock",
+                "mode": "rw",
+            },
+            context["data_mount_source"]: {"bind": "/data", "mode": "rw"},
+        }
+        client.containers.run(
+            image=context["own_image"],
+            entrypoint=[_HELPER_PYTHON, _HELPER_SCRIPT_PATH],
+            name=_HELPER_CONTAINER_NAME,
+            detach=True,
+            auto_remove=True,
+            user="0",
+            environment=["CORLINMAN_DATA_DIR=/data"],
+            volumes=volumes,
+            restart_policy={"Name": "no"},
+            network_mode="none",
+        )
+
+    @staticmethod
+    def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        data = json.dumps(payload, ensure_ascii=False, indent=2)
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        try:
+            os.write(fd, data.encode("utf-8"))
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp, path)
+
+    def _delete_request_file(self) -> None:
+        try:
+            (self._data_dir / _REQUEST_FILE_NAME).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    # ------------------------------------------------------------------
+    # Helper status mirroring
+    # ------------------------------------------------------------------
+
+    async def _mirror_helper_status(self, req: UpgradeRequest) -> None:
+        """Mirror ``.upgrade-status`` into the store until terminal.
+
+        In the happy path the helper stops THIS container mid-loop and
+        the boot finalizer settles the record. This mirror exists for the
+        early failures (helper never started, request rejected) and for
+        the log tail while the pull→swap window lasts.
+        """
+        status_path = self._data_dir / _STATUS_FILE_NAME
+        helper_request_id = str(uuid.UUID(req.request_id))
+        first_seen = time.monotonic()
+        deadline = first_seen + _HELPER_OVERALL_TIMEOUT_SECONDS
+        last_payload: dict[str, Any] | None = None
+        ever_observed = False
+        while True:
+            now = time.monotonic()
+            if now > deadline:
+                await self._safe_update(
+                    req.request_id,
+                    state="failed",
+                    phase="timeout",
+                    error="overall_timeout",
+                    finished_at=_now_ms(),
+                )
+                return
+            payload = self._read_status_file(status_path, helper_request_id)
+            if payload is not None:
+                ever_observed = True
+                if payload != last_payload:
+                    last_payload = payload
+                    await self._apply_helper_payload(req, payload)
+                    if str(payload.get("state")) in ("succeeded", "failed"):
+                        return
+            elif (
+                not ever_observed
+                and now - first_seen > _HELPER_STALL_TIMEOUT_SECONDS
+            ):
+                await self._safe_update(
+                    req.request_id,
+                    state="stalled",
+                    phase="stalled",
+                    error="helper_container_never_reported",
+                    finished_at=_now_ms(),
+                )
+                return
+            await asyncio.sleep(_STATUS_POLL_INTERVAL_SECONDS)
+
+    @staticmethod
+    def _read_status_file(
+        status_path: Path, expected_request_id: str
+    ) -> dict[str, Any] | None:
+        try:
+            raw = status_path.read_text(encoding="utf-8")
+        except (FileNotFoundError, OSError):
+            return None
+        try:
+            payload = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("request_id") != expected_request_id:
+            return None
+        return payload
+
+    async def _apply_helper_payload(
+        self, req: UpgradeRequest, payload: dict[str, Any]
+    ) -> None:
+        state_raw = str(payload.get("state", "running"))
+        state = (
+            state_raw
+            if state_raw in ("queued", "running", "succeeded", "failed")
+            else "running"
+        )
+        fields: dict[str, Any] = {"state": state, "phase": state}
+        finished = payload.get("finished_at")
+        if isinstance(finished, int):
+            fields["finished_at"] = finished
+        elif state in ("succeeded", "failed"):
+            fields["finished_at"] = _now_ms()
+        err = payload.get("error")
+        if err is None or isinstance(err, str):
+            fields["error"] = err
+        log_excerpt = payload.get("log_excerpt")
+        if isinstance(log_excerpt, str):
+            fields["log_excerpt"] = log_excerpt
+        rolled_back = payload.get("rolled_back")
+        if isinstance(rolled_back, bool):
+            fields["rolled_back"] = rolled_back
+        version_verified = payload.get("version_verified")
+        if isinstance(version_verified, bool):
+            fields["version_verified"] = version_verified
+        await self._safe_update(req.request_id, **fields)
+
+    async def _safe_update(self, request_id: str, **fields: Any) -> None:
+        try:
+            await self._store.update(request_id, **fields)
+        except KeyError:
+            return
 
     # ------------------------------------------------------------------
     # Helpers
@@ -584,3 +824,7 @@ class DockerUpgrader:
             )
         except Exception:  # noqa: BLE001 — store failure shouldn't crash
             logger.exception("docker_upgrader.fail_state_write_failed")
+
+
+# Tell the static checker DockerUpgrader satisfies UpgraderProtocol.
+_: type[UpgraderProtocol] = DockerUpgrader  # type: ignore[assignment]
