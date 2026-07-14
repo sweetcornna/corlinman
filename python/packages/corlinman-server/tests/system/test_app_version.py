@@ -43,10 +43,17 @@ class TestNormalizeAndLooksLikeVersion:
         [
             ("1.27.0", True),
             ("v1.27.0", True),
+            ("1.28.0rc1", True),
             ("main", False),
             ("", False),
             ("abc123", False),
             ("release-2", False),
+            # Digit-leading but NOT PEP 440-parseable — a commit sha or a
+            # branch ref must never beat the baked pyproject version
+            # (accepting one broke _compare_versions → available=False
+            # forever; Codex #121 review).
+            ("1234abcdef", False),
+            ("1.x-fixes", False),
         ],
     )
     def test_looks_like_version(self, raw: str, ok: bool) -> None:
