@@ -65,7 +65,7 @@ _HEALTH_SUSTAIN_SECONDS = 10.0
 _HEALTH_POLL_SECONDS = 1.0
 
 # Default upstream repo + container name (mirrors docker-compose.yml).
-_DEFAULT_REPO = "ghcr.io/ymylive/corlinman"
+_DEFAULT_REPO = "ghcr.io/sweetcornna/corlinman"
 _DEFAULT_CONTAINER_NAME = "corlinman"
 
 

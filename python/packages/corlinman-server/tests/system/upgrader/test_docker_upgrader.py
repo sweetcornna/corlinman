@@ -24,8 +24,16 @@ from corlinman_server.system.upgrader import (
     UpgradeStateStore,
 )
 from corlinman_server.system.upgrader.docker_upgrader import (
+    _DEFAULT_REPO,
     _HEALTH_TIMEOUT_SECONDS,
 )
+
+
+def test_default_repo_points_at_current_owner() -> None:
+    """Guard against the pre-transfer GHCR namespace resurfacing: the repo
+    moved ymylive → sweetcornna in 2026-05, and pulling the old namespace
+    means every default-config one-click docker upgrade 404s."""
+    assert _DEFAULT_REPO == "ghcr.io/sweetcornna/corlinman"
 
 # ---------------------------------------------------------------------------
 # Fakes
