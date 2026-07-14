@@ -13,6 +13,7 @@ import { describe, expect, it } from "vitest";
 import {
   detectUpgradeOutcome,
   resolveRestartOutcome,
+  shouldDeferTerminalStall,
 } from "../upgrade-progress";
 
 describe("resolveRestartOutcome", () => {
@@ -111,5 +112,34 @@ describe("detectUpgradeOutcome (legacy heuristic, unchanged)", () => {
         sawServerDown: false,
       }),
     ).toBe("pending");
+  });
+});
+
+describe("shouldDeferTerminalStall", () => {
+  it("defers a stalled frame once the restart was observed", () => {
+    expect(
+      shouldDeferTerminalStall({
+        error: "gateway_restarted_mid_upgrade",
+        sawServerDown: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("always defers helper_still_running (backend parks the record)", () => {
+    expect(
+      shouldDeferTerminalStall({
+        error: "helper_still_running",
+        sawServerDown: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("fails immediately on a genuine stall (no restart seen)", () => {
+    expect(
+      shouldDeferTerminalStall({
+        error: "helper_unit_missing_or_disabled",
+        sawServerDown: false,
+      }),
+    ).toBe(false);
   });
 });

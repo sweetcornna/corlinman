@@ -107,6 +107,29 @@ export function resolveRestartOutcome(args: {
   return detectUpgradeOutcome(args);
 }
 
+/**
+ * Whether a terminal ``stalled`` status frame should be DEFERRED (kept
+ * pending) instead of failing the UI. Pure + exported for unit tests.
+ *
+ * Two cases (Codex #121/#122 reviews):
+ * - ``helper_still_running`` — the restarted backend parked the record
+ *   while the privileged helper is still mid-swap; its real verdict
+ *   arrives later via the lazy status-route mirror.
+ * - Any stalled snapshot AFTER we observed the restart — the old
+ *   gateway's orphaned record gets stall-flipped on boot even when the
+ *   upgrade succeeded; the /health version probe is the decider, not
+ *   this snapshot.
+ * A stalled frame with NO restart observed (helper unit missing — the
+ * gateway never went down) still fails immediately, as before.
+ */
+export function shouldDeferTerminalStall(args: {
+  error?: string | null;
+  sawServerDown: boolean;
+}): boolean {
+  if (args.error === "helper_still_running") return true;
+  return args.sawServerDown;
+}
+
 const RECONNECT_POLL_MS = 2500;
 /** After this long with no terminal, surface a "taking longer" hint +
  * manual reload affordance (but keep polling). */
@@ -237,8 +260,21 @@ export function UpgradeProgress({
         targetTagRef.current = learnedTarget;
         setTargetLabel(learnedTarget);
       }
-      if (s.state === "failed" || s.state === "stalled") {
+      if (s.state === "failed") {
         finish("failed", s.error ?? null);
+      } else if (s.state === "stalled") {
+        // A stalled record during/after the restart window is usually
+        // the boot-time stall flip of a SUCCESSFUL upgrade (or a helper
+        // still mid-swap) — defer to the /health version probe instead
+        // of terminal-failing. Genuine stalls (no restart seen) fail.
+        if (
+          !shouldDeferTerminalStall({
+            error: s.error,
+            sawServerDown: sawServerDownRef.current,
+          })
+        ) {
+          finish("failed", s.error ?? null);
+        }
       } else if (s.state === "succeeded") {
         finish("succeeded");
       } else if (s.state === "cancelled") {
