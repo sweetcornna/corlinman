@@ -2,7 +2,8 @@
  * Dev Settings page tests.
  *
  * Asserts:
- *   - Renders one card per hidden page (11 total).
+ *   - Renders one card per developer-gated registry page (PR6: the grid
+ *     derives from `devSettingsPages()` in `@/lib/nav-registry`).
  *   - The toggle reflects + writes the `useDevMode()` flag.
  *   - Toggling the switch persists to localStorage and shows the new state.
  */
@@ -25,7 +26,9 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => new URLSearchParams(),
 }));
 
-import DevSettingsPage, { DEV_PAGE_KEYS } from "./page";
+import { devSettingsPages, NAV_PAGES } from "@/lib/nav-registry";
+
+import DevSettingsPage from "./page";
 
 beforeEach(() => {
   initI18n();
@@ -54,22 +57,28 @@ describe("DevSettingsPage", () => {
     ).toBeInTheDocument();
   });
 
-  it("renders one card per hidden developer page", () => {
+  it("renders one card per developer-gated registry page", () => {
     renderPage();
-    expect(DEV_PAGE_KEYS).toHaveLength(10);
-    for (const key of DEV_PAGE_KEYS) {
+    const pages = devSettingsPages();
+    // The grid covers exactly the developer pages (drift fixed in PR6).
+    expect(pages.map((p) => p.id)).toEqual(
+      NAV_PAGES.filter((p) => p.developer).map((p) => p.id),
+    );
+    for (const page of pages) {
       expect(
-        screen.getByTestId(`dev-settings-card-${key}`),
+        screen.getByTestId(`dev-settings-card-${page.id}`),
       ).toBeInTheDocument();
     }
   });
 
   it("links each card to its admin route", () => {
     renderPage();
-    const config = screen.getByTestId("dev-settings-card-config");
-    expect(config).toHaveAttribute("href", "/config");
-    const evolution = screen.getByTestId("dev-settings-card-evolution");
-    expect(evolution).toHaveAttribute("href", "/evolution");
+    for (const page of devSettingsPages()) {
+      expect(screen.getByTestId(`dev-settings-card-${page.id}`)).toHaveAttribute(
+        "href",
+        page.href,
+      );
+    }
   });
 
   it("the toggle is off by default", () => {

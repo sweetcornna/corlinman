@@ -453,6 +453,13 @@ export const en = {
         gilded: "Gilded",
       },
     },
+    sections: {
+      chat: "Chat",
+      ops: "Operations",
+      config: "Configuration",
+      system: "System",
+      developer: "Developer",
+    },
     dashboard: "Dashboard",
     marketplace: "Marketplace",
     marketplaceAcceleration: "Acceleration",
@@ -2815,6 +2822,14 @@ export const en = {
       plugins: {
         title: "Plugins",
         description: "Loaded sync / async / preprocessor plugins.",
+      },
+      marketplaceAcceleration: {
+        title: "Marketplace Acceleration",
+        description: "GitHub mirrors and download acceleration for installs.",
+      },
+      marketplaceContribute: {
+        title: "Marketplace Contribute",
+        description: "Package and submit skills, MCP servers, and plugins.",
       },
       hooks: {
         title: "Hooks",

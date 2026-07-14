@@ -4,7 +4,8 @@
  * Global ⌘K command palette. Powered by `cmdk` (built-in fuzzy match).
  *
  * Actions:
- *   - Jump to any admin route (10 destinations, synced with the sidebar list).
+ *   - Jump to any admin route (derived from `@/lib/nav-registry`; developer
+ *     pages appear only while dev mode is on).
  *   - Toggle theme.
  *   - Switch language (zh-CN ↔ en).
  *   - Log out (POST /admin/logout via lib/auth).
@@ -30,34 +31,20 @@ import {
   type PaletteItem,
 } from "@/components/ui/command-palette";
 import {
-  Activity,
-  Bot,
-  Boxes,
-  ClipboardCheck,
-  Database,
-  FileTerminal,
   FilterX,
   Languages,
-  Leaf,
   LogOut,
-  MessageCircle,
   MessageSquare,
   Moon,
-  Plug,
   RefreshCw,
-  Route,
-  Send,
-  Settings,
-  Sparkles,
   Sun,
-  Timer,
-  Wrench,
-  Zap,
 } from "lucide-react";
 
 import { logout } from "@/lib/auth";
 import { GATEWAY_BASE_URL } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { useDevMode } from "@/lib/dev-mode";
+import { commandEntries, type CommandEntry } from "@/lib/nav-registry";
 import { useRecentRoutes } from "@/lib/hooks/use-recent-routes";
 
 // --- context ----------------------------------------------------------------
@@ -106,34 +93,12 @@ function pushRecent(id: string): void {
   }
 }
 
-// --- nav registry (kept in sync with the sidebar) --------------------------
-
-interface NavCmd {
-  id: string;
-  labelKey: string;
-  href: string;
-  icon: React.ComponentType<{ className?: string }>;
-  keywords?: string;
-}
-
-const NAV_CMDS: NavCmd[] = [
-  { id: "nav.dashboard", labelKey: "nav.dashboard", href: "/", icon: Activity, keywords: "overview home 仪表盘 dashboard" },
-  { id: "nav.plugins", labelKey: "nav.plugins", href: "/plugins", icon: Boxes, keywords: "tools manifest 插件" },
-  { id: "nav.skills", labelKey: "nav.skills", href: "/skills", icon: Wrench, keywords: "skills gallery 技能" },
-  { id: "nav.agents", labelKey: "nav.agents", href: "/agents", icon: Bot, keywords: "prompt editor agent" },
-  { id: "nav.rag", labelKey: "nav.rag", href: "/rag", icon: Database, keywords: "retrieval chunks embeddings 向量" },
-  { id: "nav.qq", labelKey: "nav.qq", href: "/channels/qq", icon: MessageCircle, keywords: "channels messaging 通道 qq" },
-  { id: "nav.telegram", labelKey: "nav.telegram", href: "/channels/telegram", icon: Send, keywords: "telegram channel 电报" },
-  { id: "nav.scheduler", labelKey: "nav.scheduler", href: "/scheduler", icon: Timer, keywords: "cron jobs 定时任务" },
-  { id: "nav.approvals", labelKey: "nav.approvals", href: "/approvals", icon: ClipboardCheck, keywords: "pending tool gate 审批" },
-  { id: "nav.evolution", labelKey: "nav.evolution", href: "/evolution", icon: Leaf, keywords: "evolution proposals self-improve 演化 自我改进" },
-  { id: "nav.models", labelKey: "nav.models", href: "/models", icon: Route, keywords: "providers aliases routing 模型" },
-  { id: "nav.persona", labelKey: "nav.persona", href: "/persona", icon: Sparkles, keywords: "persona humanlike chat personality 拟人化 角色 grantley" },
-  { id: "nav.providers", labelKey: "nav.providers", href: "/providers", icon: Plug, keywords: "providers llm openai" },
-  { id: "nav.config", labelKey: "nav.config", href: "/config", icon: Settings, keywords: "toml settings 配置" },
-  { id: "nav.logs", labelKey: "nav.logs", href: "/logs", icon: FileTerminal, keywords: "stream events trace 日志" },
-  { id: "nav.hooks", labelKey: "nav.hooks", href: "/hooks", icon: Zap, keywords: "hooks events monitor" },
-];
+// --- nav entries ------------------------------------------------------------
+//
+// Derived from `@/lib/nav-registry` (the single source of truth shared with
+// the sidebar, dev-settings grid and breadcrumbs). Developer pages only
+// appear while dev mode is on — same gate as the sidebar. Legacy /providers
+// and /credentials entries land on /models (PR4 consolidation).
 
 // --- provider ---------------------------------------------------------------
 
@@ -200,6 +165,7 @@ function CommandPalette({
   const { theme, setTheme } = useTheme();
   const { t, i18n } = useTranslation();
   const { routes: recentRoutes } = useRecentRoutes();
+  const { enabled: devModeEnabled } = useDevMode();
   const [recent, setRecent] = React.useState<string[]>([]);
   const [chatOpen, setChatOpen] = React.useState(false);
 
@@ -210,21 +176,26 @@ function CommandPalette({
   // defer side effect so the palette closes before navigation
   const defer = (fn: () => void) => requestAnimationFrame(fn);
 
+  const navCmds = React.useMemo(
+    () => commandEntries(devModeEnabled),
+    [devModeEnabled],
+  );
+
   const navByHref = React.useMemo(() => {
-    const m = new Map<string, NavCmd>();
-    for (const n of NAV_CMDS) m.set(n.href, n);
+    const m = new Map<string, CommandEntry>();
+    for (const n of navCmds) m.set(n.href, n);
     return m;
-  }, []);
+  }, [navCmds]);
   const navById = React.useMemo(() => {
-    const m = new Map<string, NavCmd>();
-    for (const n of NAV_CMDS) m.set(n.id, n);
+    const m = new Map<string, CommandEntry>();
+    for (const n of navCmds) m.set(n.id, n);
     return m;
-  }, []);
+  }, [navCmds]);
 
   // Prefer route-history (any visited admin path) and fall back to legacy
   // per-id recents so existing users keep their list after this upgrade.
   const recentEntries = React.useMemo(() => {
-    const out: { key: string; nav: NavCmd }[] = [];
+    const out: { key: string; nav: CommandEntry }[] = [];
     const seen = new Set<string>();
     for (const href of recentRoutes) {
       const n = navByHref.get(href);
@@ -271,7 +242,7 @@ function CommandPalette({
     gs.push({
       id: "navigate",
       label: t("cmdk.groupNavigate"),
-      items: NAV_CMDS.map((n): PaletteItem => {
+      items: navCmds.map((n): PaletteItem => {
         const Icon = n.icon;
         return {
           id: n.id,
@@ -381,7 +352,7 @@ function CommandPalette({
     });
 
     return gs;
-  }, [recentEntries, theme, router, setTheme, t, i18n]);
+  }, [recentEntries, navCmds, theme, router, setTheme, t, i18n]);
 
   return (
     <>

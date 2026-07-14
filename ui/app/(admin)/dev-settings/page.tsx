@@ -5,8 +5,8 @@
  *
  * Two halves:
  *   1. Top: a `<Switch>` bound to `useDevMode().setEnabled` that toggles
- *      sidebar visibility of the 17 power-user pages. Persisted to
- *      `localStorage`.
+ *      sidebar visibility of the developer-gated pages (see
+ *      `@/lib/nav-registry`). Persisted to `localStorage`.
  *   2. Bottom: a grid of cards — one per hidden page — so the surface stays
  *      discoverable even when the toggle is off.
  *
@@ -20,6 +20,7 @@ import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
 import { useDevMode } from "@/lib/dev-mode";
+import { devSettingsPages } from "@/lib/nav-registry";
 import { Switch } from "@/components/ui/switch";
 import {
   Card,
@@ -30,41 +31,12 @@ import {
 } from "@/components/ui/card";
 
 /**
- * Static metadata for each hidden page. The route is the source of truth
- * for the i18n lookup (`devSettings.pages.<key>.title|description`).
- *
- * Keep the order in sync with `SIDEBAR_DEV_ITEMS` so the dashboard layout
- * matches the order the toggle would surface in the sidebar.
+ * The card grid derives from `devSettingsPages()` in `@/lib/nav-registry` —
+ * exactly the developer-gated pages, in the same order the dev-mode toggle
+ * surfaces them in the sidebar. Each page's `id` is the i18n lookup key
+ * (`devSettings.pages.<id>.title|description`).
  */
-const DEV_PAGE_KEYS = [
-  "config",
-  "tenants",
-  // credentials moved to the operator sidebar (out of the dev panel)
-  // alongside the merged providers admin — see /admin/credentials.
-  "agents",
-  "skills",
-  "plugins",
-  "hooks",
-  "rag",
-  "profiles",
-  "nodes",
-  "evolution",
-] as const;
-
-type DevPageKey = (typeof DEV_PAGE_KEYS)[number];
-
-const ROUTE_FOR_KEY: Record<DevPageKey, string> = {
-  config: "/config",
-  tenants: "/tenants",
-  agents: "/agents",
-  skills: "/skills",
-  plugins: "/plugins",
-  hooks: "/hooks",
-  rag: "/rag",
-  profiles: "/profiles",
-  nodes: "/nodes",
-  evolution: "/evolution",
-};
+const DEV_PAGES = devSettingsPages();
 
 export default function DevSettingsPage() {
   const { t } = useTranslation();
@@ -112,16 +84,15 @@ export default function DevSettingsPage() {
         className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3"
         data-testid="dev-settings-grid"
       >
-        {DEV_PAGE_KEYS.map((key) => {
-          const route = ROUTE_FOR_KEY[key];
-          const title = t(`devSettings.pages.${key}.title`);
-          const description = t(`devSettings.pages.${key}.description`);
+        {DEV_PAGES.map((page) => {
+          const title = t(`devSettings.pages.${page.id}.title`);
+          const description = t(`devSettings.pages.${page.id}.description`);
           return (
             <Link
-              key={key}
-              href={route as never}
+              key={page.id}
+              href={page.href}
               className="group block focus-visible:outline-none"
-              data-testid={`dev-settings-card-${key}`}
+              data-testid={`dev-settings-card-${page.id}`}
             >
               <Card
                 className={cn(
@@ -151,6 +122,3 @@ export default function DevSettingsPage() {
     </div>
   );
 }
-
-/** Exposed for the sidebar test, which asserts dev-mode parity. */
-export { DEV_PAGE_KEYS };
