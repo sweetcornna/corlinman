@@ -332,3 +332,68 @@ def test_late_refresh_ignores_ordinary_stalled_records(tmp_path: Path) -> None:
     after = _get(store, rid)
     assert after is not None
     assert after.state == "stalled"
+
+
+def test_version_match_defers_to_live_helper(tmp_path: Path) -> None:
+    """P1 (self-review): the new container boots BEFORE the docker helper
+    finishes health-checking it. A bare version match must NOT finalize
+    succeeded while the helper is alive — its later rollback verdict
+    would be lost forever (and its before_version would poison the
+    rollback slot). Park instead; mirror the late verdict on read."""
+    from corlinman_server.system.upgrader.finalizer import (
+        refresh_late_helper_verdict,
+    )
+
+    rid = _seed_running_upgrade(tmp_path, tag="v1.28.0", mode="docker")
+    _write_helper_status(
+        tmp_path,
+        {"request_id": str(uuid.UUID(rid)), "state": "running", "started_at": 1},
+    )
+
+    # Version ALREADY matches (the new container is running us) — but the
+    # helper hasn't delivered its verdict yet.
+    store = _reload_and_finalize(tmp_path, current_version="1.28.0")
+    parked = _get(store, rid)
+    assert parked is not None
+    assert parked.state == "stalled"
+    assert parked.error == "helper_still_running"
+
+    # The helper then rolls the upgrade back (healthcheck timeout).
+    _write_helper_status(
+        tmp_path,
+        {
+            "request_id": str(uuid.UUID(rid)),
+            "state": "failed",
+            "error": "healthcheck_timeout",
+            "rolled_back": True,
+            "finished_at": 9000,
+        },
+    )
+    asyncio.run(refresh_late_helper_verdict(store, rid))
+    final = _get(store, rid)
+    assert final is not None
+    assert final.state == "failed"
+    assert final.error == "healthcheck_timeout"
+    assert final.rolled_back is True
+
+
+def test_helper_success_with_version_match_finalizes_succeeded(
+    tmp_path: Path,
+) -> None:
+    rid = _seed_running_upgrade(tmp_path, tag="v1.28.0")
+    _write_helper_status(
+        tmp_path,
+        {
+            "request_id": str(uuid.UUID(rid)),
+            "state": "succeeded",
+            "finished_at": 2000,
+        },
+    )
+
+    store = _reload_and_finalize(tmp_path, current_version="1.28.0")
+
+    status = _get(store, rid)
+    assert status is not None
+    assert status.state == "succeeded"
+    assert status.version_verified is True
+    assert status.finished_at == 2000

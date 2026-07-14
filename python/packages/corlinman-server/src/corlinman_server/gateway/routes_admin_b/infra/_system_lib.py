@@ -526,7 +526,18 @@ async def _start_upgrader(
 
 
 async def _rollback_slot(upgrader: Any) -> str | None:
-    """``before_version`` of the most recent succeeded upgrade, if any.
+    """``before_version`` of the instant-restore slot, if one plausibly
+    exists.
+
+    The slot (docker: the kept ``corlinman-previous`` container) is only
+    minted by a SUCCEEDED upgrade and is consumed/cleared by any LATER
+    attempt (a failed upgrade auto-restores by renaming the slot back;
+    the next upgrade removes it up front). So the slot is only valid
+    when the NEWEST terminal record overall is that succeeded upgrade —
+    a newer failed/stalled/cancelled record means the slot is gone or
+    unknowable, and advertising it would hard-wire an instant swap that
+    can only die with ``rollback_slot_missing``. Advisory either way:
+    the helper re-verifies at execution time.
 
     Duck-typed store access (same convention as the status endpoint):
     both concrete upgraders hold the shared ``UpgradeStateStore`` as
@@ -542,19 +553,20 @@ async def _rollback_slot(upgrader: Any) -> str | None:
         statuses = await list_fn()
     except Exception:  # noqa: BLE001 — advisory data only
         return None
-    best: Any = None
+    newest: Any = None
     for status in statuses:
-        if getattr(status, "state", None) != "succeeded":
-            continue
-        before = getattr(status, "before_version", None)
-        if not isinstance(before, str) or not before:
-            continue
-        best_key = (getattr(best, "finished_at", None) or 0) if best else -1
-        if (getattr(status, "finished_at", None) or 0) >= best_key:
-            best = status
-    if best is None:
+        state = getattr(status, "state", None)
+        if state in ("queued", "running"):
+            continue  # in-flight — irrelevant to slot history
+        newest_key = (getattr(newest, "finished_at", None) or 0) if newest else -1
+        if (getattr(status, "finished_at", None) or 0) >= newest_key:
+            newest = status
+    if newest is None or getattr(newest, "state", None) != "succeeded":
         return None
-    return _strip_v(str(best.before_version))
+    before = getattr(newest, "before_version", None)
+    if not isinstance(before, str) or not before:
+        return None
+    return _strip_v(before)
 
 
 def _resolve_checker(state: AdminState) -> UpdateChecker | None:

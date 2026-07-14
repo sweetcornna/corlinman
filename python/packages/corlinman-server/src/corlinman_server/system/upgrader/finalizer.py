@@ -105,9 +105,35 @@ def _finalize_one(
     Returns the outcome label for logging.
     """
     target = _normalize(status.tag)
+    payload = _read_helper_status(data_dir, status.request_id)
 
-    # (1) Version assertion — the strongest possible signal.
-    if current and target and current == target:
+    # (0) Helper still mid-flight — park BEFORE the version assertion.
+    # The docker helper starts the new container and only then health-
+    # checks it, so this (new) gateway's boot always races the helper's
+    # verdict; a premature ``succeeded`` here would be terminal and a
+    # subsequent helper rollback (broken release, healthcheck timeout)
+    # would be silently lost — worse, its ``before_version`` would feed
+    # the rollback slot with the version that is actually running.
+    # Parked records are settled lazily by
+    # :func:`refresh_late_helper_verdict` on the next status read.
+    if payload is not None and str(payload.get("state")) in (
+        "queued",
+        "running",
+    ):
+        store.finalize_status_sync(
+            status.request_id,
+            state="stalled",
+            phase="stalled",
+            error="helper_still_running",
+            finished_at=status.finished_at or _now_ms(),
+        )
+        return "stalled_helper_alive"
+
+    # (1) Version assertion — the strongest signal once no helper is
+    # known to be mid-flight (no status file at all, or already terminal
+    # — the terminal-mirror branch below then takes precedence over a
+    # bare version match only for contradictions).
+    if payload is None and current and target and current == target:
         store.finalize_status_sync(
             status.request_id,
             state="succeeded",
@@ -119,10 +145,21 @@ def _finalize_one(
         return "succeeded_version_match"
 
     # (2) Mirror a terminal helper verdict.
-    payload = _read_helper_status(data_dir, status.request_id)
     if payload is not None:
         helper_state = str(payload.get("state") or "")
         if helper_state == "succeeded":
+            if current and target and current == target:
+                # Helper AND version agree — the strongest possible
+                # confirmation.
+                store.finalize_status_sync(
+                    status.request_id,
+                    state="succeeded",
+                    phase="done",
+                    error=None,
+                    version_verified=True,
+                    finished_at=_coerce_ms(payload.get("finished_at")),
+                )
+                return "succeeded_helper_and_version"
             # Helper claims success but the running version disagrees —
             # the swap didn't take (wrong image tag, stale venv, …).
             store.finalize_status_sync(
@@ -150,30 +187,17 @@ def _finalize_one(
             store.finalize_status_sync(status.request_id, **fields)
             return "failed_mirrored"
 
-    # (3) Inconclusive — helper may still be mid-flight (install.sh
-    # restarts the gateway *before* it writes its terminal status, and a
-    # health-fail rollback restarts it twice). Keep the legacy stall flip
-    # (single-flight must stay safe) but mark the live-helper case with a
-    # distinct error so the status route can lazily mirror the helper's
-    # LATE verdict via :func:`refresh_late_helper_verdict` — otherwise a
-    # rollback that finishes after this boot would never be recorded
-    # (Codex #122 review).
-    helper_alive = payload is not None and str(payload.get("state")) in (
-        "queued",
-        "running",
-    )
+    # (3) Inconclusive — no helper signal at all (or an unrecognized
+    # terminal state) and the version doesn't match. Legacy stall flip;
+    # live-helper parking happened in branch (0).
     store.finalize_status_sync(
         status.request_id,
         state="stalled",
         phase="stalled",
-        error=(
-            "helper_still_running"
-            if helper_alive
-            else "gateway_restarted_mid_upgrade"
-        ),
+        error="gateway_restarted_mid_upgrade",
         finished_at=status.finished_at or _now_ms(),
     )
-    return "stalled_helper_alive" if helper_alive else "stalled"
+    return "stalled"
 
 
 def _coerce_ms(raw: object) -> int:
