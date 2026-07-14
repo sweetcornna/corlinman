@@ -82,6 +82,9 @@ class SystemInfoResponse(BaseModel):
     published_at: int | None = None
     last_checked_at: int
     prerelease_seen: list[str] = []
+    # Additive (v1.28): recent release history for the rollback picker —
+    # ``[{"tag", "published_at", "prerelease"}]``, newest first.
+    recent_releases: list[dict[str, Any]] = []
 
 
 class UpgradeCommandsResponse(BaseModel):
@@ -111,11 +114,13 @@ class UpgradeStartBody(BaseModel):
     """
 
     tag: str = Field(..., description="Target release tag, e.g. ``v1.2.1``.")
-    typed_confirmation: str = Field(
-        ...,
+    typed_confirmation: str | None = Field(
+        None,
         description=(
-            "Must equal ``tag`` exactly — the user-friction gate "
-            "preventing accidental upgrades."
+            "OPTIONAL since v1.28 (the UI moved to a one-click confirm "
+            "dialog, sub2api-style; the audit log records who clicked). "
+            "When present it must still equal ``tag`` exactly — kept for "
+            "older clients/scripts that relied on the typed gate."
         ),
     )
     allow_downgrade: bool = Field(
@@ -152,6 +157,50 @@ class UpgradeStatusResponse(BaseModel):
     finished_at: int | None = None
     log_excerpt: str = ""
     error: str | None = None
+    # Additive (v1.28) — restart-window / rollback context. ``target_tag``
+    # is the normalized (no leading ``v``) form of ``tag`` so the UI can
+    # compare it against ``/health``'s ``version`` verbatim. The three
+    # booleans are tri-state: ``None`` = unknown (legacy records).
+    target_tag: str | None = None
+    before_version: str | None = None
+    version_verified: bool | None = None
+    rolled_back: bool | None = None
+
+
+class RollbackVersionEntry(BaseModel):
+    """One candidate in the rollback picker."""
+
+    tag: str
+    published_at: int | None = None
+    prerelease: bool = False
+    # ``True`` when this tag matches the kept previous version (docker:
+    # the ``corlinman-previous`` container) — restoring it needs no
+    # download. Advisory: the helper re-verifies the slot exists.
+    instant: bool = False
+
+
+class RollbackVersionsResponse(BaseModel):
+    """``GET /admin/system/rollback-versions`` payload."""
+
+    current: str
+    versions: list[RollbackVersionEntry] = []
+
+
+class RollbackStartBody(BaseModel):
+    """``POST /admin/system/rollback`` body.
+
+    ``tag`` omitted/None = roll back to the version the last successful
+    upgrade replaced (the instant slot when available).
+    """
+
+    tag: str | None = None
+
+
+class UpgradeCancelResponse(BaseModel):
+    """``POST /admin/system/upgrade/{id}/cancel`` payload."""
+
+    request_id: str
+    state: str = "cancelled"
 
 
 class AuditEntryResponse(BaseModel):
@@ -193,6 +242,12 @@ def _status_to_response(status: UpdateStatus) -> SystemInfoResponse:
         published_at=status.published_at,
         last_checked_at=status.last_checked_at,
         prerelease_seen=list(status.prerelease_seen),
+        # getattr: tolerate duck-typed checker doubles predating the field.
+        recent_releases=[
+            dict(entry)
+            for entry in (getattr(status, "recent_releases", None) or [])
+            if isinstance(entry, dict)
+        ],
     )
 
 
@@ -291,16 +346,29 @@ def _upgrade_status_to_response(status: Any, *, fallback_tag: str = "") -> Upgra
     additive field doesn't crash this serialiser, and so duck-typed
     test doubles can omit optional fields cleanly.
     """
+    tag = str(getattr(status, "tag", fallback_tag) or fallback_tag)
     return UpgradeStatusResponse(
         request_id=str(getattr(status, "request_id", "")),
-        tag=str(getattr(status, "tag", fallback_tag) or fallback_tag),
+        tag=tag,
         state=str(getattr(status, "state", "unknown")),
         phase=_as_optional_str(getattr(status, "phase", None)),
         started_at=_as_optional_int(getattr(status, "started_at", None)),
         finished_at=_as_optional_int(getattr(status, "finished_at", None)),
         log_excerpt=str(getattr(status, "log_excerpt", "") or ""),
         error=_as_optional_str(getattr(status, "error", None)),
+        target_tag=_strip_v(tag) if tag else None,
+        before_version=_as_optional_str(
+            getattr(status, "before_version", None)
+        ),
+        version_verified=_as_optional_bool(
+            getattr(status, "version_verified", None)
+        ),
+        rolled_back=_as_optional_bool(getattr(status, "rolled_back", None)),
     )
+
+
+def _as_optional_bool(raw: Any) -> bool | None:
+    return raw if isinstance(raw, bool) else None
 
 
 def _as_optional_str(raw: Any) -> str | None:
@@ -435,6 +503,58 @@ def _upgrade_commands(status: UpdateStatus) -> UpgradeCommandsResponse:
     return UpgradeCommandsResponse(
         native=native, docker=docker, docker_with_qq=docker_with_qq
     )
+
+
+async def _start_upgrader(
+    upgrader: Any,
+    tag: str,
+    actor: str,
+    *,
+    allow_downgrade: bool = False,
+    action: str = "upgrade",
+) -> Any:
+    """Call ``upgrader.start`` with the v1.28 kwargs, degrading to the
+    legacy positional signature for older impls / test doubles (which
+    predate ``allow_downgrade``/``action`` — they also predate rollback,
+    so nothing is lost on that path)."""
+    try:
+        return await upgrader.start(
+            tag, actor, allow_downgrade=allow_downgrade, action=action
+        )
+    except TypeError:
+        return await upgrader.start(tag, actor)
+
+
+async def _rollback_slot(upgrader: Any) -> str | None:
+    """``before_version`` of the most recent succeeded upgrade, if any.
+
+    Duck-typed store access (same convention as the status endpoint):
+    both concrete upgraders hold the shared ``UpgradeStateStore`` as
+    ``self._store``. Returns ``None`` when unavailable.
+    """
+    store = getattr(upgrader, "_store", None) or getattr(
+        upgrader, "store", None
+    )
+    list_fn = getattr(store, "list_statuses", None)
+    if not callable(list_fn):
+        return None
+    try:
+        statuses = await list_fn()
+    except Exception:  # noqa: BLE001 — advisory data only
+        return None
+    best: Any = None
+    for status in statuses:
+        if getattr(status, "state", None) != "succeeded":
+            continue
+        before = getattr(status, "before_version", None)
+        if not isinstance(before, str) or not before:
+            continue
+        best_key = (getattr(best, "finished_at", None) or 0) if best else -1
+        if (getattr(status, "finished_at", None) or 0) >= best_key:
+            best = status
+    if best is None:
+        return None
+    return _strip_v(str(best.before_version))
 
 
 def _resolve_checker(state: AdminState) -> UpdateChecker | None:

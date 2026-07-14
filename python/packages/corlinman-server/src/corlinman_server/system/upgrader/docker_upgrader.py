@@ -129,6 +129,8 @@ class DockerUpgrader:
        no safe abort.
     """
 
+    mode = "docker"
+
     def __init__(
         self,
         *,

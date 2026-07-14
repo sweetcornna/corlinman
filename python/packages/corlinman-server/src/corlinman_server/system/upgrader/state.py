@@ -405,6 +405,19 @@ class UpgradeStateStore:
                 return None
             return UpgradeStatus(**asdict(current))
 
+    async def list_statuses(self) -> list[UpgradeStatus]:
+        """Snapshot of every tracked status (copies, unordered).
+
+        Consumers sort by ``finished_at``/``started_at`` as needed — the
+        rollback route uses this to find the most recent succeeded
+        upgrade's ``before_version``.
+        """
+        async with self._lock:
+            return [
+                UpgradeStatus(**asdict(status))
+                for status in self._statuses.values()
+            ]
+
     async def current_in_flight(self) -> UpgradeStatus | None:
         """Return any status with state in ``{queued, running}``.
 
