@@ -110,11 +110,12 @@ export const FIXTURE_TURN_EVENTS = [
     sequence: 2,
     timestamp_ms: 1_700_000_000_100,
     event_type: "BlockStart",
+    // The timeline reducer (lib/sessions/store.ts) keys parts by
+    // `block_id` and branches on `block_kind` — see BlockStartPayload.
     payload: {
-      index: 0,
-      block_type: "tool_use",
+      block_id: "call_smoke",
+      block_kind: "tool_use",
       tool_name: "bash",
-      tool_call_id: "call_smoke",
     },
   },
   {
@@ -123,9 +124,8 @@ export const FIXTURE_TURN_EVENTS = [
     timestamp_ms: 1_700_000_000_200,
     event_type: "ToolStateCompleted",
     payload: {
-      tool_call_id: "call_smoke",
-      result_summary: "ok",
-      elapsed_ms: 100,
+      block_id: "call_smoke",
+      output: "ok",
       is_error: false,
     },
   },

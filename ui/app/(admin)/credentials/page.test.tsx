@@ -1,33 +1,23 @@
 /**
- * /credentials page tests (Wave 2.3).
+ * /credentials redirect-stub tests (PR4 model-hub consolidation).
  *
- * Coverage:
- *   1. Mount → listCredentials() runs → providers + count summary render.
- *   2. Search filters by provider name.
- *   3. Add flow: click Add on an unset row → enter value → Save → PUT
- *      fires → toast shown.
- *   4. Delete flow: click delete on a set row → confirm dialog opens →
- *      Confirm → DELETE fires → toast shown.
- *
- * The `@/lib/api` module is mocked so we don't go through the real
- * apiFetch wrapper and so we can drive mutation lifecycle deterministically.
+ * The credentials manager moved to `/models` (OAuth panel on the providers
+ * tab, raw credential fields on the advanced tab); this page only replaces
+ * the URL on mount and renders a fallback link. The old behavior suite
+ * moved with the code:
+ *   - components/model-hub/__tests__/credentials-advanced.test.tsx
  */
 
 import * as React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  cleanup,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-} from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { cleanup, render, screen } from "@testing-library/react";
+
+const { replaceMock } = vi.hoisted(() => ({ replaceMock: vi.fn() }));
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({
     push: vi.fn(),
-    replace: vi.fn(),
+    replace: replaceMock,
     refresh: vi.fn(),
     back: vi.fn(),
     forward: vi.fn(),
@@ -38,295 +28,25 @@ vi.mock("next/navigation", () => ({
   useParams: () => ({}),
 }));
 
-vi.mock("@/lib/api", async () => {
-  const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
-  return {
-    ...actual,
-    listCredentials: vi.fn(),
-    setCredential: vi.fn(),
-    deleteCredential: vi.fn(),
-    setProviderEnabled: vi.fn(),
-  };
-});
-
-vi.mock("@/app/(admin)/providers/page", () => ({
-  ProvidersAdminContent: ({
-    onCustomProvidersChanged,
-  }: {
-    onCustomProvidersChanged?: () => void;
-  }) => (
-    <button
-      type="button"
-      data-testid="mock-custom-provider-created"
-      onClick={() => onCustomProvidersChanged?.()}
-    >
-      create custom provider
-    </button>
-  ),
-}));
-
-const { toastSuccess, toastError, toastMessage } = vi.hoisted(() => ({
-  toastSuccess: vi.fn(),
-  toastError: vi.fn(),
-  toastMessage: vi.fn(),
-}));
-vi.mock("sonner", () => ({
-  toast: {
-    success: toastSuccess,
-    error: toastError,
-    message: toastMessage,
-  },
-}));
-
-import {
-  listCredentials,
-  setCredential,
-  deleteCredential,
-  setProviderEnabled,
-  type CredentialsListResponse,
-} from "@/lib/api";
 import CredentialsPage from "./page";
 
-const mockedList = vi.mocked(listCredentials);
-const mockedSet = vi.mocked(setCredential);
-const mockedDelete = vi.mocked(deleteCredential);
-const mockedEnable = vi.mocked(setProviderEnabled);
-
-const LIST_PAYLOAD: CredentialsListResponse = {
-  providers: [
-    {
-      name: "openai",
-      kind: "openai",
-      enabled: true,
-      fields: [
-        {
-          key: "api_key",
-          set: true,
-          preview: "…xyz9",
-          env_ref: "OPENAI_API_KEY",
-        },
-        {
-          key: "base_url",
-          set: false,
-          preview: null,
-          env_ref: "OPENAI_BASE_URL",
-        },
-        {
-          key: "org_id",
-          set: false,
-          preview: null,
-          env_ref: "OPENAI_ORG_ID",
-        },
-      ],
-    },
-    {
-      name: "anthropic",
-      kind: "anthropic",
-      enabled: false,
-      fields: [
-        {
-          key: "api_key",
-          set: false,
-          preview: null,
-          env_ref: "ANTHROPIC_API_KEY",
-        },
-        {
-          key: "base_url",
-          set: false,
-          preview: null,
-          env_ref: "ANTHROPIC_BASE_URL",
-        },
-      ],
-    },
-  ],
-};
-
-const CUSTOM_PROVIDER_PAYLOAD: CredentialsListResponse = {
-  providers: [
-    ...LIST_PAYLOAD.providers,
-    {
-      name: "fish_audio",
-      kind: "openai_compatible",
-      enabled: true,
-      fields: [
-        {
-          key: "api_key",
-          set: false,
-          preview: null,
-          env_ref: null,
-        },
-        {
-          key: "base_url",
-          set: true,
-          preview: "…udio",
-          env_ref: null,
-        },
-        {
-          key: "kind",
-          set: true,
-          preview: "…ible",
-          env_ref: null,
-        },
-      ],
-    },
-  ],
-};
-
-function renderPage() {
-  const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-  });
-  return render(
-    <QueryClientProvider client={qc}>
-      <CredentialsPage />
-    </QueryClientProvider>,
-  );
-}
-
-describe("CredentialsPage", () => {
+describe("CredentialsPage (redirect stub)", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
-    toastSuccess.mockReset();
-    toastError.mockReset();
-    toastMessage.mockReset();
-    mockedList.mockResolvedValue(LIST_PAYLOAD);
-    mockedSet.mockResolvedValue({ status: "ok" });
-    mockedDelete.mockResolvedValue(undefined);
-    mockedEnable.mockResolvedValue({ status: "ok" });
+    replaceMock.mockClear();
   });
 
   afterEach(() => {
     cleanup();
   });
 
-  it("lists providers + summarises configured count", async () => {
-    renderPage();
-
-    expect(
-      await screen.findByTestId("credentials-provider-openai"),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByTestId("credentials-provider-anthropic"),
-    ).toBeInTheDocument();
-
-    // Summary reads "2 个 provider（已配置 1 个）" — openai is configured,
-    // anthropic is not.
-    const summary = screen.getByTestId("credentials-count-summary");
-    expect(summary).toHaveTextContent("2");
-    expect(summary).toHaveTextContent("1");
+  it("replaces the URL with /models?tab=providers on mount", () => {
+    render(<CredentialsPage />);
+    expect(replaceMock).toHaveBeenCalledWith("/models?tab=providers");
   });
 
-  it("search filters by provider name", async () => {
-    renderPage();
-
-    await screen.findByTestId("credentials-provider-openai");
-
-    const searchBox = screen.getByTestId("credentials-search");
-    fireEvent.change(searchBox, { target: { value: "anthropic" } });
-
-    await waitFor(() => {
-      expect(
-        screen.queryByTestId("credentials-provider-openai"),
-      ).not.toBeInTheDocument();
-    });
-    expect(
-      screen.getByTestId("credentials-provider-anthropic"),
-    ).toBeInTheDocument();
-  });
-
-  it("Add → Save calls setCredential and emits a success toast", async () => {
-    renderPage();
-
-    await screen.findByTestId("credentials-provider-anthropic");
-
-    // Anthropic is unconfigured + disabled, so its card renders collapsed
-    // by default (hermes-EnvPage scannability UX). Expand it before the
-    // per-field Add control is reachable.
-    fireEvent.click(
-      screen.getByTestId("credentials-provider-anthropic-toggle-expand"),
-    );
-
-    fireEvent.click(screen.getByTestId("cred-anthropic-api_key-add"));
-    const input = screen.getByTestId(
-      "cred-anthropic-api_key-input",
-    ) as HTMLInputElement;
-    fireEvent.paste(input, {
-      clipboardData: { getData: () => "sk-ant-newvalue" },
-    });
-    fireEvent.click(screen.getByTestId("cred-anthropic-api_key-save"));
-
-    await waitFor(() => {
-      expect(mockedSet).toHaveBeenCalledWith(
-        "anthropic",
-        "api_key",
-        "sk-ant-newvalue",
-      );
-    });
-    await waitFor(() => {
-      expect(toastSuccess).toHaveBeenCalled();
-    });
-  });
-
-  it("delete flow: click trash → confirm dialog → confirm fires DELETE", async () => {
-    renderPage();
-
-    await screen.findByTestId("credentials-provider-openai");
-
-    fireEvent.click(screen.getByTestId("cred-openai-api_key-delete"));
-    // Confirmation dialog opens.
-    expect(
-      await screen.findByTestId("credentials-delete-dialog"),
-    ).toBeInTheDocument();
-
-    fireEvent.click(screen.getByTestId("credentials-delete-confirm"));
-
-    await waitFor(() => {
-      expect(mockedDelete).toHaveBeenCalledWith("openai", "api_key");
-    });
-    await waitFor(() => {
-      expect(toastSuccess).toHaveBeenCalled();
-    });
-  });
-
-  it("toggling the show-empty switch hides unconfigured providers", async () => {
-    renderPage();
-
-    await screen.findByTestId("credentials-provider-openai");
-    // Anthropic is unconfigured — visible by default.
-    expect(
-      screen.getByTestId("credentials-provider-anthropic"),
-    ).toBeInTheDocument();
-
-    fireEvent.click(screen.getByTestId("credentials-show-empty"));
-
-    await waitFor(() => {
-      expect(
-        screen.queryByTestId("credentials-provider-anthropic"),
-      ).not.toBeInTheDocument();
-    });
-    // Openai (configured) stays visible.
-    expect(
-      screen.getByTestId("credentials-provider-openai"),
-    ).toBeInTheDocument();
-  });
-
-  it("refreshes credential cards when the inline custom-provider section changes", async () => {
-    mockedList
-      .mockResolvedValueOnce(LIST_PAYLOAD)
-      .mockResolvedValueOnce(CUSTOM_PROVIDER_PAYLOAD);
-
-    renderPage();
-
-    await screen.findByTestId("credentials-provider-openai");
-    expect(
-      screen.queryByTestId("credentials-provider-fish_audio"),
-    ).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByTestId("mock-custom-provider-created"));
-
-    expect(
-      await screen.findByTestId("credentials-provider-fish_audio"),
-    ).toBeInTheDocument();
-    expect(mockedList).toHaveBeenCalledTimes(2);
+  it("renders a fallback link to the canonical page", () => {
+    render(<CredentialsPage />);
+    const link = screen.getByTestId("credentials-moved-link");
+    expect(link).toHaveAttribute("href", "/models?tab=providers");
   });
 });

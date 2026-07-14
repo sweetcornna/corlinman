@@ -458,7 +458,7 @@ export const zhCN = {
     schedulerQzone: "QZone 发布",
     approvals: "审批",
     evolution: "演化",
-    models: "模型",
+    models: "模型与密钥",
     persona: "Persona",
     providers: "Providers",
     credentials: "凭证",
@@ -1581,6 +1581,46 @@ export const zhCN = {
       success: "连接正常",
       fail: "连接失败",
       testing: "测试中…",
+    },
+    // W-B2 自定义 provider 区块（PR4 model-hub 整合时 i18n 化）
+    custom: {
+      title: "自定义 Provider",
+      subtitle:
+        "通过 /admin/providers/custom 注册的自定义 provider。传输类型（transport kind）决定用哪种内置协议（OpenAI 兼容、Anthropic 等）承载请求。",
+      add: "添加自定义 provider",
+      loadFailed: "加载失败: {{msg}}",
+      emptyTitle: "尚无自定义 provider。",
+      emptyHint:
+        "点击「添加自定义 provider」，用你选择的 slug 注册一个 OpenAI 兼容端点或其他受支持的传输类型。",
+      colSlug: "Slug",
+      colKind: "类型",
+      colBaseUrl: "Base URL",
+      colKey: "API key",
+      keySet: "已设置",
+      keyUnset: "未设置",
+      deleteAria: "删除 {{slug}}",
+      deleteTitle: "删除 {{slug}}？",
+      deleteBody:
+        "这会从 config.toml 中移除 [providers.{{slug}}] 配置块，且无法撤销。",
+      deleteSuccess: "自定义 provider「{{slug}}」已删除",
+      deleteFailed: "删除失败: {{msg}}",
+    },
+  },
+
+  // PR4 model-hub 整合 —— /models 成为承载「接入 / 路由 / 高级」三个
+  // 标签页的规范页面；/providers 与 /credentials 变为跳转占位页。
+  modelHub: {
+    title: "模型与密钥",
+    subtitle: "在一个页面完成 provider 接入、密钥管理与模型路由。",
+    moved: "此页面已并入「模型与密钥」",
+    tabs: {
+      providers: "接入",
+      routing: "路由",
+      advanced: "高级",
+    },
+    advanced: {
+      warning:
+        "在这里保存的 key 不会自动注册 Provider，也不会让模型可用——请使用「接入」标签页完成配置。",
     },
   },
 

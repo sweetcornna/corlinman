@@ -3,15 +3,17 @@
  *
  * Stubs-only smoke test that drives every "basically unusable" admin
  * surface so a deploy doesn't regress the contracts between UI and
- * gateway. The plan calls out six pages plus the per-turn drill-down:
+ * gateway. Covered pages (page routes live at the root — the `/admin/*`
+ * prefix belongs to the API only):
  *
- *   /admin/sessions                                  — list
- *   /admin/sessions/{key}                            — detail (timeline)
- *   /admin/sessions/{key}/turns/{turn_id}            — drill-down replay
- *   /admin/logs                                      — log stream
- *   /admin/providers                                 — provider table
- *   /admin/credentials                               — credentials manager
- *   /admin/models                                    — alias editor
+ *   /sessions                                — list
+ *   /sessions/detail?key=…                   — detail (timeline)
+ *   /sessions/turn?key=…&turn=…              — drill-down replay
+ *   /logs                                    — log stream
+ *   /models                                  — Models & Keys hub (PR4:
+ *                                              providers + routing +
+ *                                              advanced credentials tabs)
+ *   /providers, /credentials                 — redirect stubs → /models
  *
  * Each test follows the same shape:
  *
@@ -394,6 +396,24 @@ async function installModelsStubs(page: Page): Promise<void> {
   });
 }
 
+/**
+ * Combined stub set for the `/models` Models & Keys hub (PR4). The hub
+ * mounts one tab at a time, but a single spec walks all three, so every
+ * query family the tabs fire must be stubbed up front: providers list +
+ * custom providers + provider test/kinds (providers tab), models/aliases
+ * (routing tab + editor dialog), credentials + reveal (advanced tab), and
+ * oauth status (the OAuth panel under the providers tab).
+ *
+ * Route-registration order matters: Playwright resolves most-recently-
+ * registered first, so the models stubs go last to claim their specific
+ * URLs ahead of the glob catch-all over the admin/providers prefix.
+ */
+async function stubModelHub(page: Page): Promise<void> {
+  await installProvidersStubs(page);
+  await installCredentialsStubs(page);
+  await installModelsStubs(page);
+}
+
 /** Shared layout queries mounted outside the page under test. */
 async function installAdminLayoutStubs(page: Page): Promise<void> {
   await page.route("**/admin/system/info*", async (route: Route) => {
@@ -457,7 +477,7 @@ test.describe("admin pages smoke — stubs only", () => {
     const verify = attachStrictListeners(page);
     await installSessionsListStubs(page);
 
-    await page.goto("/admin/sessions");
+    await page.goto("/sessions");
 
     // Header button.
     await expect(page.getByTestId("sessions-clear-all")).toBeVisible();
@@ -479,7 +499,7 @@ test.describe("admin pages smoke — stubs only", () => {
     await installSessionDetailStubs(page);
     await installSessionsListStubs(page);
 
-    await page.goto(`/admin/sessions/detail?key=${encodeURIComponent(SESSION_KEY)}`);
+    await page.goto(`/sessions/detail?key=${encodeURIComponent(SESSION_KEY)}`);
 
     // Past-turns pill row — W1.2 + W2.3 wiring.
     const pills = page.getByTestId("past-turns-pills");
@@ -510,7 +530,7 @@ test.describe("admin pages smoke — stubs only", () => {
     await installTurnDrilldownStubs(page);
 
     await page.goto(
-      `/admin/sessions/turn?key=${encodeURIComponent(SESSION_KEY)}&turn=${encodeURIComponent(TURN_ID)}`,
+      `/sessions/turn?key=${encodeURIComponent(SESSION_KEY)}&turn=${encodeURIComponent(TURN_ID)}`,
     );
 
     await expect(page.getByTestId("turn-summary-card")).toBeVisible({
@@ -527,7 +547,7 @@ test.describe("admin pages smoke — stubs only", () => {
     const verify = attachStrictListeners(page);
     await installLogsStubs(page);
 
-    await page.goto("/admin/logs");
+    await page.goto("/logs");
 
     // The log pane is the `role="log"` region with an aria-label —
     // a stable anchor across visual redesigns.
@@ -540,15 +560,17 @@ test.describe("admin pages smoke — stubs only", () => {
     verify();
   });
 
-  test("providers list renders row + test-connection toast on click", async ({
+  test("models hub hosts providers, advanced credentials, and routing tabs", async ({
     page,
   }) => {
-    test.setTimeout(TEST_TIMEOUT_MS);
+    // Walks all three tabs — allow a little more than the single-page cap.
+    test.setTimeout(30_000);
     const verify = attachStrictListeners(page);
-    await installProvidersStubs(page);
+    await stubModelHub(page);
 
-    await page.goto("/admin/providers");
+    await page.goto("/models");
 
+    // --- providers tab (default) — table row + test connection + panels.
     const row = page.getByTestId("provider-row-openai");
     await expect(row).toBeVisible({ timeout: 10_000 });
 
@@ -563,20 +585,19 @@ test.describe("admin pages smoke — stubs only", () => {
     await expect(testBtn).toHaveAttribute("data-test-state", "success", {
       timeout: 10_000,
     });
-    verify();
-  });
 
-  test("credentials page renders provider group + reveal cleartext", async ({
-    page,
-  }) => {
-    test.setTimeout(TEST_TIMEOUT_MS);
-    const verify = attachStrictListeners(page);
-    await installCredentialsStubs(page);
+    // Custom providers section + OAuth panel render below the table.
+    await expect(page.getByTestId("custom-providers-add-btn")).toBeVisible();
+    await expect(page.getByTestId("oauth-panel")).toBeVisible();
 
-    await page.goto("/admin/credentials");
-
+    // --- advanced tab — credential group card + reveal cleartext.
+    await page.getByTestId("model-hub-tab-advanced").click();
+    await expect(page).toHaveURL(/\/models\?tab=advanced/);
     const card = page.getByTestId("credentials-provider-openai");
     await expect(card).toBeVisible({ timeout: 10_000 });
+    await expect(
+      page.getByTestId("credentials-advanced-warning"),
+    ).toBeVisible();
 
     // The eye-icon reveal hits W2.1's
     // `GET /admin/credentials/openai/api_key/reveal`. Click → cleartext
@@ -587,23 +608,47 @@ test.describe("admin pages smoke — stubs only", () => {
     const cleartext = page.getByTestId("cred-openai-api_key-preview-cleartext");
     await expect(cleartext).toBeVisible({ timeout: 10_000 });
     await expect(cleartext).toHaveText(REVEAL_VALUE);
-    verify();
-  });
 
-  test("models page renders alias picker and opens it on click", async ({
-    page,
-  }) => {
-    test.setTimeout(TEST_TIMEOUT_MS);
-    const verify = attachStrictListeners(page);
-    await installModelsStubs(page);
-
-    await page.goto("/admin/models");
-
-    // The "Change model…" toolbar button opens ModelPickerDialog.
+    // --- routing tab — the "Change model…" toolbar button opens
+    // ModelPickerDialog.
+    await page.getByTestId("model-hub-tab-routing").click();
+    await expect(page).toHaveURL(/\/models\?tab=routing/);
     const pick = page.getByTestId("models-pick-btn");
     await expect(pick).toBeVisible({ timeout: 10_000 });
     await pick.click();
     await expect(page.getByTestId("model-picker-dialog")).toBeVisible();
+    verify();
+  });
+
+  test("/providers redirects to the models hub providers tab", async ({
+    page,
+  }) => {
+    test.setTimeout(TEST_TIMEOUT_MS);
+    const verify = attachStrictListeners(page);
+    await stubModelHub(page);
+
+    await page.goto("/providers");
+
+    await page.waitForURL("**/models?tab=providers");
+    await expect(page.getByTestId("provider-row-openai")).toBeVisible({
+      timeout: 10_000,
+    });
+    verify();
+  });
+
+  test("/credentials redirects to the models hub providers tab", async ({
+    page,
+  }) => {
+    test.setTimeout(TEST_TIMEOUT_MS);
+    const verify = attachStrictListeners(page);
+    await stubModelHub(page);
+
+    await page.goto("/credentials");
+
+    await page.waitForURL("**/models?tab=providers");
+    await expect(page.getByTestId("oauth-panel")).toBeVisible({
+      timeout: 10_000,
+    });
     verify();
   });
 

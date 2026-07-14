@@ -475,7 +475,7 @@ export const en = {
     schedulerQzone: "QZone publishing",
     approvals: "Approvals",
     evolution: "Evolution",
-    models: "Models",
+    models: "Models & Keys",
     persona: "Persona",
     providers: "Providers",
     credentials: "Credentials",
@@ -1619,6 +1619,47 @@ export const en = {
       success: "Connected",
       fail: "Failed",
       testing: "Testing…",
+    },
+    // W-B2 custom providers section (i18n-ified in the PR4 model-hub merge)
+    custom: {
+      title: "Custom providers",
+      subtitle:
+        "Operator-defined providers registered via /admin/providers/custom. The transport kind picks which built-in protocol (OpenAI-compatible, Anthropic, etc.) ferries the requests.",
+      add: "Add custom provider",
+      loadFailed: "Load failed: {{msg}}",
+      emptyTitle: "No custom providers yet.",
+      emptyHint:
+        'Click "Add custom provider" to register an OpenAI-compatible endpoint or any other supported transport against a slug of your choice.',
+      colSlug: "Slug",
+      colKind: "Kind",
+      colBaseUrl: "Base URL",
+      colKey: "API key",
+      keySet: "set",
+      keyUnset: "unset",
+      deleteAria: "Delete {{slug}}",
+      deleteTitle: "Delete {{slug}}?",
+      deleteBody:
+        "This removes the [providers.{{slug}}] block from config.toml and cannot be undone.",
+      deleteSuccess: 'Custom provider "{{slug}}" deleted',
+      deleteFailed: "Delete failed: {{msg}}",
+    },
+  },
+
+  // PR4 model-hub consolidation — /models is the canonical page hosting the
+  // providers / routing / advanced tabs; /providers and /credentials are
+  // redirect stubs.
+  modelHub: {
+    title: "Models & Keys",
+    subtitle: "Connect providers, manage keys, and route model aliases in one place.",
+    moved: "This page moved to Models & Keys",
+    tabs: {
+      providers: "Providers & Keys",
+      routing: "Model routing",
+      advanced: "Advanced credentials",
+    },
+    advanced: {
+      warning:
+        "Keys saved here don't register a provider or make models routable — use the Providers tab for that.",
     },
   },
 
