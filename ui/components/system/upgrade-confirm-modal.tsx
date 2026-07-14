@@ -55,14 +55,32 @@ interface InFlightInfo {
 }
 
 function parseInFlight(err: CorlinmanApiError): InFlightInfo | null {
-  // The 409 body shape: { detail?, in_flight: { request_id, tag, state } }.
+  // The backend 409 body is FLAT (`_upgrade_error` in _system_lib.py):
+  //   { error, message, request_id, in_flight_tag, in_flight_state }
   // `CorlinmanApiError` stores the raw response body in `err.message` —
-  // try to JSON-parse it; tolerate failure (some backends return plain text).
+  // JSON-parse it; tolerate plain-text bodies. A nested { in_flight }
+  // shape is accepted too for forward-compat. (The flat shape was
+  // previously ignored, so the "already running" alert never rendered —
+  // self-review P2.)
   try {
     const parsed: unknown = JSON.parse(err.message);
     if (parsed && typeof parsed === "object") {
-      const inflight = (parsed as { in_flight?: InFlightInfo }).in_flight;
-      if (inflight && typeof inflight === "object") return inflight;
+      const flat = parsed as {
+        request_id?: string;
+        in_flight_tag?: string;
+        in_flight_state?: string;
+        in_flight?: InFlightInfo;
+      };
+      if (flat.in_flight && typeof flat.in_flight === "object") {
+        return flat.in_flight;
+      }
+      if (flat.request_id || flat.in_flight_tag || flat.in_flight_state) {
+        return {
+          request_id: flat.request_id,
+          tag: flat.in_flight_tag,
+          state: flat.in_flight_state,
+        };
+      }
     }
   } catch {
     /* not JSON — fall through to null */
@@ -103,7 +121,9 @@ export function UpgradeConfirmModal({
       onOpenChange(false);
     } catch (err) {
       if (err instanceof CorlinmanApiError && err.status === 409) {
-        setInFlight(parseInFlight(err));
+        // Never silent: even an unparseable 409 body renders the
+        // "already running" alert (with an unknown tag).
+        setInFlight(parseInFlight(err) ?? {});
       } else if (
         err instanceof CorlinmanApiError &&
         err.status === 503 &&

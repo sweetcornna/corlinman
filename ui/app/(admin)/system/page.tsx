@@ -115,7 +115,12 @@ export default function SystemPage() {
     deepLinkUpgradeId,
   );
   React.useEffect(() => {
-    setActiveUpgradeId(deepLinkUpgradeId);
+    // Only sync REAL deep links into state. onTerminal clears the URL
+    // (router.replace("/system")) purely to stop driving it — syncing
+    // the resulting null back would unmount <UpgradeProgress> in the
+    // same tick a failure banner appears, leaving the user with no
+    // error, no log, nothing (self-review P2).
+    if (deepLinkUpgradeId) setActiveUpgradeId(deepLinkUpgradeId);
   }, [deepLinkUpgradeId]);
 
   // Target tag of the ACTIVE request (upgrade → latest; rollback → the
