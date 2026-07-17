@@ -298,6 +298,27 @@ class _SqliteStore:
                 )
             await self._conn.commit()
 
+    async def rename_namespace_prefix(self, old: str, new: str) -> int:
+        """Move ``old`` and every ``old/…`` namespace to ``new`` in the
+        three namespace-carrying tables. Returns moved chunk count."""
+        escaped = (
+            old.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        )
+        like = f"{escaped}/%"
+        moved = 0
+        async with self._lock:
+            for table in ("chunks", "memory_host_docs", "memory_host_links"):
+                cur = await self._conn.execute(
+                    f"UPDATE {table} SET namespace ="
+                    " ? || substr(namespace, ?)"
+                    " WHERE namespace = ? OR namespace LIKE ? ESCAPE '\\'",
+                    (new, len(old) + 1, old, like),
+                )
+                if table == "chunks":
+                    moved = cur.rowcount
+            await self._conn.commit()
+        return moved
+
     async def query_chunks_by_ids(self, ids: list[int]) -> list[_ChunkRow]:
         if not ids:
             return []
@@ -942,6 +963,27 @@ class LocalSqliteHost(MemoryHost):
         await self._ensure_metadata_schema()
         await self._upsert_metadata(chunk_id, namespace, doc.metadata)
         return str(chunk_id)
+
+    async def rename_namespace_prefix(self, old: str, new: str) -> int:
+        """Re-home every namespace under ``old`` to ``new`` (identity merge).
+
+        Matches the exact namespace and any ``old/…`` descendant; updates
+        ``chunks`` plus the two metadata tables so scoped recall and the
+        graph indexes stay consistent. Returns the number of chunk rows
+        moved. Not part of the :class:`MemoryHost` ABC — callers probe
+        via ``hasattr`` (same convention as ``recent``).
+        """
+        old = old.rstrip("/")
+        new = new.rstrip("/")
+        if not old or not new or old == new:
+            return 0
+        await self._ensure_metadata_schema()
+        try:
+            return await self._store.rename_namespace_prefix(old, new)
+        except aiosqlite.Error as exc:
+            raise MemoryHostError(
+                f"LocalSqliteHost: rename namespace prefix: {exc}"
+            ) from exc
 
     async def delete(self, doc_id: str) -> None:
         try:

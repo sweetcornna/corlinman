@@ -539,6 +539,17 @@ query_chars  = 500
 [memory.kernel]
 mode = "shadow"
 
+# [memory.scope] — per-user memory scoping (privacy fix, default ON).
+# Durable notes live under facts/{tenant}/{user}/{persona}, keyed by the
+# cross-channel identity resolver, so the same human on QQ and Telegram
+# (once linked) shares one memory and users can never read each other's
+# notes. legacy_agent_notes_read_fallback keeps pre-scoping notes in the
+# old shared namespace readable for one transition release (writes go
+# scoped-only immediately).
+[memory.scope]
+per_user = true
+legacy_agent_notes_read_fallback = true
+
 # ---------------------------------------------------------------------------
 # [logging] — tracing subscriber. file_rolling emits daily files under
 # <data_dir>/logs/ in addition to stdout.

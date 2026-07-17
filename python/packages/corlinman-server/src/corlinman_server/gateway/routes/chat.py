@@ -1113,6 +1113,30 @@ def router(state: ChatState | None = None) -> APIRouter:
             session_key = _resolve_session_key(req, x_session_key)
             internal_req = _build_internal_request(req, session_key)
 
+            # Memory W2: give the bridged in-app chat a synthetic binding
+            # (channel="webchat", sender=<admin user>) so per-user memory
+            # scoping treats the operator as one identity instead of
+            # dropping every web turn into an unscoped bucket. Only the
+            # admin-session bridge stamps ``request.state.admin_user``;
+            # API-key/SDK callers keep ``binding=None`` (session-scoped
+            # memory, unchanged). ``session_key`` above is NOT derived
+            # from the binding, so session identity is untouched.
+            admin_user = getattr(request.state, "admin_user", None)
+            if internal_req.binding is None and isinstance(admin_user, str):
+                try:
+                    from corlinman_server.gateway_api.types import (
+                        ChannelBinding,
+                    )
+
+                    internal_req.binding = ChannelBinding(
+                        channel="webchat",
+                        account="local",
+                        thread=admin_user,
+                        sender=admin_user,
+                    )
+                except Exception as exc:  # noqa: BLE001 — binding is optional
+                    _log.warning("web chat synthetic binding failed: %s", exc)
+
             # H19: inject the bound persona's system prompt so the in-app
             # ``/chat`` UI is in character, mirroring the 5 chat channels.
             # Reads ``[web].humanlike`` off the live config + an optional

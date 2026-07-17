@@ -32,6 +32,29 @@ SESSION_SEARCH_TOOL: str = "session_search"
 MEMORY_WRITE_TOOL: str = "memory_write"
 MEMORY_READ_TOOL: str = "memory_read"
 
+def _scoped_namespace(
+    requested: str | None, default_namespace: str | None
+) -> str:
+    """Resolve the effective namespace under an optional scope jail.
+
+    With no ``default_namespace`` (standalone/unscoped callers) the
+    legacy behaviour applies: the model's ``namespace`` arg wins, else
+    :data:`_NOTES_NAMESPACE`. When a scope IS provided, the model can
+    only ever land inside it — a model-supplied namespace becomes a
+    sub-namespace (``{scope}/{suffix}``), never an escape into another
+    user's notes. Namespaces are opaque flat strings in the store, so a
+    prefix guarantee is a complete jail (no traversal semantics exist).
+    """
+    if default_namespace is None:
+        return requested or _NOTES_NAMESPACE
+    if not requested:
+        return default_namespace
+    suffix = requested.strip().strip("/")
+    if not suffix or suffix == default_namespace:
+        return default_namespace
+    return f"{default_namespace}/{suffix}"
+
+
 #: Default namespace for agent-written notes when the caller does not
 #: pass one. Kept distinct from the session-keyed conversational store
 #: (which uses ``session_key`` as its namespace) so durable profile
@@ -251,6 +274,8 @@ async def dispatch_memory_search(
     *,
     memory_host: Any = None,
     session_key: str | None = None,
+    default_namespace: str | None = None,
+    legacy_read_namespace: str | None = None,
 ) -> str:
     """Dispatch ``memory_search`` — wraps ``MemoryHost.query``.
 
@@ -266,6 +291,15 @@ async def dispatch_memory_search(
         Ignored for ``memory_search`` (session-scoping is
         ``session_search``'s job); accepted here for call-site
         symmetry.
+    default_namespace:
+        Per-user memory scope (W2). When set, the search is jailed to
+        the scope (a model-supplied ``namespace`` becomes a
+        sub-namespace); when ``None`` the legacy global search across
+        all namespaces is preserved.
+    legacy_read_namespace:
+        Optional read-only fallback namespace consulted when the scoped
+        search returns nothing (transition support for pre-scoping
+        notes).
     """
     if memory_host is None:
         return _NOT_CONFIGURED
@@ -280,13 +314,25 @@ async def dispatch_memory_search(
         return json.dumps({"error": "query_required"})
 
     top_k = min(max(int(args.get("top_k") or 5), 1), 20)
-    namespace = args.get("namespace") or None
+    requested = args.get("namespace") or None
+    if default_namespace is not None:
+        namespace: str | None = _scoped_namespace(requested, default_namespace)
+    else:
+        namespace = requested
 
     try:
         from corlinman_memory_host.types import MemoryQuery
 
         req = MemoryQuery(text=query_text.strip(), top_k=top_k, namespace=namespace)
         hits = await memory_host.query(req)
+        if not hits and default_namespace is not None and legacy_read_namespace:
+            hits = await memory_host.query(
+                MemoryQuery(
+                    text=query_text.strip(),
+                    top_k=top_k,
+                    namespace=legacy_read_namespace,
+                )
+            )
         results = [
             {
                 "id": h.id,
@@ -362,6 +408,7 @@ async def dispatch_memory_write(
     *,
     memory_host: Any = None,
     session_key: str | None = None,
+    default_namespace: str | None = None,
 ) -> str:
     """Dispatch ``memory_write`` — store a durable note via ``MemoryHost.upsert``.
 
@@ -381,6 +428,10 @@ async def dispatch_memory_write(
         Accepted for call-site symmetry; notes are durable and namespaced
         by ``namespace`` (default :data:`_NOTES_NAMESPACE`), NOT by the
         ephemeral session key.
+    default_namespace:
+        Per-user memory scope (W2). When set, writes are jailed to the
+        scope — a model-supplied ``namespace`` becomes a sub-namespace,
+        never an escape into another user's notes.
     """
     if memory_host is None:
         return json.dumps({"ok": False, "note": "memory_host_not_configured"})
@@ -395,7 +446,7 @@ async def dispatch_memory_write(
         return json.dumps({"ok": False, "error": "content_required"})
     content = content.strip()[:_MAX_NOTE_CHARS]
 
-    namespace = args.get("namespace") or _NOTES_NAMESPACE
+    namespace = _scoped_namespace(args.get("namespace") or None, default_namespace)
     tag = args.get("tag")
     metadata: dict[str, Any] = {"kind": "note"}
     if isinstance(tag, str) and tag.strip():
@@ -419,13 +470,17 @@ async def dispatch_memory_read(
     *,
     memory_host: Any = None,
     session_key: str | None = None,
+    default_namespace: str | None = None,
+    legacy_read_namespace: str | None = None,
 ) -> str:
     """Dispatch ``memory_read`` — recall durable notes.
 
     With a ``query`` it runs a BM25 search scoped to the notes namespace;
     without one it returns the most recent notes (via the host's
     ``recent`` helper when available, else an empty list). Degrades to
-    empty results when no host is wired.
+    empty results when no host is wired. ``default_namespace`` jails the
+    read into the per-user scope (W2); ``legacy_read_namespace`` is a
+    read-only fallback consulted when the scoped read returns nothing.
     """
     if memory_host is None:
         return _NOT_CONFIGURED
@@ -436,22 +491,27 @@ async def dispatch_memory_read(
         return json.dumps({"error": "invalid_args_json"})
 
     top_k = min(max(int(args.get("top_k") or 5), 1), 20)
-    namespace = args.get("namespace") or _NOTES_NAMESPACE
+    namespace = _scoped_namespace(args.get("namespace") or None, default_namespace)
     query_text = args.get("query")
 
-    try:
+    async def _read(ns: str) -> list[Any]:
         if isinstance(query_text, str) and query_text.strip():
             from corlinman_memory_host.types import MemoryQuery
 
-            req = MemoryQuery(
-                text=query_text.strip(), top_k=top_k, namespace=namespace
+            return list(
+                await memory_host.query(
+                    MemoryQuery(text=query_text.strip(), top_k=top_k, namespace=ns)
+                )
             )
-            hits = await memory_host.query(req)
-        else:
-            # No query → most recent notes. ``recent`` is not part of the
-            # MemoryHost ABC, so probe for it (LocalSqliteHost has it).
-            recent_fn = getattr(memory_host, "recent", None)
-            hits = await recent_fn(namespace, top_k) if recent_fn else []
+        # No query → most recent notes. ``recent`` is not part of the
+        # MemoryHost ABC, so probe for it (LocalSqliteHost has it).
+        recent_fn = getattr(memory_host, "recent", None)
+        return list(await recent_fn(ns, top_k)) if recent_fn else []
+
+    try:
+        hits = await _read(namespace)
+        if not hits and default_namespace is not None and legacy_read_namespace:
+            hits = await _read(legacy_read_namespace)
         results = [
             {
                 "id": h.id,
