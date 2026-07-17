@@ -93,9 +93,14 @@ class AppState:
     # sleep-time builtin (enabled/dry_run/max_observations/...).
     memory_curator_config: Any = None
 
-    # Optional async (text) -> list[float] embedding seam consumed by
-    # memory.reconcile; the live wiring lands with the W6 affect axes.
+    # Async (text) -> list[float] | None embedding seam — wired by C2 as
+    # a live-state closure over provider_registry + config["embedding"];
+    # returns None when no embedding provider is configured.
     memory_embed_fn: Any = None
+
+    # dict — [memory.affect] TOML knobs (enabled/weight/alpha) for the
+    # W6 EPA affect lens.
+    memory_affect_config: Any = None
 
     # corlinman_persona.PersonaResolver — read-only ``{{persona.*}}`` /
     # ``{{persona.life_*}}`` placeholder lookup keyed by ``agent_id``.

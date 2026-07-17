@@ -51,6 +51,9 @@ class GoldenProbe:
     top_k: int = 4
     expect: list[str] = field(default_factory=list)
     forbid: list[str] = field(default_factory=list)
+    # W6 affect lens: probe-time persona mood [e, p, a] + affect weight.
+    mood: list[float] | None = None
+    affect_weight: float = 0.0
 
 
 @dataclass
@@ -109,6 +112,14 @@ class GoldenLoadError(RuntimeError):
     """A golden YAML file is malformed."""
 
 
+def _validated_mood(raw: Any, filename: str) -> list[float] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, list) or len(raw) != 3:
+        raise GoldenLoadError(f"{filename}: mood must be a 3-element [e,p,a]")
+    return [float(x) for x in raw]
+
+
 def load_golden_cases(goldens_dir: Path | None = None) -> list[GoldenCase]:
     """Load every ``*.yaml`` golden case, sorted by filename.
 
@@ -145,6 +156,8 @@ def load_golden_cases(goldens_dir: Path | None = None) -> list[GoldenCase]:
                     top_k=int(p.get("top_k", 4)),
                     expect=[str(e) for e in p.get("expect", [])],
                     forbid=[str(fb) for fb in p.get("forbid", [])],
+                    mood=_validated_mood(p.get("mood"), path.name),
+                    affect_weight=float(p.get("affect_weight", 0.0)),
                 )
                 for p in raw.get("probes", [])
             ]
@@ -179,6 +192,15 @@ async def _seed_case(kernel: MemoryKernel, case: GoldenCase) -> None:
             trust=float(item.get("trust", 0.5)),
             importance=float(item.get("importance", 0.5)),
         )
+        affect = item.get("affect")
+        if isinstance(affect, list) and len(affect) == 4:
+            await kernel.set_affect(
+                item_id,
+                float(affect[0]),
+                float(affect[1]),
+                float(affect[2]),
+                float(affect[3]),
+            )
         if item.get("invalidate"):
             await kernel.invalidate_item(
                 item_id, reason=str(item.get("invalidate_reason", "golden"))
@@ -199,7 +221,19 @@ async def run_golden_case(
                 )
                 started = time.monotonic()
                 hits = await kernel.recall_ranked(
-                    scope, probe.text, top_k=probe.top_k
+                    scope,
+                    probe.text,
+                    top_k=probe.top_k,
+                    weights=(
+                        {"w_aff": probe.affect_weight}
+                        if probe.affect_weight > 0
+                        else None
+                    ),
+                    mood=(
+                        (probe.mood[0], probe.mood[1], probe.mood[2])
+                        if probe.mood
+                        else None
+                    ),
                 )
                 latencies_ms.append((time.monotonic() - started) * 1000.0)
                 report.probes += 1

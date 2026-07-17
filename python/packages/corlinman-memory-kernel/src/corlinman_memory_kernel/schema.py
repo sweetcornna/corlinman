@@ -152,6 +152,10 @@ CREATE TABLE IF NOT EXISTS mk_scope_grants (
     PRIMARY KEY (from_persona, to_persona, kind)
 );
 
+-- Persona mood is deliberately GLOBAL per persona (not per user): the
+-- persona is one character with one mood/diary across all its chats,
+-- matching agent_persona_state's keying — every conversation partner
+-- influences and experiences the same mood.
 CREATE TABLE IF NOT EXISTS mk_affect_state (
     persona_id    TEXT PRIMARY KEY,
     mood_e        REAL NOT NULL DEFAULT 0,

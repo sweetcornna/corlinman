@@ -1,32 +1,40 @@
-# W6 seeds this case with affect-tagged memories and a depressed mood,
-# asserting the mood-repair bias keeps positive memories reachable
-# (anti-spiral). Until the affect lens lands, it pins the pre-affect
-# baseline: emotional wording carries no ranking weight.
-# NOTE(W6): this case must be REPLACED (not just extended) when the
-# affect lens lands — seed affect vectors + a depressed persona mood and
-# assert the mood-repair bias keeps the positive memory reachable.
-name: mood-spiral-baseline
-description: Pre-W6 baseline — affect-free ranking treats emotional wording neutrally.
+# W6 affect lens: mood-congruent recall WITH the anti-spiral guard.
+# Two equally-relevant memories, opposite valence, affect-stamped.
+# - Mildly negative mood: congruence favors the sad memory (top_k=1).
+# - DEEPLY negative mood (e ≤ -0.6): the mood-repair bias mirrors the
+#   mood positive, so the POSITIVE memory wins instead — a sad persona
+#   must not spiral into recalling only sadness.
+# - Affect weight 0: classic ranking, both reachable (regression guard
+#   that the lens stays strictly opt-in).
+name: mood-congruence-and-repair
+description: Affect lens ranks by mood congruence but repairs deep negative moods.
 items:
   - scope_user: u1
     text: "yesterday was a sad terrible day at work"
     kind: event
+    affect: [-0.8, -0.2, 0.3, 0.8]   # strongly negative valence
   - scope_user: u1
     text: "yesterday the work demo went wonderfully"
     kind: event
+    affect: [0.8, 0.4, 0.5, 0.8]     # strongly positive valence
 probes:
-  # Neutral query: both reachable (order not asserted pre-W6).
+  # Mild sadness → mood congruence surfaces the sad memory first.
+  - text: "yesterday work"
+    scope_user: u1
+    top_k: 1
+    mood: [-0.4, 0.0, 0.0]
+    affect_weight: 1.5
+    expect: ["sad terrible"]
+    forbid: ["wonderfully"]
+  # Deep sadness → mood repair flips the bias to the positive memory.
+  - text: "yesterday work"
+    scope_user: u1
+    top_k: 1
+    mood: [-0.9, 0.0, 0.0]
+    affect_weight: 1.5
+    expect: ["wonderfully"]
+    forbid: ["sad terrible"]
+  # Lens off → classic ranking keeps both reachable.
   - text: "yesterday work"
     scope_user: u1
     expect: ["sad terrible", "wonderfully"]
-  # Term-specific queries dominate on relevance regardless of affect.
-  - text: "sad terrible day"
-    scope_user: u1
-    top_k: 1
-    expect: ["sad terrible"]
-    forbid: ["wonderfully"]
-  - text: "demo went wonderfully"
-    scope_user: u1
-    top_k: 1
-    expect: ["wonderfully"]
-    forbid: ["sad terrible"]

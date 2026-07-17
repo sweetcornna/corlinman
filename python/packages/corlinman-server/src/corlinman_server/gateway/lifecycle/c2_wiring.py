@@ -284,6 +284,52 @@ async def _wire_c2_handles(
             admin_a_state.memory_host = getattr(state, "memory_host", None)
             admin_a_state.memory_kernel = getattr(state, "memory_kernel", None)
 
+    # --- memory embed seam (W6) -------------------------------------------
+    # A live-state closure: reads state.provider_registry and
+    # state.config["embedding"] PER CALL, so config-mutation hot swaps
+    # (which rebuild the registry) are picked up without rewiring.
+    # Returns None when no embedding provider is configured/enabled —
+    # consumers (reconcile affect/vector stamping) then simply skip.
+    async def _memory_embed(text: str) -> list[float] | None:
+        registry = getattr(state, "provider_registry", None)
+        config = getattr(state, "config", None)
+        emb = config.get("embedding") if isinstance(config, dict) else None
+        if registry is None or not isinstance(emb, dict):
+            return None
+        if not emb.get("enabled", True):
+            return None
+        provider_name = emb.get("provider")
+        model = emb.get("model")
+        if not provider_name or not model:
+            return None
+        provider = registry.get(str(provider_name))
+        if provider is None:
+            return None
+        vectors = await provider.embed(model=str(model), inputs=[text])
+        return list(vectors[0]) if vectors else None
+
+    async def _memory_embed_many(texts: list[str]) -> list[list[float]] | None:
+        registry = getattr(state, "provider_registry", None)
+        config = getattr(state, "config", None)
+        emb = config.get("embedding") if isinstance(config, dict) else None
+        if registry is None or not isinstance(emb, dict):
+            return None
+        if not emb.get("enabled", True):
+            return None
+        provider_name = emb.get("provider")
+        model = emb.get("model")
+        if not provider_name or not model:
+            return None
+        provider = registry.get(str(provider_name))
+        if provider is None:
+            return None
+        vectors = await provider.embed(model=str(model), inputs=list(texts))
+        return [list(v) for v in vectors] if vectors else None
+
+    with suppress(AttributeError, TypeError):
+        state.memory_embed_fn = _memory_embed
+        state.memory_embed_many_fn = _memory_embed_many
+
     # --- memory recall config ---------------------------------------------
     # ``[memory.recall]`` TOML knobs for the servicer's conversational
     # recall (recent-turn count, notes top_k, query char cap). Published as
@@ -294,6 +340,7 @@ async def _wire_c2_handles(
         kernel_cfg: dict[str, Any] = {}
         scope_cfg: dict[str, Any] = {}
         curator_cfg: dict[str, Any] = {}
+        affect_cfg: dict[str, Any] = {}
         memory_section = _extract_section(cfg, "memory")
         if isinstance(memory_section, dict):
             recall_section = memory_section.get("recall")
@@ -308,10 +355,14 @@ async def _wire_c2_handles(
             curator_section = memory_section.get("curator")
             if isinstance(curator_section, dict):
                 curator_cfg = dict(curator_section)
+            affect_section = memory_section.get("affect")
+            if isinstance(affect_section, dict):
+                affect_cfg = dict(affect_section)
         state.memory_recall_config = recall_cfg
         state.memory_kernel_config = kernel_cfg
         state.memory_scope_config = scope_cfg
         state.memory_curator_config = curator_cfg
+        state.memory_affect_config = affect_cfg
         if recall_cfg:
             logger.info("gateway.c2.memory_recall_config_wired", **recall_cfg)
         if kernel_cfg:
@@ -325,6 +376,7 @@ async def _wire_c2_handles(
             state.memory_kernel_config = {}
             state.memory_scope_config = {}
             state.memory_curator_config = {}
+            state.memory_affect_config = {}
 
     # --- persona_resolver (gap persona-life-resolver-dead) ---------------
     # The resolver reads ``{{persona.mood}}`` / ``{{persona.life_*}}`` off

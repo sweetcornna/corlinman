@@ -90,3 +90,8 @@ class MemoryItem:
     valid_to_ms: int | None = None
     recorded_at_ms: int = 0
     score: float = 0.0
+    # EPA affect vector (W6); salience 0 = affect-neutral / unstamped.
+    affect_e: float = 0.0
+    affect_p: float = 0.0
+    affect_a: float = 0.0
+    affect_salience: float = 0.0

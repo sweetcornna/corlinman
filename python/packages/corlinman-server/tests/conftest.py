@@ -22,8 +22,18 @@ import pytest
 def _isolate_data_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Pin ``CORLINMAN_DATA_DIR`` to a fresh temp dir for every test."""
+    """Pin ``CORLINMAN_DATA_DIR`` to a fresh temp dir for every test.
+
+    Also defaults the memory kernel to ``off``: the production default
+    is ``shadow``, which makes background lanes lazily open REAL sqlite
+    connections — and dozens of servicer unit tests never call
+    ``aclose()``, so those connections leaked worker threads that
+    intermittently wedged interpreter exit (the leak-backstop firings).
+    Kernel-behaviour tests set the env var themselves, which overrides
+    this fixture.
+    """
     monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("CORLINMAN_MEMORY_KERNEL", "off")
 
 
 @pytest.fixture
