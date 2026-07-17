@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import math
 import os
 from pathlib import Path
 from typing import Any
@@ -338,6 +339,162 @@ class MemoryKernel:
         async with self._conn.execute(sql, params) as cur:
             rows = await cur.fetchall()
         return [self._row_to_item(row) for row in rows]
+
+    async def recall_ranked(
+        self,
+        scope: KernelScope,
+        text: str,
+        *,
+        top_k: int = 4,
+        candidates: int = 32,
+        weights: dict[str, float] | None = None,
+        query_vector: list[float] | None = None,
+    ) -> list[MemoryItem]:
+        """Ranked recall: hybrid candidate fetch + unified re-rank.
+
+        Candidates come from the scoped FTS branch (and, when a
+        ``query_vector`` is supplied and items carry embeddings, a
+        cosine branch RRF-merged with it). Final ordering is the
+        generative-agents-style blend::
+
+            score = w_rel·rrf + w_rec·exp(-age/τ) + w_imp·importance
+                    + w_tr·(trust·utility)   [+ w_aff·resonance, W6]
+
+        ``risk='high'`` items are excluded entirely — channel-level
+        provenance that would let them surface safely lands with the
+        W5 reconcile pipeline.
+        """
+        w = {
+            "w_rel": 1.0,
+            "w_rec": 0.3,
+            "w_imp": 0.3,
+            "w_tr": 0.2,
+            "half_life_days": 30.0,
+        }
+        if weights:
+            for key, value in weights.items():
+                if key in w and isinstance(value, (int, float)):
+                    w[key] = float(value)
+
+        fts_hits = await self.recall(scope, text, top_k=candidates)
+        # RRF rank positions per branch (1-indexed).
+        rrf: dict[str, float] = {}
+        by_id: dict[str, MemoryItem] = {}
+        for rank, item in enumerate(fts_hits, start=1):
+            if item.risk == "high":
+                continue
+            rrf[item.id] = rrf.get(item.id, 0.0) + 1.0 / (60.0 + rank)
+            by_id[item.id] = item
+        if query_vector:
+            vec_ranked = await self._vector_candidates(
+                scope, query_vector, candidates
+            )
+            for rank, item in enumerate(vec_ranked, start=1):
+                if item.risk == "high":
+                    continue
+                rrf[item.id] = rrf.get(item.id, 0.0) + 1.0 / (60.0 + rank)
+                by_id.setdefault(item.id, item)
+        if not by_id:
+            return []
+
+        now = now_ms()
+        max_rrf = max(rrf.values())
+        scored: list[tuple[float, MemoryItem]] = []
+        for item_id, item in by_id.items():
+            age_days = max(0.0, (now - item.recorded_at_ms) / 86_400_000.0)
+            recency = math.exp(-age_days / max(w["half_life_days"], 0.01))
+            score = (
+                w["w_rel"] * (rrf[item_id] / max_rrf)
+                + w["w_rec"] * recency
+                + w["w_imp"] * item.importance
+                + w["w_tr"] * (item.trust * item.utility)
+            )
+            item.score = score
+            scored.append((score, item))
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        return [item for (_, item) in scored[:top_k]]
+
+    async def _vector_candidates(
+        self, scope: KernelScope, query_vector: list[float], top_k: int
+    ) -> list[MemoryItem]:
+        """Cosine branch over the scope's embedded, currently-valid items."""
+        from corlinman_memory_kernel.vector import cosine_topk
+
+        sql = (
+            "SELECT id, embedding FROM mk_items"
+            " WHERE embedding IS NOT NULL AND tenant_id = ?"
+            "   AND (scope_user_id IS NULL OR scope_user_id = ?)"
+            "   AND (persona_id = '' OR persona_id = ?)"
+            "   AND valid_to_ms IS NULL"
+        )
+        async with self._conn.execute(
+            sql, (scope.tenant_id, scope.scope_user_id, scope.persona_id)
+        ) as cur:
+            rows = await cur.fetchall()
+        ranked = cosine_topk(
+            query_vector,
+            [(row["id"], row["embedding"]) for row in rows],
+            top_k,
+        )
+        if not ranked:
+            return []
+        ids = [item_id for (item_id, _) in ranked]
+        placeholders = ",".join("?" * len(ids))
+        async with self._conn.execute(
+            f"SELECT *, 0.0 AS fts_score FROM mk_items WHERE id IN ({placeholders})",
+            ids,
+        ) as cur:
+            rows = await cur.fetchall()
+        items = {row["id"]: self._row_to_item(row) for row in rows}
+        return [items[item_id] for item_id in ids if item_id in items]
+
+    async def mark_recalled(self, item_ids: list[str]) -> None:
+        """Stamp recall bookkeeping on injected items (trust-loop fuel)."""
+        if not item_ids:
+            return
+        placeholders = ",".join("?" * len(item_ids))
+        async with self._lock:
+            await self._conn.execute(
+                f"UPDATE mk_items SET recall_count = recall_count + 1,"
+                f" last_recalled_ms = ? WHERE id IN ({placeholders})",
+                (now_ms(), *item_ids),
+            )
+            await self._conn.commit()
+
+    async def ledger_write(
+        self, turn_key: str, entries: list[tuple[str, str, int, float, int]]
+    ) -> None:
+        """Record what was injected: (item_id, lane, rank, score, chars)."""
+        if not entries:
+            return
+        ts = now_ms()
+        async with self._lock:
+            await self._conn.executemany(
+                "INSERT INTO mk_recall_ledger("
+                "turn_key, item_id, lane, rank, score, shown_chars, ts_ms)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (turn_key, item_id, lane, rank, score, chars, ts)
+                    for (item_id, lane, rank, score, chars) in entries
+                ],
+            )
+            await self._conn.commit()
+
+    async def core_blocks(self, scope: KernelScope) -> list[tuple[str, str]]:
+        """The scope's core-memory blocks as (block, content), stable order.
+
+        Written by the W5 maintenance pipeline; empty until then. The
+        caller renders them verbatim at a stable prompt position so the
+        bytes stay prefix-cache-friendly across turns.
+        """
+        async with self._conn.execute(
+            "SELECT block, content FROM mk_core"
+            " WHERE tenant_id = ? AND scope_user_id = ? AND persona_id = ?"
+            " ORDER BY block",
+            (scope.tenant_id, scope.scope_user_id or "", scope.persona_id),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [(row["block"], row["content"]) for row in rows]
 
     # ---- MAINTENANCE surface (drained by later waves) ----------------------
 

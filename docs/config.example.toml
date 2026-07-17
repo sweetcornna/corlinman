@@ -530,6 +530,10 @@ max_promotions_per_run = 50
 recent_turns = 8
 notes_top_k  = 4
 query_chars  = 500
+# W3 knobs (0 = feature off / legacy behaviour):
+min_score = 0.0                    # relevance floor on recalled notes
+max_chars = 4000                   # char budget per injected memory block
+time_decay_half_life_hours = 0.0   # recency re-rank for the notes lane
 
 # [memory.kernel] — the unified memory kernel (mk_* tables in the same
 # memory.sqlite). mode: "off" = never touched; "shadow" (default) =
@@ -538,6 +542,9 @@ query_chars  = 500
 # CORLINMAN_MEMORY_KERNEL env var overrides this key (ops kill-switch).
 [memory.kernel]
 mode = "shadow"
+# Per-channel canary for mode = "on": when non-empty, only these
+# channels get kernel injection; everything else stays shadow.
+# on_channels = ["qq", "webchat"]
 
 # [memory.scope] — per-user memory scoping (privacy fix, default ON).
 # Durable notes live under facts/{tenant}/{user}/{persona}, keyed by the
