@@ -70,6 +70,9 @@ dependencies = [
     # LocalSqliteHost for per-session recall/store, and routes/memory.py
     # exposes it over HTTP.
     "corlinman-memory-host",
+    # Memory kernel (mk_* tables in the same memory.sqlite): observation
+    # queue + scoped bi-temporal recall, gated by CORLINMAN_MEMORY_KERNEL.
+    "corlinman-memory-kernel",
     # Imported by the gateway runtime but previously undeclared — the
     # evolution applier (corlinman_auto_rollback / corlinman_evolution_store),
     # the canvas + MCP routes, and the skills admin surface.
@@ -117,6 +120,7 @@ corlinman-replay = { workspace = true }
 corlinman-channels = { workspace = true }
 corlinman-identity = { workspace = true }
 corlinman-memory-host = { workspace = true }
+corlinman-memory-kernel = { workspace = true }
 corlinman-auto-rollback = { workspace = true }
 corlinman-evolution-engine = { workspace = true }
 corlinman-evolution-store = { workspace = true }

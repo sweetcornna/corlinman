@@ -1680,6 +1680,17 @@ def build_app(
                         )
                 with suppress(AttributeError, TypeError):
                     state.memory_host = None
+            _mem_kernel = getattr(state, "memory_kernel", None)
+            if _mem_kernel is not None:
+                try:
+                    await _mem_kernel.close()
+                except Exception as exc:  # pragma: no cover
+                    logger.warning(
+                        "gateway.c2.memory_kernel.close_failed",
+                        error=str(exc),
+                    )
+                with suppress(AttributeError, TypeError):
+                    state.memory_kernel = None
 
             # W1.3 teardown: close the observability journal so its WAL
             # file is checkpointed before the process exits.

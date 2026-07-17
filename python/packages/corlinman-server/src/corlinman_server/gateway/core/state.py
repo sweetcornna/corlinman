@@ -76,6 +76,15 @@ class AppState:
     # ``memory_read`` tool family (WP17 + new-tools lane).
     memory_host: Any = None
 
+    # corlinman_memory_kernel.MemoryKernel — the unified memory kernel
+    # (mk_* tables in the same memory.sqlite). Shadow-mode in W1; gated
+    # by CORLINMAN_MEMORY_KERNEL at the servicer call sites.
+    memory_kernel: Any = None
+
+    # dict — [memory.recall] TOML knobs for the servicer's conversational
+    # recall lanes (recent_turns / notes_top_k / query_chars).
+    memory_recall_config: Any = None
+
     # corlinman_persona.PersonaResolver — read-only ``{{persona.*}}`` /
     # ``{{persona.life_*}}`` placeholder lookup keyed by ``agent_id``.
     persona_resolver: Any = None

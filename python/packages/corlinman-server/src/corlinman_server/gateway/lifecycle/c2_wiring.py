@@ -259,6 +259,24 @@ async def _wire_c2_handles(
         with suppress(AttributeError, TypeError):
             state.memory_host = None
 
+    # --- memory_kernel (W1 — shadow mode) ---------------------------------
+    # mk_* tables co-habit memory.sqlite with the legacy host above; the
+    # kernel is a second WAL connection to the same file. Gated at the
+    # call sites by CORLINMAN_MEMORY_KERNEL, so wiring it unconditionally
+    # here is safe (off-mode servicers simply never touch it).
+    try:
+        from corlinman_memory_kernel import MemoryKernel
+
+        if getattr(state, "memory_kernel", None) is None:
+            state.memory_kernel = await MemoryKernel.open(
+                data_dir / "memory.sqlite"
+            )
+            logger.info("gateway.c2.memory_kernel_wired")
+    except Exception as exc:  # noqa: BLE001 — kernel-free chat degrades fine
+        logger.warning("gateway.c2.memory_kernel_failed", error=str(exc))
+        with suppress(AttributeError, TypeError):
+            state.memory_kernel = None
+
     # --- memory recall config ---------------------------------------------
     # ``[memory.recall]`` TOML knobs for the servicer's conversational
     # recall (recent-turn count, notes top_k, query char cap). Published as
