@@ -3,6 +3,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import NamedTuple
+
+
+class LedgerEntry(NamedTuple):
+    """One injected memory in a turn's recall ledger.
+
+    A named shape (not a bare tuple) because the fields cross the
+    servicer↔kernel package boundary and three of them are numbers — a
+    positional swap would insert silently and poison the trust-loop
+    analytics built on the ledger.
+    """
+
+    item_id: str
+    lane: str
+    rank: int
+    score: float
+    shown_chars: int
 
 
 def scope_namespace(
