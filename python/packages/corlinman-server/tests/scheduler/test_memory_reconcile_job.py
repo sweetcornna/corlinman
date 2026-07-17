@@ -97,8 +97,10 @@ async def test_dry_run_reports_but_writes_nothing(
     stats = await kernel.stats()
     assert stats["items"] == 0, "dry_run must not write items"
     assert stats["observations_pending"] == 1, "dry_run must not drain queue"
-    # The anti-pattern preamble reaches the LLM prompt.
-    assert "do NOT extract" in runner.calls[0]
+    # The anti-pattern exclusions (agent-brain SYSTEM_PROMPT rules 7-10)
+    # reach the LLM prompt.
+    assert "Do NOT extract environment-dependent failures" in runner.calls[0]
+    assert "passwords" in runner.calls[0]
     # A report landed on disk.
     reports = list((tmp_path / "reports" / "memory-curator").glob("*.json"))
     assert len(reports) == 1
