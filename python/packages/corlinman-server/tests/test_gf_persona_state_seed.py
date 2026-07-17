@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 from corlinman_persona import PersonaState
 from corlinman_persona.store import PersonaStore
@@ -83,7 +84,9 @@ async def test_seed_is_idempotent_and_does_not_clobber(tmp_path: Path) -> None:
         await store.close()
 
 
-async def test_wire_c2_handles_seeds_grantley_state(tmp_path: Path) -> None:
+async def test_wire_c2_handles_seeds_grantley_state(
+    tmp_path: Path, close_c2_handles: Any
+) -> None:
     """Through the boot wiring spine: after _wire_c2_handles, the resolver
     sees a real grantley row (default mood) instead of an empty placeholder."""
     from corlinman_server.gateway.lifecycle.entrypoint import _wire_c2_handles
@@ -92,18 +95,19 @@ async def test_wire_c2_handles_seeds_grantley_state(tmp_path: Path) -> None:
     state.data_dir = tmp_path
     app = SimpleNamespace(state=SimpleNamespace())
 
-    await _wire_c2_handles(app, state, None, tmp_path, cfg={})
+    try:
+        await _wire_c2_handles(app, state, None, tmp_path, cfg={})
 
-    assert state.persona_resolver is not None
-    mood = await state.persona_resolver.resolve("mood", DEFAULT_GRANTLEY_ID)
-    assert mood == "neutral"
+        assert state.persona_resolver is not None
+        mood = await state.persona_resolver.resolve("mood", DEFAULT_GRANTLEY_ID)
+        assert mood == "neutral"
 
-    # The seeded row is on the SAME store the lifespan teardown closes.
-    seeded = await app.state.corlinman_persona_state_store.get(
-        DEFAULT_GRANTLEY_ID
-    )
-    assert seeded is not None
-
-    await app.state.corlinman_persona_state_store.close()
-    if state.memory_host is not None:
-        await state.memory_host.close()
+        # The seeded row is on the SAME store the lifespan teardown closes.
+        seeded = await app.state.corlinman_persona_state_store.get(
+            DEFAULT_GRANTLEY_ID
+        )
+        assert seeded is not None
+    finally:
+        # EVERY handle the wiring opened (identity + kernel included —
+        # a leaked aiosqlite thread blocks interpreter exit).
+        await close_c2_handles(state, app)

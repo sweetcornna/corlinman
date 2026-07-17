@@ -139,7 +139,9 @@ async def test_get_memory_host_prefers_shared_app_state_host(
         await servicer.aclose()
 
 
-async def test_wire_c2_publishes_memory_recall_config(tmp_path: Path) -> None:
+async def test_wire_c2_publishes_memory_recall_config(
+    tmp_path: Path, close_c2_handles: Any
+) -> None:
     from corlinman_server.gateway.core.state import AppState
     from corlinman_server.gateway.lifecycle.entrypoint import _wire_c2_handles
 
@@ -149,13 +151,19 @@ async def test_wire_c2_publishes_memory_recall_config(tmp_path: Path) -> None:
     app = SimpleNamespace(state=SimpleNamespace())
 
     cfg = {"memory": {"recall": {"recent_turns": 10}, "kernel": {"mode": "off"}}}
-    await _wire_c2_handles(app, state, admin_a, tmp_path, cfg=cfg)
-    assert state.memory_recall_config == {"recent_turns": 10}
-    assert state.memory_kernel_config == {"mode": "off"}
+    try:
+        await _wire_c2_handles(app, state, admin_a, tmp_path, cfg=cfg)
+        assert state.memory_recall_config == {"recent_turns": 10}
+        assert state.memory_kernel_config == {"mode": "off"}
+    finally:
+        await close_c2_handles(state, app)
 
     # Absent section → empty dict (servicer applies legacy defaults).
     state2 = AppState()
     state2.data_dir = tmp_path
-    await _wire_c2_handles(app, state2, admin_a, tmp_path, cfg={})
-    assert state2.memory_recall_config == {}
-    assert state2.memory_kernel_config == {}
+    try:
+        await _wire_c2_handles(app, state2, admin_a, tmp_path, cfg={})
+        assert state2.memory_recall_config == {}
+        assert state2.memory_kernel_config == {}
+    finally:
+        await close_c2_handles(state2, app)

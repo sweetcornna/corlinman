@@ -223,11 +223,60 @@ async def test_scoped_read_falls_back_to_legacy_notes(host: Any) -> None:
 # ---- relevance-recall lane ----------------------------------------------
 
 
+async def test_legacy_fallback_off_by_default_no_shared_pool_leak(
+    host: Any,
+) -> None:
+    """The shared pre-scoping pool is UNATTRIBUTED — by default a scoped
+    user must NOT read it (that would re-open the cross-user leak)."""
+    from corlinman_memory_host import MemoryDoc
+
+    await host.upsert(
+        MemoryDoc(content="someone elses secret address", namespace="agent_notes")
+    )
+    resolver = _StaticResolver({("qq", "10086"): "U1"})
+    servicer = _servicer(host, resolver)
+    try:
+        start = _start("qq", "10086")
+        start.messages = [{"role": "user", "content": "secret address"}]
+        await servicer._recall_relevant_notes(start)
+        joined = " ".join(str(m.get("content", "")) for m in start.messages)
+        assert "someone elses secret address" not in joined
+    finally:
+        await servicer.aclose()
+
+
+async def test_identity_cache_ttl_expires(host: Any) -> None:
+    """Cache entries expire so a post-merge remap is picked up without a
+    restart (the merge route cannot reach in-process caches)."""
+    resolver = _StaticResolver({("qq", "10086"): "U1"})
+    servicer = _servicer(host, resolver)
+    try:
+        assert await servicer._resolve_scope_user("qq", "10086") == "U1"
+        resolver.mapping[("qq", "10086")] = "U-MERGED"
+        # Not expired yet → cached value.
+        assert await servicer._resolve_scope_user("qq", "10086") == "U1"
+        # Force expiry.
+        key = ("qq", "10086")
+        user_id, _ = servicer._identity_cache[key]
+        servicer._identity_cache[key] = (user_id, 0.0)
+        assert await servicer._resolve_scope_user("qq", "10086") == "U-MERGED"
+    finally:
+        await servicer.aclose()
+
+
 async def test_recall_relevant_notes_scoped_with_fallback(host: Any) -> None:
     from corlinman_memory_host import MemoryDoc
 
     resolver = _StaticResolver({("qq", "10086"): "U1"})
-    servicer = _servicer(host, resolver)
+    servicer = _servicer(
+        host,
+        resolver,
+        # The fallback is opt-in (single-operator deployments only).
+        memory_scope_config={
+            "per_user": True,
+            "legacy_agent_notes_read_fallback": True,
+        },
+    )
     try:
         await host.upsert(
             MemoryDoc(
@@ -283,12 +332,38 @@ async def test_merge_rehomes_kernel_rows_and_note_namespaces(
                 scope_user_id="LOSER",
             )
         )
+        # mk_core: survivor's block wins on PK conflict; unique blocks move.
+        for user, block, content in (
+            ("LOSER", "user_profile", "loser profile"),
+            ("WINNER", "user_profile", "winner profile"),
+            ("LOSER", "open_threads", "loser threads"),
+        ):
+            await kernel._conn.execute(  # noqa: SLF001 — no writer API until W3
+                "INSERT INTO mk_core(tenant_id, scope_user_id, persona_id,"
+                " block, content, updated_at_ms) VALUES ('default', ?, '', ?, ?, 1)",
+                (user, block, content),
+            )
+        await kernel._conn.commit()  # noqa: SLF001
         await host.upsert(
             MemoryDoc(content="old note", namespace="facts/default/LOSER/_")
         )
 
         moved = await kernel.merge_scope_user("LOSER", "WINNER")
-        assert moved == 2
+        assert moved == 3  # item + observation + the movable core block
+        async with kernel._conn.execute(  # noqa: SLF001
+            "SELECT block, content FROM mk_core WHERE scope_user_id = 'WINNER'"
+            " ORDER BY block"
+        ) as cur:
+            core_rows = [(r["block"], r["content"]) for r in await cur.fetchall()]
+        assert core_rows == [
+            ("open_threads", "loser threads"),
+            ("user_profile", "winner profile"),  # survivor's block won
+        ]
+        async with kernel._conn.execute(  # noqa: SLF001
+            "SELECT COUNT(*) FROM mk_core WHERE scope_user_id = 'LOSER'"
+        ) as cur:
+            row = await cur.fetchone()
+        assert row is not None and row[0] == 0
         renamed = await host.rename_namespace_prefix(
             "facts/default/LOSER", "facts/default/WINNER"
         )

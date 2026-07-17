@@ -543,12 +543,17 @@ mode = "shadow"
 # Durable notes live under facts/{tenant}/{user}/{persona}, keyed by the
 # cross-channel identity resolver, so the same human on QQ and Telegram
 # (once linked) shares one memory and users can never read each other's
-# notes. legacy_agent_notes_read_fallback keeps pre-scoping notes in the
-# old shared namespace readable for one transition release (writes go
-# scoped-only immediately).
+# notes.
+#
+# legacy_agent_notes_read_fallback: pre-scoping notes sit UNATTRIBUTED
+# in one shared namespace — surfacing them to a scoped user would show
+# them everyone's old notes, so the fallback is default OFF. Enable it
+# ONLY on single-operator deployments (one human across all channels)
+# to keep pre-upgrade notes recallable; note it only fires while the
+# user's own scope has no matching note.
 [memory.scope]
 per_user = true
-legacy_agent_notes_read_fallback = true
+legacy_agent_notes_read_fallback = false
 
 # ---------------------------------------------------------------------------
 # [logging] — tracing subscriber. file_rolling emits daily files under

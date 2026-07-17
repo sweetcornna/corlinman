@@ -103,8 +103,10 @@ def memory_search_tool_schema() -> dict[str, Any]:
                     "namespace": {
                         "type": "string",
                         "description": (
-                            "Optional namespace to restrict the search "
-                            "(e.g. a persona id or topic tag)."
+                            "Optional sub-namespace to restrict the search "
+                            "(e.g. a topic tag used at write time). The "
+                            "search always stays inside the current user's "
+                            "memory scope."
                         ),
                     },
                 },
@@ -186,9 +188,10 @@ def memory_write_tool_schema() -> dict[str, Any]:
                     "namespace": {
                         "type": "string",
                         "description": (
-                            "Optional namespace to scope the note. Defaults "
-                            "to the shared agent-notes namespace; pass a "
-                            "persona id or topic to isolate it."
+                            "Optional sub-namespace (e.g. a topic) to "
+                            "organize notes. Notes always stay inside the "
+                            "current user's private memory scope; this "
+                            "cannot share notes across users."
                         ),
                     },
                 },
@@ -234,8 +237,9 @@ def memory_read_tool_schema() -> dict[str, Any]:
                     "namespace": {
                         "type": "string",
                         "description": (
-                            "Optional namespace to read from. Defaults to "
-                            "the shared agent-notes namespace."
+                            "Optional sub-namespace to read from (the same "
+                            "value used at memory_write time). Omit to read "
+                            "the current user's main notes."
                         ),
                     },
                 },

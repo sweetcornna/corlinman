@@ -60,6 +60,11 @@ from corlinman_memory_host.types import (
 _DEFAULT_DIARY_NAME = "memory-host"
 
 
+def _escape_like(value: str) -> str:
+    r"""Escape LIKE wildcards so ``value`` matches literally (ESCAPE '\')."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _fts_match_query(text: str) -> str:
     """Escape free text into a safe FTS5 MATCH expression.
 
@@ -301,10 +306,7 @@ class _SqliteStore:
     async def rename_namespace_prefix(self, old: str, new: str) -> int:
         """Move ``old`` and every ``old/…`` namespace to ``new`` in the
         three namespace-carrying tables. Returns moved chunk count."""
-        escaped = (
-            old.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        )
-        like = f"{escaped}/%"
+        like = f"{_escape_like(old)}/%"
         moved = 0
         async with self._lock:
             for table in ("chunks", "memory_host_docs", "memory_host_links"):

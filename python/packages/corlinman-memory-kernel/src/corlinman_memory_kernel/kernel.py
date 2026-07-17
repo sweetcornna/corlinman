@@ -386,6 +386,21 @@ class MemoryKernel:
                     (into_user, from_user),
                 )
                 moved += cur.rowcount
+            # mk_core is PK'd on (tenant, scope_user, persona, block):
+            # where the survivor already has the same block, theirs wins
+            # and the loser's row is dropped; the rest are re-stamped.
+            await self._conn.execute(
+                "DELETE FROM mk_core WHERE scope_user_id = ? AND EXISTS ("
+                " SELECT 1 FROM mk_core c2 WHERE c2.tenant_id = mk_core.tenant_id"
+                " AND c2.scope_user_id = ? AND c2.persona_id = mk_core.persona_id"
+                " AND c2.block = mk_core.block)",
+                (from_user, into_user),
+            )
+            cur = await self._conn.execute(
+                "UPDATE mk_core SET scope_user_id = ? WHERE scope_user_id = ?",
+                (into_user, from_user),
+            )
+            moved += cur.rowcount
             await self._conn.commit()
         return moved
 
