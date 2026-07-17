@@ -369,14 +369,39 @@ async def _memory_reconcile_action(context: BuiltinContext) -> dict[str, Any]:
 async def _maybe_embed(
     app_state: Any, kernel: Any, item_id: str, text: str
 ) -> None:
-    """Stamp an embedding when the seam is wired (W6 lands the wiring)."""
+    """Stamp embedding + EPA affect on a new item when the seam is wired.
+
+    Both ride one embed call: the item's vector feeds the hybrid recall
+    branch, and its projection onto the (process-cached) affect anchors
+    feeds the W6 mood-congruent ranking term.
+    """
     embed_fn = getattr(app_state, "memory_embed_fn", None)
     if embed_fn is None:
         return
     try:
         vector = await embed_fn(text)
-        if vector:
-            await kernel.set_embedding(item_id, list(vector))
+        if not vector:
+            return
+        await kernel.set_embedding(item_id, list(vector))
+        from corlinman_memory_kernel.affect import (
+            affect_from_embedding,
+            build_anchors,
+        )
+
+        anchors = getattr(app_state, "memory_affect_anchors", None)
+        if anchors is None:
+            anchors = await build_anchors(embed_fn)
+            if anchors is None:
+                return
+            try:
+                app_state.memory_affect_anchors = anchors
+            except (AttributeError, TypeError):  # pragma: no cover
+                pass
+        affect = affect_from_embedding(list(vector), anchors)
+        if affect.salience > 0.0:
+            await kernel.set_affect(
+                item_id, affect.e, affect.p, affect.a, affect.salience
+            )
     except Exception as exc:  # noqa: BLE001 — embeddings are an enhancement
         _logger.warning("memory.reconcile embed failed: %s", exc)
 

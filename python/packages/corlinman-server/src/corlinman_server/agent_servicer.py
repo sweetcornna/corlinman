@@ -5007,8 +5007,82 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 session=session_key,
                 obs=obs_id,
             )
+            # W6: nudge the persona's mood off the same background task.
+            await self._update_mood_from_turn(
+                kernel,
+                self._kernel_scope_fields(start)["persona_id"],
+                user_text,
+            )
         except Exception as exc:  # noqa: BLE001 — observation is best-effort
             logger.warning("agent.memory.kernel_observe_failed", error=str(exc))
+
+    def _memory_affect_config(self) -> dict[str, Any]:
+        """Effective ``[memory.affect]`` knobs (W6 EPA lens, default off)."""
+        cfg: dict[str, Any] = {"enabled": False, "weight": 0.15, "alpha": 0.1}
+        app_state = getattr(self, "_app_state", None)
+        raw = getattr(app_state, "memory_affect_config", None)
+        if isinstance(raw, dict):
+            enabled = raw.get("enabled", cfg["enabled"])
+            if isinstance(enabled, bool):
+                cfg["enabled"] = enabled
+            for key, (lo, hi) in (("weight", (0.0, 1.0)), ("alpha", (0.0, 1.0))):
+                value = raw.get(key, cfg[key])
+                if (
+                    isinstance(value, (int, float))
+                    and not isinstance(value, bool)
+                    and lo <= float(value) <= hi
+                ):
+                    cfg[key] = float(value)
+        return cfg
+
+    async def _update_mood_from_turn(
+        self, kernel: Any, persona_id: str, user_text: str
+    ) -> None:
+        """Nudge the persona's EPA mood from this turn's user text.
+
+        Runs in the observe background task (never the hot path); no-ops
+        without an embed provider or when the affect lens is disabled.
+        Anchors are built once per process and cached on app_state.
+        """
+        affect_cfg = self._memory_affect_config()
+        if not affect_cfg["enabled"] or not user_text.strip():
+            return
+        app_state = getattr(self, "_app_state", None)
+        embed_fn = getattr(app_state, "memory_embed_fn", None)
+        if embed_fn is None:
+            return
+        try:
+            from corlinman_memory_kernel.affect import (
+                affect_from_embedding,
+                build_anchors,
+            )
+
+            anchors = getattr(app_state, "memory_affect_anchors", None)
+            if anchors is None:
+                anchors = await build_anchors(embed_fn)
+                if anchors is None:
+                    return
+                if app_state is not None:
+                    with contextlib.suppress(AttributeError, TypeError):
+                        app_state.memory_affect_anchors = anchors
+            vec = await embed_fn(user_text[:500])
+            if not vec:
+                return
+            affect = affect_from_embedding(list(vec), anchors)
+            if affect.salience <= 0.0:
+                return
+            mood = await kernel.update_affect_state(
+                persona_id,
+                (affect.e, affect.p, affect.a),
+                alpha=affect_cfg["alpha"],
+            )
+            logger.debug(
+                "agent.memory.mood_updated",
+                persona=persona_id,
+                mood_e=round(mood[0], 3),
+            )
+        except Exception as exc:  # noqa: BLE001 — affect is an enhancement
+            logger.warning("agent.memory.mood_update_failed", error=str(exc))
 
     def _memory_kernel_effective_mode(self, channel: str | None) -> str:
         """Per-channel canary on top of the base mode.
@@ -5072,10 +5146,19 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         user_text = _last_user_text(start.messages) or ""
         if not user_text.strip():
             return
+        # W6: mood-congruent recall when the affect lens is enabled.
+        affect_cfg = self._memory_affect_config()
+        mood: tuple[float, float, float] | None = None
+        rank_weights: dict[str, float] | None = None
+        if affect_cfg["enabled"]:
+            mood = await kernel.get_affect_state(fields["persona_id"])
+            rank_weights = {"w_aff": affect_cfg["weight"]}
         hits = await kernel.recall_ranked(
             scope,
             user_text.strip()[: recall_cfg["query_chars"]],
             top_k=recall_cfg["notes_top_k"],
+            weights=rank_weights,
+            mood=mood,
         )
         # kernel_min_score, NOT min_score: the notes lane's floor is on
         # the BM25 scale, this lane's blend is bounded ~0..1.8 — one knob

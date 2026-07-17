@@ -362,6 +362,7 @@ class MemoryKernel:
         candidates: int = 32,
         weights: dict[str, float] | None = None,
         query_vector: list[float] | None = None,
+        mood: tuple[float, float, float] | None = None,
     ) -> list[MemoryItem]:
         """Ranked recall: hybrid candidate fetch + unified re-rank.
 
@@ -371,17 +372,22 @@ class MemoryKernel:
         generative-agents-style blend::
 
             score = w_rel·rrf + w_rec·exp(-age/τ) + w_imp·importance
-                    + w_tr·(trust·utility)   [+ w_aff·resonance, W6]
+                    + w_tr·(trust·utility) + w_aff·resonance(mood, item)
 
-        ``risk='high'`` items are excluded entirely — channel-level
-        provenance that would let them surface safely lands with the
-        W5 reconcile pipeline.
+        The affect term (W6) only engages when a ``mood`` is supplied
+        AND ``w_aff`` > 0 AND the item carries a stamped affect vector —
+        salience gates it, and the mood-repair bias inside
+        :func:`corlinman_memory_kernel.affect.resonance` prevents
+        negative-mood spirals. ``risk='high'`` items are excluded
+        entirely — channel-level provenance that would let them surface
+        safely lands with the W5 reconcile pipeline.
         """
         w = {
             "w_rel": 1.0,
             "w_rec": 0.3,
             "w_imp": 0.3,
             "w_tr": 0.2,
+            "w_aff": 0.0,
             "half_life_days": 30.0,
         }
         if weights:
@@ -420,6 +426,10 @@ class MemoryKernel:
 
         now = now_ms()
         max_rrf = max(rrf.values())
+        affect_on = mood is not None and w["w_aff"] > 0.0
+        if affect_on:
+            from corlinman_memory_kernel.affect import resonance
+
         scored: list[tuple[float, MemoryItem]] = []
         for item_id, item in by_id.items():
             age_days = max(0.0, (now - item.recorded_at_ms) / 86_400_000.0)
@@ -430,6 +440,17 @@ class MemoryKernel:
                 + w["w_imp"] * item.importance
                 + w["w_tr"] * (item.trust * item.utility)
             )
+            if affect_on:
+                assert mood is not None  # narrowed by affect_on
+                score += w["w_aff"] * resonance(
+                    mood,
+                    (
+                        item.affect_e,
+                        item.affect_p,
+                        item.affect_a,
+                        item.affect_salience,
+                    ),
+                )
             item.score = score
             scored.append((score, item))
         scored.sort(key=lambda pair: pair[0], reverse=True)
@@ -558,6 +579,63 @@ class MemoryKernel:
             )
             out.append(obs)
         return out
+
+    async def set_affect(
+        self, item_id: str, e: float, p: float, a: float, salience: float
+    ) -> None:
+        """Stamp the EPA affect vector on an item (W6 affect lens)."""
+        async with self._lock:
+            await self._conn.execute(
+                "UPDATE mk_items SET affect_e = ?, affect_p = ?,"
+                " affect_a = ?, affect_salience = ? WHERE id = ?",
+                (e, p, a, salience, item_id),
+            )
+            await self._conn.commit()
+
+    async def get_affect_state(
+        self, persona_id: str
+    ) -> tuple[float, float, float]:
+        """The persona's current mood in EPA space (0,0,0 when unset)."""
+        async with self._conn.execute(
+            "SELECT mood_e, mood_p, mood_a FROM mk_affect_state"
+            " WHERE persona_id = ?",
+            (persona_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return (0.0, 0.0, 0.0)
+        return (float(row["mood_e"]), float(row["mood_p"]), float(row["mood_a"]))
+
+    async def update_affect_state(
+        self,
+        persona_id: str,
+        turn_affect: tuple[float, float, float],
+        *,
+        alpha: float = 0.1,
+    ) -> tuple[float, float, float]:
+        """EMA mood update: ``mood ← (1-α)·mood + α·turn_affect``.
+
+        Slow by design — one emotional message nudges the persona's
+        mood, it doesn't yank it. Returns the new mood.
+        """
+        current = await self.get_affect_state(persona_id)
+        new = tuple(
+            (1.0 - alpha) * c + alpha * t
+            for c, t in zip(current, turn_affect, strict=True)
+        )
+        async with self._lock:
+            await self._conn.execute(
+                "INSERT INTO mk_affect_state("
+                "persona_id, mood_e, mood_p, mood_a, updated_at_ms)"
+                " VALUES (?, ?, ?, ?, ?)"
+                " ON CONFLICT(persona_id) DO UPDATE SET"
+                " mood_e = excluded.mood_e, mood_p = excluded.mood_p,"
+                " mood_a = excluded.mood_a,"
+                " updated_at_ms = excluded.updated_at_ms",
+                (persona_id, new[0], new[1], new[2], now_ms()),
+            )
+            await self._conn.commit()
+        return (new[0], new[1], new[2])
 
     async def add_edge(
         self, src_id: str, dst_id: str, rel: str, *, weight: float = 1.0
@@ -733,6 +811,10 @@ class MemoryKernel:
             importance=float(row["importance"]),
             trust=float(row["trust"]),
             utility=float(row["utility"]),
+            affect_e=float(row["affect_e"] or 0.0),
+            affect_p=float(row["affect_p"] or 0.0),
+            affect_a=float(row["affect_a"] or 0.0),
+            affect_salience=float(row["affect_salience"] or 0.0),
             valid_from_ms=int(row["valid_from_ms"]),
             valid_to_ms=(
                 int(row["valid_to_ms"]) if row["valid_to_ms"] is not None else None
