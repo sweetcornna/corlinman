@@ -150,6 +150,24 @@ async def test_shadow_recall_logs_but_never_injects(
         await kernel.close()
 
 
+def test_kernel_mode_precedence(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Env var (ops kill-switch) > [memory.kernel] TOML mode > shadow."""
+    servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: _FakeProvider())
+    monkeypatch.delenv("CORLINMAN_MEMORY_KERNEL", raising=False)
+
+    assert servicer._memory_kernel_mode() == "shadow"  # no config at all
+
+    servicer.set_app_state(SimpleNamespace(memory_kernel_config={"mode": "off"}))
+    assert servicer._memory_kernel_mode() == "off"  # TOML applies
+
+    servicer.set_app_state(SimpleNamespace(memory_kernel_config={"mode": "bogus"}))
+    assert servicer._memory_kernel_mode() == "shadow"  # typo → safe default
+
+    monkeypatch.setenv("CORLINMAN_MEMORY_KERNEL", "on")
+    servicer.set_app_state(SimpleNamespace(memory_kernel_config={"mode": "off"}))
+    assert servicer._memory_kernel_mode() == "on"  # env wins
+
+
 async def test_scope_fields_tolerate_missing_binding() -> None:
     fields = CorlinmanAgentServicer._kernel_scope_fields(SimpleNamespace())
     assert fields == {

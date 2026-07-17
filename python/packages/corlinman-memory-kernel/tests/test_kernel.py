@@ -158,19 +158,84 @@ async def test_recall_matches_cjk_substrings(kernel: MemoryKernel) -> None:
     assert [h.text for h in hits] == ["喜欢喝乌龙茶"]
 
 
-def test_fts_match_query_units() -> None:
-    from corlinman_memory_kernel.kernel import _fts_match_query
+def test_trigram_match_query_units() -> None:
+    from corlinman_memory_kernel.kernel import (
+        _query_units,
+        _trigram_match_query,
+    )
 
     # Plain English: quoted units joined with OR.
-    assert _fts_match_query("lazy fox") == '"lazy" OR "fox"'
+    assert _trigram_match_query(_query_units("lazy fox")) == '"lazy" OR "fox"'
     # CJK runs become sliding trigram phrases.
-    assert _fts_match_query("家乡是哪里") == '"家乡是" OR "乡是哪" OR "是哪里"'
-    # Short CJK runs (< 3 chars) pass through as-is.
-    assert _fts_match_query("家乡") == '"家乡"'
+    assert (
+        _trigram_match_query(_query_units("家乡是哪里"))
+        == '"家乡是" OR "乡是哪" OR "是哪里"'
+    )
+    # Units shorter than 3 chars can't produce a trigram token — the
+    # MATCH expression drops them (recall LIKE-fallbacks instead).
+    assert _trigram_match_query(_query_units("家乡")) == ""
+    assert _trigram_match_query(_query_units("hi ok")) == ""
     # Embedded quotes are doubled; quote-only tokens vanish.
-    assert _fts_match_query('say "hi"') == '"say" OR """hi"""'
-    assert _fts_match_query('"') == ""
-    assert _fts_match_query("  ") == ""
+    assert _trigram_match_query(_query_units('say "hi"')) == '"say" OR """hi"""'
+    assert _trigram_match_query(_query_units('"')) == ""
+    assert _trigram_match_query(_query_units("  ")) == ""
+
+
+async def test_recall_short_query_like_fallback(kernel: MemoryKernel) -> None:
+    """Two-char CJK words (家乡/名字) and short ASCII tokens produce no
+    trigram token; recall must fall back to a scoped LIKE scan instead of
+    silently returning nothing."""
+    scope = KernelScope(scope_user_id="alice")
+    await kernel.add_item(
+        scope, text="用户的家乡是哈尔滨", kind="fact", source="turn"
+    )
+    await kernel.add_item(
+        KernelScope(scope_user_id="bob"),
+        text="bob 的家乡是上海",
+        kind="fact",
+        source="turn",
+    )
+
+    hits = await kernel.recall(scope, "家乡")
+    assert [h.text for h in hits] == ["用户的家乡是哈尔滨"]  # scope holds
+
+    # LIKE wildcards in the query match literally, not as wildcards —
+    # "%" alone would match EVERY row if unescaped.
+    assert await kernel.recall(scope, "%") == []
+    assert await kernel.recall(scope, "__") == []
+
+
+async def test_observe_queue_prunes_backlog(kernel: MemoryKernel) -> None:
+    """The retention sweep trims the pending backlog to the cap and drops
+    aged processed rows, so shadow mode can't grow mk_observations
+    forever before the reconcile job ships."""
+    from corlinman_memory_kernel import kernel as kernel_mod
+
+    old_id = await kernel.observe(_obs(user_text="ancient processed row"))
+    await kernel.mark_observations_processed([old_id])
+    # Age the processed row past the TTL.
+    async with kernel._conn.execute(  # noqa: SLF001
+        "UPDATE mk_observations SET processed_at_ms = 1 WHERE id = ?", (old_id,)
+    ):
+        pass
+    await kernel._conn.commit()  # noqa: SLF001
+
+    for _ in range(5):
+        await kernel.observe(_obs())
+
+    # Force a sweep with a tiny cap.
+    async with kernel._lock:  # noqa: SLF001
+        original_cap = kernel_mod._OBS_PENDING_CAP
+        kernel_mod._OBS_PENDING_CAP = 3
+        try:
+            await kernel._prune_observations_locked()  # noqa: SLF001
+        finally:
+            kernel_mod._OBS_PENDING_CAP = original_cap
+        await kernel._conn.commit()  # noqa: SLF001
+
+    stats = await kernel.stats()
+    assert stats["observations_pending"] == 3  # trimmed to cap, newest kept
+    assert stats["observations_total"] == 3  # aged processed row gone
 
 
 async def test_recall_escapes_fts_operators(kernel: MemoryKernel) -> None:

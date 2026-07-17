@@ -227,9 +227,11 @@ class _SqliteStore:
         # busy_timeout turns lock contention into a bounded wait instead of
         # an immediate SQLITE_BUSY. Best-effort: ``:memory:`` and some
         # network filesystems refuse WAL — the store works either way.
+        # busy_timeout BEFORE journal_mode: if the WAL switch raises, the
+        # timeout safety net must already be in place.
         try:
-            await conn.execute("PRAGMA journal_mode = WAL")
             await conn.execute("PRAGMA busy_timeout = 5000")
+            await conn.execute("PRAGMA journal_mode = WAL")
         except aiosqlite.Error:
             pass
         await conn.executescript(_SCHEMA_SQL)

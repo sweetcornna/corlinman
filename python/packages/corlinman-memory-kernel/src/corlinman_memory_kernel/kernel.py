@@ -33,6 +33,15 @@ _MODES = ("off", "shadow", "on")
 # turns are truncated rather than stored whole.
 _MAX_OBS_TEXT = 4000
 
+# Observation-queue retention. Until the W5 reconcile job ships (and for
+# deployments that never enable it), shadow mode must not grow
+# mk_observations forever: every _OBS_PRUNE_EVERY-th observe() sweeps
+# processed rows older than the TTL and trims the pending backlog to the
+# cap (oldest first — the reconcile job wants recent material anyway).
+_OBS_PRUNE_EVERY = 256
+_OBS_PROCESSED_TTL_MS = 7 * 24 * 3600 * 1000
+_OBS_PENDING_CAP = 20_000
+
 
 def kernel_mode() -> str:
     """Resolve the rollout mode (default ``shadow``).
@@ -65,17 +74,8 @@ def _is_cjk(ch: str) -> bool:
     return any(lo <= code <= hi for lo, hi in _CJK_RANGES)
 
 
-def _fts_match_query(text: str) -> str:
-    """Build a trigram-friendly FTS5 MATCH expression from free text.
-
-    Recall queries are chatty natural language, so units are joined with
-    ``OR`` and BM25 does the ranking — requiring EVERY word (implicit
-    AND, the legacy store's semantics) rejects almost any real message.
-    CJK runs are sliced into sliding character-trigram phrases because
-    the trigram tokenizer needs 3-char units and whole-sentence phrases
-    would demand a verbatim substring match. All units are quoted, so
-    FTS5 operator characters in user text match literally.
-    """
+def _query_units(text: str) -> list[str]:
+    """Slice free text into match units: words + sliding CJK trigrams."""
     units: list[str] = []
     for token in text.split():
         for is_cjk, chars in itertools.groupby(token, key=_is_cjk):
@@ -84,12 +84,39 @@ def _fts_match_query(text: str) -> str:
                 units.extend(run[i : i + 3] for i in range(len(run) - 2))
             elif run.strip('"'):
                 units.append(run)
+    return units[:_MAX_QUERY_UNITS]
 
+
+def _trigram_match_query(units: list[str]) -> str:
+    """Build a trigram-tokenizer FTS5 MATCH expression from query units.
+
+    Deliberately NOT named like the legacy host's ``_fts_match_query`` —
+    that one produces implicit-AND unicode61 syntax; merging the two
+    would silently flip a store's recall semantics.
+
+    Recall queries are chatty natural language, so units are joined with
+    ``OR`` and BM25 does the ranking — requiring EVERY word (implicit
+    AND, the legacy store's semantics) rejects almost any real message.
+    CJK runs arrive pre-sliced into 3-char windows because the trigram
+    tokenizer needs 3-char units and whole-sentence phrases would demand
+    a verbatim substring match. All units are quoted, so FTS5 operator
+    characters in user text match literally. Units shorter than 3 chars
+    produce no trigram and are dropped here; :meth:`MemoryKernel.recall`
+    falls back to a LIKE scan when nothing survives.
+    """
     quoted = [
         '"{}"'.format(u.replace('"', '""'))
-        for u in units[:_MAX_QUERY_UNITS]
+        for u in units
+        if len(u) >= 3
     ]
     return " OR ".join(quoted)
+
+
+def _escape_like(unit: str) -> str:
+    r"""Escape LIKE wildcards so a unit matches literally (ESCAPE '\')."""
+    return (
+        unit.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    )
 
 
 class MemoryKernel:
@@ -103,15 +130,18 @@ class MemoryKernel:
     def __init__(self, conn: aiosqlite.Connection) -> None:
         self._conn = conn
         self._lock = asyncio.Lock()
+        self._observe_count = 0
 
     @classmethod
     async def open(cls, path: str | Path) -> MemoryKernel:
         conn = await aiosqlite.connect(str(path))
         conn.row_factory = aiosqlite.Row
         await conn.execute("PRAGMA foreign_keys = ON")
+        # busy_timeout BEFORE journal_mode: if the WAL switch raises
+        # (network FS), the timeout safety net must already be in place.
         try:
-            await conn.execute("PRAGMA journal_mode = WAL")
             await conn.execute("PRAGMA busy_timeout = 5000")
+            await conn.execute("PRAGMA journal_mode = WAL")
         except aiosqlite.Error:
             pass
         await conn.executescript(MK_SCHEMA_SQL)
@@ -145,8 +175,27 @@ class MemoryKernel:
                     obs.ts_ms,
                 ),
             )
+            self._observe_count += 1
+            if self._observe_count % _OBS_PRUNE_EVERY == 0:
+                await self._prune_observations_locked()
             await self._conn.commit()
         return obs_id
+
+    async def _prune_observations_locked(self) -> None:
+        """Retention sweep (caller holds ``self._lock``; commit is theirs)."""
+        await self._conn.execute(
+            "DELETE FROM mk_observations WHERE processed_at_ms IS NOT NULL"
+            " AND processed_at_ms < ?",
+            (now_ms() - _OBS_PROCESSED_TTL_MS,),
+        )
+        await self._conn.execute(
+            "DELETE FROM mk_observations WHERE processed_at_ms IS NULL"
+            " AND id NOT IN ("
+            "   SELECT id FROM mk_observations WHERE processed_at_ms IS NULL"
+            "   ORDER BY ts_ms DESC LIMIT ?"
+            " )",
+            (_OBS_PENDING_CAP,),
+        )
 
     # ---- item primitives (bi-temporal) -----------------------------------
 
@@ -225,36 +274,69 @@ class MemoryKernel:
         NULL (agent-scoped memory is visible to everyone in the tenant);
         item's ``persona_id`` matches or is ``''`` (persona-shared).
         Cross-persona ``mk_scope_grants`` and visibility tiers land in W2.
+
+        Queries whose every unit is shorter than 3 chars (two-char CJK
+        words like 家乡/名字, "hi"/"ok") produce no trigram token, so
+        they fall back to a scope-filtered LIKE scan — bounded by the
+        per-scope item count, which is small by design.
         """
         if top_k <= 0:
             return []
-        match = _fts_match_query(text)
-        if not match:
+        units = _query_units(text)
+        match = _trigram_match_query(units)
+        if match:
+            sql = (
+                "SELECT i.*, bm25(mk_items_fts) AS fts_score"
+                " FROM mk_items_fts f JOIN mk_items i ON i.rowid = f.rowid"
+                " WHERE mk_items_fts MATCH ?"
+                "   AND i.tenant_id = ?"
+                "   AND (i.scope_user_id IS NULL OR i.scope_user_id = ?)"
+                "   AND (i.persona_id = '' OR i.persona_id = ?)"
+                "   AND i.valid_to_ms IS NULL"
+                " ORDER BY fts_score ASC LIMIT ?"
+            )
+            params: tuple[Any, ...] = (
+                match,
+                scope.tenant_id,
+                scope.scope_user_id,
+                scope.persona_id,
+                top_k,
+            )
+            try:
+                async with self._conn.execute(sql, params) as cur:
+                    rows = await cur.fetchall()
+            except aiosqlite.OperationalError as exc:
+                if "fts5" in str(exc).lower() or "malformed" in str(exc).lower():
+                    return []
+                raise
+            return [self._row_to_item(row) for row in rows]
+
+        # LIKE fallback for short-unit-only queries (newest-first; no BM25
+        # score is available so hits carry score=0.0).
+        like_units = [u for u in units if u][:4]
+        if not like_units:
             return []
+        like_clause = " OR ".join(
+            "i.text LIKE ? ESCAPE '\\'" for _ in like_units
+        )
         sql = (
-            "SELECT i.*, bm25(mk_items_fts) AS fts_score"
-            " FROM mk_items_fts f JOIN mk_items i ON i.rowid = f.rowid"
-            " WHERE mk_items_fts MATCH ?"
-            "   AND i.tenant_id = ?"
+            "SELECT i.*, 0.0 AS fts_score FROM mk_items i"
+            " WHERE i.tenant_id = ?"
             "   AND (i.scope_user_id IS NULL OR i.scope_user_id = ?)"
             "   AND (i.persona_id = '' OR i.persona_id = ?)"
             "   AND i.valid_to_ms IS NULL"
-            " ORDER BY fts_score ASC LIMIT ?"
+            f"   AND ({like_clause})"
+            " ORDER BY i.recorded_at_ms DESC LIMIT ?"
         )
         params = (
-            match,
             scope.tenant_id,
             scope.scope_user_id,
             scope.persona_id,
+            *(f"%{_escape_like(u)}%" for u in like_units),
             top_k,
         )
-        try:
-            async with self._conn.execute(sql, params) as cur:
-                rows = await cur.fetchall()
-        except aiosqlite.OperationalError as exc:
-            if "fts5" in str(exc).lower() or "malformed" in str(exc).lower():
-                return []
-            raise
+        async with self._conn.execute(sql, params) as cur:
+            rows = await cur.fetchall()
         return [self._row_to_item(row) for row in rows]
 
     # ---- MAINTENANCE surface (drained by later waves) ----------------------

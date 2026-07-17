@@ -71,6 +71,23 @@ def test_recall_config_reads_app_state_and_sanitises() -> None:
     }
 
 
+def test_recall_config_rejects_bools_and_honors_zero() -> None:
+    servicer = _servicer()
+    servicer.set_app_state(
+        SimpleNamespace(
+            memory_recall_config={
+                "recent_turns": True,  # TOML `true` must NOT coerce to 1
+                "notes_top_k": 0,  # explicit disable is honored
+            }
+        )
+    )
+    assert servicer._memory_recall_config() == {
+        "recent_turns": 8,
+        "notes_top_k": 0,
+        "query_chars": 500,
+    }
+
+
 async def test_recall_and_notes_lanes_honor_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -131,12 +148,14 @@ async def test_wire_c2_publishes_memory_recall_config(tmp_path: Path) -> None:
     admin_a = SimpleNamespace(identity_store=None, persona_resolver=None)
     app = SimpleNamespace(state=SimpleNamespace())
 
-    cfg = {"memory": {"recall": {"recent_turns": 10}}}
+    cfg = {"memory": {"recall": {"recent_turns": 10}, "kernel": {"mode": "off"}}}
     await _wire_c2_handles(app, state, admin_a, tmp_path, cfg=cfg)
     assert state.memory_recall_config == {"recent_turns": 10}
+    assert state.memory_kernel_config == {"mode": "off"}
 
     # Absent section → empty dict (servicer applies legacy defaults).
     state2 = AppState()
     state2.data_dir = tmp_path
     await _wire_c2_handles(app, state2, admin_a, tmp_path, cfg={})
     assert state2.memory_recall_config == {}
+    assert state2.memory_kernel_config == {}

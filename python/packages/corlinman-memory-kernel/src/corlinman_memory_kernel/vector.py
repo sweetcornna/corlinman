@@ -41,9 +41,11 @@ def cosine_topk(
 ) -> list[tuple[str, float]]:
     """Rank ``(id, f32-blob)`` candidates by cosine similarity to ``query``.
 
-    Blobs whose dimension differs from the query score 0 (skipped from
-    the result) rather than raising — mixed-dimension stores happen when
-    the embedding provider changes between waves.
+    Blobs whose dimension differs from the query are skipped rather than
+    raising — mixed-dimension stores happen when the embedding provider
+    changes between waves. Candidates with non-positive similarity are
+    dropped too: an orthogonal or opposed memory is noise, not a weak
+    hit, and callers treat presence in the result as "related".
     """
     if top_k <= 0 or not query:
         return []

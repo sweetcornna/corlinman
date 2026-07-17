@@ -85,6 +85,10 @@ class AppState:
     # recall lanes (recent_turns / notes_top_k / query_chars).
     memory_recall_config: Any = None
 
+    # dict — [memory.kernel] TOML knobs (mode = off|shadow|on). The
+    # CORLINMAN_MEMORY_KERNEL env var overrides as an ops kill-switch.
+    memory_kernel_config: Any = None
+
     # corlinman_persona.PersonaResolver — read-only ``{{persona.*}}`` /
     # ``{{persona.life_*}}`` placeholder lookup keyed by ``agent_id``.
     persona_resolver: Any = None

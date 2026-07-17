@@ -523,11 +523,21 @@ max_promotions_per_run = 50
 # how much stored memory each turn injects: `recent_turns` recent
 # exchanges for the session plus up to `notes_top_k` BM25-matched durable
 # notes queried with the first `query_chars` chars of the user's message.
-# Defaults below = the legacy hardcoded behaviour; the section is optional.
+# Defaults below = the legacy hardcoded behaviour; the section is
+# optional. A value of 0 disables that lane explicitly; negative or
+# malformed values fall back to the default.
 [memory.recall]
 recent_turns = 8
 notes_top_k  = 4
 query_chars  = 500
+
+# [memory.kernel] — the unified memory kernel (mk_* tables in the same
+# memory.sqlite). mode: "off" = never touched; "shadow" (default) =
+# observations accumulate + recall runs for diff telemetry only, nothing
+# is injected; "on" = reserved for the W3 injection flip. The
+# CORLINMAN_MEMORY_KERNEL env var overrides this key (ops kill-switch).
+[memory.kernel]
+mode = "shadow"
 
 # ---------------------------------------------------------------------------
 # [logging] — tracing subscriber. file_rolling emits daily files under
