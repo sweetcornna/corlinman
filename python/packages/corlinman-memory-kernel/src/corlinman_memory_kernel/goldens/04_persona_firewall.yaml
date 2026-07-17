@@ -1,0 +1,27 @@
+# Cross-persona firewall: persona-bound facts stay with their persona;
+# persona-shared ('') facts surface for every persona of the same user.
+name: persona-firewall
+description: Persona-specific memory is isolated; shared memory crosses personas.
+items:
+  - scope_user: u1
+    persona: grantley
+    text: "秘密任务代号是青鸟"
+    kind: fact
+  - scope_user: u1
+    persona: ""
+    text: "用户生日是三月十二日"
+    kind: fact
+probes:
+  - text: "秘密任务 代号"
+    scope_user: u1
+    persona: other_persona
+    expect: []
+    forbid: ["青鸟"]
+  - text: "生日 三月"
+    scope_user: u1
+    persona: grantley
+    expect: ["三月十二日"]
+  - text: "秘密任务 代号"
+    scope_user: u1
+    persona: grantley
+    expect: ["青鸟"]

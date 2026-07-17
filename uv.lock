@@ -673,10 +673,14 @@ version = "0.1.0"
 source = { editable = "python/packages/corlinman-memory-kernel" }
 dependencies = [
     { name = "aiosqlite" },
+    { name = "pyyaml" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "aiosqlite", specifier = ">=0.20" }]
+requires-dist = [
+    { name = "aiosqlite", specifier = ">=0.20" },
+    { name = "pyyaml", specifier = ">=6" },
+]
 
 [[package]]
 name = "corlinman-nodebridge"

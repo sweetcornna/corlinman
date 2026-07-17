@@ -1,0 +1,25 @@
+# Chinese recall must work for chatty questions AND two-char words —
+# the unicode61 blindness (whole CJK run = one token) and the trigram
+# 3-char minimum are both pinned here.
+name: cjk-recall
+description: CJK substring recall via trigram + short-word LIKE fallback.
+items:
+  - scope_user: u1
+    text: "用户的家乡是哈尔滨"
+    kind: fact
+  - scope_user: u1
+    text: "用户喜欢喝乌龙茶"
+    kind: preference
+  - scope_user: u1
+    text: "用户的名字叫小明"
+    kind: fact
+probes:
+  - text: "你还记得我的家乡在哪里吗"
+    scope_user: u1
+    expect: ["哈尔滨"]
+  - text: "名字"                # two-char word → LIKE fallback path
+    scope_user: u1
+    expect: ["小明"]
+  - text: "喜欢喝什么茶"
+    scope_user: u1
+    expect: ["乌龙茶"]

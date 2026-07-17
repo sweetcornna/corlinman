@@ -1,0 +1,17 @@
+# W6 seeds this case with affect-tagged memories and a depressed mood,
+# asserting the mood-repair bias keeps positive memories reachable
+# (anti-spiral). Until the affect lens lands, it pins the pre-affect
+# baseline: emotional wording carries no ranking weight.
+name: mood-spiral-baseline
+description: Pre-W6 baseline — affect-free ranking treats emotional wording neutrally.
+items:
+  - scope_user: u1
+    text: "yesterday was a sad terrible day at work"
+    kind: event
+  - scope_user: u1
+    text: "yesterday the work demo went wonderfully"
+    kind: event
+probes:
+  - text: "yesterday work"
+    scope_user: u1
+    expect: ["sad terrible", "wonderfully"]

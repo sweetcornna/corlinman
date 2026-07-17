@@ -1,0 +1,24 @@
+# FTS operator characters and LIKE wildcards in probe text must match
+# literally — a crafted query can neither crash recall nor wildcard its
+# way into unrelated (or other-scope) memory.
+name: operator-injection
+description: Query metacharacters are inert data, not syntax.
+items:
+  - scope_user: u1
+    text: "deploy failed with error code 137"
+    kind: event
+  - scope_user: victim
+    text: "victim secret token abc"
+    kind: fact
+probes:
+  - text: "deploy - error:"
+    scope_user: u1
+    expect: ["error code 137"]
+  - text: "%"                      # bare wildcard → must match nothing
+    scope_user: u1
+    expect: []
+    forbid: ["secret token"]
+  - text: 'deploy OR "victim"'     # cross-scope fishing via OR syntax
+    scope_user: u1
+    expect: ["error code 137"]
+    forbid: ["secret token"]
