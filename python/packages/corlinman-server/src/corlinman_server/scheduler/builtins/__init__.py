@@ -55,6 +55,10 @@ from corlinman_server.scheduler.builtins.evolution_shadow_test import (
     EVOLUTION_SHADOW_TEST_BUILTIN_NAME,
     _evolution_shadow_test_action,
 )
+from corlinman_server.scheduler.builtins.memory_dream import (
+    MEMORY_DREAM_BUILTIN_NAME,
+    _memory_dream_action,
+)
 from corlinman_server.scheduler.builtins.memory_reconcile import (
     MEMORY_RECONCILE_BUILTIN_NAME,
     _memory_reconcile_action,
@@ -88,6 +92,7 @@ __all__ = [
     "EVOLUTION_DARWIN_CURATE_BUILTIN_NAME",
     "EVOLUTION_ENGINE_RUN_ONCE_BUILTIN_NAME",
     "EVOLUTION_SHADOW_TEST_BUILTIN_NAME",
+    "MEMORY_DREAM_BUILTIN_NAME",
     "MEMORY_RECONCILE_BUILTIN_NAME",
     "PERSONA_DECAY_BUILTIN_NAME",
     "PERSONA_LIFE_ADVANCE_BUILTIN_NAME",
@@ -97,6 +102,7 @@ __all__ = [
     "_evolution_darwin_curate_action",
     "_evolution_engine_run_once_action",
     "_evolution_shadow_test_action",
+    "_memory_dream_action",
     "_memory_reconcile_action",
     "_persona_decay_action",
     "_persona_life_advance_action",

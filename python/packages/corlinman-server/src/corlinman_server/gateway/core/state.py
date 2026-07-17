@@ -106,6 +106,9 @@ class AppState:
     # for the W7 implicit trust loop.
     memory_trust_config: Any = None
 
+    # dict — [memory.dream] TOML knobs for the W8 nightly dream cycle.
+    memory_dream_config: Any = None
+
     # corlinman_persona.PersonaResolver — read-only ``{{persona.*}}`` /
     # ``{{persona.life_*}}`` placeholder lookup keyed by ``agent_id``.
     persona_resolver: Any = None
