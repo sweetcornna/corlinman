@@ -368,6 +368,42 @@ class MemoryKernel:
             out.append(obs)
         return out
 
+    async def merge_scope_user(self, from_user: str, into_user: str) -> int:
+        """Re-stamp every row of a merged identity onto the survivor.
+
+        Called after an operator ``merge_users``; returns the number of
+        rows moved. Bi-temporal history is preserved as-is — only the
+        scope key changes.
+        """
+        if not from_user or not into_user or from_user == into_user:
+            return 0
+        moved = 0
+        async with self._lock:
+            for table in ("mk_items", "mk_observations"):
+                cur = await self._conn.execute(
+                    f"UPDATE {table} SET scope_user_id = ?"
+                    " WHERE scope_user_id = ?",
+                    (into_user, from_user),
+                )
+                moved += cur.rowcount
+            # mk_core is PK'd on (tenant, scope_user, persona, block):
+            # where the survivor already has the same block, theirs wins
+            # and the loser's row is dropped; the rest are re-stamped.
+            await self._conn.execute(
+                "DELETE FROM mk_core WHERE scope_user_id = ? AND EXISTS ("
+                " SELECT 1 FROM mk_core c2 WHERE c2.tenant_id = mk_core.tenant_id"
+                " AND c2.scope_user_id = ? AND c2.persona_id = mk_core.persona_id"
+                " AND c2.block = mk_core.block)",
+                (from_user, into_user),
+            )
+            cur = await self._conn.execute(
+                "UPDATE mk_core SET scope_user_id = ? WHERE scope_user_id = ?",
+                (into_user, from_user),
+            )
+            moved += cur.rowcount
+            await self._conn.commit()
+        return moved
+
     async def mark_observations_processed(self, obs_ids: list[str]) -> None:
         if not obs_ids:
             return

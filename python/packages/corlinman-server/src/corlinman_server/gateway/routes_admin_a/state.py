@@ -162,6 +162,12 @@ class AdminState:
     # → all four /admin/identity routes 503 ``identity_disabled``.
     identity_store: Any | None = None
 
+    # Memory W2: the merge route re-homes the merged user's memory
+    # (mk_* scope rows + legacy notes namespaces) through these. Both
+    # optional; merge succeeds without them (memory just stays split).
+    memory_host: Any | None = None
+    memory_kernel: Any | None = None
+
     # -- /admin/personas --------------------------------------------
     #
     # ``corlinman_server.persona.PersonaStore`` instance. ``None`` →

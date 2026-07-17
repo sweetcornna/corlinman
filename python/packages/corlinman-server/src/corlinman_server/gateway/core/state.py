@@ -99,6 +99,15 @@ class AppState:
     # routing calls ``resolve_or_create`` on it.
     identity_store: Any = None
 
+    # corlinman_identity.UserIdentityResolver — resolve/link facade over
+    # identity_store. The servicer's _memory_scope maps (channel, sender)
+    # → canonical UserId through it for per-user memory scoping (W2).
+    identity_resolver: Any = None
+
+    # dict — [memory.scope] TOML knobs (per_user,
+    # legacy_agent_notes_read_fallback).
+    memory_scope_config: Any = None
+
     # Async callable ``(prompt: str) -> Any`` the scheduler's ``run_agent``
     # action invokes for a real one-turn agent run on a cron schedule.
     agent_runner_fn: Any = None

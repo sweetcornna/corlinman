@@ -2,7 +2,13 @@
 
 from corlinman_memory_kernel.ids import new_id, now_ms
 from corlinman_memory_kernel.kernel import MemoryKernel, kernel_mode
-from corlinman_memory_kernel.types import KernelScope, MemoryItem, Observation
+from corlinman_memory_kernel.types import (
+    KernelScope,
+    MemoryItem,
+    Observation,
+    scope_namespace,
+    user_namespace_prefix,
+)
 from corlinman_memory_kernel.vector import (
     cosine,
     cosine_topk,
@@ -22,4 +28,6 @@ __all__ = [
     "kernel_mode",
     "new_id",
     "now_ms",
+    "scope_namespace",
+    "user_namespace_prefix",
 ]

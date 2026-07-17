@@ -5,6 +5,23 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
+def scope_namespace(
+    tenant_id: str, user_id: str, persona_id: str = ""
+) -> str:
+    """Canonical per-user notes namespace: ``facts/{tenant}/{user}/{persona}``.
+
+    ``_`` stands in for the unbound persona so the segment count stays
+    fixed. This is the single definition of the scheme — the servicer's
+    scope helper and the identity merge re-homing both build from here.
+    """
+    return f"facts/{tenant_id}/{user_id}/{persona_id or '_'}"
+
+
+def user_namespace_prefix(tenant_id: str, user_id: str) -> str:
+    """Prefix covering every persona namespace of one user (for merges)."""
+    return f"facts/{tenant_id}/{user_id}"
+
+
 @dataclass(frozen=True)
 class KernelScope:
     """Who a memory belongs to. The hard isolation boundary.

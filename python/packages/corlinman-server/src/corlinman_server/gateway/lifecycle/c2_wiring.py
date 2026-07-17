@@ -277,6 +277,13 @@ async def _wire_c2_handles(
         with suppress(AttributeError, TypeError):
             state.memory_kernel = None
 
+    # W2: the /admin/identity/merge route re-homes the merged user's
+    # memory through these handles (best-effort — merge works without).
+    if admin_a_state is not None:
+        with suppress(AttributeError, TypeError):
+            admin_a_state.memory_host = getattr(state, "memory_host", None)
+            admin_a_state.memory_kernel = getattr(state, "memory_kernel", None)
+
     # --- memory recall config ---------------------------------------------
     # ``[memory.recall]`` TOML knobs for the servicer's conversational
     # recall (recent-turn count, notes top_k, query char cap). Published as
@@ -285,6 +292,7 @@ async def _wire_c2_handles(
     try:
         recall_cfg: dict[str, Any] = {}
         kernel_cfg: dict[str, Any] = {}
+        scope_cfg: dict[str, Any] = {}
         memory_section = _extract_section(cfg, "memory")
         if isinstance(memory_section, dict):
             recall_section = memory_section.get("recall")
@@ -293,17 +301,24 @@ async def _wire_c2_handles(
             kernel_section = memory_section.get("kernel")
             if isinstance(kernel_section, dict):
                 kernel_cfg = dict(kernel_section)
+            scope_section = memory_section.get("scope")
+            if isinstance(scope_section, dict):
+                scope_cfg = dict(scope_section)
         state.memory_recall_config = recall_cfg
         state.memory_kernel_config = kernel_cfg
+        state.memory_scope_config = scope_cfg
         if recall_cfg:
             logger.info("gateway.c2.memory_recall_config_wired", **recall_cfg)
         if kernel_cfg:
             logger.info("gateway.c2.memory_kernel_config_wired", **kernel_cfg)
+        if scope_cfg:
+            logger.info("gateway.c2.memory_scope_config_wired", **scope_cfg)
     except Exception as exc:  # noqa: BLE001 — defaults apply
         logger.warning("gateway.c2.memory_recall_config_failed", error=str(exc))
         with suppress(AttributeError, TypeError):
             state.memory_recall_config = {}
             state.memory_kernel_config = {}
+            state.memory_scope_config = {}
 
     # --- persona_resolver (gap persona-life-resolver-dead) ---------------
     # The resolver reads ``{{persona.mood}}`` / ``{{persona.life_*}}`` off
@@ -356,11 +371,26 @@ async def _wire_c2_handles(
         extras = getattr(state, "extras", None)
         if isinstance(extras, dict):
             extras["identity_store"] = id_store
+        # Memory W2: the high-level resolve/link facade over the same
+        # store. The servicer's _memory_scope reads this to map
+        # (channel, sender) → canonical UserId for per-user memory.
+        try:
+            from corlinman_identity import UserIdentityResolver
+
+            state.identity_resolver = UserIdentityResolver(id_store)
+            logger.info("gateway.c2.identity_resolver_wired")
+        except Exception as resolver_exc:  # noqa: BLE001 — scope falls back to raw sender
+            logger.warning(
+                "gateway.c2.identity_resolver_failed", error=str(resolver_exc)
+            )
+            with suppress(AttributeError, TypeError):
+                state.identity_resolver = None
         logger.info("gateway.c2.identity_store_wired", path=str(id_path))
     except Exception as exc:  # noqa: BLE001 — routes 503 cleanly
         logger.warning("gateway.c2.identity_store_failed", error=str(exc))
         with suppress(AttributeError, TypeError):
             state.identity_store = None
+            state.identity_resolver = None
 
     # --- agent_runner_fn (gap goals-cron-run-agent-dead) -----------------
     try:

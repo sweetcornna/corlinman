@@ -1195,6 +1195,14 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # gated by CORLINMAN_MEMORY_KERNEL (off | shadow | on).
         self._memory_kernel: Any = None
         self._memory_kernel_init_done = False
+        # W2: (channel, sender) → (canonical UserId, expires_at_monotonic).
+        # Bounded LRU with a TTL: an operator identity merge re-homes
+        # rows in the DB but cannot reach this in-process cache (nor the
+        # caches of other gateways in HA), so entries expire instead of
+        # living until eviction — bounding post-merge staleness.
+        self._identity_cache: OrderedDict[tuple[str, str], tuple[str, float]] = (
+            OrderedDict()
+        )
         # Per-session task lists for the ``todo_write`` tool.
         self._todo_store = TodoStore()
         # T1.4: per-session token / cost accumulator. Updated from the
@@ -3625,11 +3633,27 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 # raising, so the model can handle unavailability.
                 _memory_host = await self._get_memory_host()
                 _ms_session_key = start.session_key or None
+                # W2: durable notes are scoped per (tenant, user, persona).
+                # The dispatchers prefix-jail any model-supplied namespace
+                # under the scope so the model cannot hop into another
+                # user's notes; unscoped turns keep legacy behaviour.
+                _mem_scope = await self._memory_scope(start)
+                _default_ns = _mem_scope["namespace"] if _mem_scope else None
+                _legacy_ns = (
+                    "agent_notes"
+                    if _mem_scope
+                    and self._memory_scope_config()[
+                        "legacy_agent_notes_read_fallback"
+                    ]
+                    else None
+                )
                 if event.tool == MEMORY_SEARCH_TOOL:
                     return await dispatch_memory_search(
                         args_json=event.args_json,
                         memory_host=_memory_host,
                         session_key=_ms_session_key,
+                        default_namespace=_default_ns,
+                        legacy_read_namespace=_legacy_ns,
                     )
                 if event.tool == SESSION_SEARCH_TOOL:
                     return await dispatch_session_search(
@@ -3642,12 +3666,15 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                         args_json=event.args_json,
                         memory_host=_memory_host,
                         session_key=_ms_session_key,
+                        default_namespace=_default_ns,
                     )
                 if event.tool == MEMORY_READ_TOOL and dispatch_memory_read is not None:
                     return await dispatch_memory_read(
                         args_json=event.args_json,
                         memory_host=_memory_host,
                         session_key=_ms_session_key,
+                        default_namespace=_default_ns,
+                        legacy_read_namespace=_legacy_ns,
                     )
             if event.tool == SEND_ATTACHMENT_TOOL:
                 # No-op stub on the agent side. The real upload happens
@@ -4821,6 +4848,120 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             "persona_id": _bound_persona_id_from_start(start) or "",
         }
 
+    # ------------------------------------------------------------------
+    # Memory scope (W2 — per-user identity-unified scoping)
+    # ------------------------------------------------------------------
+
+    def _memory_scope_config(self) -> dict[str, bool]:
+        """Effective ``[memory.scope]`` knobs.
+
+        ``per_user`` (default ON) gates the whole scoping layer. The
+        legacy read fallback is default **OFF**: pre-scoping
+        ``agent_notes`` rows are unattributed, so surfacing them to a
+        scoped user would re-open the exact cross-user leak this layer
+        closes — only single-operator deployments should enable it.
+        Non-bool values are ignored (TOML section is optional).
+        """
+        cfg = {"per_user": True, "legacy_agent_notes_read_fallback": False}
+        app_state = getattr(self, "_app_state", None)
+        raw = getattr(app_state, "memory_scope_config", None)
+        if isinstance(raw, dict):
+            for key in cfg:
+                value = raw.get(key, cfg[key])
+                if isinstance(value, bool):
+                    cfg[key] = value
+        return cfg
+
+    #: Identity-cache entry lifetime. Bounds how long a merged (stale)
+    #: mapping can survive in this process after an operator merge.
+    _IDENTITY_CACHE_TTL_S = 300.0
+
+    async def _resolve_scope_user(self, channel: str, sender: str) -> str:
+        """Map (channel, sender) → canonical identity UserId.
+
+        Successful resolves are LRU-cached with a TTL (see
+        ``_identity_cache``); failures are NOT cached and fall open to
+        the channel-qualified raw sender (``qq:10086``) so a transient
+        resolver outage cannot pin a wrong scope. The fallback is
+        channel-qualified because bare sender ids collide across
+        transports.
+        """
+        key = (channel, sender)
+        cached = self._identity_cache.get(key)
+        if cached is not None:
+            user_id, expires_at = cached
+            if time.monotonic() < expires_at:
+                self._identity_cache.move_to_end(key)
+                return user_id
+            self._identity_cache.pop(key, None)
+        app_state = getattr(self, "_app_state", None)
+        resolver = getattr(app_state, "identity_resolver", None)
+        if resolver is not None:
+            try:
+                user_id = str(await resolver.resolve(channel, sender))
+                self._identity_cache[key] = (
+                    user_id,
+                    time.monotonic() + self._IDENTITY_CACHE_TTL_S,
+                )
+                self._identity_cache.move_to_end(key)
+                cap = _session_cache_cap()
+                while len(self._identity_cache) > cap:
+                    self._identity_cache.popitem(last=False)
+                return user_id
+            except Exception as exc:  # noqa: BLE001 — fail open, never block a turn
+                logger.warning(
+                    "agent.memory.scope_resolve_failed",
+                    channel=channel,
+                    error=str(exc),
+                )
+        return f"{channel}:{sender}"
+
+    async def _memory_scope_from_fields(
+        self, fields: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Core of :meth:`_memory_scope`, for callers that captured the
+        binding fields synchronously (the background kernel lanes). Every
+        consumer of per-user scope MUST come through here so the
+        ``per_user`` gate applies uniformly — a lane that resolves its
+        own scope would diverge from what observations were stamped with.
+        """
+        if not self._memory_scope_config()["per_user"]:
+            return None
+        channel = fields["channel"]
+        sender = fields["channel_user_id"]
+        if not channel or not sender:
+            return None
+        user_id = await self._resolve_scope_user(channel, sender)
+        persona = fields["persona_id"]
+        try:
+            from corlinman_memory_kernel import scope_namespace
+        except Exception:  # noqa: BLE001 — package absent: same scheme inline
+
+            def scope_namespace(
+                tenant_id: str, user_id: str, persona_id: str = ""
+            ) -> str:
+                return f"facts/{tenant_id}/{user_id}/{persona_id or '_'}"
+
+        return {
+            "tenant_id": "default",
+            "user_id": user_id,
+            "persona_id": persona,
+            "namespace": scope_namespace("default", user_id, persona),
+        }
+
+    async def _memory_scope(self, start: Any) -> dict[str, Any] | None:
+        """Per-user memory scope for this turn, or ``None`` when unscoped.
+
+        ``None`` (scoping disabled via config, or no identifiable sender
+        — API-key/SDK callers with no binding) keeps every caller on the
+        legacy behaviour. The namespace scheme is
+        ``facts/{tenant}/{user}/{persona}`` with ``_`` for the unbound
+        persona segment.
+        """
+        return await self._memory_scope_from_fields(
+            self._kernel_scope_fields(start)
+        )
+
     async def _observe_turn_kernel(
         self, session_key: str, user_text: str, reply_text: str, start: Any
     ) -> None:
@@ -4831,12 +4972,14 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 return
             from corlinman_memory_kernel import Observation, now_ms
 
+            scope = await self._memory_scope(start)
             obs_id = await kernel.observe(
                 Observation(
                     session_key=session_key,
                     user_text=user_text,
                     reply_text=reply_text,
                     ts_ms=now_ms(),
+                    scope_user_id=scope["user_id"] if scope else None,
                     **self._kernel_scope_fields(start),
                 )
             )
@@ -4864,10 +5007,12 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 return
             from corlinman_memory_kernel import KernelScope
 
+            # W2: same gated scope resolution as the observe lane —
+            # shadow recall must query exactly what observations were
+            # stamped with, or the diff telemetry lies.
+            mem_scope = await self._memory_scope_from_fields(fields)
             scope = KernelScope(
-                # W1: raw channel sender as the scope key; W2 swaps in the
-                # canonical identity-resolver user id.
-                scope_user_id=fields["channel_user_id"],
+                scope_user_id=mem_scope["user_id"] if mem_scope else None,
                 persona_id=fields["persona_id"],
             )
             recall_cfg = self._memory_recall_config()
@@ -5002,12 +5147,31 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             from corlinman_memory_host.types import MemoryQuery  # noqa: PLC0415
 
             recall_cfg = self._memory_recall_config()
+            # W2: durable notes are scoped per (tenant, user, persona);
+            # unscoped turns (no binding) keep the legacy shared namespace.
+            scope = await self._memory_scope(start)
+            namespace = scope["namespace"] if scope else "agent_notes"
             req = MemoryQuery(
                 text=user_text.strip()[: recall_cfg["query_chars"]],
                 top_k=recall_cfg["notes_top_k"],
-                namespace="agent_notes",
+                namespace=namespace,
             )
             hits = await query_fn(req)
+            if (
+                not hits
+                and scope
+                and self._memory_scope_config()["legacy_agent_notes_read_fallback"]
+            ):
+                # Transition release: pre-scoping notes live in the shared
+                # legacy namespace — read-only fallback so they don't
+                # vanish overnight. Writes go scoped-only immediately.
+                hits = await query_fn(
+                    MemoryQuery(
+                        text=req.text,
+                        top_k=req.top_k,
+                        namespace="agent_notes",
+                    )
+                )
         except Exception as exc:  # noqa: BLE001 — recall is best-effort
             logger.warning("agent.memory.relevance_recall_failed", error=str(exc))
             return

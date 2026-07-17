@@ -26,6 +26,7 @@ from __future__ import annotations
 from datetime import UTC
 from typing import Annotated, Any
 
+import structlog
 from corlinman_identity import (
     ChannelAlias,
     IdentityError,
@@ -43,6 +44,8 @@ from corlinman_server.gateway.routes_admin_a.state import (
     AdminState,
     get_admin_state,
 )
+
+_log = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Wire shapes
@@ -309,6 +312,35 @@ def router() -> APIRouter:
             raise _user_not_found_404(exc.user_id) from exc
         except IdentityError as exc:
             raise _storage_error_500(exc) from exc
+
+        # Memory W2 scope-merge: re-home the losing identity's memory
+        # onto the survivor — kernel scope rows plus the legacy host's
+        # ``facts/{tenant}/{user}/…`` note namespaces. Best-effort: a
+        # memory failure must not fail the identity merge itself (the
+        # rows just stay split until a manual re-run).
+        loser = (
+            body.from_user_id
+            if str(surviving) == body.into_user_id
+            else body.into_user_id
+        )
+        try:
+            kernel = getattr(state, "memory_kernel", None)
+            if kernel is not None:
+                await kernel.merge_scope_user(loser, str(surviving))
+            host = getattr(state, "memory_host", None)
+            rename = getattr(host, "rename_namespace_prefix", None)
+            if rename is not None:
+                from corlinman_memory_kernel import user_namespace_prefix
+
+                await rename(
+                    user_namespace_prefix("default", loser),
+                    user_namespace_prefix("default", str(surviving)),
+                )
+        except Exception as exc:  # noqa: BLE001 — memory re-home is best-effort
+            _log.warning(
+                "identity.merge.memory_rehome_failed",
+                error=str(exc),
+            )
 
         return MergeOut(surviving_user_id=str(surviving))
 

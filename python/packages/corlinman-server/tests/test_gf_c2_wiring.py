@@ -21,9 +21,16 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from corlinman_server.gateway.core.state import AppState
+
+# NOTE: every test that calls ``_wire_c2_handles`` must close through
+# the shared ``close_c2_handles`` conftest fixture — a leaked aiosqlite
+# connection parks a non-daemon worker thread that blocks interpreter
+# exit AFTER the test summary (the historical "py-test hangs to the CI
+# cap" failure mode).
 
 # ---------------------------------------------------------------------------
 # AppState C2 slots
@@ -49,7 +56,9 @@ def test_appstate_has_c2_slots_defaulting_none() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_wire_c2_handles_populates_all_slots(tmp_path: Path) -> None:
+async def test_wire_c2_handles_populates_all_slots(
+    tmp_path: Path, close_c2_handles: Any
+) -> None:
     from corlinman_server.gateway.lifecycle.entrypoint import _wire_c2_handles
 
     state = AppState()
@@ -80,13 +89,14 @@ async def test_wire_c2_handles_populates_all_slots(tmp_path: Path) -> None:
         getattr(app.state, "corlinman_persona_state_store", None) is not None
     )
 
-    # Clean up the open sqlite handles we opened in this test.
-    await app.state.corlinman_identity_store.close()
-    await app.state.corlinman_persona_state_store.close()
+    # Clean up EVERY sqlite handle this wiring call opened (the earlier
+    # version missed memory_host/memory_kernel — leaked worker threads
+    # blocked interpreter exit after the test summary).
+    await close_c2_handles(state, app)
 
 
 async def test_wire_c2_persona_resolver_reads_agent_state(
-    tmp_path: Path,
+    tmp_path: Path, close_c2_handles: Any
 ) -> None:
     """The wired resolver reads the SAME agent_state.sqlite the persona
     life tools write to — a mood set on that row resolves through it."""
@@ -108,9 +118,7 @@ async def test_wire_c2_persona_resolver_reads_agent_state(
     mood = await state.persona_resolver.resolve("mood", "grantley")
     assert mood == "嘚瑟"
 
-    await app.state.corlinman_persona_state_store.close()
-    if state.memory_host is not None:
-        await state.memory_host.close()
+    await close_c2_handles(state, app)
 
 
 # ---------------------------------------------------------------------------
