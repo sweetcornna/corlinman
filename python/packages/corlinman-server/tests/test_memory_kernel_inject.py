@@ -211,6 +211,103 @@ async def test_ranked_recall_orders_by_blend(tmp_path: Path) -> None:
         await kernel.close()
 
 
+async def test_high_risk_does_not_starve_candidate_pool(
+    tmp_path: Path,
+) -> None:
+    """risk=high rows are filtered IN the candidate query, so a pile of
+    quarantined matches can't crowd a legitimate one out of the pool."""
+    kernel = await MemoryKernel.open(tmp_path / "memory.sqlite")
+    try:
+        for i in range(40):
+            await kernel.add_item(
+                _SCOPE,
+                text=f"oolong tea quarantined note {i}",
+                kind="fact",
+                source="turn",
+                risk="high",
+            )
+        safe = await kernel.add_item(
+            _SCOPE, text="oolong tea safe note", kind="fact", source="turn"
+        )
+        hits = await kernel.recall_ranked(_SCOPE, "oolong tea", top_k=4)
+        assert [h.id for h in hits] == [safe]
+    finally:
+        await kernel.close()
+
+
+async def test_core_blocks_shared_persona_visible_and_overridable(
+    tmp_path: Path,
+) -> None:
+    """Shared (persona='') core blocks surface for persona-bound turns;
+    a persona-specific block of the same name wins."""
+    kernel = await MemoryKernel.open(tmp_path / "memory.sqlite")
+    try:
+        async with kernel._lock:  # noqa: SLF001 — no writer API until W5
+            for persona, block, content in (
+                ("", "user_profile", "shared profile"),
+                ("grantley", "user_profile", "grantley view of profile"),
+                ("", "open_threads", "shared threads"),
+            ):
+                await kernel._conn.execute(  # noqa: SLF001
+                    "INSERT INTO mk_core(tenant_id, scope_user_id,"
+                    " persona_id, block, content, updated_at_ms)"
+                    " VALUES ('default', 'qq:10086', ?, ?, ?, 1)",
+                    (persona, block, content),
+                )
+            await kernel._conn.commit()  # noqa: SLF001
+
+        bound = await kernel.core_blocks(
+            KernelScope(scope_user_id="qq:10086", persona_id="grantley")
+        )
+        assert bound == [
+            ("open_threads", "shared threads"),
+            ("user_profile", "grantley view of profile"),
+        ]
+        unbound = await kernel.core_blocks(
+            KernelScope(scope_user_id="qq:10086")
+        )
+        assert unbound == [
+            ("open_threads", "shared threads"),
+            ("user_profile", "shared profile"),
+        ]
+    finally:
+        await kernel.close()
+
+
+async def test_vector_branch_rrf_merges_with_fts(tmp_path: Path) -> None:
+    """query_vector engages the cosine branch: an embedded item that the
+    FTS query can't match (no shared tokens) still surfaces via RRF."""
+    from corlinman_memory_kernel import encode_f32
+
+    kernel = await MemoryKernel.open(tmp_path / "memory.sqlite")
+    try:
+        semantic = await kernel.add_item(
+            _SCOPE, text="喜欢喝铁观音", kind="preference", source="turn"
+        )
+        await kernel.add_item(
+            _SCOPE, text="tea preference oolong", kind="fact", source="turn"
+        )
+        async with kernel._lock:  # noqa: SLF001 — embeddings wired in W5
+            await kernel._conn.execute(  # noqa: SLF001
+                "UPDATE mk_items SET embedding = ?, embedding_dim = 3"
+                " WHERE id = ?",
+                (encode_f32([1.0, 0.0, 0.0]), semantic),
+            )
+            await kernel._conn.commit()  # noqa: SLF001
+
+        hits = await kernel.recall_ranked(
+            _SCOPE,
+            "tea preference",  # FTS matches only the English item
+            top_k=4,
+            query_vector=[0.9, 0.1, 0.0],
+        )
+        ids = [h.id for h in hits]
+        assert semantic in ids, "cosine branch must contribute candidates"
+        assert len(ids) == 2
+    finally:
+        await kernel.close()
+
+
 async def test_max_chars_budget_truncates_by_whole_items(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

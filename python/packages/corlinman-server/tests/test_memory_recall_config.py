@@ -50,6 +50,7 @@ def test_recall_config_defaults_without_app_state() -> None:
         "notes_top_k": 4,
         "query_chars": 500,
         "min_score": 0.0,
+        "kernel_min_score": 0.0,
         "max_chars": 4000.0,
         "time_decay_half_life_hours": 0.0,
     }
@@ -72,6 +73,7 @@ def test_recall_config_reads_app_state_and_sanitises() -> None:
         "notes_top_k": 6,
         "query_chars": 500,
         "min_score": 0.0,
+        "kernel_min_score": 0.0,
         "max_chars": 4000.0,
         "time_decay_half_life_hours": 0.0,
     }
@@ -92,6 +94,7 @@ def test_recall_config_rejects_bools_and_honors_zero() -> None:
         "notes_top_k": 0,
         "query_chars": 500,
         "min_score": 0.0,
+        "kernel_min_score": 0.0,
         "max_chars": 4000.0,
         "time_decay_half_life_hours": 0.0,
     }

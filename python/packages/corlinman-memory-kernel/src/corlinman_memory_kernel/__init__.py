@@ -4,6 +4,7 @@ from corlinman_memory_kernel.ids import new_id, now_ms
 from corlinman_memory_kernel.kernel import MemoryKernel, kernel_mode
 from corlinman_memory_kernel.types import (
     KernelScope,
+    LedgerEntry,
     MemoryItem,
     Observation,
     scope_namespace,
@@ -18,6 +19,7 @@ from corlinman_memory_kernel.vector import (
 
 __all__ = [
     "KernelScope",
+    "LedgerEntry",
     "MemoryItem",
     "MemoryKernel",
     "Observation",

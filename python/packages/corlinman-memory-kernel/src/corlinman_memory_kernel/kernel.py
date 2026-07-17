@@ -24,7 +24,12 @@ import aiosqlite
 
 from corlinman_memory_kernel.ids import new_id, now_ms
 from corlinman_memory_kernel.schema import MK_SCHEMA_SQL
-from corlinman_memory_kernel.types import KernelScope, MemoryItem, Observation
+from corlinman_memory_kernel.types import (
+    KernelScope,
+    LedgerEntry,
+    MemoryItem,
+    Observation,
+)
 
 _MODE_ENV = "CORLINMAN_MEMORY_KERNEL"
 _MODES = ("off", "shadow", "on")
@@ -267,7 +272,12 @@ class MemoryKernel:
     # ---- READ pipeline ----------------------------------------------------
 
     async def recall(
-        self, scope: KernelScope, text: str, *, top_k: int = 8
+        self,
+        scope: KernelScope,
+        text: str,
+        *,
+        top_k: int = 8,
+        exclude_high_risk: bool = False,
     ) -> list[MemoryItem]:
         """Scoped BM25 recall over currently-valid items.
 
@@ -283,6 +293,7 @@ class MemoryKernel:
         """
         if top_k <= 0:
             return []
+        risk_pred = " AND i.risk != 'high'" if exclude_high_risk else ""
         units = _query_units(text)
         match = _trigram_match_query(units)
         if match:
@@ -294,6 +305,7 @@ class MemoryKernel:
                 "   AND (i.scope_user_id IS NULL OR i.scope_user_id = ?)"
                 "   AND (i.persona_id = '' OR i.persona_id = ?)"
                 "   AND i.valid_to_ms IS NULL"
+                f"{risk_pred}"
                 " ORDER BY fts_score ASC LIMIT ?"
             )
             params: tuple[Any, ...] = (
@@ -326,6 +338,7 @@ class MemoryKernel:
             "   AND (i.scope_user_id IS NULL OR i.scope_user_id = ?)"
             "   AND (i.persona_id = '' OR i.persona_id = ?)"
             "   AND i.valid_to_ms IS NULL"
+            f"{risk_pred}"
             f"   AND ({like_clause})"
             " ORDER BY i.recorded_at_ms DESC LIMIT ?"
         )
@@ -373,16 +386,24 @@ class MemoryKernel:
         }
         if weights:
             for key, value in weights.items():
-                if key in w and isinstance(value, (int, float)):
+                # bool is an int subclass — reject it like the config
+                # sanitisers do (TOML `true` must not become weight 1.0).
+                if (
+                    key in w
+                    and isinstance(value, (int, float))
+                    and not isinstance(value, bool)
+                ):
                     w[key] = float(value)
 
-        fts_hits = await self.recall(scope, text, top_k=candidates)
+        # Risk filtering happens IN the candidate queries so high-risk
+        # rows can't starve the candidate pool for legitimate matches.
+        fts_hits = await self.recall(
+            scope, text, top_k=candidates, exclude_high_risk=True
+        )
         # RRF rank positions per branch (1-indexed).
         rrf: dict[str, float] = {}
         by_id: dict[str, MemoryItem] = {}
         for rank, item in enumerate(fts_hits, start=1):
-            if item.risk == "high":
-                continue
             rrf[item.id] = rrf.get(item.id, 0.0) + 1.0 / (60.0 + rank)
             by_id[item.id] = item
         if query_vector:
@@ -448,35 +469,39 @@ class MemoryKernel:
         items = {row["id"]: self._row_to_item(row) for row in rows}
         return [items[item_id] for item_id in ids if item_id in items]
 
-    async def mark_recalled(self, item_ids: list[str]) -> None:
-        """Stamp recall bookkeeping on injected items (trust-loop fuel)."""
-        if not item_ids:
-            return
-        placeholders = ",".join("?" * len(item_ids))
-        async with self._lock:
-            await self._conn.execute(
-                f"UPDATE mk_items SET recall_count = recall_count + 1,"
-                f" last_recalled_ms = ? WHERE id IN ({placeholders})",
-                (now_ms(), *item_ids),
-            )
-            await self._conn.commit()
-
-    async def ledger_write(
-        self, turn_key: str, entries: list[tuple[str, str, int, float, int]]
+    async def record_injection(
+        self, turn_key: str, entries: list[LedgerEntry]
     ) -> None:
-        """Record what was injected: (item_id, lane, rank, score, chars)."""
+        """Injection bookkeeping in ONE transaction: mk_recall_ledger rows
+        plus recall_count/last_recalled_ms bumps on the injected items.
+        Atomic so the trust loop's shown-vs-recalled ratio can't skew when
+        one half fails."""
         if not entries:
             return
         ts = now_ms()
+        placeholders = ",".join("?" * len(entries))
         async with self._lock:
             await self._conn.executemany(
                 "INSERT INTO mk_recall_ledger("
                 "turn_key, item_id, lane, rank, score, shown_chars, ts_ms)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?)",
                 [
-                    (turn_key, item_id, lane, rank, score, chars, ts)
-                    for (item_id, lane, rank, score, chars) in entries
+                    (
+                        turn_key,
+                        e.item_id,
+                        e.lane,
+                        e.rank,
+                        e.score,
+                        e.shown_chars,
+                        ts,
+                    )
+                    for e in entries
                 ],
+            )
+            await self._conn.execute(
+                f"UPDATE mk_items SET recall_count = recall_count + 1,"
+                f" last_recalled_ms = ? WHERE id IN ({placeholders})",
+                (ts, *[e.item_id for e in entries]),
             )
             await self._conn.commit()
 
@@ -485,16 +510,25 @@ class MemoryKernel:
 
         Written by the W5 maintenance pipeline; empty until then. The
         caller renders them verbatim at a stable prompt position so the
-        bytes stay prefix-cache-friendly across turns.
+        bytes stay prefix-cache-friendly across turns. Persona scoping
+        matches the recall convention: shared (``persona_id=''``) blocks
+        are visible to every persona, and a persona-specific block wins
+        over a shared block of the same name.
         """
         async with self._conn.execute(
-            "SELECT block, content FROM mk_core"
-            " WHERE tenant_id = ? AND scope_user_id = ? AND persona_id = ?"
-            " ORDER BY block",
+            "SELECT block, content, persona_id FROM mk_core"
+            " WHERE tenant_id = ? AND scope_user_id = ?"
+            "   AND (persona_id = '' OR persona_id = ?)"
+            " ORDER BY block, persona_id",
             (scope.tenant_id, scope.scope_user_id or "", scope.persona_id),
         ) as cur:
             rows = await cur.fetchall()
-        return [(row["block"], row["content"]) for row in rows]
+        # ORDER BY persona_id puts '' first; the later (persona-specific)
+        # row overwrites the shared one for the same block name.
+        merged: dict[str, str] = {}
+        for row in rows:
+            merged[row["block"]] = row["content"]
+        return sorted(merged.items())
 
     # ---- MAINTENANCE surface (drained by later waves) ----------------------
 
