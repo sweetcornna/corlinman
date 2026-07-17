@@ -566,6 +566,23 @@ mode = "shadow"
 per_user = true
 legacy_agent_notes_read_fallback = false
 
+# [memory.curator] — the memory.reconcile sleep-time builtin: drains the
+# kernel's observation queue into curated bi-temporal facts (extract →
+# redact → risk → mem0-style reconcile) and rebuilds core-memory blocks.
+# dry_run (default) reports every action WITHOUT writing or consuming
+# the queue — flip it only after reviewing a report under
+# <data_dir>/reports/memory-curator/. Schedule it via [[scheduler.jobs]]:
+#   [[scheduler.jobs]]
+#   name = "memory-reconcile"
+#   cron = "0 0 4 * * * *"
+#   action = { type = "run_tool", plugin = "memory", tool = "reconcile" }
+[memory.curator]
+enabled = false
+dry_run = true
+max_observations = 200
+min_confidence = 0.5
+core_block_items = 8
+
 # ---------------------------------------------------------------------------
 # [logging] — tracing subscriber. file_rolling emits daily files under
 # <data_dir>/logs/ in addition to stdout.

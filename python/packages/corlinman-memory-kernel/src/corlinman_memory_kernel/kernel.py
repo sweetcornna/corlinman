@@ -559,6 +559,98 @@ class MemoryKernel:
             out.append(obs)
         return out
 
+    async def add_edge(
+        self, src_id: str, dst_id: str, rel: str, *, weight: float = 1.0
+    ) -> None:
+        """Record a typed edge (supports/contradicts/refines/derived_from)."""
+        async with self._lock:
+            await self._conn.execute(
+                "INSERT OR REPLACE INTO mk_edges("
+                "src_id, dst_id, rel, weight, created_at_ms)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (src_id, dst_id, rel, weight, now_ms()),
+            )
+            await self._conn.commit()
+
+    async def set_embedding(
+        self, item_id: str, vector: list[float]
+    ) -> None:
+        """Stamp an embedding on an item (feeds the vector recall branch)."""
+        from corlinman_memory_kernel.vector import encode_f32
+
+        async with self._lock:
+            await self._conn.execute(
+                "UPDATE mk_items SET embedding = ?, embedding_dim = ?"
+                " WHERE id = ?",
+                (encode_f32(vector), len(vector), item_id),
+            )
+            await self._conn.commit()
+
+    async def top_items_for_scope(
+        self,
+        scope: KernelScope,
+        *,
+        kinds: tuple[str, ...] = ("preference", "fact"),
+        limit: int = 8,
+    ) -> list[MemoryItem]:
+        """Highest trust×importance valid items for a scope (core-block
+        source). NULL-scope (agent-scoped) handled like every other
+        scoped read — ``scope_user_id IS NULL`` matches, not ``= NULL``.
+        """
+        kind_ph = ",".join("?" * len(kinds))
+        if scope.scope_user_id is None:
+            user_pred = "scope_user_id IS NULL"
+            params: tuple[Any, ...] = (scope.tenant_id, *kinds, scope.persona_id, limit)
+        else:
+            user_pred = "scope_user_id = ?"
+            params = (
+                scope.tenant_id,
+                scope.scope_user_id,
+                *kinds,
+                scope.persona_id,
+                limit,
+            )
+        sql = (
+            "SELECT *, 0.0 AS fts_score FROM mk_items"
+            f" WHERE tenant_id = ? AND {user_pred}"
+            f"   AND kind IN ({kind_ph})"
+            "   AND (persona_id = '' OR persona_id = ?)"
+            "   AND valid_to_ms IS NULL"
+            " ORDER BY (trust * importance) DESC, recorded_at_ms DESC LIMIT ?"
+        )
+        async with self._conn.execute(sql, params) as cur:
+            rows = await cur.fetchall()
+        return [self._row_to_item(row) for row in rows]
+
+    async def set_core_block(
+        self, scope: KernelScope, block: str, content: str
+    ) -> None:
+        """Upsert one core-memory block for a scope (maintenance writer).
+
+        Content is rendered by the maintenance pipeline; recall injects
+        it verbatim at a stable prompt position, so rebuilds should only
+        write when the content actually changed (the caller compares) to
+        keep the bytes prefix-cache-stable.
+        """
+        async with self._lock:
+            await self._conn.execute(
+                "INSERT INTO mk_core("
+                "tenant_id, scope_user_id, persona_id, block, content,"
+                " updated_at_ms) VALUES (?, ?, ?, ?, ?, ?)"
+                " ON CONFLICT(tenant_id, scope_user_id, persona_id, block)"
+                " DO UPDATE SET content = excluded.content,"
+                " updated_at_ms = excluded.updated_at_ms",
+                (
+                    scope.tenant_id,
+                    scope.scope_user_id or "",
+                    scope.persona_id,
+                    block,
+                    content,
+                    now_ms(),
+                ),
+            )
+            await self._conn.commit()
+
     async def merge_scope_user(self, from_user: str, into_user: str) -> int:
         """Re-stamp every row of a merged identity onto the survivor.
 

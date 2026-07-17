@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 _logger = logging.getLogger("corlinman_server.scheduler.builtins")
@@ -32,6 +33,7 @@ __all__ = [
     "BuiltinAction",
     "BuiltinContext",
     "register_builtin",
+    "resolve_data_dir",
     "run_builtin",
 ]
 
@@ -111,3 +113,20 @@ async def run_builtin(name: str, context: BuiltinContext) -> dict[str, Any]:
         )
         return {"ok": False, "reason": f"non_dict_result: {type(result).__name__}"}
     return result
+
+
+def resolve_data_dir(context: BuiltinContext) -> Path | None:
+    """Find the gateway's writable data dir off the firing context.
+
+    Shared by the maintenance builtins — this exact three-probe walk was
+    copy-pasted across six builtin modules before landing here; new
+    builtins must use this instead of a seventh copy.
+    """
+    for owner in (context.app_state, context.admin_state):
+        raw = getattr(owner, "data_dir", None)
+        if raw:
+            try:
+                return Path(str(raw))
+            except (TypeError, ValueError):  # pragma: no cover — defensive
+                continue
+    return None

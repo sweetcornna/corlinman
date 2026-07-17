@@ -277,7 +277,6 @@ async def test_core_blocks_shared_persona_visible_and_overridable(
 async def test_vector_branch_rrf_merges_with_fts(tmp_path: Path) -> None:
     """query_vector engages the cosine branch: an embedded item that the
     FTS query can't match (no shared tokens) still surfaces via RRF."""
-    from corlinman_memory_kernel import encode_f32
 
     kernel = await MemoryKernel.open(tmp_path / "memory.sqlite")
     try:
@@ -287,13 +286,7 @@ async def test_vector_branch_rrf_merges_with_fts(tmp_path: Path) -> None:
         await kernel.add_item(
             _SCOPE, text="tea preference oolong", kind="fact", source="turn"
         )
-        async with kernel._lock:  # noqa: SLF001 — embeddings wired in W5
-            await kernel._conn.execute(  # noqa: SLF001
-                "UPDATE mk_items SET embedding = ?, embedding_dim = 3"
-                " WHERE id = ?",
-                (encode_f32([1.0, 0.0, 0.0]), semantic),
-            )
-            await kernel._conn.commit()  # noqa: SLF001
+        await kernel.set_embedding(semantic, [1.0, 0.0, 0.0])
 
         hits = await kernel.recall_ranked(
             _SCOPE,
