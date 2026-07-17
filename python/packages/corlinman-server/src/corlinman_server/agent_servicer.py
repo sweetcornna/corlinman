@@ -1190,6 +1190,11 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # embedding model needed).
         self._memory_host: Any = None
         self._memory_init_done = False
+        # Memory kernel (mk_* tables in the same memory.sqlite) — W1
+        # shadow mode. Same lazy-open discipline as the host above;
+        # gated by CORLINMAN_MEMORY_KERNEL (off | shadow | on).
+        self._memory_kernel: Any = None
+        self._memory_kernel_init_done = False
         # Per-session task lists for the ``todo_write`` tool.
         self._todo_store = TodoStore()
         # T1.4: per-session token / cost accumulator. Updated from the
@@ -2159,7 +2164,10 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     # Store the completed turn so a later conversation can
                     # recall it. Best-effort — never blocks the Done frame.
                     await self._store_memory(
-                        start.session_key, user_text, "".join(reply_parts)
+                        start.session_key,
+                        user_text,
+                        "".join(reply_parts),
+                        start=start,
                     )
                     # T4.1: journal the assistant's final reply + flip
                     # the turn to completed. Skip the assistant append
@@ -2468,6 +2476,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         resources: list[tuple[str, Any]] = [
             ("journal", self._journal),
             ("memory_host", self._memory_host),
+            ("memory_kernel", self._memory_kernel),
             ("blackboard_store", self._blackboard_store),
             ("persona_state_store", self._persona_state_store),
             ("inbox", getattr(self, "_inbox", None)),
@@ -2495,6 +2504,8 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         self._journal_init_done = True
         self._memory_host = None
         self._memory_init_done = True
+        self._memory_kernel = None
+        self._memory_kernel_init_done = True
         self._blackboard_store = None
         self._persona_state_store = None
         self._persona_state_store_init_done = True
@@ -4709,6 +4720,171 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             self._memory_host = None
         return self._memory_host
 
+    # ------------------------------------------------------------------
+    # Memory kernel (W1 — shadow mode)
+    # ------------------------------------------------------------------
+
+    def _spawn_background(self, coro: Any) -> None:
+        """Fire-and-forget a coroutine with GC protection.
+
+        The strong reference in ``_prefetch_tasks`` keeps the task alive
+        until done (bare ``create_task`` results are garbage-collectable
+        mid-flight); the done-callback discards it. Inputs the coroutine
+        needs from mutable turn state (e.g. ``start.messages``) must be
+        captured by the CALLER before this call — the task runs after
+        the hot path has moved on.
+        """
+        try:
+            task = asyncio.get_running_loop().create_task(coro)
+        except RuntimeError:  # pragma: no cover — no running loop (sync tests)
+            coro.close()
+            return
+        self._prefetch_tasks.add(task)
+        task.add_done_callback(self._prefetch_tasks.discard)
+
+    def _memory_kernel_mode(self) -> str:
+        """Memory-kernel rollout gate (``off`` | ``shadow`` | ``on``).
+
+        Precedence: the ``CORLINMAN_MEMORY_KERNEL`` env var (ops
+        kill-switch, always wins) > the ``[memory.kernel] mode`` TOML key
+        (published as ``app_state.memory_kernel_config`` by C2 wiring —
+        hot-reloadable/UI-editable like its ``[memory.recall]`` siblings)
+        > default ``shadow``. Unknown values fall back to ``shadow`` so a
+        typo cannot silently stop observation accrual.
+        """
+        raw: Any = os.environ.get("CORLINMAN_MEMORY_KERNEL")
+        if raw is None or not str(raw).strip():
+            app_state = getattr(self, "_app_state", None)
+            cfg = getattr(app_state, "memory_kernel_config", None)
+            if isinstance(cfg, dict):
+                raw = cfg.get("mode")
+        if not isinstance(raw, str):
+            return "shadow"
+        value = raw.strip().lower()
+        return value if value in ("off", "shadow", "on") else "shadow"
+
+    async def _get_memory_kernel(self) -> Any | None:
+        """Return the memory kernel, preferring the gateway-shared one.
+
+        Mirrors :meth:`_get_memory_host`: the C2-wired
+        ``app_state.memory_kernel`` wins; the lazy self-open (same
+        ``memory.sqlite`` file — mk_* tables co-habit with the legacy
+        store) is the standalone fallback. ``None`` = kernel-free chat.
+        """
+        app_state = getattr(self, "_app_state", None)
+        if app_state is not None:
+            shared = getattr(app_state, "memory_kernel", None)
+            if shared is not None:
+                return shared
+        if self._memory_kernel_init_done:
+            return self._memory_kernel
+        self._memory_kernel_init_done = True
+        try:
+            from corlinman_memory_kernel import MemoryKernel
+
+            path = _resolve_data_dir() / "memory.sqlite"
+            self._memory_kernel = await MemoryKernel.open(path)
+            logger.info("agent.memory.kernel_opened", path=str(path))
+        except Exception as exc:  # noqa: BLE001 — degrade, never crash chat
+            logger.warning("agent.memory.kernel_init_failed", error=str(exc))
+            self._memory_kernel = None
+        return self._memory_kernel
+
+    @staticmethod
+    def _kernel_scope_fields(start: Any) -> dict[str, Any]:
+        """Best-effort binding/persona extraction for kernel rows.
+
+        Channels attach ``extra["binding"] = {channel, account, thread,
+        sender}`` and ``extra["persona_id"]``; both are optional on the
+        duck-typed request contract, so every read degrades to ``None``
+        rather than raising (a new REQUIRED field silently kills all
+        channels — see the persona_id lesson).
+        """
+        # Deliberately looser than ``_channel_binding_from_start`` (which
+        # requires all of channel/account/thread/sender — the outbound-
+        # delivery contract): scope keying only needs channel + sender,
+        # and a partial binding should still scope the memory rather than
+        # fall back to unscoped. Persona reuses the canonical extractor.
+        channel: str | None = None
+        channel_user_id: str | None = None
+        extra = getattr(start, "extra", None)
+        if isinstance(extra, dict):
+            binding = extra.get("binding")
+            if isinstance(binding, dict):
+                raw_channel = binding.get("channel")
+                raw_sender = binding.get("sender")
+                channel = str(raw_channel) if raw_channel else None
+                channel_user_id = str(raw_sender) if raw_sender else None
+        return {
+            "channel": channel,
+            "channel_user_id": channel_user_id,
+            "persona_id": _bound_persona_id_from_start(start) or "",
+        }
+
+    async def _observe_turn_kernel(
+        self, session_key: str, user_text: str, reply_text: str, start: Any
+    ) -> None:
+        """Queue the completed turn as a kernel observation (background)."""
+        try:
+            kernel = await self._get_memory_kernel()
+            if kernel is None:
+                return
+            from corlinman_memory_kernel import Observation, now_ms
+
+            obs_id = await kernel.observe(
+                Observation(
+                    session_key=session_key,
+                    user_text=user_text,
+                    reply_text=reply_text,
+                    ts_ms=now_ms(),
+                    **self._kernel_scope_fields(start),
+                )
+            )
+            logger.debug(
+                "agent.memory.kernel_observed",
+                session=session_key,
+                obs=obs_id,
+            )
+        except Exception as exc:  # noqa: BLE001 — observation is best-effort
+            logger.warning("agent.memory.kernel_observe_failed", error=str(exc))
+
+    async def _kernel_shadow_recall(
+        self, session_key: str | None, user_text: str, fields: dict[str, Any]
+    ) -> None:
+        """Shadow-mode recall: compute what the kernel WOULD inject and log
+        it. Never touches the prompt. Diff analysis correlates the
+        ``agent.memory.kernel_shadow`` events with the legacy lanes'
+        ``agent.memory.recalled`` / ``relevant_recalled`` events by
+        session key."""
+        try:
+            if not user_text.strip():
+                return
+            kernel = await self._get_memory_kernel()
+            if kernel is None:
+                return
+            from corlinman_memory_kernel import KernelScope
+
+            scope = KernelScope(
+                # W1: raw channel sender as the scope key; W2 swaps in the
+                # canonical identity-resolver user id.
+                scope_user_id=fields["channel_user_id"],
+                persona_id=fields["persona_id"],
+            )
+            recall_cfg = self._memory_recall_config()
+            hits = await kernel.recall(
+                scope,
+                user_text.strip()[: recall_cfg["query_chars"]],
+                top_k=recall_cfg["notes_top_k"],
+            )
+            logger.info(
+                "agent.memory.kernel_shadow",
+                session=session_key,
+                kernel_hits=len(hits),
+                kernel_ids=[h.id for h in hits],
+            )
+        except Exception as exc:  # noqa: BLE001 — shadow lane is best-effort
+            logger.warning("agent.memory.kernel_shadow_failed", error=str(exc))
+
     def _memory_recall_config(self) -> dict[str, int]:
         """Effective ``[memory.recall]`` knobs (defaults = legacy values).
 
@@ -4722,10 +4898,15 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         raw = getattr(app_state, "memory_recall_config", None)
         if isinstance(raw, dict):
             for key in cfg:
+                configured = raw.get(key, cfg[key])
+                if isinstance(configured, bool):
+                    continue  # TOML `true` would int() to 1 — reject
                 try:
-                    value = int(raw.get(key, cfg[key]))
+                    value = int(configured)
                 except (TypeError, ValueError):
                     continue
+                # 0 is honored (explicit "disable this lane"); negatives
+                # are treated as invalid and fall back to the default.
                 if value >= 0:
                     cfg[key] = value
         return cfg
@@ -4742,6 +4923,19 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         """
         if not start.session_key:
             return
+        # W1 memory-kernel shadow lane: compute (and only log) what the
+        # kernel would recall, entirely off the hot path. Runs in shadow
+        # AND on modes — injection itself is a later wave. Inputs are
+        # captured synchronously so the background task never races the
+        # in-place ``start.messages`` mutations below.
+        if self._memory_kernel_mode() != "off":
+            self._spawn_background(
+                self._kernel_shadow_recall(
+                    start.session_key,
+                    _last_user_text(start.messages) or "",
+                    self._kernel_scope_fields(start),
+                )
+            )
         # Consume the background-prefetched hits when present (one-shot pop:
         # a rare cross-surface write between turns costs at most one slightly
         # stale recall, and the next post-turn prefetch repopulates).
@@ -4837,12 +5031,23 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         )
 
     async def _store_memory(
-        self, session_key: str, user_text: str, reply_text: str
+        self,
+        session_key: str,
+        user_text: str,
+        reply_text: str,
+        start: Any | None = None,
     ) -> None:
         """Persist the completed turn so a later conversation can recall
         it. Best-effort — a failure is logged and swallowed."""
         if not session_key or not user_text.strip():
             return
+        # W1 memory-kernel ingest: queue the turn as an observation
+        # (fire-and-forget, one INSERT) independently of the legacy dump
+        # below — a legacy-host failure must not starve the kernel queue.
+        if start is not None and self._memory_kernel_mode() != "off":
+            self._spawn_background(
+                self._observe_turn_kernel(session_key, user_text, reply_text, start)
+            )
         host = await self._get_memory_host()
         if host is None:
             return
@@ -4864,14 +5069,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # recency recall would return, so recompute it OFF the hot path — the
         # next turn's _recall_memory pops the result instead of awaiting the
         # host inline. Fire-and-forget; failures degrade to inline recall.
-        try:
-            task = asyncio.get_running_loop().create_task(
-                self._prefetch_recent_recall(session_key)
-            )
-            self._prefetch_tasks.add(task)
-            task.add_done_callback(self._prefetch_tasks.discard)
-        except RuntimeError:  # pragma: no cover — no running loop (sync tests)
-            pass
+        self._spawn_background(self._prefetch_recent_recall(session_key))
 
     async def _prefetch_recent_recall(self, session_key: str) -> None:
         """Precompute the next turn's recency recall (see ``_recall_prefetch``)."""

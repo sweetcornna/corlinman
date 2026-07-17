@@ -25,6 +25,7 @@ members = [
     "corlinman-identity",
     "corlinman-mcp-server",
     "corlinman-memory-host",
+    "corlinman-memory-kernel",
     "corlinman-nodebridge",
     "corlinman-persona",
     "corlinman-providers",
@@ -391,6 +392,7 @@ dependencies = [
     { name = "corlinman-evolution-engine" },
     { name = "corlinman-goals" },
     { name = "corlinman-grpc" },
+    { name = "corlinman-memory-kernel" },
     { name = "corlinman-persona" },
     { name = "corlinman-providers" },
     { name = "corlinman-server" },
@@ -422,6 +424,7 @@ requires-dist = [
     { name = "corlinman-evolution-engine", editable = "python/packages/corlinman-evolution-engine" },
     { name = "corlinman-goals", editable = "python/packages/corlinman-goals" },
     { name = "corlinman-grpc", editable = "python/packages/corlinman-grpc" },
+    { name = "corlinman-memory-kernel", editable = "python/packages/corlinman-memory-kernel" },
     { name = "corlinman-persona", editable = "python/packages/corlinman-persona" },
     { name = "corlinman-providers", editable = "python/packages/corlinman-providers" },
     { name = "corlinman-server", editable = "python/packages/corlinman-server" },
@@ -665,6 +668,17 @@ requires-dist = [
 ]
 
 [[package]]
+name = "corlinman-memory-kernel"
+version = "0.1.0"
+source = { editable = "python/packages/corlinman-memory-kernel" }
+dependencies = [
+    { name = "aiosqlite" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "aiosqlite", specifier = ">=0.20" }]
+
+[[package]]
 name = "corlinman-nodebridge"
 version = "0.1.0"
 source = { editable = "python/packages/corlinman-nodebridge" }
@@ -756,6 +770,7 @@ dependencies = [
     { name = "corlinman-identity" },
     { name = "corlinman-mcp-server" },
     { name = "corlinman-memory-host" },
+    { name = "corlinman-memory-kernel" },
     { name = "corlinman-providers" },
     { name = "corlinman-replay" },
     { name = "corlinman-shadow-tester" },
@@ -811,6 +826,7 @@ requires-dist = [
     { name = "corlinman-identity", editable = "python/packages/corlinman-identity" },
     { name = "corlinman-mcp-server", editable = "python/packages/corlinman-mcp-server" },
     { name = "corlinman-memory-host", editable = "python/packages/corlinman-memory-host" },
+    { name = "corlinman-memory-kernel", editable = "python/packages/corlinman-memory-kernel" },
     { name = "corlinman-providers", editable = "python/packages/corlinman-providers" },
     { name = "corlinman-replay", editable = "python/packages/corlinman-replay" },
     { name = "corlinman-shadow-tester", editable = "python/packages/corlinman-shadow-tester" },
