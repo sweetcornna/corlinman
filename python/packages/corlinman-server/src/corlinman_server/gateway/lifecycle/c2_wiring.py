@@ -293,6 +293,7 @@ async def _wire_c2_handles(
         recall_cfg: dict[str, Any] = {}
         kernel_cfg: dict[str, Any] = {}
         scope_cfg: dict[str, Any] = {}
+        curator_cfg: dict[str, Any] = {}
         memory_section = _extract_section(cfg, "memory")
         if isinstance(memory_section, dict):
             recall_section = memory_section.get("recall")
@@ -304,9 +305,13 @@ async def _wire_c2_handles(
             scope_section = memory_section.get("scope")
             if isinstance(scope_section, dict):
                 scope_cfg = dict(scope_section)
+            curator_section = memory_section.get("curator")
+            if isinstance(curator_section, dict):
+                curator_cfg = dict(curator_section)
         state.memory_recall_config = recall_cfg
         state.memory_kernel_config = kernel_cfg
         state.memory_scope_config = scope_cfg
+        state.memory_curator_config = curator_cfg
         if recall_cfg:
             logger.info("gateway.c2.memory_recall_config_wired", **recall_cfg)
         if kernel_cfg:
@@ -319,6 +324,7 @@ async def _wire_c2_handles(
             state.memory_recall_config = {}
             state.memory_kernel_config = {}
             state.memory_scope_config = {}
+            state.memory_curator_config = {}
 
     # --- persona_resolver (gap persona-life-resolver-dead) ---------------
     # The resolver reads ``{{persona.mood}}`` / ``{{persona.life_*}}`` off

@@ -42,6 +42,16 @@ _SECRET_PATTERNS: list[re.Pattern[str]] = [
         r"\s*[=:]\s*[\"']?[^\s\"',;]{4,}",
         re.IGNORECASE,
     ),
+    # Natural-language credential statements ("the password is hunter2",
+    # "密码是abc123") — LLM extraction rephrases secrets into prose, so
+    # the assignment-style pattern above never fires on them. Wide net is
+    # deliberate: a false positive merely keeps a low-value "fact about a
+    # password" out of memory; a false negative persists a credential.
+    re.compile(
+        r"(?:password|passwd|passcode|passphrase|密码|口令|验证码)"
+        r"\s*(?:is|was|为|是|叫)?\s*[:：]?\s*[\"'`]?[^\s\"'`,;。！？]{4,}",
+        re.IGNORECASE,
+    ),
 ]
 
 # Soft-sensitive: PII (emails, phones, private IPs). These are not hard secrets,

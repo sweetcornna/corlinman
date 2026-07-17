@@ -130,10 +130,20 @@ def should_skip_session(bundle: SessionBundle, config: CuratorConfig) -> bool:
     if len(bundle.messages) < config.min_messages_for_curation:
         return True
 
-    # Must have at least one user message with >20 chars of content
+    # Must have at least one substantive user message. The threshold is
+    # script-aware: 20 chars of English is a short sentence, but Chinese
+    # packs the same information into far fewer characters ("我叫小明，
+    # 家乡是哈尔滨" is 11 chars and carries two durable facts) — a flat
+    # >20 gate silently discarded most CJK turns.
+    def _substantive(content: str) -> bool:
+        text = content.strip()
+        cjk = sum(1 for ch in text if "぀" <= ch <= "鿿")
+        return len(text) > 20 or cjk > 6
+
     user_messages = [
-        m for m in bundle.messages
-        if m.role in ("user", "human") and len(m.content.strip()) > 20
+        m
+        for m in bundle.messages
+        if m.role in ("user", "human") and _substantive(m.content)
     ]
     return not user_messages
 

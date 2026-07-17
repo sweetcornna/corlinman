@@ -89,6 +89,14 @@ class AppState:
     # CORLINMAN_MEMORY_KERNEL env var overrides as an ops kill-switch.
     memory_kernel_config: Any = None
 
+    # dict — [memory.curator] TOML knobs for the memory.reconcile
+    # sleep-time builtin (enabled/dry_run/max_observations/...).
+    memory_curator_config: Any = None
+
+    # Optional async (text) -> list[float] embedding seam consumed by
+    # memory.reconcile; the live wiring lands with the W6 affect axes.
+    memory_embed_fn: Any = None
+
     # corlinman_persona.PersonaResolver — read-only ``{{persona.*}}`` /
     # ``{{persona.life_*}}`` placeholder lookup keyed by ``agent_id``.
     persona_resolver: Any = None
