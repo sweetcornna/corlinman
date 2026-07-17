@@ -4937,8 +4937,10 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             from corlinman_memory_kernel import scope_namespace
         except Exception:  # noqa: BLE001 — package absent: same scheme inline
 
-            def scope_namespace(t: str, u: str, p: str = "") -> str:
-                return f"facts/{t}/{u}/{p or '_'}"
+            def scope_namespace(
+                tenant_id: str, user_id: str, persona_id: str = ""
+            ) -> str:
+                return f"facts/{tenant_id}/{user_id}/{persona_id or '_'}"
 
         return {
             "tenant_id": "default",
