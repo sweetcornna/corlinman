@@ -79,24 +79,11 @@ _DRY_RUN_SAMPLE = 20
 _RETURNED_ACTIONS_CAP = 20
 
 
-def _tokens(text: str) -> set[str]:
-    # CJK-aware token set: whole words for spaced scripts, character
-    # bigrams for contiguous CJK runs (a word-level Jaccard would score
-    # two different Chinese sentences as one token vs one token).
-    out: set[str] = set()
-    for word in text.lower().split():
-        if any("一" <= ch <= "鿿" for ch in word):
-            out.update(word[i : i + 2] for i in range(max(len(word) - 1, 1)))
-        else:
-            out.add(word)
-    return out
-
-
+# CJK-aware similarity shared with the trust loop (kernel textsim).
 def _jaccard(a: str, b: str) -> float:
-    ta, tb = _tokens(a), _tokens(b)
-    if not ta or not tb:
-        return 0.0
-    return len(ta & tb) / len(ta | tb)
+    from corlinman_memory_kernel.textsim import jaccard
+
+    return jaccard(a, b)
 
 
 def _curator_config(app_state: Any) -> dict[str, Any]:

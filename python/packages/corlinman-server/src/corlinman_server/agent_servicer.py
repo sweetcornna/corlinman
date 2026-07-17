@@ -1197,6 +1197,9 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         self._memory_kernel_init_done = False
         # Set by aclose(); lazy openers abort a post-shutdown open.
         self._closing = False
+        # W7: session_key → the turn_key minted at this turn's injection,
+        # consumed one-shot by the post-turn trust loop.
+        self._injection_turn_keys: OrderedDict[str, str] = OrderedDict()
         # W2: (channel, sender) → (canonical UserId, expires_at_monotonic).
         # Bounded LRU with a TTL: an operator identity merge re-homes
         # rows in the DB but cannot reach this in-process cache (nor the
@@ -5080,6 +5083,139 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         except Exception as exc:  # noqa: BLE001 — affect is an enhancement
             logger.warning("agent.memory.mood_update_failed", error=str(exc))
 
+    def _memory_trust_config(self) -> dict[str, Any]:
+        """Effective ``[memory.trust]`` knobs (W7 implicit trust loop).
+
+        ``dry_run`` records verdicts (the tuning telemetry) without
+        moving trust — hermes discipline, one release of observation
+        before the loop starts healing memory autonomously.
+        """
+        cfg: dict[str, Any] = {
+            "enabled": False,
+            "dry_run": True,
+            "judge_sample": 0.1,
+        }
+        app_state = getattr(self, "_app_state", None)
+        raw = getattr(app_state, "memory_trust_config", None)
+        if isinstance(raw, dict):
+            for key in ("enabled", "dry_run"):
+                value = raw.get(key, cfg[key])
+                if isinstance(value, bool):
+                    cfg[key] = value
+            value = raw.get("judge_sample", cfg["judge_sample"])
+            if (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and 0.0 <= float(value) <= 1.0
+            ):
+                cfg["judge_sample"] = float(value)
+        return cfg
+
+    async def _kernel_trust_loop(
+        self, session_key: str, reply_text: str
+    ) -> None:
+        """W7: attribute the finished reply against what was injected.
+
+        Tier-0 (pure Python): containment overlap + negation cues →
+        used / ignored / ambiguous. Tier-1 (sampled LLM judge via the
+        agent_runner_fn seam) resolves the ambiguous slice — an
+        unresolved ambiguous row keeps verdict NULL and is retried by
+        a later pass rather than guessed. Verdicts are recorded even in
+        dry_run (they ARE the tuning telemetry); trust/utility moves
+        and the trust-floor invalidation only run live.
+        """
+        try:
+            trust_cfg = self._memory_trust_config()
+            if not trust_cfg["enabled"] or not reply_text.strip():
+                return
+            kernel = await self._get_memory_kernel()
+            if kernel is None:
+                return
+            # Exact turn_key minted at injection time — never "latest
+            # rows", which a delayed bookkeeping write could misattribute
+            # to the wrong turn's reply.
+            turn_key = self._injection_turn_keys.pop(session_key, None)
+            if turn_key is None:
+                return
+            rows = await kernel.ledger_rows_for_turn(turn_key)
+            if not rows:
+                return
+            from corlinman_memory_kernel.textsim import attribute_reply
+
+            verdicts: list[tuple[int, str, str, float, int]] = []
+            ambiguous: list[tuple[int, str, str, float]] = []
+            for ledger_id, item_id, item_text in rows:
+                verdict, score = attribute_reply(reply_text, item_text)
+                if verdict == "ambiguous":
+                    ambiguous.append((ledger_id, item_id, item_text, score))
+                else:
+                    verdicts.append((ledger_id, item_id, verdict, score, 0))
+
+            if ambiguous:
+                judged = await self._judge_ambiguous(
+                    reply_text, ambiguous, trust_cfg["judge_sample"]
+                )
+                verdicts.extend(judged)
+
+            if not verdicts:
+                return
+            counts = await kernel.apply_trust_verdicts(
+                verdicts, move_trust=not trust_cfg["dry_run"]
+            )
+            logger.info(
+                "agent.memory.trust_verdicts",
+                session=session_key,
+                turn=turn_key,
+                dry_run=trust_cfg["dry_run"],
+                **counts,
+            )
+        except Exception as exc:  # noqa: BLE001 — the loop is best-effort
+            logger.warning("agent.memory.trust_loop_failed", error=str(exc))
+
+    async def _judge_ambiguous(
+        self,
+        reply_text: str,
+        ambiguous: list[tuple[int, str, str, float]],
+        sample_rate: float,
+    ) -> list[tuple[int, str, str, float, int]]:
+        """Tier-1: cheap LLM verdicts for the ambiguous slice (sampled).
+
+        Sampling is deterministic per ledger row (id-hash), so retries
+        judge the same rows instead of resampling. Unsampled/failed rows
+        return no verdict — their ledger rows stay NULL for later.
+        """
+        app_state = getattr(self, "_app_state", None)
+        runner_fn = getattr(app_state, "agent_runner_fn", None)
+        if runner_fn is None or sample_rate <= 0.0:
+            return []
+        out: list[tuple[int, str, str, float, int]] = []
+        for ledger_id, item_id, item_text, score in ambiguous:
+            if (ledger_id % 100) >= int(sample_rate * 100):
+                continue
+            prompt = (
+                "You are judging whether an assistant reply USED or "
+                "CONTRADICTED a stored memory (or ignored it).\n"
+                f"Stored memory: {item_text[:500]}\n"
+                f"Assistant reply: {reply_text[:1000]}\n"
+                "Answer with exactly one word: used, contradicted, or "
+                "ignored."
+            )
+            try:
+                result = await runner_fn(prompt)
+                raw = (
+                    str(result.get("reply", ""))
+                    if isinstance(result, dict) and result.get("ok")
+                    else ""
+                )
+                verdict = raw.strip().lower().split()[0] if raw.strip() else ""
+                if verdict in ("used", "contradicted", "ignored"):
+                    out.append((ledger_id, item_id, verdict, score, 1))
+            except Exception as exc:  # noqa: BLE001 — judge is best-effort
+                logger.warning(
+                    "agent.memory.trust_judge_failed", error=str(exc)
+                )
+        return out
+
     def _memory_kernel_effective_mode(self, channel: str | None) -> str:
         """Per-channel canary on top of the base mode.
 
@@ -5204,12 +5340,16 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 hits=len(kept),
                 core_blocks=len(blocks),
             )
-            # NOTE(W7): the journal turn id does not exist yet at recall
-            # time, so the ledger key is session+injection-instant. The
-            # trust loop joins by "latest ledger rows for this session at
-            # TurnComplete" — in-process and single-writer per session,
-            # so the fuzzy join is deterministic in practice.
+            # The turn_key is minted HERE (synchronously) and remembered
+            # for the post-turn trust loop, which joins by this exact
+            # key — never by "latest rows for the session".
             turn_key = f"{start.session_key or ''}:{int(time.time() * 1000)}"
+            if start.session_key:
+                self._injection_turn_keys[start.session_key] = turn_key
+                self._injection_turn_keys.move_to_end(start.session_key)
+                cap = _session_cache_cap()
+                while len(self._injection_turn_keys) > cap:
+                    self._injection_turn_keys.popitem(last=False)
             self._spawn_background(
                 self._kernel_injection_bookkeeping(kernel, turn_key, entries)
             )
@@ -5502,6 +5642,11 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         if start is not None and self._memory_kernel_mode() != "off":
             self._spawn_background(
                 self._observe_turn_kernel(session_key, user_text, reply_text, start)
+            )
+            # W7: attribute the finished reply against this turn's
+            # injected memories (no-op unless [memory.trust] enables it).
+            self._spawn_background(
+                self._kernel_trust_loop(session_key, reply_text)
             )
         host = await self._get_memory_host()
         if host is None:

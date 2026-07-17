@@ -526,6 +526,101 @@ class MemoryKernel:
             )
             await self._conn.commit()
 
+    async def ledger_rows_for_turn(
+        self, turn_key: str
+    ) -> list[tuple[int, str, str]]:
+        """Verdict-less ledger rows of ONE injection, with item text.
+
+        The caller supplies the exact turn_key it minted at injection
+        time — attribution must never guess "the latest rows", or a
+        delayed bookkeeping write would let turn N's injection be
+        attributed against turn N+1's reply.
+        """
+        async with self._conn.execute(
+            "SELECT l.id, l.item_id, i.text FROM mk_recall_ledger l"
+            " JOIN mk_items i ON i.id = l.item_id"
+            " WHERE l.turn_key = ? AND l.verdict IS NULL",
+            (turn_key,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [(int(r["id"]), r["item_id"], r["text"]) for r in rows]
+
+    async def apply_trust_verdicts(
+        self,
+        verdicts: list[tuple[int, str, str, float, int]],
+        *,
+        move_trust: bool,
+        use_bonus: float = 0.05,
+        contradict_penalty: float = 0.25,
+        utility_alpha: float = 0.1,
+        trust_floor: float = 0.2,
+    ) -> dict[str, int]:
+        """Record verdicts and (optionally) move trust — ONE transaction.
+
+        ``verdicts`` rows are ``(ledger_row_id, item_id, verdict,
+        score, tier)`` with verdict ∈ used|ignored|contradicted.
+        Moves (only when ``move_trust``):
+
+        - used        → trust += use_bonus (cap 1.0), use_count += 1,
+                        utility ← EMA toward 1.
+        - ignored     → utility ← EMA toward 0 (ranking signal only —
+                        being ignored is not evidence of falsehood).
+        - contradicted→ trust −= contradict_penalty (floor 0),
+                        contradict_count += 1; when trust falls below
+                        ``trust_floor`` with ≥2 independent
+                        contradictions, the item is bi-temporally
+                        invalidated (reason ``trust_floor``) — archived,
+                        never deleted, operator-restorable by UPDATE.
+        """
+        counts = {"used": 0, "ignored": 0, "contradicted": 0, "invalidated": 0}
+        now = now_ms()
+        async with self._lock:
+            for ledger_id, item_id, verdict, score, tier in verdicts:
+                if verdict not in ("used", "ignored", "contradicted"):
+                    continue
+                counts[verdict] += 1
+                await self._conn.execute(
+                    "UPDATE mk_recall_ledger SET verdict = ?,"
+                    " verdict_score = ?, verdict_tier = ? WHERE id = ?",
+                    (verdict, score, tier, ledger_id),
+                )
+                if not move_trust:
+                    continue
+                if verdict == "used":
+                    await self._conn.execute(
+                        "UPDATE mk_items SET"
+                        " trust = MIN(1.0, trust + ?),"
+                        " use_count = use_count + 1,"
+                        " utility = utility + ? * (1.0 - utility)"
+                        " WHERE id = ?",
+                        (use_bonus, utility_alpha, item_id),
+                    )
+                elif verdict == "ignored":
+                    await self._conn.execute(
+                        "UPDATE mk_items SET utility = utility * (1.0 - ?)"
+                        " WHERE id = ?",
+                        (utility_alpha, item_id),
+                    )
+                else:  # contradicted
+                    await self._conn.execute(
+                        "UPDATE mk_items SET"
+                        " trust = MAX(0.0, trust - ?),"
+                        " contradict_count = contradict_count + 1"
+                        " WHERE id = ?",
+                        (contradict_penalty, item_id),
+                    )
+                    cur = await self._conn.execute(
+                        "UPDATE mk_items SET valid_to_ms = ?,"
+                        " invalidated_by = 'trust_loop',"
+                        " invalid_reason = 'trust_floor'"
+                        " WHERE id = ? AND valid_to_ms IS NULL"
+                        " AND trust < ? AND contradict_count >= 2",
+                        (now, item_id, trust_floor),
+                    )
+                    counts["invalidated"] += cur.rowcount
+            await self._conn.commit()
+        return counts
+
     async def core_blocks(self, scope: KernelScope) -> list[tuple[str, str]]:
         """The scope's core-memory blocks as (block, content), stable order.
 

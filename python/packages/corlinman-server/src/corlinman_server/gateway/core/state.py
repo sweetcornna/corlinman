@@ -102,6 +102,10 @@ class AppState:
     # W6 EPA affect lens.
     memory_affect_config: Any = None
 
+    # dict — [memory.trust] TOML knobs (enabled/dry_run/judge_sample)
+    # for the W7 implicit trust loop.
+    memory_trust_config: Any = None
+
     # corlinman_persona.PersonaResolver — read-only ``{{persona.*}}`` /
     # ``{{persona.life_*}}`` placeholder lookup keyed by ``agent_id``.
     persona_resolver: Any = None
