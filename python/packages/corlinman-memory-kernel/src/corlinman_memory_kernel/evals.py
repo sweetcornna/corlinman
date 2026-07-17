@@ -110,8 +110,15 @@ class GoldenLoadError(RuntimeError):
 
 
 def load_golden_cases(goldens_dir: Path | None = None) -> list[GoldenCase]:
-    """Load every ``*.yaml`` golden case, sorted by filename."""
+    """Load every ``*.yaml`` golden case, sorted by filename.
+
+    A missing directory or an empty set raises — a misconfigured path
+    that silently shadows zero cases would look green forever (same
+    guard the shadow-tester's loader enforces).
+    """
     root = goldens_dir or BUNDLED_GOLDENS
+    if not root.is_dir():
+        raise GoldenLoadError(f"goldens dir missing: {root}")
     cases: list[GoldenCase] = []
     for path in sorted(root.glob("*.yaml")):
         try:
@@ -121,6 +128,15 @@ def load_golden_cases(goldens_dir: Path | None = None) -> list[GoldenCase]:
         if not isinstance(raw, dict):
             raise GoldenLoadError(f"{path.name}: top level must be a mapping")
         try:
+            items = list(raw.get("items", []))
+            for item in items:
+                # Validate at load so a malformed item names its file
+                # instead of aborting the whole run with a bare KeyError
+                # from the seeding step.
+                if not isinstance(item, dict) or "text" not in item:
+                    raise GoldenLoadError(
+                        f"{path.name}: every item needs a 'text' key"
+                    )
             probes = [
                 GoldenProbe(
                     text=str(p["text"]),
@@ -136,13 +152,15 @@ def load_golden_cases(goldens_dir: Path | None = None) -> list[GoldenCase]:
                 GoldenCase(
                     name=str(raw.get("name", path.stem)),
                     description=str(raw.get("description", "")),
-                    items=list(raw.get("items", [])),
+                    items=items,
                     probes=probes,
                     min_recall=float(raw.get("min_recall", 1.0)),
                 )
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise GoldenLoadError(f"{path.name}: {exc}") from exc
+    if not cases:
+        raise GoldenLoadError(f"no golden cases found under {root}")
     return cases
 
 
@@ -222,19 +240,43 @@ async def run_goldens(goldens_dir: Path | None = None) -> EvalReport:
         report.cases += 1
         await run_golden_case(case, report, latencies_ms)
     if latencies_ms:
+        # method="inclusive" is bounded by the sample max; the default
+        # exclusive method EXTRAPOLATES above it for small n, letting a
+        # single slow probe manufacture a phantom p95 breach.
         report.p95_ms = (
-            statistics.quantiles(latencies_ms, n=20)[-1]
+            statistics.quantiles(latencies_ms, n=20, method="inclusive")[-1]
             if len(latencies_ms) >= 2
             else latencies_ms[0]
         )
     return report
 
 
-def main() -> int:
-    """CLI: run the bundled goldens, print JSON, exit 1 on any failure."""
-    report = asyncio.run(run_goldens())
+#: CLI latency budget — generous for loaded CI/prod boxes; anywhere near
+#: it means a pathological query plan, not variance.
+CLI_P95_BUDGET_MS = 250.0
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI: run a golden set, print JSON, exit 1 on ANY failure
+    (leak, recall miss, or a busted latency budget)."""
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="corlinman-memory-evals")
+    parser.add_argument(
+        "--goldens-dir",
+        type=Path,
+        default=None,
+        help="directory of *.yaml golden cases (default: bundled set)",
+    )
+    args = parser.parse_args(argv)
+    report = asyncio.run(run_goldens(args.goldens_dir))
     print(json.dumps(report.to_json(), ensure_ascii=False, indent=2))
-    return 1 if (report.leaks or report.recall < 1.0) else 0
+    failed = (
+        report.leaks > 0
+        or report.recall < 1.0
+        or report.p95_ms >= CLI_P95_BUDGET_MS
+    )
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":  # pragma: no cover

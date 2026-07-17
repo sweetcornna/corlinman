@@ -13,9 +13,9 @@ from corlinman_memory_kernel.evals import (
     run_goldens,
 )
 
-#: Generous local bound — golden DBs are tiny; a p95 anywhere near this
-#: means a pathological query plan snuck in, not normal variance.
-_P95_BUDGET_MS = 50.0
+#: Generous bound sized for loaded CI runners — golden DBs are tiny, so
+#: anywhere near this means a pathological query plan, not variance.
+_P95_BUDGET_MS = 250.0
 
 
 def test_golden_set_is_nonempty_and_loads() -> None:
@@ -72,7 +72,23 @@ async def test_harness_detects_misses_and_leaks() -> None:
 
 
 async def test_goldens_dir_ships_with_package() -> None:
-    # The gate must keep working from an installed wheel, not just the
-    # repo checkout — the goldens live inside the package tree.
+    # The goldens live inside the package tree (not tests/) so the CLI
+    # and future prod-side gate ride the wheel. NOTE: from a repo/
+    # editable checkout this cannot prove wheel contents — hatchling
+    # bundles committed non-.py package files by default; a packaging
+    # regression would surface via the CLI on an installed box.
     assert BUNDLED_GOLDENS.is_dir()
     assert list(BUNDLED_GOLDENS.glob("*.yaml"))
+
+
+def test_loader_rejects_empty_or_missing_dir(tmp_path: object) -> None:
+    """A misconfigured goldens path must not look green forever."""
+    from pathlib import Path
+
+    import pytest
+    from corlinman_memory_kernel.evals import GoldenLoadError, load_golden_cases
+
+    with pytest.raises(GoldenLoadError):
+        load_golden_cases(Path(str(tmp_path)) / "nope")
+    with pytest.raises(GoldenLoadError):
+        load_golden_cases(Path(str(tmp_path)))  # exists but empty

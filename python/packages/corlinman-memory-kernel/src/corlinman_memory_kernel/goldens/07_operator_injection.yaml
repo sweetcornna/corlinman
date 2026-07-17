@@ -1,12 +1,18 @@
 # FTS operator characters and LIKE wildcards in probe text must match
-# literally — a crafted query can neither crash recall nor wildcard its
-# way into unrelated (or other-scope) memory.
+# literally. The same-scope probes are the load-bearing ones: the scope
+# filter cannot save us there, so they genuinely exercise syntax
+# inertness (a raw "%" reaching LIKE unescaped would match EVERY row,
+# including the same-scope secret). The cross-scope probe additionally
+# pins that query syntax cannot fish across scopes.
 name: operator-injection
-description: Query metacharacters are inert data, not syntax.
+description: Query metacharacters are inert data, not syntax — proven within one scope.
 items:
   - scope_user: u1
     text: "deploy failed with error code 137"
     kind: event
+  - scope_user: u1
+    text: "u1 private recovery phrase zebra"
+    kind: fact
   - scope_user: victim
     text: "victim secret token abc"
     kind: fact
@@ -14,11 +20,22 @@ probes:
   - text: "deploy - error:"
     scope_user: u1
     expect: ["error code 137"]
-  - text: "%"                      # bare wildcard → must match nothing
+  # Same-scope wildcard probes: unescaped LIKE would match everything.
+  - text: "%"
     scope_user: u1
     expect: []
-    forbid: ["secret token"]
-  - text: 'deploy OR "victim"'     # cross-scope fishing via OR syntax
+    forbid: ["recovery phrase", "error code 137"]
+  - text: "__"
+    scope_user: u1
+    expect: []
+    forbid: ["recovery phrase"]
+  # Operator-keyword probe: if NOT acted as FTS syntax this query would
+  # negate/error; as data, the deploy unit simply matches.
+  - text: "NOT deploy"
+    scope_user: u1
+    expect: ["error code 137"]
+  # Cross-scope fishing via query syntax must stay impossible.
+  - text: 'deploy OR "victim"'
     scope_user: u1
     expect: ["error code 137"]
     forbid: ["secret token"]
