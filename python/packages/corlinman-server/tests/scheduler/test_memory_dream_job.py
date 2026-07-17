@@ -102,12 +102,16 @@ async def test_dream_writes_reflections_diary_mood_demote(
     assert result["demoted"] == 1
     assert result["mood_delta"] == [0.2, 0.0, 0.1]
 
-    # Reflection landed at low trust with derived_from evidence edges.
-    scope = KernelScope(scope_user_id=None, persona_id="grantley")
+    # Reflection landed at low trust with derived_from evidence edges,
+    # scoped to u1 (all its evidence was u1's — the privacy inheritance).
+    # recall() is recency-ordered and ties are unstable, so locate the
+    # reflection explicitly rather than assuming hits[0].
+    scope = KernelScope(scope_user_id="u1", persona_id="grantley")
     hits = await kernel.recall(scope, "享受 下厨 散步")
-    assert hits and hits[0].kind == "reflection" and hits[0].trust == 0.4
+    refl = next((h for h in hits if h.kind == "reflection"), None)
+    assert refl is not None and refl.trust == 0.4
     async with kernel._conn.execute(  # noqa: SLF001
-        "SELECT rel, dst_id FROM mk_edges WHERE src_id = ?", (hits[0].id,)
+        "SELECT rel, dst_id FROM mk_edges WHERE src_id = ?", (refl.id,)
     ) as cur:
         edges = await cur.fetchall()
     assert {r["dst_id"] for r in edges} == {ids[0], ids[2]}
@@ -122,6 +126,66 @@ async def test_dream_writes_reflections_diary_mood_demote(
     ) as cur:
         row = await cur.fetchone()
     assert row is not None and row[0] < 0.6  # demoted
+
+
+async def test_reflection_inherits_single_user_scope(
+    kernel: MemoryKernel, tmp_path: Path
+) -> None:
+    """A reflection drawn only from user A's memories must be scoped to
+    A (private), not agent-global where every user of the persona sees
+    it. Cross-user evidence stays persona-global."""
+    scope_a = KernelScope(scope_user_id="alice", persona_id="grantley")
+    scope_b = KernelScope(scope_user_id="bob", persona_id="grantley")
+    a1 = await kernel.add_item(scope_a, text="alice 爱爬山", kind="fact", source="turn")
+    a2 = await kernel.add_item(scope_a, text="alice 周末去了黄山", kind="fact", source="turn")
+    b1 = await kernel.add_item(scope_b, text="bob 爱做饭", kind="fact", source="turn")
+    for i in (a1, a2, b1):
+        await kernel.set_affect(i, 0.4, 0.0, 0.2, 0.6)
+
+    runner = _runner(
+        {
+            "reflections": [
+                {"text": "alice 热爱户外和登山", "evidence": [a1, a2]},
+                {"text": "大家都各有热爱的事", "evidence": [a1, b1]},
+            ],
+            "diary": "",
+            "mood_delta": {},
+            "demote": [],
+        }
+    )
+    ctx = _ctx(kernel, runner, tmp_path)
+    result = await run_builtin(MEMORY_DREAM_BUILTIN_NAME, ctx)
+    assert result["reflections"] == 2
+
+    # alice-derived reflection surfaces for alice, NOT for bob.
+    alice_hits = await kernel.recall(scope_a, "热爱 户外 登山")
+    assert any("热爱户外" in h.text for h in alice_hits)
+    bob_hits = await kernel.recall(scope_b, "热爱 户外 登山")
+    assert not any("热爱户外" in h.text for h in bob_hits), "cross-user leak"
+    # The cross-user pattern is persona-global (visible to both).
+    assert any("各有热爱" in h.text for h in await kernel.recall(scope_b, "各有热爱"))
+
+
+async def test_mood_nudge_adds_not_replaces(
+    kernel: MemoryKernel, tmp_path: Path
+) -> None:
+    """The morning nudge ADDs its delta to accumulated mood — an
+    alpha=1 EMA would wipe the mood down to just the ±0.3 delta."""
+    await kernel.update_affect_state("grantley", (0.9, 0.0, 0.0), alpha=1.0)
+    await _seed(kernel)
+    runner = _runner(
+        {
+            "reflections": [],
+            "diary": "",
+            "mood_delta": {"e": 0.2, "p": 0.0, "a": 0.0},
+            "demote": [],
+        }
+    )
+    ctx = _ctx(kernel, runner, tmp_path)
+    await run_builtin(MEMORY_DREAM_BUILTIN_NAME, ctx)
+    mood = await kernel.get_affect_state("grantley")
+    # 0.9 + 0.2, clamped to 1.0 — NOT reset to 0.2.
+    assert mood[0] > 0.9, f"nudge must add, got {mood[0]}"
 
 
 async def test_reflection_with_unknown_evidence_is_rejected(

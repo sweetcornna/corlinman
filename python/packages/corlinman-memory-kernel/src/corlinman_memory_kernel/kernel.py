@@ -781,6 +781,32 @@ class MemoryKernel:
             await self._conn.commit()
         return (new[0], new[1], new[2])
 
+    async def nudge_affect_state(
+        self, persona_id: str, delta: tuple[float, float, float]
+    ) -> tuple[float, float, float]:
+        """ADD a bounded delta to the persona's mood, clamped to [-1, 1].
+
+        Distinct from :meth:`update_affect_state` (an EMA toward a turn's
+        affect): the dream's morning nudge SHIFTS the accumulated mood,
+        it does not replace it — using the EMA with alpha=1 would discard
+        the whole mood and leave only the ±0.3 delta.
+        """
+        cur = await self.get_affect_state(persona_id)
+        new = tuple(max(-1.0, min(1.0, c + d)) for c, d in zip(cur, delta, strict=True))
+        async with self._lock:
+            await self._conn.execute(
+                "INSERT INTO mk_affect_state("
+                "persona_id, mood_e, mood_p, mood_a, updated_at_ms)"
+                " VALUES (?, ?, ?, ?, ?)"
+                " ON CONFLICT(persona_id) DO UPDATE SET"
+                " mood_e = excluded.mood_e, mood_p = excluded.mood_p,"
+                " mood_a = excluded.mood_a,"
+                " updated_at_ms = excluded.updated_at_ms",
+                (persona_id, new[0], new[1], new[2], now_ms()),
+            )
+            await self._conn.commit()
+        return (new[0], new[1], new[2])
+
     async def add_edge(
         self, src_id: str, dst_id: str, rel: str, *, weight: float = 1.0
     ) -> None:

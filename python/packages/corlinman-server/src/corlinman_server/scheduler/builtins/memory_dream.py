@@ -93,11 +93,15 @@ def _clamp(value: Any, lo: float, hi: float) -> float:
 
 async def _write_diary(app_state: Any, persona_id: str, entry: str) -> bool:
     """Append the dream's diary entry via the existing persona path."""
-    store = getattr(app_state, "corlinman_persona_state_store", None)
+    # Canonical AppState path is extras["persona_state_store"] (c2 wiring);
+    # corlinman_persona_state_store is the FastAPI app.state name, kept as
+    # a fallback for callers that pass that object.
+    store = None
+    extras = getattr(app_state, "extras", None)
+    if isinstance(extras, dict):
+        store = extras.get("persona_state_store")
     if store is None:
-        extras = getattr(app_state, "extras", None)
-        if isinstance(extras, dict):
-            store = extras.get("persona_state_store")
+        store = getattr(app_state, "corlinman_persona_state_store", None)
     if store is None:
         return False
     try:
@@ -154,6 +158,11 @@ async def _memory_dream_action(context: BuiltinContext) -> dict[str, Any]:
         return {"ok": True, **report, "reason": "no_material"}
 
     valid_ids = {item.id for item in material}
+    # id → owning user, so a reflection inherits the scope of its
+    # evidence (see the reflection loop): one derived only from user A's
+    # memories must stay private to A, not surface to every user of the
+    # persona.
+    item_user = {item.id: item.scope.scope_user_id for item in material}
     rendered = "\n".join(f"[{item.id}] {item.text}" for item in material)
     prompt = f"{_DREAM_SYSTEM_PROMPT}\n\n## Memories\n{rendered}"
 
@@ -173,8 +182,10 @@ async def _memory_dream_action(context: BuiltinContext) -> dict[str, Any]:
         return {"ok": False, "reason": "dream_not_object", **report}
 
     # Reflections — evidence must reference REAL sampled ids.
-    scope = KernelScope(scope_user_id=None, persona_id=persona_id)
-    for refl in dream.get("reflections", [])[:3]:
+    reflections = dream.get("reflections", [])
+    if not isinstance(reflections, list):
+        reflections = []
+    for refl in reflections[:3]:
         if not isinstance(refl, dict):
             continue
         text = str(refl.get("text", "")).strip()
@@ -184,10 +195,16 @@ async def _memory_dream_action(context: BuiltinContext) -> dict[str, Any]:
         if not text or not evidence:
             report["reflections_rejected"] += 1
             continue
+        # Scope the reflection to its evidence: a single owning user →
+        # private to that user; evidence spanning users (or agent-scoped
+        # items) → persona-global (a genuine cross-user pattern, no one
+        # user's PII). This is what keeps A's reflections off B's turns.
+        owners = {item_user.get(ev) for ev in evidence}
+        refl_user = owners.pop() if len(owners) == 1 else None
         report["reflections"] += 1
         if not cfg["dry_run"]:
             new_id = await kernel.add_item(
-                scope,
+                KernelScope(scope_user_id=refl_user, persona_id=persona_id),
                 text=text,
                 kind="reflection",
                 source="dream",
@@ -216,7 +233,8 @@ async def _memory_dream_action(context: BuiltinContext) -> dict[str, Any]:
         )
         report["mood_delta"] = list(delta)
         if not cfg["dry_run"]:
-            await kernel.update_affect_state(persona_id, delta, alpha=1.0)
+            # ADD the delta to the accumulated mood (not an EMA-replace).
+            await kernel.nudge_affect_state(persona_id, delta)
 
     # Gated demotion — soft, reversible, never touches valid_to_ms.
     demote = [str(d) for d in dream.get("demote", []) if str(d) in valid_ids]
