@@ -597,6 +597,20 @@ enabled = false
 weight = 0.15
 alpha = 0.1
 
+# [memory.trust] — the W7 implicit trust loop: after each reply, the
+# injected memories are attributed used / ignored / contradicted
+# (tier-0 = pure text overlap + negation cues; an LLM judge samples the
+# ambiguous slice at judge_sample rate). used → trust+, ignored →
+# utility down (ranking only), contradicted → trust−; below the floor
+# with ≥2 independent contradictions the item is bi-temporally
+# invalidated (archived, operator-restorable). dry_run records verdicts
+# (the tuning telemetry) without moving trust — observe a while, then
+# flip.
+[memory.trust]
+enabled = false
+dry_run = true
+judge_sample = 0.1
+
 # ---------------------------------------------------------------------------
 # [logging] — tracing subscriber. file_rolling emits daily files under
 # <data_dir>/logs/ in addition to stdout.
