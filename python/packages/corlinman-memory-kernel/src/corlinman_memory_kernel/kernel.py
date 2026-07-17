@@ -621,6 +621,55 @@ class MemoryKernel:
             await self._conn.commit()
         return counts
 
+    async def sample_dream_material(
+        self,
+        persona_id: str,
+        *,
+        lookback_hours: float = 36.0,
+        limit: int = 12,
+    ) -> list[MemoryItem]:
+        """Salient recent material for the dream cycle.
+
+        Recent valid items visible to the persona, weighted by
+        importance × (0.3 + affect_salience) — emotional events replay
+        preferentially, mirroring sleep's amygdala-modulated
+        consolidation, but importance keeps neutral-but-crucial facts
+        in the pool.
+        """
+        cutoff = now_ms() - int(lookback_hours * 3_600_000)
+        async with self._conn.execute(
+            "SELECT *, 0.0 AS fts_score FROM mk_items"
+            " WHERE recorded_at_ms >= ? AND valid_to_ms IS NULL"
+            "   AND (persona_id = '' OR persona_id = ?)"
+            "   AND risk != 'high'"
+            " ORDER BY importance * (0.3 + affect_salience) DESC,"
+            " recorded_at_ms DESC LIMIT ?",
+            (cutoff, persona_id, limit),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [self._row_to_item(row) for row in rows]
+
+    async def demote_items(
+        self, item_ids: list[str], *, factor: float = 0.5, floor: float = 0.05
+    ) -> int:
+        """Soft demotion: scale importance down (never below the floor).
+
+        Reversible by design — demotion is a ranking nudge, not a
+        belief change; the trust loop and bi-temporal machinery own
+        actual retirement.
+        """
+        if not item_ids:
+            return 0
+        placeholders = ",".join("?" * len(item_ids))
+        async with self._lock:
+            cur = await self._conn.execute(
+                f"UPDATE mk_items SET importance = MAX(?, importance * ?)"
+                f" WHERE id IN ({placeholders}) AND valid_to_ms IS NULL",
+                (floor, factor, *item_ids),
+            )
+            await self._conn.commit()
+            return cur.rowcount
+
     async def core_blocks(self, scope: KernelScope) -> list[tuple[str, str]]:
         """The scope's core-memory blocks as (block, content), stable order.
 
@@ -718,6 +767,32 @@ class MemoryKernel:
             (1.0 - alpha) * c + alpha * t
             for c, t in zip(current, turn_affect, strict=True)
         )
+        async with self._lock:
+            await self._conn.execute(
+                "INSERT INTO mk_affect_state("
+                "persona_id, mood_e, mood_p, mood_a, updated_at_ms)"
+                " VALUES (?, ?, ?, ?, ?)"
+                " ON CONFLICT(persona_id) DO UPDATE SET"
+                " mood_e = excluded.mood_e, mood_p = excluded.mood_p,"
+                " mood_a = excluded.mood_a,"
+                " updated_at_ms = excluded.updated_at_ms",
+                (persona_id, new[0], new[1], new[2], now_ms()),
+            )
+            await self._conn.commit()
+        return (new[0], new[1], new[2])
+
+    async def nudge_affect_state(
+        self, persona_id: str, delta: tuple[float, float, float]
+    ) -> tuple[float, float, float]:
+        """ADD a bounded delta to the persona's mood, clamped to [-1, 1].
+
+        Distinct from :meth:`update_affect_state` (an EMA toward a turn's
+        affect): the dream's morning nudge SHIFTS the accumulated mood,
+        it does not replace it — using the EMA with alpha=1 would discard
+        the whole mood and leave only the ±0.3 delta.
+        """
+        cur = await self.get_affect_state(persona_id)
+        new = tuple(max(-1.0, min(1.0, c + d)) for c, d in zip(cur, delta, strict=True))
         async with self._lock:
             await self._conn.execute(
                 "INSERT INTO mk_affect_state("

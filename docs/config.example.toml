@@ -611,6 +611,24 @@ enabled = false
 dry_run = true
 judge_sample = 0.1
 
+# [memory.dream] — the W8 nightly dream cycle. Samples the day's
+# affect-weighted memories and, in the persona's voice, writes 1-3
+# higher-order reflections back into memory (low trust, mandatory
+# evidence edges — a reflection citing an unknown id is rejected), a
+# first-person diary entry (via the persona's capped diary), a small
+# morning mood nudge, and gated demotion of stale clutter. dry_run
+# reports the whole dream without writing. Schedule nightly:
+#   [[scheduler.jobs]]
+#   name = "memory-dream"
+#   cron = "0 0 4 * * * *"
+#   action = { type = "run_tool", plugin = "memory", tool = "dream" }
+[memory.dream]
+enabled = false
+dry_run = true
+lookback_hours = 36.0
+sample = 12
+persona_id = "grantley"
+
 # ---------------------------------------------------------------------------
 # [logging] — tracing subscriber. file_rolling emits daily files under
 # <data_dir>/logs/ in addition to stdout.
