@@ -4,6 +4,69 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.29.0] — 2026-07-17 — unified memory kernel
+
+> A nine-wave overhaul of the agent's memory. The old path dumped every
+> raw turn into one FTS store, recalled it by keyword only, siloed
+> memory per chat session, and shared one global notes namespace across
+> all users (a cross-user leak). It is replaced by a unified, per-user,
+> bi-temporal **memory kernel** — plus four capabilities no mainstream
+> agent-memory system ships. Every new behaviour is config-gated and
+> **off by default**; with the memory kernel left in its default
+> `shadow`/off modes the chat path behaves exactly as 1.28.
+
+### Added
+- **corlinman-memory-kernel** — a new package: one `memory.sqlite`,
+  additive `mk_*` tables, atomic bi-temporal facts (contradicted facts
+  are *invalidated with a validity interval*, never deleted), an
+  observation ingest queue, a recall ledger, and core-memory blocks.
+  Rollout gate `CORLINMAN_MEMORY_KERNEL=off|shadow|on` (default
+  `shadow`: observations accumulate and recall runs for telemetry only,
+  nothing is injected).
+- **Per-user, cross-channel scoping** (`[memory.scope]`, default on):
+  durable memory is keyed by canonical identity, so the same person on
+  QQ and Telegram (once linked) shares one memory and no user can read
+  another's — closing the previous global-namespace leak. An operator
+  identity merge re-homes the merged user's memory.
+- **Ranked hybrid recall** (`[memory.recall]`): FTS5 + optional vector
+  cosine fused with RRF, then ranked by relevance · recency · importance
+  · trust, with a relevance floor and a per-injection char budget.
+  Recalled memory is framed as untrusted data with per-item provenance
+  (poisoning defence). The FTS index is CJK-capable (trigram), fixing
+  Chinese recall that the previous tokenizer silently missed.
+- **Sleep-time reconcile** (`memory.reconcile` scheduler builtin): turns
+  the raw observation queue into curated facts off the hot path
+  (LLM extraction → PII redaction → risk classification → mem0-style
+  ADD/UPDATE/NOOP against existing memory), rebuilds core-memory blocks,
+  and runs dry-run-first with an auditable per-run report.
+- **EPA affect lens** (`[memory.affect]`): memories carry an
+  emotion vector and the persona a live mood; recall becomes
+  mood-congruent, with a mood-repair bias that prevents negative
+  spirals. (Innovation.)
+- **Implicit trust loop** (`[memory.trust]`): each reply is attributed
+  against the memories it was shown — used / ignored / contradicted —
+  and trust self-adjusts with no explicit feedback tool; repeatedly
+  contradicted facts retire themselves. (Innovation.)
+- **Dream cycle** (`memory.dream` scheduler builtin): a nightly
+  affect-weighted replay that writes evidence-backed reflections into
+  memory and a first-person entry into the persona's diary, with a
+  small morning mood shift. (Innovation.)
+- **Memory golden evals** — a YAML-scripted harness (`corlinman-memory-
+  evals`) that gates recall regressions in CI the way code regressions
+  are gated: scope-leak count must be zero, recall@k must hold.
+  (Innovation.)
+
+### Changed
+- `LocalSqliteHost` opens with WAL + `busy_timeout` and reaps orphaned
+  synthetic file rows; the agent servicer shares one memory-host handle
+  instead of opening its own. No behaviour change for existing callers.
+
+### Fixed
+- FTS queries containing operator characters (`-`, `:`, quotes) no
+  longer silently return empty — user text is escaped before `MATCH`.
+- A leaked-connection class that could hang the Python test suite to the
+  CI cap is closed at the source (test teardown + a repo-level backstop).
+
 ## [1.28.2] — 2026-07-15 — neutral User-Agent for OpenAI-compatible relays
 
 > Patch: an OpenAI-compatible relay behind Cloudflare (Sub2API) blocked
