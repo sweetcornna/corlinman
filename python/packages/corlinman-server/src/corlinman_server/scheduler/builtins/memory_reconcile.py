@@ -80,10 +80,12 @@ _RETURNED_ACTIONS_CAP = 20
 
 
 # CJK-aware similarity shared with the trust loop (kernel textsim).
-def _jaccard(a: str, b: str) -> float:
-    from corlinman_memory_kernel.textsim import jaccard
+try:
+    from corlinman_memory_kernel.textsim import jaccard as _jaccard
+except Exception:  # pragma: no cover — partial install; builtin degrades
 
-    return jaccard(a, b)
+    def _jaccard(a: str, b: str) -> float:
+        return 0.0
 
 
 def _curator_config(app_state: Any) -> dict[str, Any]:

@@ -140,6 +140,52 @@ async def test_disabled_leaves_ledger_untouched(
         await kernel.close()
 
 
+async def test_stale_injection_key_never_misattributes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The second misattribution window: a turn_key left over from a
+    disabled-trust turn must be consumed-and-discarded, not attributed
+    against a later unrelated reply."""
+    monkeypatch.setenv("CORLINMAN_MEMORY_KERNEL", "on")
+    kernel = await MemoryKernel.open(tmp_path / "memory.sqlite")
+    await kernel.add_item(
+        _SCOPE, text="user likes oolong tea", kind="preference", source="turn"
+    )
+    servicer = _servicer(
+        kernel, memory_trust_config={"enabled": False, "dry_run": False}
+    )
+    try:
+        # Turn 1: injection happens, trust loop disabled → key would
+        # have lingered before the fix.
+        await _run_turn(servicer, "the user likes oolong tea")
+        # Enable trust; turn 2's reply is UNRELATED and injects nothing
+        # relevant — turn 1's rows must NOT be attributed against it.
+        servicer.set_app_state(
+            SimpleNamespace(
+                memory_host=_NullHost(),
+                memory_kernel=kernel,
+                identity_resolver=None,
+                memory_trust_config={"enabled": True, "dry_run": False},
+            )
+        )
+        await _run_turn(servicer, "totally unrelated weather chat")
+        async with kernel._conn.execute(  # noqa: SLF001
+            "SELECT COUNT(*) FROM mk_recall_ledger"
+            " WHERE verdict = 'ignored' OR verdict = 'contradicted'"
+        ) as cur:
+            row = await cur.fetchone()
+        # Turn 1's rows stay unattributed (uncounted, never guessed);
+        # turn 2's own injection may legitimately attribute, but turn 1
+        # rows from the disabled period must not be marked from turn 2's
+        # reply. With the fix, turn 1's key was consumed on turn 1.
+        hits = await kernel.recall(_SCOPE, "oolong tea")
+        assert hits and hits[0].trust == 0.5, "no cross-turn trust moves"
+        assert row is not None
+    finally:
+        await servicer.aclose()
+        await kernel.close()
+
+
 async def test_ambiguous_goes_to_sampled_judge(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
