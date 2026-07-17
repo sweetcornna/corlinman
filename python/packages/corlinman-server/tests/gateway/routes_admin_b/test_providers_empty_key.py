@@ -127,7 +127,7 @@ def test_upsert_persists_a_real_value_key(tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
     config_path.write_text("", encoding="utf-8")
 
-    for state, client in _with_state(config_path):
+    for _state, client in _with_state(config_path):
         resp = client.post(
             "/admin/providers",
             json={

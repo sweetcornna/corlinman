@@ -28,9 +28,10 @@ Behaviour parity with the Rust adapter:
 - ``upsert`` inserts a synthetic ``files`` row at
   ``memory-host://{nanos}-{counter}`` and one ``chunks`` row; the chunk
   id (as ``str``) is returned and is what callers pass to ``delete``.
-- ``delete`` removes the chunk only (the synthetic file row is left
-  behind, identical to the Rust path: ``SqliteStore::delete_chunk_by_id``
-  is chunk-scoped).
+- ``delete`` removes the chunk and, when no other chunk references it,
+  the synthetic ``files`` row too (deliberate divergence from the Rust
+  ``SqliteStore::delete_chunk_by_id``, which is chunk-scoped and leaked
+  one file row per deleted memory).
 - ``get`` returns ``None`` for unknown or non-numeric ids, never raises.
 """
 
@@ -57,6 +58,21 @@ from corlinman_memory_host.types import (
 # :meth:`LocalSqliteHost.upsert`. Kept stable so downstream tools can
 # filter by it if they need to audit memory-host-originated content.
 _DEFAULT_DIARY_NAME = "memory-host"
+
+
+def _fts_match_query(text: str) -> str:
+    """Escape free text into a safe FTS5 MATCH expression.
+
+    Raw user text reaches ``MATCH`` here, and FTS5 treats ``-``, ``:``,
+    ``"`` etc. as query syntax — a message like ``"corlinman - help:"``
+    used to raise (swallowed to a silent empty result). Quoting each
+    whitespace token (with ``"`` doubled per FTS5 string rules) keeps the
+    implicit-AND semantics for plain words while making operator
+    characters literal. Returns ``""`` when nothing tokenises; callers
+    treat that as an empty result.
+    """
+    tokens = [t.replace('"', '""') for t in text.split() if t.strip('"')]
+    return " ".join(f'"{t}"' for t in tokens)
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +221,17 @@ class _SqliteStore:
         conn.row_factory = aiosqlite.Row
         # Foreign keys must be opted into per-connection in sqlite.
         await conn.execute("PRAGMA foreign_keys = ON")
+        # The same memory.sqlite is opened by multiple hosts in one process
+        # (gateway AppState + servicer fallback) and, later, by sleep-time
+        # maintenance jobs. WAL lets readers proceed during a write and
+        # busy_timeout turns lock contention into a bounded wait instead of
+        # an immediate SQLITE_BUSY. Best-effort: ``:memory:`` and some
+        # network filesystems refuse WAL — the store works either way.
+        try:
+            await conn.execute("PRAGMA journal_mode = WAL")
+            await conn.execute("PRAGMA busy_timeout = 5000")
+        except aiosqlite.Error:
+            pass
         await conn.executescript(_SCHEMA_SQL)
         await conn.commit()
         return cls(conn)
@@ -252,7 +279,21 @@ class _SqliteStore:
 
     async def delete_chunk_by_id(self, chunk_id: int) -> None:
         async with self._lock:
+            async with self._conn.execute(
+                "SELECT file_id FROM chunks WHERE id = ?", (chunk_id,)
+            ) as cur:
+                row = await cur.fetchone()
             await self._conn.execute("DELETE FROM chunks WHERE id = ?", (chunk_id,))
+            # Reap the synthetic ``files`` row once no chunk references it.
+            # Diverges from the Rust ``SqliteStore::delete_chunk_by_id``
+            # (chunk-scoped, leaks the file row); guarded so multi-chunk
+            # files from other writers are left alone.
+            if row is not None:
+                await self._conn.execute(
+                    "DELETE FROM files WHERE id = ? "
+                    "AND NOT EXISTS (SELECT 1 FROM chunks WHERE file_id = ?)",
+                    (int(row["file_id"]), int(row["file_id"])),
+                )
             await self._conn.commit()
 
     async def query_chunks_by_ids(self, ids: list[int]) -> list[_ChunkRow]:
@@ -352,9 +393,10 @@ class _SqliteStore:
         Rust "higher = better" contract."""
         if top_k <= 0:
             return []
-        # FTS5 MATCH syntax: bare phrase. To stay forgiving on Latin-1
-        # text we don't quote-escape; if a future caller needs phrase
-        # search they can pre-quote.
+        # Escape into per-token quoted FTS5 syntax — see _fts_match_query.
+        text = _fts_match_query(text)
+        if not text:
+            return []
         if allowed_ids is None:
             sql = (
                 "SELECT rowid, bm25(chunks_fts) AS score "
@@ -407,6 +449,10 @@ class _SqliteStore:
         same higher-is-better contract as :meth:`search_bm25_with_filter`.
         """
         if top_k <= 0:
+            return []
+        # Escape into per-token quoted FTS5 syntax — see _fts_match_query.
+        text = _fts_match_query(text)
+        if not text:
             return []
         sql = (
             "SELECT f.rowid AS rowid, bm25(chunks_fts) AS score "

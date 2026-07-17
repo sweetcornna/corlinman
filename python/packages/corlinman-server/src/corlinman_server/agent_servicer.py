@@ -3606,18 +3606,13 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 or event.tool == MEMORY_WRITE_TOOL
                 or event.tool == MEMORY_READ_TOOL
             ):
-                # WP17: agent-callable memory. ``memory_host`` is resolved
-                # from ``app_state`` (CONTRACT C2 — set during gateway
-                # lifespan by wire-B). When not wired, dispatchers return
-                # empty / not_configured envelopes rather than raising, so
-                # the model can handle unavailability.
-                _memory_host = None
-                if hasattr(self, "_app_state") and self._app_state is not None:
-                    _memory_host = getattr(self._app_state, "memory_host", None)
-                if _memory_host is None:
-                    # Fall back to the servicer's own lazily-opened host so
-                    # durable notes work even before app_state is attached.
-                    _memory_host = await self._get_memory_host()
+                # WP17: agent-callable memory. ``_get_memory_host`` prefers
+                # the app_state host (CONTRACT C2 — set during gateway
+                # lifespan by wire-B) and falls back to the servicer's own
+                # lazily-opened one. When neither is available, dispatchers
+                # return empty / not_configured envelopes rather than
+                # raising, so the model can handle unavailability.
+                _memory_host = await self._get_memory_host()
                 _ms_session_key = start.session_key or None
                 if event.tool == MEMORY_SEARCH_TOOL:
                     return await dispatch_memory_search(
@@ -4687,9 +4682,19 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
     # ------------------------------------------------------------------
 
     async def _get_memory_host(self) -> Any | None:
-        """Lazily open the LocalSqlite memory host (FTS5 BM25, no
-        embeddings). Returns ``None`` if the host cannot be opened — the
-        chat path then runs memory-free."""
+        """Return the memory host, preferring the gateway-shared instance.
+
+        The C2-wired ``app_state.memory_host`` (one connection per process)
+        wins so the chat path, tool dispatch and maintenance jobs all write
+        through the same handle. The lazy self-open below is the standalone
+        fallback (embedded console, bare gRPC boots with no app state).
+        Returns ``None`` if no host can be produced — the chat path then
+        runs memory-free."""
+        app_state = getattr(self, "_app_state", None)
+        if app_state is not None:
+            shared = getattr(app_state, "memory_host", None)
+            if shared is not None:
+                return shared
         if self._memory_init_done:
             return self._memory_host
         self._memory_init_done = True
@@ -4703,6 +4708,27 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             logger.warning("agent.memory.init_failed", error=str(exc))
             self._memory_host = None
         return self._memory_host
+
+    def _memory_recall_config(self) -> dict[str, int]:
+        """Effective ``[memory.recall]`` knobs (defaults = legacy values).
+
+        Read from ``app_state.memory_recall_config`` (published by C2
+        wiring off the loaded TOML). Values are sanitised to non-negative
+        ints; anything missing or malformed falls back to the hardcoded
+        legacy behaviour, so standalone boots are unchanged.
+        """
+        cfg = {"recent_turns": 8, "notes_top_k": 4, "query_chars": 500}
+        app_state = getattr(self, "_app_state", None)
+        raw = getattr(app_state, "memory_recall_config", None)
+        if isinstance(raw, dict):
+            for key in cfg:
+                try:
+                    value = int(raw.get(key, cfg[key]))
+                except (TypeError, ValueError):
+                    continue
+                if value >= 0:
+                    cfg[key] = value
+        return cfg
 
     async def _recall_memory(self, start: AgentChatStart) -> None:
         """Recall recent conversation memory for this session and fold it
@@ -4728,7 +4754,10 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             if recent_fn is None:
                 return
             try:
-                hits = await recent_fn(start.session_key, 8)
+                hits = await recent_fn(
+                    start.session_key,
+                    self._memory_recall_config()["recent_turns"],
+                )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("agent.memory.recall_failed", error=str(exc))
                 return
@@ -4767,12 +4796,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         notes namespace. Silent no-op on any missing piece — never raises.
         """
         try:
-            host = None
-            app_state = getattr(self, "_app_state", None)
-            if app_state is not None:
-                host = getattr(app_state, "memory_host", None)
-            if host is None:
-                host = await self._get_memory_host()
+            host = await self._get_memory_host()
             if host is None:
                 return
             query_fn = getattr(host, "query", None)
@@ -4783,9 +4807,10 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 return
             from corlinman_memory_host.types import MemoryQuery  # noqa: PLC0415
 
+            recall_cfg = self._memory_recall_config()
             req = MemoryQuery(
-                text=user_text.strip()[:500],
-                top_k=4,
+                text=user_text.strip()[: recall_cfg["query_chars"]],
+                top_k=recall_cfg["notes_top_k"],
                 namespace="agent_notes",
             )
             hits = await query_fn(req)
@@ -4857,7 +4882,9 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             recent_fn = getattr(host, "recent", None)
             if recent_fn is None:
                 return
-            hits = await recent_fn(session_key, 8)
+            hits = await recent_fn(
+                session_key, self._memory_recall_config()["recent_turns"]
+            )
         except Exception as exc:  # noqa: BLE001 — prefetch is best-effort
             logger.debug("agent.memory.prefetch_failed", error=str(exc))
             return

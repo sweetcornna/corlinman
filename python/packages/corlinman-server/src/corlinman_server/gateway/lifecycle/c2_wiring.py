@@ -259,6 +259,26 @@ async def _wire_c2_handles(
         with suppress(AttributeError, TypeError):
             state.memory_host = None
 
+    # --- memory recall config ---------------------------------------------
+    # ``[memory.recall]`` TOML knobs for the servicer's conversational
+    # recall (recent-turn count, notes top_k, query char cap). Published as
+    # a plain dict; the servicer sanitises values and falls back to legacy
+    # defaults for anything missing, so an absent/partial section is fine.
+    try:
+        recall_cfg: dict[str, Any] = {}
+        memory_section = _extract_section(cfg, "memory")
+        if isinstance(memory_section, dict):
+            recall_section = memory_section.get("recall")
+            if isinstance(recall_section, dict):
+                recall_cfg = dict(recall_section)
+        state.memory_recall_config = recall_cfg
+        if recall_cfg:
+            logger.info("gateway.c2.memory_recall_config_wired", **recall_cfg)
+    except Exception as exc:  # noqa: BLE001 — defaults apply
+        logger.warning("gateway.c2.memory_recall_config_failed", error=str(exc))
+        with suppress(AttributeError, TypeError):
+            state.memory_recall_config = {}
+
     # --- persona_resolver (gap persona-life-resolver-dead) ---------------
     # The resolver reads ``{{persona.mood}}`` / ``{{persona.life_*}}`` off
     # the SAME runtime persona-STATE DB (``agent_state.sqlite``) the agent
