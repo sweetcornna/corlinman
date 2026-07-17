@@ -1,0 +1,29 @@
+# The load-bearing privacy invariant: users can never read each other's
+# memory. A leak here fails the whole suite unconditionally.
+name: scope-isolation
+description: Different users' facts are mutually invisible; agent-scoped facts are shared.
+items:
+  - scope_user: alice
+    text: "alice 的家庭住址在中央大街 1 号"
+    kind: fact
+  - scope_user: bob
+    text: "bob prefers espresso over latte"
+    kind: preference
+  - scope_user: null   # agent-scoped: visible to everyone in the tenant
+    text: "server timezone is UTC"
+    kind: fact
+probes:
+  - text: "家庭住址 中央大街"
+    scope_user: bob
+    expect: []
+    forbid: ["中央大街 1 号"]
+  - text: "espresso latte preference"
+    scope_user: alice
+    expect: []
+    forbid: ["espresso"]
+  - text: "server timezone"
+    scope_user: bob
+    expect: ["server timezone is UTC"]
+  - text: "家庭住址 中央大街"
+    scope_user: alice
+    expect: ["中央大街 1 号"]

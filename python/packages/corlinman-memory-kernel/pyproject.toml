@@ -9,7 +9,12 @@ authors = [{ name = "corlinman contributors" }]
 
 dependencies = [
     "aiosqlite>=0.20",
+    # Golden-eval harness (evals.py) loads YAML-scripted recall cases.
+    "pyyaml>=6",
 ]
+
+[project.scripts]
+corlinman-memory-evals = "corlinman_memory_kernel.evals:main"
 
 [build-system]
 requires = ["hatchling"]

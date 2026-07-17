@@ -1,0 +1,21 @@
+# The unified ranker must let trust×importance beat equally-relevant
+# noise when the probe can only keep one hit (top_k=1).
+name: ranking-blend
+description: High-trust important facts outrank low-trust noise at equal relevance.
+items:
+  - scope_user: u1
+    text: "meeting cadence is weekly on Monday"
+    kind: fact
+    trust: 0.9
+    importance: 0.9
+  - scope_user: u1
+    text: "meeting cadence might be biweekly maybe"
+    kind: fact
+    trust: 0.1
+    importance: 0.1
+probes:
+  - text: "meeting cadence"
+    scope_user: u1
+    top_k: 1
+    expect: ["weekly on Monday"]
+    forbid: ["biweekly maybe"]

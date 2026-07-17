@@ -1,0 +1,19 @@
+# Bi-temporal correctness: a corrected fact is invalidated, not deleted
+# — and only the current belief surfaces (the LongMemEval knowledge-
+# update category, the one that separates memory systems in practice).
+name: knowledge-update
+description: Invalidated facts never surface; the superseding fact does.
+items:
+  - scope_user: u1
+    text: "user works at Initech"
+    kind: fact
+    invalidate: true
+    invalidate_reason: contradiction
+  - scope_user: u1
+    text: "user works at Globex since 2026"
+    kind: fact
+probes:
+  - text: "where does the user works"
+    scope_user: u1
+    expect: ["Globex"]
+    forbid: ["Initech"]

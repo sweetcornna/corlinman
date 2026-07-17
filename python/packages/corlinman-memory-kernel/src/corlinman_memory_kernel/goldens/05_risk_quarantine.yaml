@@ -1,0 +1,22 @@
+# risk=high items are quarantined from ranked recall entirely (until
+# channel-level provenance lands), and they must not crowd safe matches
+# out of the candidate pool.
+name: risk-quarantine
+description: High-risk items never surface and never starve the pool.
+items:
+  - scope_user: u1
+    text: "checkout flow bug report one"
+    kind: fact
+    risk: high
+  - scope_user: u1
+    text: "checkout flow bug report two"
+    kind: fact
+    risk: high
+  - scope_user: u1
+    text: "checkout flow works on staging"
+    kind: fact
+probes:
+  - text: "checkout flow bug"
+    scope_user: u1
+    expect: ["works on staging"]
+    forbid: ["bug report one", "bug report two"]
