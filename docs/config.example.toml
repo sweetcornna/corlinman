@@ -589,6 +589,9 @@ core_block_items = 8
 # turn); recall adds `weight` × mood-congruent resonance. Built-in
 # mood-repair bias: a deeply negative mood surfaces POSITIVE memories
 # (anti-spiral). weight = 0 or enabled = false restores classic ranking.
+# COST: enabling adds one embedding API call per chat turn (mood update)
+# plus a one-time anchor build per embedding model (single batch call).
+# Mood is global per persona (one character, one mood across all chats).
 [memory.affect]
 enabled = false
 weight = 0.15

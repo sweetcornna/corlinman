@@ -112,6 +112,14 @@ class GoldenLoadError(RuntimeError):
     """A golden YAML file is malformed."""
 
 
+def _validated_mood(raw: Any, filename: str) -> list[float] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, list) or len(raw) != 3:
+        raise GoldenLoadError(f"{filename}: mood must be a 3-element [e,p,a]")
+    return [float(x) for x in raw]
+
+
 def load_golden_cases(goldens_dir: Path | None = None) -> list[GoldenCase]:
     """Load every ``*.yaml`` golden case, sorted by filename.
 
@@ -148,11 +156,7 @@ def load_golden_cases(goldens_dir: Path | None = None) -> list[GoldenCase]:
                     top_k=int(p.get("top_k", 4)),
                     expect=[str(e) for e in p.get("expect", [])],
                     forbid=[str(fb) for fb in p.get("forbid", [])],
-                    mood=(
-                        [float(x) for x in p["mood"]]
-                        if isinstance(p.get("mood"), list)
-                        else None
-                    ),
+                    mood=_validated_mood(p.get("mood"), path.name),
                     affect_weight=float(p.get("affect_weight", 0.0)),
                 )
                 for p in raw.get("probes", [])

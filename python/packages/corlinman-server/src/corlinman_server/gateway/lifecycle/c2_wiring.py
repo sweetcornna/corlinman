@@ -308,8 +308,27 @@ async def _wire_c2_handles(
         vectors = await provider.embed(model=str(model), inputs=[text])
         return list(vectors[0]) if vectors else None
 
+    async def _memory_embed_many(texts: list[str]) -> list[list[float]] | None:
+        registry = getattr(state, "provider_registry", None)
+        config = getattr(state, "config", None)
+        emb = config.get("embedding") if isinstance(config, dict) else None
+        if registry is None or not isinstance(emb, dict):
+            return None
+        if not emb.get("enabled", True):
+            return None
+        provider_name = emb.get("provider")
+        model = emb.get("model")
+        if not provider_name or not model:
+            return None
+        provider = registry.get(str(provider_name))
+        if provider is None:
+            return None
+        vectors = await provider.embed(model=str(model), inputs=list(texts))
+        return [list(v) for v in vectors] if vectors else None
+
     with suppress(AttributeError, TypeError):
         state.memory_embed_fn = _memory_embed
+        state.memory_embed_many_fn = _memory_embed_many
 
     # --- memory recall config ---------------------------------------------
     # ``[memory.recall]`` TOML knobs for the servicer's conversational

@@ -5052,19 +5052,15 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         if embed_fn is None:
             return
         try:
-            from corlinman_memory_kernel.affect import (
-                affect_from_embedding,
-                build_anchors,
+            from corlinman_memory_kernel.affect import affect_from_embedding
+
+            from corlinman_server.gateway.memory_affect import (
+                get_affect_anchors,
             )
 
-            anchors = getattr(app_state, "memory_affect_anchors", None)
+            anchors = await get_affect_anchors(app_state)
             if anchors is None:
-                anchors = await build_anchors(embed_fn)
-                if anchors is None:
-                    return
-                if app_state is not None:
-                    with contextlib.suppress(AttributeError, TypeError):
-                        app_state.memory_affect_anchors = anchors
+                return
             vec = await embed_fn(user_text[:500])
             if not vec:
                 return

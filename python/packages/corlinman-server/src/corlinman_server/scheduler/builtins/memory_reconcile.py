@@ -383,20 +383,13 @@ async def _maybe_embed(
         if not vector:
             return
         await kernel.set_embedding(item_id, list(vector))
-        from corlinman_memory_kernel.affect import (
-            affect_from_embedding,
-            build_anchors,
-        )
+        from corlinman_memory_kernel.affect import affect_from_embedding
 
-        anchors = getattr(app_state, "memory_affect_anchors", None)
+        from corlinman_server.gateway.memory_affect import get_affect_anchors
+
+        anchors = await get_affect_anchors(app_state)
         if anchors is None:
-            anchors = await build_anchors(embed_fn)
-            if anchors is None:
-                return
-            try:
-                app_state.memory_affect_anchors = anchors
-            except (AttributeError, TypeError):  # pragma: no cover
-                pass
+            return
         affect = affect_from_embedding(list(vector), anchors)
         if affect.salience > 0.0:
             await kernel.set_affect(

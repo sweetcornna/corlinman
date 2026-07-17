@@ -80,32 +80,51 @@ def _mean(vectors: list[list[float]]) -> list[float]:
 
 
 def _diff_axis(pos: list[list[float]], neg: list[list[float]]) -> list[float]:
+    # Raw mean difference — direction only; affect_from_embedding reads
+    # it through cosine, which normalizes, so no explicit unit-scaling.
     mp, mn = _mean(pos), _mean(neg)
     return [a - b for a, b in zip(mp, mn, strict=True)]
 
 
-async def build_anchors(embed_fn: EmbedFn) -> AffectAnchors | None:
+EmbedManyFn = Callable[[list[str]], Awaitable[list[list[float]] | None]]
+
+
+async def build_anchors(
+    embed_fn: EmbedFn, *, embed_many: EmbedManyFn | None = None
+) -> AffectAnchors | None:
     """Embed the antonym sets once and derive the three axes.
 
-    ~40 short embedding calls, done once per process (callers cache the
-    result). Returns None when the embed seam is unavailable or any
-    word fails to embed — affect then simply stays off.
+    With ``embed_many`` (batch seam) this is ONE provider request; the
+    per-word fallback costs ~40 sequential round trips, so callers on a
+    real provider should always pass the batch fn. Done once per
+    process per embedding model (callers cache keyed by model). Returns
+    None when the seam is unavailable or any word fails to embed —
+    affect then simply stays off.
     """
+    all_words: list[str] = []
+    for pos_words, neg_words in ANCHOR_WORDS.values():
+        all_words.extend(pos_words)
+        all_words.extend(neg_words)
+
+    vectors: dict[str, list[float]] = {}
+    if embed_many is not None:
+        batched = await embed_many(all_words)
+        if not batched or len(batched) != len(all_words):
+            return None
+        vectors = {w: list(v) for w, v in zip(all_words, batched, strict=True)}
+    else:
+        for word in all_words:
+            vec = await embed_fn(word)
+            if not vec:
+                return None
+            vectors[word] = list(vec)
+
     axes: dict[str, list[float]] = {}
     for axis, (pos_words, neg_words) in ANCHOR_WORDS.items():
-        pos: list[list[float]] = []
-        neg: list[list[float]] = []
-        for word in pos_words:
-            vec = await embed_fn(word)
-            if not vec:
-                return None
-            pos.append(list(vec))
-        for word in neg_words:
-            vec = await embed_fn(word)
-            if not vec:
-                return None
-            neg.append(list(vec))
-        axes[axis] = _diff_axis(pos, neg)
+        axes[axis] = _diff_axis(
+            [vectors[w] for w in pos_words],
+            [vectors[w] for w in neg_words],
+        )
     return AffectAnchors(e=axes["e"], p=axes["p"], a=axes["a"])
 
 
