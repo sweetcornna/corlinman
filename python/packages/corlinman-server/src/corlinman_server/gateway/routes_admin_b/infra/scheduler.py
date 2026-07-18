@@ -185,6 +185,15 @@ def router() -> APIRouter:
             qq_account=(
                 body.qq_account if body.qq_account is not None else rj.qq_account
             ),
+            # B5 — pass the promoted fields through only when the PATCH sent
+            # them (top-level is authoritative). When omitted (None) the
+            # merged ``metadata`` carry-over below preserves the existing
+            # value, and ``_compose_metadata`` leaves it untouched. A changed
+            # ``jitter_minutes`` flows into metadata → ``_store_job`` →
+            # ``_apply_enabled_state`` re-registers the tick loop, which reads
+            # the new ``jitter_secs`` via ``_jitter_secs_from_metadata``.
+            image_ref_labels=body.image_ref_labels,
+            jitter_minutes=body.jitter_minutes,
             metadata=(
                 body.metadata if body.metadata is not None else dict(rj.metadata)
             ),
