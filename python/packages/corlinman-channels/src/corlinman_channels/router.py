@@ -199,6 +199,12 @@ class ChannelRouter:
     group_keywords: GroupKeywords = field(default_factory=dict)
     """Per-group keyword filter (case-insensitive substring match)."""
 
+    group_replies_enabled: bool = True
+    """Master switch for group-message dispatch. ``False`` drops every
+    group message BEFORE mention/keyword checks (private chat is
+    unaffected) — the emergency mute for a bot misbehaving in groups.
+    Config: ``[channels.qq].group_replies_enabled``."""
+
     self_ids: list[int] = field(default_factory=list)
     """``@mention`` targets that always trigger, independent of
     keywords. In OneBot this is the bot's own ``self_id``."""
@@ -302,6 +308,8 @@ class ChannelRouter:
         if event.message_type == MessageType.PRIVATE:
             binding = ChannelBinding.qq_private(event.self_id, event.user_id)
         elif event.message_type == MessageType.GROUP:
+            if not self.group_replies_enabled:
+                return None
             group_id = event.group_id
             if group_id is None:
                 return None
