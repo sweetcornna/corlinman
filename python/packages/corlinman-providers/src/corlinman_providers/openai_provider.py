@@ -168,6 +168,21 @@ _REASONING_UNSUPPORTED_PARAMS: tuple[str, ...] = (
 _STRICT_ALTERNATION_MODEL_PREFIXES: tuple[str, ...] = ("deepseek", "qwen", "qwq", "glm")
 
 
+# A reasoning-summary part HEADLINE as emitted by Responses→chat.completions
+# shims (observed on gpt-5.x behind OpenAI-compatible relays): one complete
+# chunk of the form ``**Assessing project architecture**`` — bold, single
+# line, nothing else. Real reasoning traces (DeepSeek-R1 / QwQ) stream as
+# multi-chunk prose and never match.
+_SUMMARY_HEADLINE_RE = re.compile(r"^\s*\*\*[^\n*]{1,200}\*\*\s*$")
+
+# Upper bound for a buffered summary body. Observed bodies run a few
+# hundred chars; anything growing past this is almost certainly the real
+# answer misrouted into the heuristic — flush it back to content so a
+# long reply never hides inside the reasoning block (worst case cost:
+# the first ~4KB of a rare answer arrives as one burst).
+_SUMMARY_BODY_CAP = 4000
+
+
 def _is_reasoning_model(model: str) -> bool:
     """Return whether ``model`` belongs to the o1/o3/o4/gpt-5 reasoning family."""
     return model.startswith(_REASONING_MODEL_PREFIXES)
@@ -389,6 +404,36 @@ class OpenAIProvider:
         open_calls: dict[int, _ToolCallState] = {}
         finish_reason = "stop"
 
+        # ── reasoning-summary body rerouting ──────────────────────────
+        # Some Responses→chat.completions shims split each reasoning
+        # summary part across two fields: the bold headline arrives as a
+        # single ``delta.reasoning_content`` chunk while the part's BODY
+        # streams as plain ``delta.content`` — indistinguishable from
+        # answer text at the field level (observed with gpt-5.x behind
+        # OpenAI-compatible relays; the leaked planning prose then renders
+        # as the assistant's reply). Heuristic: after a headline-only
+        # reasoning chunk, buffer subsequent content. A tool-call delta or
+        # ``finish_reason=tool_calls`` proves the buffer was planning
+        # prose → flush it into the reasoning block; ``finish=stop`` or
+        # the buffer outgrowing a summary-sized cap proves it was the real
+        # answer → flush it back as ordinary content.
+        summary_mode = False
+        summary_buffer: list[str] = []
+        reasoning_seen = False
+
+        def _flush_summary(*, as_reasoning: bool) -> ProviderChunk | None:
+            nonlocal summary_mode
+            summary_mode = False
+            if not summary_buffer:
+                return None
+            body = "".join(summary_buffer)
+            summary_buffer.clear()
+            if as_reasoning:
+                return ProviderChunk(
+                    kind="token", text="\n\n" + body, is_reasoning=True
+                )
+            return ProviderChunk(kind="token", text=body)
+
         async def _open() -> tuple[Any, Any]:
             """Build the client + open the stream, mapping any vendor SDK
             exception to a :class:`CorlinmanError`.
@@ -440,14 +485,45 @@ class OpenAIProvider:
                     # loop renders a separate block and never replays them.
                     reasoning_text = getattr(delta, "reasoning_content", None)
                     if reasoning_text:
-                        yield ProviderChunk(
-                            kind="token", text=reasoning_text, is_reasoning=True
+                        # A buffered body followed by a NEW summary part
+                        # belongs to the previous part → reasoning.
+                        flushed = _flush_summary(as_reasoning=True)
+                        if flushed is not None:
+                            yield flushed
+                        is_headline = bool(
+                            _SUMMARY_HEADLINE_RE.match(reasoning_text)
                         )
+                        # Separate summary PARTS from each other; plain
+                        # continuation chunks (R1-style prose) stream
+                        # verbatim with no injected whitespace.
+                        yield ProviderChunk(
+                            kind="token",
+                            text=(
+                                "\n\n" if is_headline and reasoning_seen else ""
+                            )
+                            + reasoning_text,
+                            is_reasoning=True,
+                        )
+                        reasoning_seen = True
+                        summary_mode = is_headline
                     text = getattr(delta, "content", None)
                     if text:
-                        yield ProviderChunk(kind="token", text=text)
+                        if summary_mode:
+                            summary_buffer.append(text)
+                            if sum(len(t) for t in summary_buffer) > _SUMMARY_BODY_CAP:
+                                flushed = _flush_summary(as_reasoning=False)
+                                if flushed is not None:
+                                    yield flushed
+                        else:
+                            yield ProviderChunk(kind="token", text=text)
 
                     tool_deltas = getattr(delta, "tool_calls", None) or []
+                    if tool_deltas and (summary_mode or summary_buffer):
+                        # Tool calls after the buffered text prove it was
+                        # planning prose, not the answer.
+                        flushed = _flush_summary(as_reasoning=True)
+                        if flushed is not None:
+                            yield flushed
                     for td in tool_deltas:
                         idx = getattr(td, "index", 0) or 0
                         tc_id = getattr(td, "id", None)
@@ -511,6 +587,12 @@ class OpenAIProvider:
                                 state.pending_args.append(fn_args)
 
                 if finish is not None:
+                    # Route any buffered summary body by what the step turned
+                    # out to be: a tool-call step keeps it as planning prose
+                    # (reasoning); a plain stop means it was the answer.
+                    flushed = _flush_summary(as_reasoning=(finish == "tool_calls"))
+                    if flushed is not None:
+                        yield flushed
                     # Close any still-open tool calls before the terminal done.
                     for state in open_calls.values():
                         if not state.started:
