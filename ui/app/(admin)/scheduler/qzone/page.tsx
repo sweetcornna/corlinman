@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * /admin/scheduler/qzone — W6 of PLAN_PERSONA_STUDIO.md.
+ * /admin/scheduler/qzone — W6 of PLAN_PERSONA_STUDIO.md, rewired in PR-F4.
  *
  * Operator surface for managing the `qzone.daily_publish` runtime
  * scheduler jobs that drive a persona's daily QQ-空间 说说 pipeline.
@@ -9,19 +9,25 @@
  * Layout (mirrors the persona + scheduler admin pages):
  *   [ page header with title + one-click "Enable daily 说说" button
  *     (quick path — uses the form's persona selection) ]
- *   [ Edit card — persona dropdown (job name derived as
- *     `${personaId}.daily_qzone`), prefilled prompt template, cron
- *     preset select with advanced raw-cron reveal, toggle + helper
- *     showing "next fire at …" ]
- *   [ Jobs table — name · cron · persona · enabled · last-run
- *     summary · actions (run now, link to last qzone url) ]
+ *   [ Upsert card — persona dropdown (job name derived as
+ *     `${personaId}.daily_qzone`), prompt template, a friendly
+ *     schedule picker (`<QzoneSchedulePicker>`), send-time jitter, a
+ *     reference-image grid (`<QzoneRefImagePicker>`), and a
+ *     "next fire at …" preview. Editing a row backfills this same card
+ *     in place (no dialog) and switches Save → Update. ]
+ *   [ Jobs table — one `<QzoneJobRow>` per job with the full action
+ *     cluster: run now / edit / pause·resume / delete. ]
  *
  * Data flow:
  *   - `fetchSchedulerJobsTyped()` (15s poll) — every scheduler row;
  *     filtered client-side to `action_type === qzone.daily_publish`.
  *   - `fetchPersonas()` (no poll) — populates the persona dropdown.
- *   - `createSchedulerJob` — write path (also powers the one-click
- *     daily enable for any persona).
+ *   - `createSchedulerJob` / `patchSchedulerJob` — the write path
+ *     (create vs. in-place edit, keyed by `editingName`).
+ *   - `pauseSchedulerJob` / `resumeSchedulerJob` — the row pause/resume
+ *     toggle (NOT an `{ enabled }` patch, so the backend re-validates
+ *     before re-arming the tick loop).
+ *   - `deleteSchedulerJob` — behind a page-level confirm dialog.
  *   - `triggerSchedulerJobTyped` — "run now" button.
  *
  * Style: minimal shadcn + Tailwind — does NOT pull the Tidepool
@@ -34,10 +40,9 @@ import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { ExternalLink, Play, Plus, RefreshCw, Sparkles } from "@/components/icons";
+import { Pencil, Plus, RefreshCw, Sparkles, X } from "@/components/icons";
 
 import { cn } from "@/lib/utils";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -46,6 +51,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { FieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -54,24 +60,29 @@ import { Switch } from "@/components/ui/switch";
 import {
   Table,
   TableBody,
-  TableCell,
   TableHead,
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { QzoneJobRow } from "@/components/scheduler/qzone-job-row";
+import { QzoneSchedulePicker } from "@/components/scheduler/qzone-schedule-picker";
+import { QzoneRefImagePicker } from "@/components/scheduler/qzone-ref-image-picker";
 
 import {
   createSchedulerJob,
+  deleteSchedulerJob,
   fetchSchedulerJobsTyped,
   formatNextFire,
   isQzoneDailyJob,
   nextFireTime,
+  patchSchedulerJob,
   QZONE_DAILY_ACTION_TYPE,
   triggerSchedulerJobTyped,
   type SchedulerJobRow,
 } from "@/lib/api/scheduler";
+import { pauseSchedulerJob, resumeSchedulerJob } from "@/lib/api";
+import { composeCron, parseCron, type ScheduleState } from "@/lib/cron-schedule";
 import { fetchPersonas, type Persona } from "@/lib/api/personas";
-import { formatDateTime } from "@/lib/format";
 
 const JOBS_QUERY_KEY = ["admin", "scheduler", "qzone-jobs"] as const;
 const PERSONAS_QUERY_KEY = ["admin", "personas"] as const;
@@ -87,30 +98,31 @@ const DEFAULT_DAILY_PROMPT =
   "语气可以轻松随意，可以聊聊今天的心情、关注到的小事或正在做的事。" +
   "结尾必须调用 qzone_publish 工具发布（可以使用 generate 字段生成配图）。";
 
-/** Cron choices surfaced in the preset select. Anything else lives
- * behind the 自定义 advanced reveal (raw 5-field cron input). */
-const CRON_PRESETS = [
-  { cron: "0 9 * * *", key: "cronPreset09", fallback: "每天 09:00" },
-  { cron: "0 12 * * *", key: "cronPreset12", fallback: "每天 12:00" },
-  { cron: "0 21 * * *", key: "cronPreset21", fallback: "每天 21:00" },
-] as const;
-
-/** Sentinel select value that reveals the raw cron input. */
-const CRON_CUSTOM = "__custom__";
+/** Send-time jitter is capped at two hours — beyond that the "daily at
+ * 09:00" mental model breaks down and the operator should pick a window. */
+const JITTER_MAX_MINUTES = 120;
 
 interface FormState {
   personaId: string;
   promptTemplate: string;
-  cron: string;
+  schedule: ScheduleState;
   enabled: boolean;
+  imageRefLabels: string[];
+  jitterMinutes: number;
 }
 
-const DEFAULT_FORM: FormState = {
-  personaId: "",
-  promptTemplate: DEFAULT_DAILY_PROMPT,
-  cron: DEFAULT_CRON,
-  enabled: true,
-};
+/** Fresh default form — a factory (not a shared const) so a reset never
+ * hands back a `schedule` object aliased with a previous edit. */
+function makeDefaultForm(): FormState {
+  return {
+    personaId: "",
+    promptTemplate: DEFAULT_DAILY_PROMPT,
+    schedule: parseCron(DEFAULT_CRON),
+    enabled: true,
+    imageRefLabels: [],
+    jitterMinutes: 0,
+  };
+}
 
 /** Job name is mechanically derived from the persona — one daily job
  * per persona, so re-saving the same persona upserts in place. */
@@ -130,13 +142,38 @@ function browserTimeZone(): string | null {
   }
 }
 
+/** The forward-compat `image_ref_labels` / `jitter_minutes` fields ride
+ * inside a runtime job's `metadata` today (the gateway hasn't surfaced
+ * them top-level yet — PR-B5). Read whichever is present so an edit
+ * round-trips them, falling back to the top-level fields once the wire
+ * carries them. `SchedulerJobRow` has no `metadata` in its type, so reach
+ * for it defensively. */
+function readJobMeta(job: SchedulerJobRow): Record<string, unknown> {
+  const meta = (job as { metadata?: unknown }).metadata;
+  return meta && typeof meta === "object" ? (meta as Record<string, unknown>) : {};
+}
+
+function asStringArray(v: unknown): string[] | null {
+  return Array.isArray(v) && v.every((x) => typeof x === "string")
+    ? (v as string[])
+    : null;
+}
+
+function asFiniteNumber(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
 export default function QzoneSchedulerPage() {
   const { t } = useTranslation();
   const qc = useQueryClient();
 
-  const [form, setForm] = React.useState<FormState>(DEFAULT_FORM);
-  // Whether the operator opened the advanced raw-cron input (自定义).
-  const [cronCustom, setCronCustom] = React.useState(false);
+  const [form, setForm] = React.useState<FormState>(makeDefaultForm);
+  // `null` = creating a new job; a job name = editing that row in place.
+  const [editingName, setEditingName] = React.useState<string | null>(null);
+  // Name pending delete confirmation (drives the page-level ConfirmDialog).
+  const [pendingDelete, setPendingDelete] = React.useState<string | null>(null);
+  // Anchor the "scroll into view on edit" jump.
+  const formAnchorRef = React.useRef<HTMLDivElement>(null);
 
   // 1-Hz tick so the "next fire at" preview stays roughly current
   // without a busy redraw. The preview is the only time-sensitive
@@ -157,17 +194,61 @@ export default function QzoneSchedulerPage() {
     queryFn: () => fetchPersonas(),
   });
 
-  const createMutation = useMutation({
-    mutationFn: () =>
-      createSchedulerJob({
-        name: deriveJobName(form.personaId),
-        cron: form.cron.trim(),
+  const qzoneJobs = React.useMemo(
+    () => (jobsQuery.data ?? []).filter(isQzoneDailyJob),
+    [jobsQuery.data],
+  );
+  const personas = personasQuery.data ?? [];
+
+  const resetForm = React.useCallback(() => {
+    setForm(makeDefaultForm());
+    setEditingName(null);
+  }, []);
+
+  const composedCron = React.useMemo(
+    () => composeCron(form.schedule),
+    [form.schedule],
+  );
+
+  const nextFirePreview = React.useMemo(
+    () => (composedCron ? nextFireTime(composedCron, now) : null),
+    [composedCron, now],
+  );
+
+  const canSubmit =
+    form.personaId.trim().length > 0 &&
+    form.promptTemplate.trim().length > 0 &&
+    composedCron !== null;
+
+  // Create OR patch, keyed by `editingName`. The forward-compat
+  // `image_ref_labels` / `jitter_minutes` ride top-level — the backend
+  // ignores them until PR-B5 wires them in (harmless before then).
+  const saveMutation = useMutation({
+    mutationFn: () => {
+      const cron = composeCron(form.schedule);
+      if (cron === null) {
+        return Promise.reject(new Error("invalid cron"));
+      }
+      const common = {
+        cron,
         action_type: QZONE_DAILY_ACTION_TYPE,
         timezone: browserTimeZone(),
         persona_id: form.personaId,
         prompt_template: form.promptTemplate,
+        image_ref_labels: form.imageRefLabels,
+        jitter_minutes: form.jitterMinutes,
+      };
+      if (editingName) {
+        // `enabled` is intentionally NOT patched here — pause/resume owns
+        // that transition so the backend re-arms the tick loop.
+        return patchSchedulerJob(editingName, common);
+      }
+      return createSchedulerJob({
+        name: deriveJobName(form.personaId),
         enabled: form.enabled,
-      }),
+        ...common,
+      });
+    },
     onSuccess: (row) => {
       toast.success(
         t("schedulerQzone.created", {
@@ -175,8 +256,7 @@ export default function QzoneSchedulerPage() {
           name: row.name,
         }),
       );
-      setForm(DEFAULT_FORM);
-      setCronCustom(false);
+      resetForm();
       qc.invalidateQueries({ queryKey: JOBS_QUERY_KEY });
     },
     onError: (err) => {
@@ -227,10 +307,10 @@ export default function QzoneSchedulerPage() {
   });
 
   const enableDailyForSelection = React.useCallback(() => {
-    const personas = personasQuery.data ?? [];
+    const list = personasQuery.data ?? [];
     const target =
-      personas.find((p) => p.id === form.personaId) ??
-      (personas.length === 1 ? personas[0] : undefined);
+      list.find((p) => p.id === form.personaId) ??
+      (list.length === 1 ? list[0] : undefined);
     if (!target) {
       toast.info(
         t("schedulerQzone.needPersona", {
@@ -284,21 +364,99 @@ export default function QzoneSchedulerPage() {
     },
   });
 
-  const qzoneJobs = React.useMemo(
-    () => (jobsQuery.data ?? []).filter(isQzoneDailyJob),
-    [jobsQuery.data],
+  const toggleEnabledMutation = useMutation({
+    mutationFn: (job: SchedulerJobRow) =>
+      job.enabled ? pauseSchedulerJob(job.name) : resumeSchedulerJob(job.name),
+    onSuccess: (_row, job) => {
+      toast.success(
+        job.enabled
+          ? t("schedulerQzone.paused", {
+              defaultValue: "Paused {{name}}",
+              name: job.name,
+            })
+          : t("schedulerQzone.resumed", {
+              defaultValue: "Resumed {{name}}",
+              name: job.name,
+            }),
+      );
+      qc.invalidateQueries({ queryKey: JOBS_QUERY_KEY });
+    },
+    onError: (err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast.warning(
+        t("schedulerQzone.toggleFail", {
+          defaultValue: "Pause/resume failed: {{msg}}",
+          msg,
+        }),
+      );
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (name: string) => deleteSchedulerJob(name),
+    onSuccess: (res) => {
+      toast.success(
+        t("schedulerQzone.deleted", {
+          defaultValue: "Deleted {{name}}",
+          name: res.deleted,
+        }),
+      );
+      // Bail out of the edit form if the row being edited was removed.
+      if (editingName === res.deleted) resetForm();
+      qc.invalidateQueries({ queryKey: JOBS_QUERY_KEY });
+    },
+    onError: (err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast.warning(
+        t("schedulerQzone.deleteFail", {
+          defaultValue: "Delete failed: {{msg}}",
+          msg,
+        }),
+      );
+    },
+  });
+
+  const startEdit = React.useCallback(
+    (name: string) => {
+      const job = qzoneJobs.find((j) => j.name === name);
+      if (!job) return;
+      const meta = readJobMeta(job);
+      setForm({
+        personaId: job.persona_id ?? "",
+        promptTemplate: job.prompt_template ?? DEFAULT_DAILY_PROMPT,
+        schedule: parseCron(job.cron),
+        enabled: job.enabled ?? true,
+        imageRefLabels:
+          job.image_ref_labels ?? asStringArray(meta.image_ref_labels) ?? [],
+        jitterMinutes:
+          job.jitter_minutes ?? asFiniteNumber(meta.jitter_minutes) ?? 0,
+      });
+      setEditingName(job.name);
+      // Scroll the upsert card into view. `scrollIntoView` is absent under
+      // jsdom, so guard the call for the test environment.
+      requestAnimationFrame(() => {
+        formAnchorRef.current?.scrollIntoView?.({
+          behavior: "smooth",
+          block: "start",
+        });
+      });
+    },
+    [qzoneJobs],
   );
-  const personas = personasQuery.data ?? [];
 
-  const nextFirePreview = React.useMemo(() => {
-    if (!form.cron.trim()) return null;
-    return nextFireTime(form.cron.trim(), now);
-  }, [form.cron, now]);
+  const requestDelete = React.useCallback((name: string) => {
+    setPendingDelete(name);
+  }, []);
 
-  const canSubmit =
-    form.personaId.trim().length > 0 &&
-    form.promptTemplate.trim().length > 0 &&
-    nextFirePreview !== null;
+  const toggleEnabled = React.useCallback(
+    (name: string) => {
+      const job = qzoneJobs.find((j) => j.name === name);
+      if (job) toggleEnabledMutation.mutate(job);
+    },
+    [qzoneJobs, toggleEnabledMutation],
+  );
+
+  const isEditing = editingName !== null;
 
   return (
     <div className="flex flex-col gap-6">
@@ -346,182 +504,239 @@ export default function QzoneSchedulerPage() {
       </header>
 
       {/* Edit / upsert form -------------------------------------------------- */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">
-            <Plus className="mr-1 inline h-4 w-4 align-text-bottom" aria-hidden />
-            {t("schedulerQzone.create", { defaultValue: "配置每日说说任务" })}
-          </CardTitle>
-          <CardDescription>
-            {t("schedulerQzone.createHelp", {
-              defaultValue: "选择人格并保存；同一人格重复保存会就地更新任务。",
-            })}
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="grid gap-4 md:grid-cols-2">
-          <div className="space-y-1.5 md:col-span-1">
-            <Label htmlFor="qzone-job-persona">
-              {t("schedulerQzone.fieldPersona", { defaultValue: "Persona" })}
-            </Label>
-            <select
-              id="qzone-job-persona"
-              value={form.personaId}
-              onChange={(e) =>
-                setForm((f) => ({ ...f, personaId: e.target.value }))
-              }
-              className={cn(
-                "flex h-9 w-full rounded-md border border-input bg-transparent",
-                "px-3 py-1 text-sm shadow-sm transition-colors",
-                "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                "disabled:cursor-not-allowed disabled:opacity-50",
+      <div ref={formAnchorRef}>
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">
+              {isEditing ? (
+                <Pencil
+                  className="mr-1 inline h-4 w-4 align-text-bottom"
+                  aria-hidden
+                />
+              ) : (
+                <Plus
+                  className="mr-1 inline h-4 w-4 align-text-bottom"
+                  aria-hidden
+                />
               )}
-            >
-              <option value="">
-                {t("schedulerQzone.fieldPersonaPlaceholder", {
-                  defaultValue: "— pick a persona —",
-                })}
-              </option>
-              {personas.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.display_name} ({p.id})
-                </option>
-              ))}
-            </select>
-            {personasQuery.isPending ? (
-              <FieldHint>
-                {t("schedulerQzone.loadingPersonas", {
-                  defaultValue: "Loading personas…",
-                })}
-              </FieldHint>
-            ) : null}
-            {form.personaId ? (
-              <FieldHint id="qzone-derived-name">
-                {t("schedulerQzone.derivedName", {
-                  defaultValue: "任务名：{{name}}",
-                  name: deriveJobName(form.personaId),
-                })}
-              </FieldHint>
-            ) : null}
-          </div>
-          <div className="space-y-1.5 md:col-span-2">
-            <Label htmlFor="qzone-job-prompt">
-              {t("schedulerQzone.fieldPrompt", { defaultValue: "提示词" })}
-            </Label>
-            <textarea
-              id="qzone-job-prompt"
-              value={form.promptTemplate}
-              onChange={(e) =>
-                setForm((f) => ({ ...f, promptTemplate: e.target.value }))
-              }
-              placeholder={t("schedulerQzone.fieldPromptPlaceholder", {
-                defaultValue:
-                  "用今日的视角写一条 200 字以内的 QQ 空间说说，配一张你最近状态的立绘图。",
+              {isEditing
+                ? t("schedulerQzone.editTitle", { defaultValue: "编辑说说任务" })
+                : t("schedulerQzone.create", { defaultValue: "配置每日说说任务" })}
+            </CardTitle>
+            <CardDescription>
+              {t("schedulerQzone.createHelp", {
+                defaultValue: "选择人格并保存；同一人格重复保存会就地更新任务。",
               })}
-              spellCheck={false}
-              className={cn(
-                "flex min-h-[120px] w-full rounded-md border border-input bg-transparent",
-                "px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground",
-                "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-              )}
-            />
-            <FieldHint
-              detail={t("schedulerQzone.fieldPromptDetail", {
-                defaultValue:
-                  "内容会原样作为用户消息发送；人格设定与发布指令由系统自动附加。",
-              })}
-            >
-              {t("schedulerQzone.fieldPromptHelp", {
-                defaultValue: "告诉人格每天写什么，可随时修改。",
-              })}
-            </FieldHint>
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="qzone-job-cron-preset">
-              {t("schedulerQzone.fieldCron", { defaultValue: "发布时间" })}
-            </Label>
-            <select
-              id="qzone-job-cron-preset"
-              value={cronCustom ? CRON_CUSTOM : form.cron}
-              onChange={(e) => {
-                const v = e.target.value;
-                if (v === CRON_CUSTOM) {
-                  setCronCustom(true);
-                } else {
-                  setCronCustom(false);
-                  setForm((f) => ({ ...f, cron: v }));
-                }
-              }}
-              className={cn(
-                "flex h-9 w-full rounded-md border border-input bg-transparent",
-                "px-3 py-1 text-sm shadow-sm transition-colors",
-                "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-              )}
-            >
-              {CRON_PRESETS.map((preset) => (
-                <option key={preset.cron} value={preset.cron}>
-                  {t(`schedulerQzone.${preset.key}`, {
-                    defaultValue: preset.fallback,
-                  })}
-                </option>
-              ))}
-              <option value={CRON_CUSTOM}>
-                {t("schedulerQzone.cronPresetCustom", { defaultValue: "自定义…" })}
-              </option>
-            </select>
-            {cronCustom ? (
-              <Input
-                id="qzone-job-cron"
-                value={form.cron}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, cron: e.target.value }))
-                }
-                placeholder={DEFAULT_CRON}
-                spellCheck={false}
-                aria-invalid={form.cron.length > 0 && nextFirePreview === null}
-              />
-            ) : null}
-            <p
-              className={cn(
-                "text-xs",
-                nextFirePreview === null && form.cron.trim().length > 0
-                  ? "text-sg-err"
-                  : "text-muted-foreground",
-              )}
-            >
-              {nextFirePreview !== null
-                ? t("schedulerQzone.cronNext", {
-                    defaultValue: "Next fire: {{when}}",
-                    when: `${formatNextFire(nextFirePreview)} (${browserTimeZone() ?? "UTC"})`,
-                  })
-                : t("schedulerQzone.cronInvalid", {
-                    defaultValue: "Use 5-field cron (min hour dom mon dow).",
-                  })}
-            </p>
-          </div>
-          <div className="flex items-end gap-3">
-            <div className="flex flex-1 items-center gap-2">
-              <Switch
-                id="qzone-job-enabled"
-                checked={form.enabled}
-                onCheckedChange={(v) =>
-                  setForm((f) => ({ ...f, enabled: Boolean(v) }))
-                }
-              />
-              <Label htmlFor="qzone-job-enabled" className="cursor-pointer">
-                {form.enabled
-                  ? t("schedulerQzone.toggleOn", { defaultValue: "Enabled" })
-                  : t("schedulerQzone.toggleOff", { defaultValue: "Paused" })}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-5 md:grid-cols-2">
+            {/* Persona ------------------------------------------------------- */}
+            <div className="space-y-1.5">
+              <Label htmlFor="qzone-job-persona">
+                {t("schedulerQzone.fieldPersona", { defaultValue: "Persona" })}
               </Label>
+              <select
+                id="qzone-job-persona"
+                value={form.personaId}
+                disabled={isEditing}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, personaId: e.target.value }))
+                }
+                className={cn(
+                  "flex h-9 w-full rounded-md border border-input bg-transparent",
+                  "px-3 py-1 text-sm shadow-sm transition-colors",
+                  "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                  "disabled:cursor-not-allowed disabled:opacity-50",
+                )}
+              >
+                <option value="">
+                  {t("schedulerQzone.fieldPersonaPlaceholder", {
+                    defaultValue: "— pick a persona —",
+                  })}
+                </option>
+                {personas.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.display_name} ({p.id})
+                  </option>
+                ))}
+              </select>
+              {personasQuery.isPending ? (
+                <FieldHint>
+                  {t("schedulerQzone.loadingPersonas", {
+                    defaultValue: "Loading personas…",
+                  })}
+                </FieldHint>
+              ) : null}
+              {form.personaId ? (
+                <FieldHint id="qzone-derived-name">
+                  {t("schedulerQzone.derivedName", {
+                    defaultValue: "任务名：{{name}}",
+                    name: deriveJobName(form.personaId),
+                  })}
+                </FieldHint>
+              ) : null}
+              {isEditing ? (
+                <FieldHint>
+                  {t("schedulerQzone.personaLockedHint", {
+                    defaultValue:
+                      "已有任务的人格不可更改。如需换人格，请删除此任务后新建。",
+                  })}
+                </FieldHint>
+              ) : null}
             </div>
-            <Button
-              onClick={() => createMutation.mutate()}
-              disabled={!canSubmit || createMutation.isPending}
-            >
-              {t("schedulerQzone.save", { defaultValue: "Save job" })}
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+
+            {/* Send-time jitter --------------------------------------------- */}
+            <div className="space-y-1.5">
+              <Label htmlFor="qzone-job-jitter">
+                {t("schedulerQzone.jitterLabel", {
+                  defaultValue: "发送抖动（分钟）",
+                })}
+              </Label>
+              <Input
+                id="qzone-job-jitter"
+                type="number"
+                min={0}
+                max={JITTER_MAX_MINUTES}
+                value={String(form.jitterMinutes)}
+                data-testid="qzone-job-jitter"
+                onChange={(e) => {
+                  const n = Number.parseInt(e.target.value, 10);
+                  const clamped = Number.isFinite(n)
+                    ? Math.min(JITTER_MAX_MINUTES, Math.max(0, n))
+                    : 0;
+                  setForm((f) => ({ ...f, jitterMinutes: clamped }));
+                }}
+                className="max-w-[160px]"
+              />
+              <FieldHint>
+                {t("schedulerQzone.jitterHint", {
+                  defaultValue:
+                    "在触发时间上随机 ± 这么多分钟（0–120），让发布看起来更自然。",
+                })}
+              </FieldHint>
+            </div>
+
+            {/* Prompt -------------------------------------------------------- */}
+            <div className="space-y-1.5 md:col-span-2">
+              <Label htmlFor="qzone-job-prompt">
+                {t("schedulerQzone.fieldPrompt", { defaultValue: "提示词" })}
+              </Label>
+              <textarea
+                id="qzone-job-prompt"
+                value={form.promptTemplate}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, promptTemplate: e.target.value }))
+                }
+                placeholder={t("schedulerQzone.fieldPromptPlaceholder", {
+                  defaultValue:
+                    "用今日的视角写一条 200 字以内的 QQ 空间说说，配一张你最近状态的立绘图。",
+                })}
+                spellCheck={false}
+                className={cn(
+                  "flex min-h-[120px] w-full rounded-md border border-input bg-transparent",
+                  "px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground",
+                  "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                )}
+              />
+              <FieldHint
+                detail={t("schedulerQzone.fieldPromptDetail", {
+                  defaultValue:
+                    "内容会原样作为用户消息发送；人格设定与发布指令由系统自动附加。",
+                })}
+              >
+                {t("schedulerQzone.fieldPromptHelp", {
+                  defaultValue: "告诉人格每天写什么，可随时修改。",
+                })}
+              </FieldHint>
+            </div>
+
+            {/* Schedule picker + next-fire preview -------------------------- */}
+            <div className="space-y-2 md:col-span-2">
+              <QzoneSchedulePicker
+                value={form.schedule}
+                onChange={(schedule) => setForm((f) => ({ ...f, schedule }))}
+              />
+              <p
+                className={cn(
+                  "text-xs",
+                  composedCron === null ? "text-sg-err" : "text-muted-foreground",
+                )}
+                data-testid="qzone-next-fire"
+              >
+                {nextFirePreview !== null
+                  ? t("schedulerQzone.cronNext", {
+                      defaultValue: "Next fire: {{when}}",
+                      when: `${formatNextFire(nextFirePreview)} (${browserTimeZone() ?? "UTC"})`,
+                    })
+                  : t("schedulerQzone.cronInvalid", {
+                      defaultValue: "Use 5-field cron (min hour dom mon dow).",
+                    })}
+              </p>
+            </div>
+
+            {/* Reference images (only once a persona is chosen) ------------- */}
+            {form.personaId ? (
+              <div className="md:col-span-2">
+                <QzoneRefImagePicker
+                  personaId={form.personaId}
+                  selected={form.imageRefLabels}
+                  onChange={(imageRefLabels) =>
+                    setForm((f) => ({ ...f, imageRefLabels }))
+                  }
+                />
+              </div>
+            ) : null}
+
+            {/* Enabled toggle (create) / pause hint (edit) + actions -------- */}
+            <div className="flex flex-wrap items-center justify-between gap-3 md:col-span-2">
+              {isEditing ? (
+                <FieldHint>
+                  {t("schedulerQzone.enabledEditHint", {
+                    defaultValue:
+                      "启用或暂停请使用任务列表中该行的暂停/恢复按钮。",
+                  })}
+                </FieldHint>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <Switch
+                    id="qzone-job-enabled"
+                    checked={form.enabled}
+                    onCheckedChange={(v) =>
+                      setForm((f) => ({ ...f, enabled: Boolean(v) }))
+                    }
+                  />
+                  <Label htmlFor="qzone-job-enabled" className="cursor-pointer">
+                    {form.enabled
+                      ? t("schedulerQzone.toggleOn", { defaultValue: "Enabled" })
+                      : t("schedulerQzone.toggleOff", { defaultValue: "Paused" })}
+                  </Label>
+                </div>
+              )}
+              <div className="flex items-center gap-2">
+                {isEditing ? (
+                  <Button
+                    variant="ghost"
+                    onClick={resetForm}
+                    data-testid="qzone-cancel-edit"
+                  >
+                    <X className="mr-1 h-3.5 w-3.5" aria-hidden />
+                    {t("schedulerQzone.cancelEdit", { defaultValue: "取消编辑" })}
+                  </Button>
+                ) : null}
+                <Button
+                  onClick={() => saveMutation.mutate()}
+                  disabled={!canSubmit || saveMutation.isPending}
+                  data-testid="qzone-job-save"
+                >
+                  {isEditing
+                    ? t("schedulerQzone.update", { defaultValue: "更新任务" })
+                    : t("schedulerQzone.save", { defaultValue: "Save job" })}
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
 
       {/* Existing jobs ------------------------------------------------------- */}
       <Card>
@@ -578,7 +793,10 @@ export default function QzoneSchedulerPage() {
                   <QzoneJobRow
                     key={job.name}
                     job={job}
-                    onTrigger={() => triggerMutation.mutate(job.name)}
+                    onTrigger={(name) => triggerMutation.mutate(name)}
+                    onEdit={startEdit}
+                    onToggleEnabled={toggleEnabled}
+                    onDelete={requestDelete}
                     triggering={
                       triggerMutation.isPending &&
                       triggerMutation.variables === job.name
@@ -590,91 +808,29 @@ export default function QzoneSchedulerPage() {
           )}
         </CardContent>
       </Card>
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        onOpenChange={(o) => {
+          if (!o) setPendingDelete(null);
+        }}
+        title={t("schedulerQzone.deleteTitle", {
+          defaultValue: "删除该每日说说任务？",
+        })}
+        description={t("schedulerQzone.deleteBody", {
+          defaultValue: "确定删除 {{name}}？此操作不可撤销。",
+          name: pendingDelete ?? "",
+        })}
+        cancelLabel={t("common.cancel", { defaultValue: "Cancel" })}
+        confirmLabel={t("common.delete", { defaultValue: "Delete" })}
+        testId="qzone-job-delete-confirm"
+        busy={deleteMutation.isPending}
+        onConfirm={() => {
+          const name = pendingDelete;
+          setPendingDelete(null);
+          if (name) deleteMutation.mutate(name);
+        }}
+      />
     </div>
-  );
-}
-
-interface QzoneJobRowProps {
-  job: SchedulerJobRow;
-  onTrigger: () => void;
-  triggering: boolean;
-}
-
-function QzoneJobRow({ job, onTrigger, triggering }: QzoneJobRowProps) {
-  const { t } = useTranslation();
-  const lastRunDate =
-    job.last_run_at_ms !== null && job.last_run_at_ms !== undefined
-      ? new Date(job.last_run_at_ms)
-      : null;
-
-  return (
-    <TableRow>
-      <TableCell className="font-mono text-xs">{job.name}</TableCell>
-      <TableCell>{job.persona_id ?? "—"}</TableCell>
-      <TableCell className="font-mono text-xs">{job.cron}</TableCell>
-      <TableCell>
-        {job.enabled ? (
-          <Badge variant="default">
-            {t("schedulerQzone.row.enabled", { defaultValue: "enabled" })}
-          </Badge>
-        ) : (
-          <Badge variant="secondary">
-            {t("schedulerQzone.row.paused", { defaultValue: "paused" })}
-          </Badge>
-        )}
-      </TableCell>
-      <TableCell className="space-y-1 text-xs">
-        {lastRunDate === null ? (
-          <span className="text-muted-foreground">
-            {t("schedulerQzone.row.neverRun", { defaultValue: "never run" })}
-          </span>
-        ) : (
-          <>
-            <div className="flex items-center gap-1.5">
-              {job.last_run_ok ? (
-                <Badge variant="default">
-                  {t("schedulerQzone.row.ok", { defaultValue: "ok" })}
-                </Badge>
-              ) : (
-                <Badge variant="destructive">
-                  {t("schedulerQzone.row.error", { defaultValue: "error" })}
-                </Badge>
-              )}
-              <span className="text-muted-foreground">
-                {formatDateTime(lastRunDate)}
-              </span>
-            </div>
-            {job.last_run_ok && job.last_qzone_url ? (
-              <a
-                href={job.last_qzone_url}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1 text-sg-accent hover:underline"
-              >
-                <ExternalLink className="h-3 w-3" aria-hidden />
-                {t("schedulerQzone.row.viewQzone", { defaultValue: "View on QZone" })}
-              </a>
-            ) : null}
-            {!job.last_run_ok && job.last_error ? (
-              <p className="text-sg-err">{job.last_error}</p>
-            ) : null}
-          </>
-        )}
-      </TableCell>
-      <TableCell className="text-right">
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={onTrigger}
-          disabled={triggering}
-        >
-          <Play
-            className={cn("mr-1 h-3 w-3", triggering && "animate-pulse")}
-            aria-hidden
-          />
-          {t("schedulerQzone.row.runNow", { defaultValue: "Run now" })}
-        </Button>
-      </TableCell>
-    </TableRow>
   );
 }

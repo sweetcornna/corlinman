@@ -1300,6 +1300,23 @@ export const en = {
     cronInvalid: "Use 5-field cron (min hour dom mon dow).",
     cronNext: "Next fire: {{when}}",
     save: "Save job",
+    update: "Update job",
+    editTitle: "Edit the daily post job",
+    cancelEdit: "Cancel edit",
+    personaLockedHint:
+      "The persona is fixed for an existing job. To use a different one, delete this job and create a new one.",
+    enabledEditHint:
+      "Use the pause / resume button on the job's table row to enable or disable it.",
+    jitterLabel: "Send-time jitter (minutes)",
+    jitterHint:
+      "Randomly shift the fire time by ± this many minutes (0–120) so posts don't look automated.",
+    deleteTitle: "Delete this daily post job?",
+    deleteBody: "Delete {{name}}? This can't be undone.",
+    deleted: "Deleted {{name}}",
+    deleteFail: "Delete failed: {{msg}}",
+    paused: "Paused {{name}}",
+    resumed: "Resumed {{name}}",
+    toggleFail: "Pause/resume failed: {{msg}}",
     refresh: "Refresh",
     tableTitle: "QZone daily jobs",
     tableHelp: "Only daily post jobs are shown here; manage other scheduled jobs on the Scheduler page.",
