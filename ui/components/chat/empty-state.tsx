@@ -6,7 +6,7 @@ import { motion, useReducedMotion } from "framer-motion";
 import { Sparkles } from "@/components/icons";
 
 import { useMotionVariants } from "@/lib/motion";
-import { Mascot } from "@/components/ui/mascot";
+import { PresenceOrb } from "@/components/ui/presence-orb";
 
 interface ChatEmptyStateProps {
   onPick?: (text: string) => void;
@@ -34,13 +34,13 @@ export function ChatEmptyState({ onPick }: ChatEmptyStateProps) {
       data-testid="chat-empty"
     >
       <motion.div variants={liquidRise}>
-        {/* The mascot carries its own CSS float loop (reduced-motion gated),
-            so the spring entrance on this wrapper isn't clobbered. */}
-        <Mascot size={96} still={Boolean(reducedMotion)} />
+        {/* Hero eclipse pearl — the empty chat's one lively element
+            (eclipse-turn is reduced-motion gated in globals.css). */}
+        <PresenceOrb size="hero" active={!reducedMotion} />
       </motion.div>
       <motion.h2
         variants={liquidRise}
-        className="text-sg-ink text-2xl font-semibold tracking-tight"
+        className="text-sg-ink font-display text-2xl font-medium tracking-[0.01em]"
       >
         {t("chat.emptyTitle")}
       </motion.h2>
@@ -60,10 +60,10 @@ export function ChatEmptyState({ onPick }: ChatEmptyStateProps) {
             <button
               type="button"
               onClick={() => onPick?.(s)}
-              className=" inline-flex items-center gap-1.5 rounded-full border border-sg-border bg-sg-inset px-3.5 py-1.5 text-left text-[12px] text-sg-ink-3 hover:border-sg-accent/30 hover:bg-sg-accent-soft hover:text-sg-ink"
+              className="inline-flex items-center gap-1.5 rounded-full border border-sg-border bg-sg-inset px-3.5 py-1.5 text-left text-[12px] text-sg-ink-3 hover:border-sg-border-strong hover:bg-sg-inset-hover hover:text-sg-ink"
             >
               <Sparkles
-                className="h-3 w-3 shrink-0 text-sg-accent"
+                className="h-3 w-3 shrink-0 text-sg-ink-4"
                 aria-hidden="true"
               />
               <span className="max-w-[220px] truncate">{s}</span>

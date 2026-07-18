@@ -209,7 +209,7 @@ export function MarkdownMessage({
       {streaming ? (
         <span
           aria-hidden="true"
-          className="ml-0.5 inline-block h-[15px] w-[7px] animate-pulse rounded-[2px] bg-sg-accent align-middle"
+          className="ml-0.5 inline-block h-[15px] w-[7px] animate-pulse rounded-[2px] bg-sg-tint align-middle shadow-[var(--sg-bloom-1)]"
           data-testid="md-cursor"
         />
       ) : null}

@@ -12,6 +12,7 @@ import type { MentionCandidate } from "@/components/chat/composer-mention-menu";
 import { ChatEmptyState } from "@/components/chat/empty-state";
 import { ConversationSearch } from "@/components/chat/conversation-search";
 import { MessageList } from "@/components/chat/message-list";
+import { PresenceOrb } from "@/components/ui/presence-orb";
 import { AgentPicker } from "@/components/playground/agent-picker";
 import { useChatStream } from "@/lib/chat/use-chat-stream";
 import { modelSupportsReasoningEffort } from "@/lib/chat/reasoning-effort";
@@ -357,10 +358,15 @@ export function ChatArea({
         )}
         data-testid="chat-area"
       >
-        <header className="flex items-center justify-between border-b border-sg-border px-4 py-2">
-          <div className="flex min-w-0 flex-col">
-            <h1 className="truncate text-[13px] font-medium text-sg-ink">{title}</h1>
-            <p className="font-mono text-[10px] text-sg-ink-5">{sessionKey}</p>
+        <header className="c-appbar flex items-center justify-between px-4 py-2">
+          <div className="flex min-w-0 items-center gap-2.5">
+            {/* The app-bar pearl doubles as the typing indicator: it spins
+                with full bloom while a turn streams, and rests idle after. */}
+            <PresenceOrb size="sm" active={chat.isStreaming} />
+            <div className="flex min-w-0 flex-col">
+              <h1 className="truncate font-display text-[13px] font-medium text-sg-ink">{title}</h1>
+              <p className="font-mono text-[10px] text-sg-ink-5">{sessionKey}</p>
+            </div>
           </div>
           <div className="flex shrink-0 items-center gap-2 text-[11px] text-sg-ink-4">
             <button
@@ -400,7 +406,8 @@ export function ChatArea({
               <span
                 className={cn(
                   "h-1.5 w-1.5 rounded-full",
-                  chat.isStreaming ? "animate-pulse bg-sg-accent" : "bg-sg-ok",
+                  // Static — the app-bar pearl owns the streaming motion.
+                  chat.isStreaming ? "bg-sg-tint" : "bg-sg-ok",
                 )}
                 aria-hidden="true"
               />
