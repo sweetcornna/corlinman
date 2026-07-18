@@ -265,7 +265,7 @@ export function MessageList({
           onClick={jumpToBottom}
           className={cn(
             "absolute bottom-4 left-1/2 inline-flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full",
-            "border border-sg-accent/30 bg-sg-card text-sg-accent shadow-sg-glow",
+            "border border-sg-border-strong bg-sg-opaque text-sg-ink shadow-[var(--sg-edge-top),var(--sg-elev-2)]",
             "transition hover:bg-sg-accent-soft hover:text-sg-ink",
           )}
           aria-label={t("chat.jumpToLatestAriaLabel")}

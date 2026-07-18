@@ -27,7 +27,7 @@ import {
 import { CorlinmanApiError } from "@/lib/api";
 import { useMotionVariants } from "@/lib/motion";
 import { BrandMark } from "@/components/layout/brand-mark";
-import { Mascot } from "@/components/ui/mascot";
+import { PresenceOrb } from "@/components/ui/presence-orb";
 import { LanguageToggle } from "@/components/layout/language-toggle";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
 import { Button } from "@/components/ui/button";
@@ -60,29 +60,8 @@ function HeroColumn() {
   const variants = useMotionVariants();
   return (
     <aside className="relative hidden overflow-hidden border-r border-sg-border md:flex md:flex-col md:justify-between md:p-10">
-      {/* Deep-space showcase — layered nebula glows drift slowly behind the
-          brand copy. The base deep-space gradient is painted on <html>; this
-          aside only adds the accent-hued nebulae + a faint noise grain. */}
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-0 sg-drift"
-        style={{
-          backgroundImage:
-            "radial-gradient(760px 520px at 18% 12%, var(--sg-nebula-1), transparent 60%), " +
-            "radial-gradient(620px 480px at 88% 30%, var(--sg-nebula-2), transparent 62%), " +
-            "radial-gradient(560px 420px at 40% 104%, var(--sg-nebula-3), transparent 64%)",
-        }}
-      />
-      {/* Twinkling starfield (dark theme only — hidden in daylight via CSS). */}
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-0"
-      />
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-0 opacity-[0.03]"
-      />
-
+      {/* The canvas (pure black + moonrise halo + vignette) is painted on
+          <html> — the hero column adds nothing behind the copy. */}
       <div className="relative z-10 flex items-center gap-2">
         <BrandMark />
       </div>
@@ -92,11 +71,9 @@ function HeroColumn() {
         initial="hidden"
         animate="visible"
       >
-        {/* The mascot is the hero object — floating above the headline with
-            its own glow, ground light, and the global cursor halo passing
-            over it. */}
-        <Mascot size={148} className="-ml-2" />
-        <h2 className="sg-grad-text text-3xl font-semibold tracking-tight">
+        {/* Hero eclipse pearl — the app's one spinning pearl, full bloom. */}
+        <PresenceOrb size="hero" active />
+        <h2 className="sg-grad-text font-display text-[26px] font-medium tracking-[0.01em]">
           {t("auth.heroTitle")}
         </h2>
         <p className="max-w-xs text-sm leading-relaxed text-sg-ink-3">

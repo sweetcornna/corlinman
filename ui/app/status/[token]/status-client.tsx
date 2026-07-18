@@ -234,43 +234,12 @@ function useStatusEvents(token: string | null, seed: LiveEvent[]) {
 /* -------------------------------------------------------------- */
 
 /**
- * Full-bleed deep-space backdrop for the standalone status card. This page
- * lives OUTSIDE the admin shell, so it can't borrow the admin layout's
- * <AuroraBackground />; it paints its own layered nebula glow + noise here.
- * All layers are decorative (aria-hidden, pointer-events-none) and sit behind
- * the content; the base deep-space gradient itself is painted on <html> in
- * globals.css (theme-flipping, pre-hydration), so we only add depth on top.
+ * The standalone status card rides the global canvas: pure black +
+ * moonrise halo + vignette, painted on <html> by globals.css
+ * (theme-flipping, pre-hydration). No page-local backdrop layers.
  */
 function StatusBackdrop() {
-  return (
-    <div
-      aria-hidden="true"
-      className="fixed inset-0 -z-10 overflow-hidden pointer-events-none"
-    >
-      {/* Nebula glow blobs — soft accent-hued radials, slow drift + hue drift. */}
-      <div
-        className="absolute inset-0 sg-drift pointer-events-none"
-        style={{
-          backgroundImage:
-            "radial-gradient(900px 560px at 15% 8%, var(--sg-nebula-1), transparent 60%), " +
-            "radial-gradient(760px 540px at 86% 18%, var(--sg-nebula-2), transparent 60%), " +
-            "radial-gradient(680px 460px at 52% 96%, var(--sg-nebula-3), transparent 62%)",
-        }}
-      />
-      {/* Twinkling starfield (dark theme only — hidden in daylight via CSS). */}
-      <div className="absolute inset-0 pointer-events-none" />
-      {/* Depth vignette — fade toward the edges so corners keep spatial depth. */}
-      <div
-        className="absolute inset-0 pointer-events-none"
-        style={{
-          background:
-            "radial-gradient(120% 90% at 50% 30%, transparent 0%, var(--sg-space-3) 78%, var(--sg-space-0) 100%)",
-        }}
-      />
-      {/* Fractal noise — breaks gradient banding at ~3%. */}
-      <div className="absolute inset-0 opacity-[0.03] pointer-events-none" />
-    </div>
-  );
+  return null;
 }
 
 function CenteredCard({
@@ -535,7 +504,7 @@ function PersonaAvatar({ personaId }: { personaId: string | undefined }) {
   // a public capability URL on the gateway origin. Wrapped in an accent ring
   // glow so the bound persona reads as the card's focal point.
   return (
-    <span className="relative inline-flex size-12 shrink-0 items-center justify-center rounded-full bg-sg-accent-soft p-[2px] shadow-sg-glow ring-1 ring-sg-accent/40">
+    <span className="relative inline-flex size-12 shrink-0 items-center justify-center rounded-full bg-sg-tint-soft p-[2px] shadow-sg-edge ring-1 ring-sg-border-strong">
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         src={src}

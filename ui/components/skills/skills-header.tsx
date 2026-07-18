@@ -40,7 +40,7 @@ export function SkillsHeader({ counts, offline }: SkillsHeaderProps) {
   const withTools = counts?.withTools ?? 0;
 
   return (
-    <GlassPanel variant="strong" as="section" lively className="relative overflow-hidden p-7">
+    <GlassPanel variant="strong" as="section" className="relative overflow-hidden p-7">
       {/* Ambient amber glow, mirrors the Plugins/Dashboard hero. */}
       <div
         aria-hidden

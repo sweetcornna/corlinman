@@ -255,8 +255,7 @@ function InstalledCard({
     >
       <GlassPanel
         variant="soft"
-        lively
-        role={onOpen ? "button" : undefined}
+                role={onOpen ? "button" : undefined}
         tabIndex={onOpen ? 0 : undefined}
         aria-label={
           onOpen

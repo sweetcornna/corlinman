@@ -76,8 +76,7 @@ export function MarketCard({
     >
       <GlassPanel
         variant="soft"
-        lively
-        role="button"
+                role="button"
         tabIndex={0}
         aria-label={`Open ${item.name} details`}
         onClick={() => onSelect(item)}

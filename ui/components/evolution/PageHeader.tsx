@@ -62,7 +62,7 @@ export function EvolutionPageHeader({
         </div>
         <h1
           className={cn(
-            "font-serif text-[40px] font-normal leading-[1.04] tracking-[-0.02em] text-sg-ink",
+            "font-display text-[40px] font-normal leading-[1.04] tracking-[-0.02em] text-sg-ink",
             "sm:text-[46px]",
           )}
         >

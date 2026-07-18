@@ -18,7 +18,7 @@
 import Link from "next/link";
 import { useTranslation } from "react-i18next";
 
-import { Mascot } from "@/components/ui/mascot";
+import { PresenceOrb } from "@/components/ui/presence-orb";
 
 // Deterministic per-dot config. Keeping this static avoids hydration drift
 // and lets us ship zero client JS for the decoration.
@@ -71,11 +71,11 @@ export default function NotFound() {
       </div>
 
       <div className="relative z-10 flex flex-col items-center text-center">
-        <Mascot size={108} />
-        <p className="mt-4 font-mono text-sm uppercase tracking-[0.3em] text-muted-foreground">
+        <PresenceOrb size="hero" />
+        <p className="mt-6 font-mono text-sm uppercase tracking-[0.3em] text-muted-foreground">
           404
         </p>
-        <h1 className="text-sg-ink mt-2 text-7xl font-semibold tracking-tight md:text-8xl">
+        <h1 className="text-sg-ink font-display mt-2 text-7xl font-medium tracking-tight md:text-8xl">
           404
         </h1>
         <p className="mt-4 max-w-sm text-sm text-muted-foreground">

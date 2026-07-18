@@ -194,24 +194,7 @@ export default function DashboardPage() {
       <GettingStartedCard />
 
       {/* ─── HERO ──────────────────────────────────────────── */}
-      <GlassPanel variant="strong" lively as="section" className="relative overflow-hidden p-5 md:p-8">
-        {/* nebula accent glows behind hero copy — cyan + violet, drifting */}
-        <div
-          aria-hidden
-          className="sg-drift pointer-events-none absolute bottom-[-80px] right-[-40px] h-[280px] w-[420px] rounded-full opacity-80 blur-3xl"
-          style={{
-            background: "radial-gradient(closest-side, var(--sg-accent-glow), transparent 70%)",
-          }}
-        />
-        <div
-          aria-hidden
-          className="sg-drift pointer-events-none absolute top-[-60px] left-[-60px] h-[220px] w-[320px] rounded-full opacity-60 blur-[50px]"
-          style={{
-            background:
-              "radial-gradient(closest-side, color-mix(in oklch, var(--sg-accent-2) 38%, transparent), transparent 70%)",
-          }}
-        />
-
+      <GlassPanel variant="strong" as="section" className="relative overflow-hidden p-5 md:p-8">
         <div className="relative grid items-end gap-9 md:grid-cols-[1fr_auto]">
           <div className="flex min-w-0 flex-col gap-4">
             <HeroLead systemsOk={`${okChecks}/${totalChecks || 7}`} />
@@ -244,7 +227,7 @@ export default function DashboardPage() {
               {pendingApprovals > 0 ? (
                 <Link
                   href="/approvals"
-                  className=" inline-flex items-center gap-2 rounded-full border border-sg-accent/30 bg-sg-accent-soft px-3.5 py-2 text-[13px] font-medium text-sg-accent transition-all duration-200 hover:-translate-y-px hover:border-sg-accent/50 hover:shadow-sg-glow"
+                  className=" inline-flex items-center gap-2 rounded-full border border-sg-accent/30 bg-sg-accent-soft px-3.5 py-2 text-[13px] font-medium text-sg-accent transition-all duration-200 hover:-translate-y-px hover:border-sg-border-strong"
                 >
                   {t("dashboard.tp.ctaReview", { n: pendingApprovals })}
                   <ArrowUpRight className="h-3.5 w-3.5 opacity-70" />
@@ -454,7 +437,7 @@ function HeroUptime({ health }: { health: HealthStatus | undefined }) {
       <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-sg-ink-4">
         {t("dashboard.tp.uptimeLabel")}
       </div>
-      <div className="mt-2 font-serif text-[38px] font-normal leading-[1.05] tracking-[-0.02em] text-sg-ink">
+      <div className="mt-2 font-display text-[38px] font-normal leading-[1.05] tracking-[-0.02em] text-sg-ink">
         {pct}
         <span className="ml-0.5 font-sans text-[18px] font-normal text-sg-ink-3">
           %

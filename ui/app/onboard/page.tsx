@@ -47,7 +47,7 @@ import {
   type OnboardPersonaChoice,
 } from "@/lib/api";
 import { BrandMark } from "@/components/layout/brand-mark";
-import { Mascot } from "@/components/ui/mascot";
+import { PresenceOrb } from "@/components/ui/presence-orb";
 import { LanguageToggle } from "@/components/layout/language-toggle";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
 import { Button } from "@/components/ui/button";
@@ -144,27 +144,8 @@ function HeroColumn() {
   const variants = useMotionVariants();
   return (
     <aside className="relative hidden overflow-hidden border-r border-sg-border md:flex md:flex-col md:justify-between md:p-10">
-      {/* Deep-space showcase — nebula glows + grain over the <html> gradient. */}
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-0 sg-drift"
-        style={{
-          backgroundImage:
-            "radial-gradient(760px 520px at 18% 12%, var(--sg-nebula-1), transparent 60%), " +
-            "radial-gradient(620px 480px at 88% 30%, var(--sg-nebula-2), transparent 62%), " +
-            "radial-gradient(560px 420px at 40% 104%, var(--sg-nebula-3), transparent 64%)",
-        }}
-      />
-      {/* Twinkling starfield (dark theme only — hidden in daylight via CSS). */}
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-0"
-      />
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-0 opacity-[0.03]"
-      />
-
+      {/* The canvas (pure black + moonrise halo + vignette) is painted on
+          <html> — nothing extra behind the copy. */}
       <div className="relative z-10 flex items-center gap-2">
         <BrandMark />
       </div>
@@ -174,8 +155,10 @@ function HeroColumn() {
         initial="hidden"
         animate="visible"
       >
-        <Mascot size={148} className="-ml-2" />
-        <h2 className="sg-grad-text text-3xl font-semibold tracking-tight">
+        {/* Hero eclipse pearl — shares the unauthenticated-hero allowance
+            with login (never both on screen). */}
+        <PresenceOrb size="hero" active />
+        <h2 className="sg-grad-text font-display text-[26px] font-medium tracking-[0.01em]">
           {t("auth.onboardHeroTitle")}
         </h2>
         <p className="max-w-xs text-sm leading-relaxed text-sg-ink-3">
@@ -393,10 +376,10 @@ function StepIndicator({
                 className={cn(
                   "relative inline-flex h-7 w-7 items-center justify-center rounded-full border text-xs font-semibold transition-all",
                   isCurrent &&
-                    "border-sg-accent bg-sg-accent text-white shadow-sg-glow",
+                    "border-transparent bg-sg-tint text-sg-tint-ink shadow-sg-glow",
                   !isCurrent &&
                     isDone &&
-                    "border-transparent bg-sg-accent text-white",
+                    "border-transparent bg-sg-tint text-sg-tint-ink",
                   !isCurrent &&
                     !isDone &&
                     "border-sg-border bg-sg-inset text-sg-ink-4",

@@ -450,7 +450,7 @@ export default function EvolutionPage() {
           <div className="flex flex-col gap-1">
             <h1
               id="curator-heading"
-              className="font-serif text-2xl text-sg-ink"
+              className="font-display text-2xl text-sg-ink"
             >
               {t("evolution.title")}
             </h1>
@@ -529,7 +529,7 @@ export default function EvolutionPage() {
             <header className="flex items-center justify-between gap-3">
               <h2
                 id="skills-heading"
-                className="font-serif text-lg text-sg-ink"
+                className="font-display text-lg text-sg-ink"
               >
                 {t("evolution.skill.heading")}
               </h2>

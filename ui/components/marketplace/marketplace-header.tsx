@@ -29,8 +29,7 @@ export function MarketplaceHeader({ offline = false }: MarketplaceHeaderProps) {
     <GlassPanel
       variant="strong"
       as="section"
-      lively
-      className="relative overflow-hidden p-7"
+            className="relative overflow-hidden p-7"
     >
       <div
         aria-hidden

@@ -209,7 +209,7 @@ export const MessageBubble = React.memo(function MessageBubble({
     >
       {isAssistant ? (
         /* Assistant identity = a tiny eclipse pearl (static in the role
-           row; the lively pearl lives in the app bar while streaming). */
+           row; the pearl lives in the app bar while streaming). */
         <PresenceOrb size="sm" className="!h-3.5 !w-3.5 shrink-0" />
       ) : (
         <span

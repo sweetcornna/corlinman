@@ -140,8 +140,7 @@ export function SkillCard({
     >
       <GlassPanel
         variant="soft"
-        lively
-        role="button"
+                role="button"
         tabIndex={0}
         aria-label={`Open ${skill.name} skill details`}
         onClick={() => onOpen(skill)}

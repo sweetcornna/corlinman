@@ -15,7 +15,7 @@ export interface EmptyStateProps extends HTMLMotionProps<"div"> {
 /**
  * Centered placeholder block on the Spatial Glass card recipe, used when a
  * list / table / panel has no content. The icon sits in a circular sunken
- * chip with a faint accent glow that floats slowly (sg-drift). Rises in on
+ * chip with a matte inset chip. Rises in on
  * mount via the Liquid Glass spring (`liquidRise`); the motion variants are
  * reduced-motion aware.
  */

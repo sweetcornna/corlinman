@@ -34,7 +34,7 @@ export function ChatEmptyState({ onPick }: ChatEmptyStateProps) {
       data-testid="chat-empty"
     >
       <motion.div variants={liquidRise}>
-        {/* Hero eclipse pearl — the empty chat's one lively element
+        {/* Hero eclipse pearl — the empty chat's one element
             (eclipse-turn is reduced-motion gated in globals.css). */}
         <PresenceOrb size="hero" active={!reducedMotion} />
       </motion.div>

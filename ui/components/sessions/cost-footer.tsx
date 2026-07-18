@@ -254,7 +254,7 @@ function Pill({ icon, label, value, tone = "default", title, testId }: PillProps
         "group inline-flex items-center gap-2 rounded-full",
         "border px-3 py-1 text-xs",
         "transition-all duration-150 ease-out",
-        "hover:-translate-y-px hover:shadow-sg-glow",
+        "hover:-translate-y-px",
         tone === "primary"
           ? "border-sg-accent/35 bg-sg-accent-soft text-sg-accent"
           : "border-sg-border bg-sg-inset text-sg-ink-2",

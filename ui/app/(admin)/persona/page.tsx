@@ -769,11 +769,8 @@ function PersonaAvatar({
 
   return (
     <div
-      className="flex shrink-0 items-center justify-center rounded-full text-[11px] font-semibold text-white"
-      style={{
-        ...dim,
-        background: "linear-gradient(135deg, var(--sg-accent), var(--sg-accent-2))",
-      }}
+      className="flex shrink-0 items-center justify-center rounded-full border border-sg-border bg-sg-inset-strong text-[11px] font-medium text-sg-ink-2 shadow-sg-edge"
+      style={dim}
       aria-hidden="true"
       data-testid={`persona-avatar-fallback-${persona.id}`}
     >

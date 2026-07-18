@@ -75,8 +75,7 @@ export function HubSkillCard({
     >
       <GlassPanel
         variant="soft"
-        lively
-        role="button"
+                role="button"
         tabIndex={0}
         aria-label={`Open ${summary.name} hub skill details`}
         onClick={() => onSelect(summary)}
