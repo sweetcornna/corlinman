@@ -47,15 +47,15 @@ const sparkGradientStops: Record<
   NonNullable<StatChipProps["sparkTone"]>,
   { top: string; bottom: string }
 > = {
-  // Re-mapped onto the Spatial Glass accent palette: amber→cyan primary,
-  // ember→violet secondary, peach→ok green.
+  // Eclipse mapping (legacy tone names kept for call sites): amber→tint
+  // (the "light"), ember→moon-white ink, peach→ok green.
   amber: {
-    top: "color-mix(in oklch, var(--sg-accent) 32%, transparent)",
-    bottom: "color-mix(in oklch, var(--sg-accent) 0%, transparent)",
+    top: "color-mix(in oklch, var(--sg-tint) 32%, transparent)",
+    bottom: "color-mix(in oklch, var(--sg-tint) 0%, transparent)",
   },
   ember: {
-    top: "color-mix(in oklch, var(--sg-accent-2) 24%, transparent)",
-    bottom: "color-mix(in oklch, var(--sg-accent-2) 0%, transparent)",
+    top: "color-mix(in oklch, var(--sg-ink) 26%, transparent)",
+    bottom: "color-mix(in oklch, var(--sg-ink) 0%, transparent)",
   },
   peach: {
     top: "color-mix(in oklch, var(--sg-ok) 22%, transparent)",
@@ -119,7 +119,7 @@ export const StatChip = React.forwardRef<HTMLDivElement, StatChipProps>(
           <span
             className={cn(
               "font-sans text-[34px] font-medium leading-none tracking-[-0.03em] tabular-nums animate-sg-tick-up",
-              isPrimary ? "text-sg-ink" : "text-sg-ink",
+              "text-sg-ink",
             )}
           >
             {value}

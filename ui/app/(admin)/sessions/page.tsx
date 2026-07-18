@@ -174,7 +174,7 @@ export default function SessionsPage() {
 
       {isDisabled ? <SessionsDisabledBanner /> : null}
 
-      <section className=" relative overflow-hidden rounded-sg-lg border border-sg-border bg-sg-card-grad shadow-sg-2">
+      <section className="relative overflow-hidden rounded-sg-lg border border-sg-border bg-sg-card-grad shadow-sg-2">
         <span
           aria-hidden="true"
           className="pointer-events-none absolute inset-x-0 top-0 h-px bg-sg-highlight opacity-80"

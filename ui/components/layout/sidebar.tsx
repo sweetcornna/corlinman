@@ -282,7 +282,9 @@ export function Sidebar({ user }: SidebarProps) {
           <div className="flex items-center gap-2">
             <div className="relative flex h-7 w-7 shrink-0 items-center justify-center">
               <PresenceOrb size="md" className="absolute inset-0 !h-7 !w-7" />
-              <span className="relative text-[11px] font-medium text-sg-ink-2">
+              {/* The pearl's disc is always #000 — the initial must stay
+                  white in BOTH themes (theme ink would vanish on Paper). */}
+              <span className="relative text-[11px] font-medium text-white">
                 {(user ?? "a").slice(0, 1).toUpperCase()}
               </span>
             </div>

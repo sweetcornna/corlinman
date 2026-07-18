@@ -146,7 +146,7 @@ function LoginForm() {
 
   return (
     <motion.div
-      className=" sg-glass-overlay w-full max-w-sm space-y-6 rounded-sg-xl p-8 shadow-sg-4"
+      className="sg-glass-overlay w-full max-w-sm space-y-6 rounded-sg-xl p-8 shadow-sg-4"
       variants={variants.liquidSurface}
       initial="hidden"
       animate="visible"

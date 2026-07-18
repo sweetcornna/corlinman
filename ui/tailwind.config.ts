@@ -153,6 +153,9 @@ const config: Config = {
         "sg-bloom-1": "var(--sg-bloom-1)",
         "sg-bloom-2": "var(--sg-bloom-2)",
         "sg-bloom-3": "var(--sg-bloom-3)",
+        // Selected/"most active" treatment (single source shared with the
+        // .nav-active class via --sg-shadow-selected).
+        "sg-selected": "var(--sg-shadow-selected)",
       },
       backgroundImage: {
         "sg-grad-text": "var(--sg-grad-text)",

@@ -34,7 +34,7 @@ export function ApprovalPrompt({ prompt, onDecide }: ApprovalPromptProps) {
       className={cn(
         "my-2 overflow-hidden rounded-sg-md border",
         // Undecided = the heaviest inline layer: opaque matte + strong moon
-        // edge + elevation (the .c-sheet treatment, rendered in-thread).
+        // edge + elevation (the sheet treatment, rendered in-thread).
         decided
           ? "border-sg-border bg-sg-inset opacity-70"
           : "border-sg-border-strong bg-sg-opaque shadow-[var(--sg-edge-top-strong),var(--sg-elev-2)]",

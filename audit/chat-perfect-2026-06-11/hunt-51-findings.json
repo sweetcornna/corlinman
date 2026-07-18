@@ -1,0 +1,662 @@
+{
+  "summary": "Loop-until-dry discovery of UNREPORTED chat-stack bugs across 8 lenses + adversarial verify of criticals",
+  "agentCount": 36,
+  "logs": [
+    "第 1 轮：8 个视角并行挖掘（已知 0 个去重基准）",
+    "第 1 轮原始发现 52 条，去重中",
+    "第 1 轮净新增 36 条",
+    "第 1 轮入库 35 条（critical 经对抗核实）",
+    "第 2 轮：8 个视角并行挖掘（已知 36 个去重基准）",
+    "第 2 轮原始发现 64 条，去重中",
+    "第 2 轮净新增 13 条",
+    "第 2 轮入库 13 条（critical 经对抗核实）",
+    "第 3 轮：8 个视角并行挖掘（已知 49 个去重基准）",
+    "第 3 轮原始发现 48 条，去重中",
+    "第 3 轮净新增 3 条",
+    "第 3 轮入库 3 条（critical 经对抗核实）",
+    "扫描结束：共 51 条未报告缺陷"
+  ],
+  "result": {
+    "total": 51,
+    "findings": [
+      {
+        "title": "Cross-turn event pollution: reduceEvent applies stale-turn events to the new pending message (no turnId guard, dedup set reset per turn)",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/lib/chat/use-chat-stream.ts"
+        ],
+        "rootCause": "The reduceEvent callback (lines 236-284) applies events to the current pendingMessage without checking that the event's turnId matches pendingMessage.turnId. Two mechanisms let stale events through: (1) line 309 replaces the entire EventDedupSet with a fresh instance at turn start, so late-arriving events from a still-streaming previous turn are no longer recognized as duplicates; (2) lines 321-327 close the previous turn's live EventSource and immediately reassign, leaving a window where the old turn's onEvent consumer can still fire (risk R1-005 acknowledged in a code comment). Either path lets Turn A events get reduced into Turn B's draft message.",
+        "evidence": "Line 309: `dedupRef.current = new EventDedupSet();` discards the previous turn's dedup state. Lines 236-284: setPendingMessage((prev) => { ... applyEvent(next, ev); }) never compares prev.turnId to ev.turnId. Lines 321-327: closeLiveRef.current?.() then immediate reassignment to openLiveEventStream(...); the in-code R1-005 comment acknowledges the leaked-consumer race that reduces into a stale pendingMessage.",
+        "severity": "major",
+        "fixSketch": "Add a guard at the top of reduceEvent: if (prev && prev.turnId && prev.turnId !== ev.turnId) return prev. Keep dedup state per turn (Map<turnId, EventDedupSet>) instead of replacing a single set. Filter live-stream onEvent by the active turn id, or fully tear down the previous EventSource before opening the new one.",
+        "lens": "frontend-state",
+        "verified": "confirmed"
+      },
+      {
+        "title": "Rapid Session Navigation Leaves Orphaned Pending Message State",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/lib/chat/use-chat-stream.ts",
+          "/Users/cornna/project/corlinman/ui/components/chat/chat-area.tsx"
+        ],
+        "rootCause": "When the sessionKey prop changes in ChatArea (user navigates between conversations), the old useChatStream hook instance is discarded. If a turn was in-flight, its runTurn function continues executing asynchronously. When it completes and calls setPendingMessage/setMessages, these state updates are applied to a component that is no longer mounted, causing memory leaks and orphaned state. Additionally, there's no cleanup mechanism to abort in-flight turns when the sessionKey changes.",
+        "evidence": "ChatArea.tsx line 63-68: creates useChatStream once per render with sessionKey as a prop. When sessionKey changes, the old hook instance is destroyed, but any in-flight runTurn async operation continues. Lines 421-426 still call state setters even though the component may have unmounted. The useEffect cleanup (lines 571-577) only runs on unmount, not on sessionKey change.",
+        "severity": "major",
+        "fixSketch": "Add a useEffect in useChatStream that monitors args (or specifically args.sessionKey) and aborts any in-flight turn when the sessionKey changes: React.useEffect(() => { return () => { abortRef.current?.abort(); closeLiveRef.current?.(); } }, [args.sessionKey]). Alternatively, add a stable reference ID to each turn and validate in state setters that updates are only applied to the current turn.",
+        "lens": "frontend-state",
+        "verified": "unverified"
+      },
+      {
+        "title": "Deferred EventSource Closure via setTimeout May Not Execute on Unmount",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/lib/chat/use-chat-stream.ts"
+        ],
+        "rootCause": "Lines 434-436 defer the EventSource closure to 500ms later via setTimeout. However, if the component unmounts before the timeout fires, the setTimeout persists in the event queue and eventually fires on a potentially garbage-collected component. While the close function itself is idempotent, this represents a resource that isn't properly cleaned up and could cause warnings in strict-mode React.",
+        "evidence": "Lines 434-436: `const close = closeLiveRef.current; closeLiveRef.current = null; setTimeout(() => close?.(), 500);` schedules a deferred closure but doesn't track this timeout for cleanup. The cleanup effect (lines 571-577) doesn't cancel this timeout.",
+        "severity": "minor",
+        "fixSketch": "Store the setTimeout ID and clear it in the cleanup effect: `timeoutIdRef.current = setTimeout(...); ... React.useEffect(() => { return () => { if (timeoutIdRef.current) clearTimeout(timeoutIdRef.current); ... } }, [])`.",
+        "lens": "frontend-state",
+        "verified": "unverified"
+      },
+      {
+        "title": "Backend sends non-conforming SSE error chunk — frontend silently ignores it, pending message stuck loading, HTTP status stays 200",
+        "files": [
+          "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/routes/chat.py",
+          "/Users/cornna/project/corlinman/ui/lib/chat/event-merger.ts",
+          "/Users/cornna/project/corlinman/ui/lib/chat/use-chat-stream.ts"
+        ],
+        "rootCause": "When an ErrorEvent occurs during streaming (chat.py:565-574), the backend embeds {\"error\": {\"code\", \"reason\", \"message\"}} in an SSE data frame with no `choices` array and no finish_reason — not a valid OpenAI streaming chunk. The frontend's chunkToChatEvents() (event-merger.ts:27-102) iterates chunk.choices, so the error object yields zero events: no turn-complete/turn-errored is generated and the pending message stays in loading state with no error surfaced. Because the response already started streaming, the HTTP status is locked at 200 OK, so clients also cannot distinguish failure via status code (the non-stream path correctly returns 502).",
+        "evidence": "chat.py:573 yields `data: {json.dumps(err)}` where err has no \"choices\" or finish_reason field. event-merger.ts:33: `for (const choice of chunk.choices ?? [])` — the loop never executes for the error object, so an empty events array is returned. use-chat-stream.ts:378 finishReceived stays false; the finally-block commit at line 424 surfaces no error to the UI. Contrast chat.py:507-510 (non-stream mode) which explicitly returns status.HTTP_502_BAD_GATEWAY.",
+        "severity": "critical",
+        "fixSketch": "Emit streaming errors as a valid ChatCompletionChunk with choices[0].finish_reason=\"error\" (or define a dedicated SSE error event type), AND make chunkToChatEvents check chunk.error and emit a turn-errored event. Align the streaming error contract with the non-stream 502 path so clients can reliably detect upstream failure.",
+        "lens": "sse-protocol",
+        "verified": "confirmed"
+      },
+      {
+        "title": "JSON parse errors in SSE token stream silently ignored - no error reporting to user",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/lib/api/chat.ts"
+        ],
+        "rootCause": "At chat.ts:152-156, when JSON.parse fails on a data line, the error is caught and silently ignored with empty catch block. If backend emits malformed JSON in a chunk, that entire chunk is dropped with no feedback. Since there's no per-chunk validation, a malformed chunk could partially corrupt the token stream or cause loss of metadata like turn_id.",
+        "evidence": "chat.ts lines 152-156: try { yield JSON.parse(data) as ChatCompletionChunk; } catch { // ignore malformed chunk }. Comment explicitly states the error is ignored. No logging, no error event, no user notification — the user simply sees fewer tokens in the response than were sent.",
+        "severity": "major",
+        "fixSketch": "Log JSON parse errors to console/error sink for debugging. Consider emitting a turn-errored event if critical chunks fail to parse. Add per-chunk validation to detect malformed response early.",
+        "lens": "sse-protocol",
+        "verified": "unverified"
+      },
+      {
+        "title": "Live event stream silently drops malformed JSON events without notifying client",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/lib/sessions/event-stream.ts"
+        ],
+        "rootCause": "At event-stream.ts:87-89, when JSON.parse fails on a live SSE message, the handler returns early without calling onError callback or invoking error handling. Malformed events from the backend are silently consumed and discarded, with no indication to caller that data loss occurred.",
+        "evidence": "event-stream.ts lines 87-89: try { parsed = JSON.parse(raw.data) as LiveEvent; } catch { return; }. The catch block calls return without invoking opts.onError?.(). Compare to es.onerror handler at line 97-105 which DOES call opts.onError.",
+        "severity": "major",
+        "fixSketch": "In the catch block, call opts.onError?.(new Error(`Failed to parse event: ${raw.data}`)) to surface parse failures to the client, OR log them for debugging.",
+        "lens": "sse-protocol",
+        "verified": "unverified"
+      },
+      {
+        "title": "No timeout or heartbeat monitoring for token stream stalls",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/lib/api/chat.ts",
+          "/Users/cornna/project/corlinman/ui/lib/chat/use-chat-stream.ts"
+        ],
+        "rootCause": "The fetch/stream reading loop at chat.ts:140-159 has no timeout mechanism. If the backend sends data: chunks but never sends DoneEvent or [DONE] marker (e.g., backend crash mid-generation), the reader will wait indefinitely for the next chunk. The pending message will never transition out of loading state. The 500ms grace period at use-chat-stream.ts:436 only applies to the live stream, not the token stream timeout.",
+        "evidence": "chat.ts lines 140-159: while(true) loop with await reader.read() has no timeout. No AbortController timeout or setTimeout wrapper. If backend becomes non-responsive after emitting some tokens, stream hangs. use-chat-stream.ts comment at line 395-399 acknowledges 'OpenAI-compat servers don't always close cleanly' but assumes an eventual error is thrown - doesn't handle the case where stream becomes idle indefinitely.",
+        "severity": "major",
+        "fixSketch": "Add a timeout to the reader.read() operation using Promise.race([reader.read(), timeout]). If timeout fires before DoneEvent, emit turn-errored event. For production enterprise chat, recommend 60-120s timeout per turn.",
+        "lens": "sse-protocol",
+        "verified": "unverified"
+      },
+      {
+        "title": "Stream parser skips [DONE] marker without validation - silent success on incomplete stream",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/lib/api/chat.ts"
+        ],
+        "rootCause": "At chat.ts:151, the SSE parser explicitly skips the [DONE] marker: if (!data || data === \"[DONE]\") continue. This is meant to be a marker of successful completion, but the code treats it as ignorable. If backend sends [DONE] without first sending a finish_reason chunk, finishReceived stays false and the catch block at line 394 won't execute - the stream simply ends and the reader breaks, leading to implicit success when completion may have been unexpected.",
+        "evidence": "chat.ts:151 skips [DONE] without checking if it was preceded by a proper finish_reason chunk. use-chat-stream.ts:378 initializes finishReceived=false. Line 390 only sets it on turn-complete event. If backend sends tokens then [DONE] without DoneEvent, finishReceived stays false but async generator returns normally (line 142: if(done) break). No error is raised.",
+        "severity": "major",
+        "fixSketch": "Validate that a finish_reason chunk was received before accepting [DONE]. If [DONE] arrives without prior finish_reason, treat as protocol error and emit turn-errored.",
+        "lens": "sse-protocol",
+        "verified": "unverified"
+      },
+      {
+        "title": "Admin session validated only once at middleware — TTL never re-checked during long-running streams (TOCTOU)",
+        "files": [
+          "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/middleware/auth.py",
+          "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/routes/chat.py",
+          "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_a/_session_store.py"
+        ],
+        "rootCause": "The admin_session_resolver is called once at middleware time (auth.py:303) to validate the cookie before the request enters the chat handler. SessionRow.last_used is refreshed only at that moment (session_store.py:99) and the auth result cached in request.state is never re-validated. If a streaming chat response outlives the session TTL, the session expires mid-stream but the cached auth state allows the stream to continue uninterrupted (e.g., a 30-minute session permitting a 2-hour stream). The same single-validation design also creates a (smaller) time-of-check-time-of-use window between middleware validation and handler execution.",
+        "evidence": "auth.py:297-319 shows the admin_session_resolver is called once per request in the middleware dispatch path, sets request.state.tenant and request.state.admin_session_bridged=True, then returns await call_next(request). The resolver calls session_store.validate(token) at _auth_shim.py:308, which touches last_used (session_store.py:99), but this timestamp is never refreshed during streaming and there is no subsequent check anywhere in the stream lifetime.",
+        "severity": "major",
+        "fixSketch": "Periodically re-validate the session TTL during streaming (call session_store.validate() between chunk yields in _sse_iter and abort the stream when the session becomes invalid), or extend the session TTL on validation. For the handler boundary, re-validate request.state auth at the start of the chat handler before processing.",
+        "lens": "backend-chat-route",
+        "verified": "unverified"
+      },
+      {
+        "title": "Blocking JSON serialization in async streaming generator without timeout",
+        "files": [
+          "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/routes/chat.py"
+        ],
+        "rootCause": "The _sse_iter() generator calls json.dumps() synchronously on every chunk (chat.py:553, 559, 563, 573). While json.dumps() is typically fast, it is a blocking call that executes in the event loop thread. If an event chunk is extremely large (e.g. a tool call with massive args_json), json.dumps() could block the event loop for several milliseconds, starving other concurrent requests. The OpenAI API handles this by chunking large content into multiple smaller SSE frames, but this implementation serializes the entire event dict at once.",
+        "evidence": "chat.py:553: `yield f\"data: {json.dumps(chunk)}\\n\\n\".encode()` is called synchronously inside the async generator. For TokenDeltaEvent chunks, each token is typically small, but ToolCallEvent.args_json could be arbitrarily large (no validation bounds). The json.dumps() call has no timeout and no pre-allocation bounds.",
+        "severity": "minor",
+        "fixSketch": "Wrap json.dumps() in asyncio.to_thread() to offload serialization to a thread pool, preventing event loop blockage. Alternatively, cap the size of chunks sent per SSE frame and validate that ToolCallEvent.args_json is bounded (e.g., max 64 KB per tool call). The simplest fix is using asyncio.to_thread(json.dumps, chunk) for large events.",
+        "lens": "backend-chat-route",
+        "verified": "unverified"
+      },
+      {
+        "title": "Missing validation of message content encoding and character limits",
+        "files": [
+          "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/routes/chat.py"
+        ],
+        "rootCause": "The ChatRequest.messages validation (chat.py:637-642) checks only that the list is non-empty. It does not validate individual message content: no bounds on string length, no checks for null bytes or invalid UTF-8, no validation that the role enum is correct for the context. OpenAI API enforces per-message and per-request content limits to prevent abuse and resource exhaustion. A malformed message with 100 MB of content would pass validation and propagate to the chat service.",
+        "evidence": "chat.py:637-642: `if not req.messages:` is the only validation. The message role is cast via _role_from_str() at chat.py:196-200, which silently defaults to Role.USER on invalid input (no error raised). Individual message content is never validated for length or encoding.",
+        "severity": "minor",
+        "fixSketch": "Add pydantic validators on ChatMessage to enforce: (1) content length <= N (e.g. 32 KB), (2) valid UTF-8 encoding, (3) total messages array size <= M (e.g. 100 messages), (4) total content bytes across all messages <= P (e.g. 1 MB). Use pydantic field validators and model validators to fail at request parse time, not at handler time.",
+        "lens": "backend-chat-route",
+        "verified": "unverified"
+      },
+      {
+        "title": "No list virtualization for very large message lists",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/components/chat/message-list.tsx"
+        ],
+        "rootCause": "The MessageList renders all messages as a flat `<ol>` without virtualization (line 96-112). While the existing streaming perf test confirms that settled messages don't re-render on pending message deltas (R4-D5), the DOM still contains every message node. For conversations with hundreds of messages, the full message tree stays in the DOM and contributes to layout thrashing during scroll, especially if any message contains a large markdown table, code block, or deeply nested list. Performance degrades O(n) with message count.",
+        "evidence": "Line 96-112: `<ol>` renders `{all.map((m, i) => <MessageBubble ...>)}` without any windowing library. The package.json includes @tanstack/react-virtual (v3.13.24) but it is not used in the chat. Long conversations (100+ messages) will cause scroll jank and increased memory usage.",
+        "severity": "major",
+        "fixSketch": "Integrate @tanstack/react-virtual into MessageList using useVirtualizer hook. Wrap the message list with a fixed-height container and virtualizer to render only visible messages + overscan buffer. This is a common pattern in long-list chat UIs (e.g., Discord, Slack). Reference the logs/page.tsx usage of useVirtualizer in the codebase.",
+        "lens": "rendering",
+        "verified": "unverified"
+      },
+      {
+        "title": "Missing translation function dependency in session operation handlers",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/app/(admin)/chat/page.tsx"
+        ],
+        "rootCause": "The `handleRename`, `handleTogglePin`, `handleToggleArchive`, and `handleDelete` React.useCallback hooks use the `t` translation function in error toast messages but do not include `t` in their dependency arrays. This causes the handlers to capture a stale `t` function at component mount time, which will not update if the user changes the app language.",
+        "evidence": "Lines 250-326: handleRename (line 264) uses `t()` but dependency array is `[refreshList]`. handleTogglePin (line 280) uses `t()` but dependency array is `[conversations, refreshList]`. handleToggleArchive (line 296) uses `t()` but dependency array is `[conversations, refreshList]`. handleDelete (line 326) uses `t()` at lines 313, 315, 320 but dependency array is `[refreshList, router, sessionKey]`. Each of these handlers calls `toast.error(t('common.saveFailed'))` or similar, which will use a stale translation function if the user switches languages mid-session.",
+        "severity": "minor",
+        "fixSketch": "Add `t` to the dependency array of each useCallback hook. For example, change `[refreshList]` to `[refreshList, t]` in handleRename. This ensures each handler captures the current translation function. Alternatively, use a separate callback wrapper that doesn't rely on `t` in the dependency.",
+        "lens": "session-mgmt",
+        "verified": "confirmed"
+      },
+      {
+        "title": "Premature exit from rename edit mode before API completes — rename failures invisible to user",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/components/chat/chat-sidebar.tsx"
+        ],
+        "rootCause": "The `onConfirmRename` callback in ChatSidebar immediately calls `setRenamingKey(null)` synchronously after calling the async `onRename()` handler (line 234-235), without awaiting it. The rename input closes on blur or Enter before the API response; if the PATCH fails (network error, 404, 422), the user receives no error feedback — the sidebar row simply reverts to non-editable state with no indication of failure and no opportunity to retry.",
+        "evidence": "Lines 233-236: `onConfirmRename={(v) => { onRename(c.sessionKey, v); setRenamingKey(null); }}` — `onRename` is async (ChatPage's `patchChatSession()` + `refreshList()`) but is not awaited before clearing UI state. Lines 313-325: the rename input fires `onBlur={() => onConfirmRename(renameValue)}` and Enter via onKeyDown, so the input always closes while the API is still in flight, creating a race with no error surface.",
+        "severity": "major",
+        "fixSketch": "Make the callback async and await the rename before clearing state: `onConfirmRename={async (v) => { await onRename(c.sessionKey, v); setRenamingKey(null); }}`, and have ChatPage's handleRename surface failures (keep the input open or show inline/toast error). Only clear the renaming flag after confirmed success.",
+        "lens": "session-mgmt",
+        "verified": "confirmed"
+      },
+      {
+        "title": "Memoization ineffective due to Date.now() in dependency call",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/components/chat/chat-sidebar.tsx"
+        ],
+        "rootCause": "The `useMemo` for `grouped` conversations calls `groupConversations(filtered, Date.now())` at line 129. Although `Date.now()` is not in the dependency array, the function is recalculated on every render because `filtered` changes whenever `query` changes (line 121-126). More critically, if `Date.now()` were added to dependencies, it would defeat memoization entirely since `Date.now()` returns a different value every millisecond.",
+        "evidence": "Line 129: `const grouped = React.useMemo(() => groupConversations(filtered, Date.now()), [filtered]);`. The intent is to group conversations by relative age (today, yesterday, week, etc.), which requires knowing 'now'. However, since `Date.now()` is not memoized, the grouping recalculates whenever filtered changes. Additionally, the date cutoff is computed fresh on every render, meaning a sidebar that renders every 100ms will show conversations jumping between date groups as the reference time drifts.",
+        "severity": "major",
+        "fixSketch": "Capture 'now' once per render: `const now = React.useMemo(() => Date.now(), []); const grouped = React.useMemo(() => groupConversations(filtered, now), [filtered, now]);`. Or use a ref to cache 'now' for the duration of the render phase and update it at render start. This ensures stable grouping during a single render while still respecting filtered changes.",
+        "lens": "session-mgmt",
+        "verified": "unverified"
+      },
+      {
+        "title": "Indistinguishable empty states for no conversations vs no search results",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/components/chat/chat-sidebar.tsx"
+        ],
+        "rootCause": "When `grouped.length === 0`, the sidebar displays a single message using `t('chat.noConversations')` (lines 211-214). This message is shown both when there are genuinely no conversations in the system and when a search query has filtered out all conversations. The user cannot tell whether to clear the search or if they truly have no history.",
+        "evidence": "Lines 211-214: `{grouped.length === 0 ? <div>{t('chat.noConversations')}</div> : null}`. The `grouped` array is populated after filtering by `query` (line 121-126), so an empty `grouped` could mean no conversations exist, or the search term matched nothing. The single message lacks context.",
+        "severity": "minor",
+        "fixSketch": "Check if `query` is non-empty and display different messages: `{grouped.length === 0 && query.length > 0 ? <div>{t('chat.noSearchResults')}</div> : grouped.length === 0 ? <div>{t('chat.noConversations')}</div> : null}`. Alternatively, show a hint that the search can be cleared.",
+        "lens": "session-mgmt",
+        "verified": "unverified"
+      },
+      {
+        "title": "Potential race condition in delete-with-undo rapid succession",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/app/(admin)/chat/page.tsx"
+        ],
+        "rootCause": "The `handleDelete` callback (lines 298-326) shows a toast with an undo button that has a 4.5-second window (line 322). If a user rapidly deletes two conversations and clicks undo on the first, the undo's `refreshList()` call (line 319) may race with the second deletion's timeout-based `refreshList()` (line 305), leading to inconsistent cache state in React Query.",
+        "evidence": "Lines 298-326: `handleDelete` uses `window.setTimeout(async () => { ... refreshList(); ... }, 4500)` and the undo button calls `refreshList()` immediately on click. The `refreshList` function (line 233-235) invalidates the React Query cache with `qc.invalidateQueries()`, which is not atomic. Two simultaneous invalidations could leave the cache in an inconsistent state or cause a flicker.",
+        "severity": "minor",
+        "fixSketch": "Use a flag to prevent concurrent refreshList calls, or ensure deletions are idempotent on the backend (they already are, per the 404 handling) and add a queuing mechanism to invalidateQueries, or use React Query's mutation patterns instead of manual timer-based deletions.",
+        "lens": "session-mgmt",
+        "verified": "unverified"
+      },
+      {
+        "title": "Unhandled approval decision API errors silent to user",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/lib/chat/use-chat-stream.ts",
+          "/Users/cornna/project/corlinman/ui/components/chat/message-bubble.tsx"
+        ],
+        "rootCause": "The `approve` callback in use-chat-stream.ts (line 543-569) calls `submitApproval()` without a try-catch. When the user clicks an approval decision button in message-bubble.tsx (line 353-354), the promise is not awaited and any error is silently swallowed. If the approval API returns 401, 5xx, or network error, the user sees no error indication and the approval prompt never resets to allow retry.",
+        "evidence": "use-chat-stream.ts lines 550-553 await submitApproval without error handling. message-bubble.tsx lines 353-354 call onApprove without awaiting or error handling. No toast, dialog, or error state surfaces the failure to the user.",
+        "severity": "major",
+        "fixSketch": "Wrap submitApproval in try-catch in the approve callback, emit an error event or state to trigger a toast notification on failure. Alternatively, convert the synchronous onDecide callback to async and handle errors at the message-bubble click handler.",
+        "lens": "reliability-errors",
+        "verified": "confirmed"
+      },
+      {
+        "title": "Silent unhandled promise rejections on sendMessage/editAndRerun/stop",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/components/chat/chat-area.tsx",
+          "/Users/cornna/project/corlinman/ui/lib/chat/use-chat-stream.ts"
+        ],
+        "rootCause": "chat-area.tsx calls chat.sendMessage(), chat.editAndRerun(), and chat.stop() with `void` keyword (lines 91, 98, 249, 253), which prevents error handling. These promises can throw on network failure or 401/5xx responses. Without awaiting or .catch() chaining, any rejection becomes an unhandled promise rejection in the console that doesn't surface to the user as a toast or visible error state.",
+        "evidence": "chat-area.tsx lines 91 (handlePickSuggestion), 98 (handleEdit), 249, 253 all use 'void' operator on promises. use-chat-stream.ts sendMessage (line 442-456) and stop (line 478-485) can throw but callers don't handle rejections. No global unhandledrejection listener exists.",
+        "severity": "major",
+        "fixSketch": "Add .catch() handlers to the fire-and-forget calls to surface errors via toast, or restructure to await with proper error UI. At minimum, attach .catch(() => {}) with logging to prevent unhandled rejections from reaching the console.",
+        "lens": "reliability-errors",
+        "verified": "unverified"
+      },
+      {
+        "title": "Session expiry / 401 during chat never surfaced: no re-login flow on fetch 401 and EventSource errors silently reconnect",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/lib/api/chat.ts",
+          "/Users/cornna/project/corlinman/ui/lib/chat/use-chat-stream.ts",
+          "/Users/cornna/project/corlinman/ui/lib/sessions/event-stream.ts",
+          "/Users/cornna/project/corlinman/ui/app/(admin)/chat/page.tsx"
+        ],
+        "rootCause": "When a 401 is received from `/v1/chat/completions` (chat.ts:126-132), it throws a CorlinmanApiError; use-chat-stream catches this and sets message.error (line 415), but the admin layout's session check (layout.tsx:56-62) runs only once at mount, so nothing redirects to /login. In parallel, the live EventSource path has the same blindness: event-stream.ts (lines 97-105) silently reconnects with exponential backoff on 401/5xx, and use-chat-stream.ts (line 322-327) never supplies an onError handler. The user is stuck in a broken state — chat hangs or errors opaquely — with no indication that their session expired or any way to re-authenticate.",
+        "evidence": "chat.ts line 128 throws on 401 with no redirect handling. use-chat-stream.ts line 415 shows error text but doesn't trigger login. layout.tsx line 56-62 checks auth only at mount. event-stream.ts line 97-105 defines error handling with backoff but use-chat-stream.ts line 322 calls openLiveEventStream without onError — repeated 401/5xx reconnect loops produce zero UI feedback.",
+        "severity": "major",
+        "fixSketch": "Globally intercept 401 at the ApiFetch layer (or in use-chat-stream error handling) and emit a 'session-expired' event that shows a toast with a 'Re-login' action or redirects to /login?redirect=... Wire an onError callback into openLiveEventStream that detects repeated connection failures and surfaces a warning / triggers the same re-auth flow.",
+        "lens": "reliability-errors",
+        "verified": "confirmed"
+      },
+      {
+        "title": "No retry affordance or error recovery for failed chat turns",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/lib/chat/use-chat-stream.ts",
+          "/Users/cornna/project/corlinman/ui/components/chat/chat-area.tsx"
+        ],
+        "rootCause": "When sendMessage throws or the stream errors mid-turn, a turn-errored event is emitted (line 403-417) that sets message.error. However, there is no automatic retry button or user-visible recovery action beyond the manual 'Regenerate' button (which only works if the last message in history is an assistant message with an error). If an intermediate message fails to send or a network drop occurs, the user must manually navigate back and resend.",
+        "evidence": "use-chat-stream.ts line 458-476 retryLast removes the failed turn but requires the user to manually click Regenerate. No automatic retry, no exponential backoff, no recoverable error state with a 'Retry' button in the error toast.",
+        "severity": "major",
+        "fixSketch": "Add an explicit 'Retry' action to error toasts, or expose a retryLast method that the chat bubble's error state can call. Implement exponential backoff for network errors on subsequent user retries.",
+        "lens": "reliability-errors",
+        "verified": "unverified"
+      },
+      {
+        "title": "Streaming message announce without aria-atomic; polite region missing role='status'",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/components/chat/message-list.tsx"
+        ],
+        "rootCause": "The message list uses aria-live='polite' but lacks aria-atomic='true' and the scroll container should have role='status' or role='log' to properly announce streaming assistant messages. Screen readers may not capture complete streaming deltas (particularly the streaming cursor animation at /Users/cornna/project/corlinman/ui/components/chat/markdown-message.tsx:141-143) without atomic grouping.",
+        "evidence": "Line 94 in message-list.tsx: `aria-live=\"polite\"` without `aria-atomic`. Streaming messages append partial content via the `pendingMessage` in chat.messages and delta updates; without atomic announcement, a11y users miss content coherence.",
+        "severity": "major",
+        "fixSketch": "Add `aria-atomic='true'` and `role='log'` to the message-list scroll container to properly announce complete streaming messages as atomic units.",
+        "lens": "mobile-a11y",
+        "verified": "unverified"
+      },
+      {
+        "title": "Message bubble action bar buttons: 20px total height insufficient for mobile touch targets",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/components/chat/message-bubble.tsx"
+        ],
+        "rootCause": "Action bar buttons (copy, edit, regenerate, branch, reply) use `px-1.5 py-0.5` (6px vertical + 12px horizontal padding) with h-3/w-3 icons. The total tap target is ~20px tall—below WCAG 2.5 Touch Target Size guideline (minimum 24x24px target area). On iOS with soft keyboard, these buttons become harder to tap.",
+        "evidence": "Lines 213-267 in message-bubble.tsx: Button wrapper has `px-1.5 py-0.5` (~20px computed height on 12px text baseline); icons are h-3 w-3 (12px). Mobile users (especially with large text scaling or one-handed use) struggle to tap.",
+        "severity": "major",
+        "fixSketch": "Increase button padding to at least `px-2 py-1` (~28px height) or use min-h-10 w-10 to guarantee 40x40px or larger touch targets. Alternatively, group actions into a popover menu on mobile.",
+        "lens": "mobile-a11y",
+        "verified": "unverified"
+      },
+      {
+        "title": "Sidebar search input lacks proper focus-visible indicator for keyboard navigation",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/components/chat/chat-sidebar.tsx"
+        ],
+        "rootCause": "Line 204 in chat-sidebar.tsx: Search input uses `focus:outline-none` without a visible focus-visible alternative. The focus ring is defined only in globals.css at the `:focus-visible` level, but the input wrapper background is transparent with subtle placeholder text. Keyboard users cannot easily see when the input is focused.",
+        "evidence": "Lines 197-207: Input container background is transparent (`bg-transparent`) with light placeholder text. When focused, no visible indicator appears because focus:outline-none suppresses the ring and the background does not change visibly.",
+        "severity": "major",
+        "fixSketch": "Add `focus-visible:ring-2 focus-visible:ring-sg-accent/40` or change `focus:bg-sg-inset-hover` to make the focused input visually distinct. The rename input at line 323 has this pattern (`focus-visible:ring-2 focus-visible:ring-sg-accent/40`)—apply the same.",
+        "lens": "mobile-a11y",
+        "verified": "unverified"
+      },
+      {
+        "title": "Color contrast: sidebar text (sg-ink-3 on sg-inset-hover/sg-inset) may fail at WCAG AA on light mode",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/components/chat/chat-sidebar.tsx",
+          "/Users/cornna/project/corlinman/ui/app/globals.css"
+        ],
+        "rootCause": "Sidebar row inactive state uses `text-sg-ink-3` (lightness ~42% light mode) on `hover:bg-sg-inset-hover` (oklch(0.91 0.015 275 / 0.7)). In light mode, the Lightness 42% ink on ~91% background yields ~4.2:1 contrast. Additionally, placeholder text in the search input uses `placeholder:text-sg-ink-5` (lightness 66%) on an inset background—likely ~3:1 contrast, below WCAG AA requirement of 4.5:1 for normal text.",
+        "evidence": "globals.css lines 59 (light): --sg-ink-3: oklch(0.42 0.02 280); line 49: --sg-inset-bg-hover: oklch(0.91 0.015 275 / 0.7). chat-sidebar.tsx line 293: text-sg-ink-3 on hover state. Calculated contrast approx 4.2:1, borderline at AA but fails at AAA.",
+        "severity": "major",
+        "fixSketch": "Use `text-sg-ink-2` (lightness ~27% light mode) for inactive sidebar rows instead of `text-sg-ink-3` to ensure 5.5+:1 contrast. For placeholder text, use `placeholder:text-sg-ink-4` (lightness ~55%) instead of `sg-ink-5`.",
+        "lens": "mobile-a11y",
+        "verified": "unverified"
+      },
+      {
+        "title": "iOS soft keyboard may overlap composer on viewport <376px width; no bottom padding adjustment",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/app/(admin)/chat/layout.tsx",
+          "/Users/cornna/project/corlinman/ui/components/chat/composer.tsx"
+        ],
+        "rootCause": "The chat layout uses `h-[calc(100dvh-4rem)]` (dynamic viewport height minus header) and the composer at line 301 uses `pb-3`. On iOS Safari with a soft keyboard (55-315px depending on orientation), the composer textarea may be hidden behind the keyboard with no scroll-into-view behavior. The layout has `overflow-hidden` and `min-h-0` which prevents the message list from growing and pushing the composer up.",
+        "evidence": "layout.tsx line 19: `h-[calc(100dvh-4rem)] overflow-hidden`. composer.tsx line 301: `pb-3` (12px padding). On iPhone 12 portrait with mobile Safari keyboard, the textarea sits at ~calc(100dvh - 4rem - 48px - 12px) = ~80px above the keyboard. When the keyboard opens, it takes ~335px, leaving the input obscured.",
+        "severity": "major",
+        "fixSketch": "Add `position: fixed; bottom: env(keyboard-inset-height, 0)` to the composer or wrap it in a scrollable container that scrolls the textarea into view on focus. Alternatively, use `pb-6 md:pb-3` and increase the gap when keyboard is detected via a media query or IntersectionObserver on the composer.",
+        "lens": "mobile-a11y",
+        "verified": "unverified"
+      },
+      {
+        "title": "Focus not restored to message list after send; no announcement of new message arrival for screen readers",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/components/chat/chat-area.tsx",
+          "/Users/cornna/project/corlinman/ui/components/chat/message-list.tsx"
+        ],
+        "rootCause": "When a user sends a message via the composer (chat-area.tsx line 245-250), focus remains in the textarea (or stays on the send button). The new message appears in the list but there's no explicit focus management to move focus to the latest message or announce arrival. Screen reader users cannot easily navigate to their own sent message or the assistant's reply.",
+        "evidence": "composer.tsx handleSend clears text and attachments but does not call `.focus()` or manage focus. message-list.tsx has aria-live='polite' on the scroll container (line 94) but the new message bubble (message-bubble.tsx) renders without a role='status' or id to be targeted by live region announcements.",
+        "severity": "major",
+        "fixSketch": "After send, use `taRef.current?.focus()` to restore focus to the textarea. For a11y, add `role='status' aria-live='polite' aria-atomic='true'` to newly added assistant message bubbles or add a live region that announces 'New message from assistant' when the pendingMessage resolves.",
+        "lens": "mobile-a11y",
+        "verified": "unverified"
+      },
+      {
+        "title": "Emoji picker button uses aria-haspopup='dialog' but dialog role is on the grid, not the overlay container",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/components/chat/emoji-picker.tsx",
+          "/Users/cornna/project/corlinman/ui/components/chat/composer.tsx"
+        ],
+        "rootCause": "composer.tsx line 454 declares `aria-haspopup='dialog'` on the button, and emoji-picker.tsx line 241 renders `role='dialog'` on the motion.div. However, the motion.div is a grid container (absolute positioned, z-30), not a true modal. Additionally, the emoji picker does not trap focus or manage focus return when closed—when the user closes the picker, focus should return to the emoji button, but line 283 in composer.tsx uses `requestAnimationFrame` which may cause a race condition.",
+        "evidence": "composer.tsx line 454: aria-haspopup='dialog'. emoji-picker.tsx line 241: role='dialog' on the grid. closeEmoji at composer.tsx line 283 uses rAF which may not guarantee focus is set before the picker unmounts. No aria-modal='true' on the picker.",
+        "severity": "minor",
+        "fixSketch": "Change emoji-picker.tsx role to 'listbox' (it's an ARIA grid selection pattern) or add aria-modal='true' if keeping role='dialog'. Add focus management: when closed, explicitly call `emojiWrapRef.current?.querySelector('button')?.focus()` instead of relying on taRef focus.",
+        "lens": "mobile-a11y",
+        "verified": "unverified"
+      },
+      {
+        "title": "Markdown link color (text-sg-accent) may not meet WCAG contrast on assistants messages with light backgrounds",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/components/chat/markdown-message.tsx"
+        ],
+        "rootCause": "Links in markdown use `text-sg-accent decoration-sg-accent/40 underline-offset-2 hover:underline` (line 59). In light mode, sg-accent is oklch(0.5 0.16 245)—lightness 50%. On the transparent/white assistant message background (no explicit background), links render at ~3.2:1 contrast against the white. The underline is present but decoration is semi-transparent, and underline-offset-2 (8px) may not be obvious enough.",
+        "evidence": "markdown-message.tsx line 59: text-sg-accent on transparent bg. globals.css line 64: --sg-accent: oklch(0.5 0.16 245). No underline on non-hover state; only hover shows underline. Users with color-blindness may not distinguish links from regular text.",
+        "severity": "minor",
+        "fixSketch": "Add `underline` to the base link style (not just hover) or increase color contrast by using text-sg-accent-2 (darker purple) or add a background color. Ensure decoration-sg-accent is fully opaque.",
+        "lens": "mobile-a11y",
+        "verified": "unverified"
+      },
+      {
+        "title": "Multi-tenant isolation bypass: session list/delete/replay/patch journal operations are not tenant-scoped",
+        "files": [
+          "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_a/sessions.py",
+          "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_a/_sessions_lib.py",
+          "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/agent_journal_backend.py"
+        ],
+        "rootCause": "All session admin handlers resolve tenant_id via _resolve_tenant() but then call journal helpers that take no tenant parameter: GET /admin/sessions calls _list_from_journal(state, data_dir) (sessions.py:110/118), DELETE calls _delete_from_journal(state, data_dir, session_key) (sessions.py:150-177), PATCH calls _update_session_meta_in_journal(...) (sessions.py:303), and replay calls _replay_for_request(...) (sessions.py:340) — none pass tenant_id. The root systemic cause: the turns table schema (agent_journal_backend.py:439) has no tenant_id column, so the SQL in list_session_summaries() (lines 1420-1452) cannot filter by tenant even if the helpers were fixed. In a multi-tenant deployment, any admin authenticated to one tenant can list, read/replay, rename/pin/archive, and delete ALL sessions from ALL tenants.",
+        "evidence": "sessions.py line 110: `tenant_id = _resolve_tenant(state, tenant)` resolves correctly, but line 118 calls `_list_from_journal(state, data_dir)` without it; the _list_from_journal signature (_sessions_lib.py:255) accepts only (state, data_dir). DELETE (sessions.py:150-177), PATCH (line 303), and replay (line 340) follow the identical pattern. agent_journal_backend.py lines 1420-1452 show no tenant WHERE clause because the turns table (line 439) lacks a tenant_id column.",
+        "severity": "critical",
+        "fixSketch": "1. Add a tenant_id column to the turns table schema and populate it on all insert/update paths in agent_journal_backend.py. 2. Thread tenant_id through _list_from_journal, _delete_from_journal, _update_session_meta_in_journal, and _replay_for_request, adding WHERE tenant_id = ? to the journal queries. 3. Verify session_key belongs to the resolved tenant before any delete/patch/replay. 4. Add regression tests asserting tenant-scoped visibility and cross-tenant 404s for all four operations.",
+        "lens": "enterprise-parity",
+        "verified": "confirmed"
+      },
+      {
+        "title": "MAJOR: Admin authentication does not include per-tenant scoping in cookie path",
+        "files": [
+          "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/middleware/admin_auth.py",
+          "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_a/_auth_shim.py"
+        ],
+        "rootCause": "When an admin authenticates via cookie (admin_auth.py line 234, _auth_shim.py line 217), the AdminPrincipal sets tenant = state.default_tenant_id (admin_auth.py line 234) rather than reading tenant context from the request or credential. In multi-tenant setups, all admin sessions inherit the same default tenant regardless of ?tenant= query param intent, breaking tenant isolation at the auth layer.",
+        "evidence": "admin_auth.py line 234: `tenant=state.default_tenant_id` hardcodes the default tenant in the cookie path, ignoring multi-tenant routing. _auth_shim.py line 323 mirrors this: `return getattr(active_state, 'default_tenant', None) or default_tenant()` with no query-param consultation. Admin can switch tenants via ?tenant= query but the auth layer doesn't validate they're authorized for that tenant.",
+        "severity": "major",
+        "fixSketch": "1. Extract tenant from request query/header AFTER auth succeeds. 2. Validate admin's tenant credentials match requested tenant (in routes_admin_b or a new middleware). 3. Ensure TenantScopeMiddleware fires AFTER AdminAuthMiddleware so 403 tenant_not_allowed still applies. 4. Document that admin tokens are tenant-scoped and ?tenant= overrides require re-validation.",
+        "lens": "enterprise-parity",
+        "verified": "unverified"
+      },
+      {
+        "title": "MAJOR: No conversation share/export or message feedback surface",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/components/chat/chat-sidebar.tsx",
+          "/Users/cornna/project/corlinman/ui/components/chat/message-bubble.tsx"
+        ],
+        "rootCause": "The web chat UI provides conversation list (chat-sidebar.tsx) and message view (message-bubble.tsx) but no conversation export, share-link, or message feedback (thumbs up/down for quality rating) controls. Enterprise ChatGPT/Claude parity requires these.",
+        "evidence": "chat-sidebar.tsx shows Pin/Archive/Delete/Rename (lines 9-19) but no Export or Share controls. message-bubble.tsx shows Copy/Edit/Branch/Regenerate/Approve (lines 14-16) but no feedback buttons (like/dislike for message quality).",
+        "severity": "major",
+        "fixSketch": "1. Add conversation export endpoint (POST /admin/sessions/{key}/export) returning JSON/markdown/PDF. 2. Add share-link surface (POST /admin/sessions/{key}/share returning shareable UUID). 3. Add message feedback API (POST /v1/chat/completions/{turn_id}/{message_id}/feedback with {rating: 'like'|'dislike'|null}). 4. Surface export/share buttons in chat-sidebar context menu. 5. Add feedback micro-interactions (thumbs up/down icons) to message-bubble action menu.",
+        "lens": "enterprise-parity",
+        "verified": "unverified"
+      },
+      {
+        "title": "MAJOR: No model-switch mid-conversation history carryover validation",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/lib/chat/use-chat-stream.ts",
+          "/Users/cornna/project/corlinman/ui/components/chat/chat-model-picker.tsx"
+        ],
+        "rootCause": "The chat model picker (chat-model-picker.tsx) allows switching models mid-conversation but does not validate or warn whether the new model can resume history context (e.g., switching from Claude 3.5 Sonnet to a smaller/older model may lose context window fidelity). No server-side validation of model compatibility for conversation history carryover.",
+        "evidence": "chat-model-picker.tsx allows arbitrary model selection (line 56 onPick) without validation. use-chat-stream.ts sends model in metadata (line 367 'session_key') but does not validate server-side whether the history can be replayed with a different model.",
+        "severity": "major",
+        "fixSketch": "1. Add model compatibility check when submitting (use-chat-stream.ts): warn user if switching to a model with smaller context window than current history. 2. Server-side: return 422 or 400 if model incompatibility detected (e.g., context size < conversation length). 3. Add advisory banner in chat UI when mid-conversation model-switch occurs. 4. Log model changes in session metadata for audit.",
+        "lens": "enterprise-parity",
+        "verified": "unverified"
+      },
+      {
+        "title": "MAJOR: No conversation data retention policy or TTL display",
+        "files": [
+          "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_a/_sessions_lib.py",
+          "/Users/cornna/project/corlinman/ui/components/chat/chat-sidebar.tsx"
+        ],
+        "rootCause": "The system has no visible data retention policy for chat history. Sessions persist indefinitely in the journal without documented TTL or deletion mechanics. Admin cannot configure per-tenant data retention or see when conversations will be auto-deleted. Enterprise deployments require GDPR/privacy compliance with clear retention and deletion visibility.",
+        "evidence": "_sessions_lib.py and agent_journal_backend.py show no retention TTL or auto-deletion logic in schema or queries. chat-sidebar.tsx displays session list without retention info (age, TTL, deletion date). No /admin config surface to set retention windows or view deletion schedules.",
+        "severity": "major",
+        "fixSketch": "1. Add optional retention_ttl_days to session metadata schema. 2. Implement background job to soft-delete or purge sessions exceeding TTL. 3. Add /admin/sessions/{key}/retention endpoint returning {expires_at, retention_days}. 4. Display retention badge in chat-sidebar (e.g. 'Expires in 30 days'). 5. Log all session deletion (manual + auto) for audit compliance.",
+        "lens": "enterprise-parity",
+        "verified": "unverified"
+      },
+      {
+        "title": "MINOR: Missing conversation usage/cost tracking display",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/components/chat/chat-area.tsx",
+          "/Users/cornna/project/corlinman/ui/lib/chat/types.ts"
+        ],
+        "rootCause": "The chat UI does not surface token counts, estimated costs, or quota consumption for conversations. Enterprise users need visibility into usage/billing per conversation and per quota window to manage spend.",
+        "evidence": "chat-area.tsx and types.ts contain no usage, cost, or quota fields in ChatMessage or ChatConversation types. No cost badge or token counter visible in the UI.",
+        "severity": "minor",
+        "fixSketch": "1. Add token_count, cost_estimate_usd fields to ChatMessage wire type. 2. Add total_tokens, total_cost_usd to ChatConversation. 3. Implement /admin/sessions/{key}/usage endpoint returning aggregated metrics. 4. Display usage summary in conversation sidebar (e.g. '2.5K tokens, $0.15'). 5. Add quota warning when approaching org/user limits.",
+        "lens": "enterprise-parity",
+        "verified": "unverified"
+      },
+      {
+        "title": "Conversation search overlay input missing focus-visible indicator",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/components/chat/conversation-search.tsx"
+        ],
+        "rootCause": "The search input on line 90 has only a focus:outline-none class with no replacement focus indicator (no focus-visible ring or border). Keyboard users cannot see the input when focused, violating WCAG 2.1 Level AA (2.4.7 Focus Visible). Note: this is the in-conversation search overlay, a different component from the already-accepted sidebar search input finding (chat-sidebar.tsx).",
+        "severity": "major",
+        "evidence": "Line 90: className='w-48 bg-transparent text-sg-ink placeholder:text-sg-ink-5 focus:outline-none' — no focus-visible styling added. Verified against live file; the input is auto-focused on open (line 34) but has no visible focus ring.",
+        "fixSketch": "Add 'focus-visible:ring-2 focus-visible:ring-sg-accent/40' to the input className.",
+        "lens": "frontend-state",
+        "verified": "unverified"
+      },
+      {
+        "title": "Untranslated image lightbox close button aria-label",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/components/chat/markdown-message.tsx"
+        ],
+        "rootCause": "The ImageLightbox close button (line 171) has a hardcoded aria-label='close' instead of a translated label. This breaks i18n for screen reader users in non-English locales and is inconsistent with the rest of the component, which uses t() for accessibility labels (e.g., chat.mdCodeBlockCopyAriaLabel). ImageLightbox does not currently receive the translation function.",
+        "severity": "minor",
+        "evidence": "Line 171: aria-label='close' is a hardcoded English string (verified in live file). Parent MarkdownMessage imports useTranslation and uses t() for other aria-labels (lines 221, 232); ImageLightbox has no access to translations.",
+        "fixSketch": "Add a translation key and pass the translated label into ImageLightbox as a prop (e.g., closeLabelText), then use it for aria-label.",
+        "lens": "rendering",
+        "verified": "unverified"
+      },
+      {
+        "title": "Image lightbox missing focus trap and initial focus despite role='dialog' aria-modal='true'",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/components/chat/markdown-message.tsx"
+        ],
+        "rootCause": "The ImageLightbox dialog (lines 151-179) sets role='dialog' and aria-modal='true' but never moves focus into the dialog when it opens and does not trap focus within it. The only effect is an Escape keydown listener. WCAG 2.4.3 (Focus Order) requires focus to move to the dialog on open; without a trap, keyboard focus can escape to the background page behind the modal.",
+        "severity": "major",
+        "evidence": "Verified in live file: the component's only useEffect (lines 152-158) adds a window keydown listener for Escape; there is no autoFocus on the close button (line 168-175), no focus() call on mount, and no focus trap. aria-modal='true' is set at line 163.",
+        "fixSketch": "Add autoFocus to the close button (or a useEffect to focus the dialog/close button on mount) and implement focus trapping (e.g., react-focus-lock or a small trap hook); restore focus to the triggering image on close.",
+        "lens": "rendering",
+        "verified": "unverified"
+      },
+      {
+        "title": "SSE stream buffer incomplete after final chunk — lost data if frame doesn't end with \\n\\n",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/lib/api/chat.ts"
+        ],
+        "rootCause": "streamChatCompletions reads chunks and accumulates them in buffer (line 143), splits on `\\n\\n` and processes complete frames (lines 145-158). When the stream ends (done: true), any remaining data in `buffer` is never processed. If the final chunk contains a partial SSE frame or data that doesn't end with `\\n\\n`, it is silently discarded. The TextDecoder's final flush call (to handle incomplete UTF-8 sequences) is also never executed.",
+        "severity": "major",
+        "evidence": "Verified in live file: the while loop breaks on `done` before processing remaining buffer content; `buffer = frames.pop() ?? \"\"` retains the trailing partial frame which is then dropped on exit; decoder.decode is always called with {stream: true} and a final flush `decoder.decode()` never occurs; the finally block only releases the reader lock.",
+        "fixSketch": "After the read loop breaks, append decoder.decode() (final flush) to the buffer and process any remaining complete data lines before returning.",
+        "lens": "sse-protocol",
+        "verified": "unverified"
+      },
+      {
+        "title": "Unhandled UTF-8 decode error in tool args_json kills SSE stream (and non-streaming envelope)",
+        "files": [
+          "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/routes/chat.py"
+        ],
+        "rootCause": "In `_tool_call_delta_chunk()` (line ~420), the code calls `event.args_json.decode('utf-8')` without try-except. If the bytes payload is invalid UTF-8, a UnicodeDecodeError propagates up and kills the async generator without sending any SSE error chunk to the client; the client's stream reader then hangs or errors silently. The same unguarded decode exists in `_tool_call_envelope()` (line ~406) for the non-streaming path.",
+        "severity": "major",
+        "evidence": "Verified in live file: both helpers contain `args = event.args_json.decode(\"utf-8\") if event.args_json else \"{}\"` with no exception handling; `_tool_call_delta_chunk` is invoked from the SSE iterator, so a UnicodeDecodeError terminates the stream mid-flight.",
+        "fixSketch": "Use `event.args_json.decode('utf-8', errors='replace')` or wrap in try-except defaulting to '{}' with a warning log; optionally emit a proper error event through the stream instead of letting the generator die.",
+        "lens": "backend-chat-route",
+        "verified": "unverified"
+      },
+      {
+        "title": "Image lightbox closes on image click due to missing event.stopPropagation()",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/components/chat/markdown-message.tsx"
+        ],
+        "rootCause": "The ImageLightbox overlay div has onClick={onClose} (line 166). The <img> element (line 177) has no onClick={(e) => e.stopPropagation()}. When the user clicks on the image to examine it, the click bubbles to the parent and closes the lightbox unexpectedly — contrary to the common lightbox convention of backdrop-only close.",
+        "severity": "major",
+        "evidence": "Verified in live file: overlay div onClick={onClose} at line 166; the img at line 177 is a direct child with no click handler. Caveat for triage: the component's doc comment ('Fullscreen image zoom — closes on click, Esc, or the corner button') suggests close-on-any-click may be intentional, so this may be a deliberate design choice rather than a regression.",
+        "fixSketch": "Add onClick={(e) => e.stopPropagation()} to the <img> element so only backdrop clicks (and the close button/Escape) dismiss the lightbox.",
+        "lens": "rendering",
+        "verified": "unverified"
+      },
+      {
+        "title": "Clipboard write failures silently ignored — no user feedback on copy failure",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/components/chat/markdown-message.tsx",
+          "/Users/cornna/project/corlinman/ui/components/chat/message-bubble.tsx"
+        ],
+        "rootCause": "navigator.clipboard.writeText() is invoked with .then() but no .catch() handler in both the CodeBlock copy button (markdown-message.tsx ~line 196) and the message copy action (message-bubble.tsx line 131). In restricted contexts (non-HTTPS origins, denied permissions, unavailable clipboard), writeText rejects; the rejection is unhandled, the 'copied' indicator never appears, and the user gets no feedback that copy failed.",
+        "severity": "minor",
+        "evidence": "Verified in markdown-message.tsx: `void navigator.clipboard?.writeText(children).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), 1500); });` — no .catch(). message-bubble.tsx line 131 uses the identical pattern.",
+        "fixSketch": "Add .catch(() => { /* show toast error or fallback to execCommand copy */ }) after .then() in both locations, or convert to async/await with try-catch and surface a failure toast.",
+        "lens": "rendering",
+        "verified": "unverified"
+      },
+      {
+        "title": "Premature Exit from Edit Mode Before API Completion (message edit, not rename)",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/components/chat/message-bubble.tsx",
+          "/Users/cornna/project/corlinman/ui/app/(admin)/chat/page.tsx"
+        ],
+        "rootCause": "In message-bubble.tsx's handleSaveEdit() (lines 143-151), edit mode is closed immediately via setEditing(false) right after firing onEdit?.(message.id, next), before the async editAndRerun completes. The parent (chat-area.tsx line 98) calls void chat.editAndRerun() without awaiting, so if the API fails the user sees edit mode closed with content unchanged and the edited draft lost. Distinct from the already-accepted sidebar rename finding — this is the message-bubble edit-and-rerun flow.",
+        "severity": "major",
+        "evidence": "Verified in live file message-bubble.tsx lines 143-151: `onEdit?.(message.id, next); setEditing(false);` — fire-and-forget then immediate state reset. The void prefix in chat-area.tsx discards the returned promise, so failures are never surfaced to the editor UI.",
+        "fixSketch": "Make handleSaveEdit await the onEdit promise (show a saving state) and only setEditing(false) on success; on failure keep edit mode open with the draft intact and show an error.",
+        "lens": "reliability-errors",
+        "verified": "unverified"
+      },
+      {
+        "title": "Sidebar and chat area are not responsive for small mobile screens — no collapse/drawer below 640px",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/components/chat/chat-sidebar.tsx",
+          "/Users/cornna/project/corlinman/ui/app/(admin)/chat/layout.tsx"
+        ],
+        "rootCause": "The chat layout (layout.tsx line 19) uses flex with no responsive breakpoints to hide or collapse the sidebar on small screens. The sidebar always renders at w-64 (256px) or w-12 (48px when manually collapsed). On a 375px phone in portrait, the sidebar alone consumes ~17-68% of the viewport, leaving under 200px for the chat. No md:hidden, responsive drawer, or off-canvas pattern exists.",
+        "severity": "major",
+        "evidence": "Verified: chat-sidebar.tsx lines 137 and 165 hardcode 'w-12 shrink-0' and 'w-64 shrink-0' with zero responsive variants in the file; layout.tsx line 19's only responsive classes are sm:gap-4 sm:p-4 (spacing only). No drawer/overlay pattern anywhere in the chat layout.",
+        "fixSketch": "On <md viewports, render the sidebar as an off-canvas drawer toggled by a hamburger button (overlay with backdrop), defaulting to hidden; keep the fixed-width column only at md+ breakpoints.",
+        "lens": "mobile-a11y",
+        "verified": "confirmed"
+      },
+      {
+        "title": "Emoji picker grid cells are tab-trapped with tabIndex=-1 preventing keyboard escape",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/components/chat/emoji-picker.tsx"
+        ],
+        "rootCause": "The emoji picker grid container at line 245 sets tabIndex={-1} and each emoji button at line 223 also sets tabIndex={-1}. While the picker implements arrow-key navigation (lines 171-198), it removes the grid entirely from the tab order, so the roving-tabindex pattern is broken: there is no tabIndex={0} active cell, the grid is unreachable/leavable via Tab, and keyboard users must rely solely on Escape and arrow keys.",
+        "severity": "major",
+        "evidence": "Verified in live file: tabIndex={-1} present at lines 223 (emoji buttons) and 245 (dialog container). No element in the grid carries tabIndex={0}.",
+        "fixSketch": "Implement a proper roving tabindex: tabIndex={0} on the currently active emoji cell (or the grid container) and tabIndex={-1} on inactive cells, so Tab enters/exits the widget normally while arrow keys move within it.",
+        "lens": "mobile-a11y",
+        "verified": "unverified"
+      },
+      {
+        "title": "Conversation search overlay lacks focus restoration when closed",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/components/chat/conversation-search.tsx"
+        ],
+        "rootCause": "The conversation search overlay (lines 59-139) has no mechanism to restore focus to the previously active element or the message list when closed. On Escape (line 77-78) or close-button click (line 131) it just calls setOpen(false), leaving focus undefined (likely body/document). Screen reader and keyboard users lose their place after closing search.",
+        "severity": "major",
+        "evidence": "Lines 59-139: closes via setOpen(false) on Escape and close-button click with no focus()/ref mechanism to return focus to the trigger element. The component does auto-focus its input on open (line 34) but never restores focus on close.",
+        "fixSketch": "Capture document.activeElement (or a trigger ref) when the overlay opens and call .focus() on it when the overlay closes.",
+        "lens": "mobile-a11y",
+        "verified": "unverified"
+      },
+      {
+        "title": "Model picker dialog lacks focus trap, background inert, and initial focus on search input",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/components/chat/chat-model-picker.tsx"
+        ],
+        "rootCause": "The model picker dialog (lines 197-240) has role='dialog' aria-modal='true' but implements no focus management: no focus trap, no inert/aria-hidden on background content, and no initial focus moved to the search input when the dialog opens. Keyboard users can Tab out of the modal into hidden page content, and must manually Tab to reach the search field, violating WCAG 2.1 dialog focus requirements.",
+        "severity": "major",
+        "evidence": "Verified in live file: useEffects exist at lines 67 and 124 but neither (nor any other code in the component) calls .focus(); grep for focus shows only focus:outline-none styling on the inputs (lines 255, 277). No focus-guard library, no inert attribute, no autoFocus prop anywhere in the component.",
+        "fixSketch": "Add a useEffect that focuses the search input when open transitions to true, implement a focus trap (e.g., @radix-ui Dialog or react-focus-lock), and restore focus to the trigger on close.",
+        "lens": "mobile-a11y",
+        "verified": "unverified"
+      },
+      {
+        "title": "Attachment remove button has insufficient touch target size (20x20px)",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/components/chat/composer-attachments.tsx"
+        ],
+        "rootCause": "The remove button for each composer attachment uses h-5 w-5 (20x20px), positioned absolutely at -right-1.5 -top-1.5 as a small corner pill. This falls below the 24x24px WCAG 2.2 AA minimum and far below the 44x44px AAA/mobile guideline, making it hard to hit on touch devices. Distinct element from the already-accepted message action-bar touch-target finding.",
+        "severity": "major",
+        "evidence": "Verified in live file line 118: className includes 'absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full' — a 20x20px clickable area.",
+        "fixSketch": "Increase the button to at least h-7 w-7 with a larger hit area (or add an invisible padding/::before hit extension), and verify it does not overlap adjacent attachments' targets.",
+        "lens": "mobile-a11y",
+        "verified": "unverified"
+      },
+      {
+        "title": "Missing Null/Undefined Guard for choice.delta Before Property Access",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/lib/chat/event-merger.ts"
+        ],
+        "rootCause": "At line 34, `const delta = choice.delta` is assigned without checking if `delta` exists. Then at lines 35, 43, 51 the code accesses `delta.content`, `delta.reasoning_content`, `delta.tool_calls` without guarding for the case where `delta` is undefined. Although the TypeScript interface marks `delta:` as required, the interface is not a runtime constraint — if the backend sends a malformed chunk without a delta field, this code will throw a runtime error when trying to access properties of undefined.",
+        "evidence": "Lines 34-79 in event-merger.ts: After `const delta = choice.delta`, multiple unguarded accesses follow (`delta.content`, `delta.reasoning_content`, `delta.tool_calls`). If a malformed chunk arrives (e.g., from a third-party server or internal bug), the code throws before reaching the try/catch in chat.ts line 153. Verified in source: line 34 `const delta = choice.delta;` followed by `if (delta.content)` at line 35 with no null guard.",
+        "severity": "minor",
+        "fixSketch": "Add a guard: `if (!delta) continue;` after line 34, or use optional chaining throughout (e.g., `delta?.content`), or validate at the TypeScript level by allowing `delta` to be optional and handling both cases explicitly.",
+        "lens": "sse-protocol",
+        "verified": "unverified"
+      },
+      {
+        "title": "Empty String finish_reason Silently Ignored, Stream Never Completes",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/lib/chat/event-merger.ts"
+        ],
+        "rootCause": "At line 81, the condition `if (choice.finish_reason)` uses JavaScript truthiness, which treats empty strings as falsy. If the backend emits `finish_reason: \"\"` (an empty string, which is technically valid data), the condition fails and no `turn-complete` event is emitted. The frontend's `finishReceived` flag stays false, and if the stream ends normally, the handler treats it as an error and surfaces \"stream failed\" to the user.",
+        "evidence": "Line 81 in event-merger.ts: `if (choice.finish_reason) { ... }`. In JavaScript, `if (\"\")` is false. If the backend ever sends a chunk with `finish_reason: \"\"` instead of `finish_reason: \"stop\"` or `finish_reason: null`, the tools-settle and turn-complete events (lines 87-98) are not emitted. Verified in source.",
+        "severity": "minor",
+        "fixSketch": "Change the condition to `if (choice.finish_reason !== null && choice.finish_reason !== undefined)` or explicitly check `typeof choice.finish_reason === 'string'` to distinguish between empty strings and null/undefined.",
+        "lens": "sse-protocol",
+        "verified": "unverified"
+      },
+      {
+        "title": "Rename Input Calls onConfirmRename on Both Blur and Enter Without Debounce",
+        "files": [
+          "/Users/cornna/project/corlinman/ui/components/chat/chat-sidebar.tsx"
+        ],
+        "rootCause": "The rename input (lines 318-321) calls `onConfirmRename` on both `onBlur` and when Enter is pressed, with no guards against double submission. If a user presses Enter and then the input immediately loses focus due to event propagation or state updates, the callback could be invoked twice with identical parameters, potentially causing duplicate API calls or race conditions.",
+        "evidence": "Lines 318-321 (verified in source): Both `onBlur={() => onConfirmRename(renameValue)}` and the Enter key handler `if (e.key === \"Enter\") onConfirmRename(renameValue)` call the same callback. Pressing Enter causes the parent to exit rename mode, unmounting the input and firing blur, which invokes onConfirmRename a second time. No deduplication or submission flag prevents double invocation within the same frame.",
+        "severity": "minor",
+        "fixSketch": "Introduce a `submitting` state flag inside the SidebarRow component to prevent re-submission, or convert onBlur to only confirm if the value has actually changed since focus.",
+        "lens": "session-mgmt",
+        "verified": "unverified"
+      }
+    ]
+  }
+}

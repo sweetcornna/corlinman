@@ -1,0 +1,31 @@
+skip bird (exists)
+OK   dog  1545KB  162.1s
+OK   butterfly  1965KB  60.8s
+OK   deer  1615KB  157.6s
+OK   cat  1654KB  142.6s
+OK   rabbit  1750KB  53.4s
+OK   fish  1649KB  61.8s
+ERR  flower attempt 1: The read operation timed out
+ERR  flower attempt 2: <urlopen error EOF occurred in violation of protocol (_ssl.c:1129)>
+ERR  flower attempt 3: <urlopen error EOF occurred in violation of protocol (_ssl.c:1129)>
+FAIL flower
+ERR  fern attempt 1: <urlopen error EOF occurred in violation of protocol (_ssl.c:1129)>
+ERR  fern attempt 2: <urlopen error EOF occurred in violation of protocol (_ssl.c:1129)>
+ERR  fern attempt 3: <urlopen error EOF occurred in violation of protocol (_ssl.c:1129)>
+FAIL fern
+ERR  vine attempt 1: <urlopen error EOF occurred in violation of protocol (_ssl.c:1129)>
+ERR  vine attempt 2: <urlopen error EOF occurred in violation of protocol (_ssl.c:1129)>
+ERR  vine attempt 3: <urlopen error EOF occurred in violation of protocol (_ssl.c:1129)>
+FAIL vine
+ERR  grass attempt 1: <urlopen error EOF occurred in violation of protocol (_ssl.c:1129)>
+ERR  grass attempt 2: <urlopen error EOF occurred in violation of protocol (_ssl.c:1129)>
+ERR  grass attempt 3: <urlopen error EOF occurred in violation of protocol (_ssl.c:1129)>
+FAIL grass
+ERR  gear attempt 1: <urlopen error EOF occurred in violation of protocol (_ssl.c:1129)>
+ERR  gear attempt 2: <urlopen error EOF occurred in violation of protocol (_ssl.c:1129)>
+ERR  gear attempt 3: <urlopen error EOF occurred in violation of protocol (_ssl.c:1129)>
+FAIL gear
+ERR  brain attempt 1: <urlopen error EOF occurred in violation of protocol (_ssl.c:1129)>
+ERR  brain attempt 2: <urlopen error EOF occurred in violation of protocol (_ssl.c:1129)>
+ERR  brain attempt 3: <urlopen error EOF occurred in violation of protocol (_ssl.c:1129)>
+FAIL brain

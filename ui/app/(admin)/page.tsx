@@ -216,7 +216,7 @@ export default function DashboardPage() {
               <button
                 type="button"
                 onClick={onRunPalette}
-                className=" inline-flex items-center gap-2 rounded-full border border-sg-border bg-sg-inset px-3.5 py-2 text-[13px] font-medium text-sg-ink-2 shadow-sg-1 transition-all duration-200 hover:-translate-y-px hover:border-sg-accent/30 hover:bg-sg-accent-soft hover:text-sg-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40"
+                className="inline-flex items-center gap-2 rounded-full border border-sg-border bg-sg-inset px-3.5 py-2 text-[13px] font-medium text-sg-ink-2 shadow-sg-1 transition-all duration-200 hover:-translate-y-px hover:border-sg-accent/30 hover:bg-sg-accent-soft hover:text-sg-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40"
               >
                 <Search className="h-3.5 w-3.5" />
                 {t("dashboard.tp.ctaPalette")}
@@ -227,7 +227,7 @@ export default function DashboardPage() {
               {pendingApprovals > 0 ? (
                 <Link
                   href="/approvals"
-                  className=" inline-flex items-center gap-2 rounded-full border border-sg-accent/30 bg-sg-accent-soft px-3.5 py-2 text-[13px] font-medium text-sg-accent transition-all duration-200 hover:-translate-y-px hover:border-sg-border-strong"
+                  className="inline-flex items-center gap-2 rounded-full border border-sg-accent/30 bg-sg-accent-soft px-3.5 py-2 text-[13px] font-medium text-sg-accent transition-all duration-200 hover:-translate-y-px hover:border-sg-border-strong"
                 >
                   {t("dashboard.tp.ctaReview", { n: pendingApprovals })}
                   <ArrowUpRight className="h-3.5 w-3.5 opacity-70" />
@@ -235,7 +235,7 @@ export default function DashboardPage() {
               ) : (
                 <Link
                   href="/logs"
-                  className=" inline-flex items-center gap-2 rounded-full border border-sg-border bg-sg-inset px-3.5 py-2 text-[13px] font-medium text-sg-ink-2 transition-all duration-200 hover:-translate-y-px hover:border-sg-accent/30 hover:bg-sg-accent-soft hover:text-sg-ink"
+                  className="inline-flex items-center gap-2 rounded-full border border-sg-border bg-sg-inset px-3.5 py-2 text-[13px] font-medium text-sg-ink-2 transition-all duration-200 hover:-translate-y-px hover:border-sg-accent/30 hover:bg-sg-accent-soft hover:text-sg-ink"
                 >
                   {t("dashboard.tp.ctaLogs")}
                   <ArrowUpRight className="h-3.5 w-3.5 opacity-70" />

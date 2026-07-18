@@ -28,7 +28,6 @@ export function PresenceOrb({
   return (
     <span
       aria-hidden
-      data-active={active || undefined}
       className={cn(
         "presence-orb",
         !active && "idle",

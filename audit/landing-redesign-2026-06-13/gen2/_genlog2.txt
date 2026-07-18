@@ -1,0 +1,6 @@
+OK   flower  1461KB  59.7s
+OK   fern  1957KB  65.4s
+OK   vine  1502KB  49.5s
+OK   grass  2349KB  25.3s
+OK   gear  2906KB  61.2s
+OK   brain  2402KB  70.2s

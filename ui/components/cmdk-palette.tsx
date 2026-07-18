@@ -470,7 +470,7 @@ function TestChatDrawer({ onClose }: { onClose: () => void }) {
             <button
               type="submit"
               disabled={submitting || !prompt.trim()}
-              className=" inline-flex h-8 items-center rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+              className="inline-flex h-8 items-center rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
             >
               {submitting ? t("cmdk.sending") : t("cmdk.send")}
             </button>

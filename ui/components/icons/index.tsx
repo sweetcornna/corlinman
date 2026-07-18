@@ -1,9 +1,19 @@
-// GENERATED barrel — Eclipse icon components over the inline sprite.
+// GENERATED barrel — Eclipse icon components over the external sprite
+// (public/icons-sprite.svg, fetched once and cached across all routes).
 // Drop-in replacement for the former lucide-react imports: same PascalCase
-// names, same className/size ergonomics; stroke geometry lives in the
-// sprite symbols (uniform 1.8 per the design language), so per-call-site
-// strokeWidth props are intentionally ignored.
+// names, same className/size ergonomics. Two deliberate contract
+// differences from lucide, both enforced by the sprite's symbol markup:
+//  - stroke geometry is baked in (uniform 1.8 per the design language) —
+//    per-call-site strokeWidth props are ignored;
+//  - fill/stroke presentation attrs live INSIDE the <symbol>, so class
+//    overrides like `fill-current` cannot penetrate the <use> shadow tree.
+//    Need a filled glyph? Add a filled symbol to the sprite instead.
 import * as React from "react";
+
+/** Where the sprite ships. Same-origin absolute path — public/ assets are
+ * served at the origin root in every deploy mode (assetPrefix only
+ * rewrites /_next). */
+const SPRITE_URL = "/icons-sprite.svg";
 
 export type IconName =
   | "activity"
@@ -176,7 +186,7 @@ export function Icon({
       aria-hidden={rest["aria-label"] ? undefined : true}
       {...rest}
     >
-      <use href={`#i-${name}`} />
+      <use href={`${SPRITE_URL}#i-${name}`} />
     </svg>
   );
 }

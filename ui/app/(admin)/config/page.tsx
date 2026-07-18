@@ -520,7 +520,7 @@ export default function ConfigPage() {
                   minimap: { enabled: false },
                   wordWrap: "on",
                   scrollBeyondLastLine: false,
-                  fontFamily: "var(--font-geist-mono), ui-monospace, monospace",
+                  fontFamily: "var(--font-jetbrains-mono), ui-monospace, monospace",
                 }}
               />
             )}

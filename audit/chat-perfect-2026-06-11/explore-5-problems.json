@@ -1,0 +1,471 @@
+{
+  "summary": "Parallel read-only exploration of 5 reported chat UI problems + ChatGPT/Claude feature-gap benchmark",
+  "agentCount": 6,
+  "logs": [
+    "6 个只读 Explore agents 并行探索 5 个问题 + 功能差距盘点",
+    "完成 6/6 个维度"
+  ],
+  "result": {
+    "dimensions": [
+      {
+        "key": "file-display",
+        "summary": "The web chat UI has complete file attachment UI (composer with file picker, drag-drop, pending attachment cards in ComposerAttachments, and AttachmentGallery for displaying messages with images). The backend infrastructure to handle attachments exists (InternalChatRequest.attachments field, proto converters in chat_service.py). However, the end-to-end flow is broken at five critical points: (1) frontend collects attachments but never converts them to OpenAI content-parts when building requests, (2) backend ChatMessage model only accepts string content and cannot deserialize content-parts arrays, (3) no HTTP storage/retrieval endpoint exists for files, (4) attachment metadata is not persisted in message history, and (5) attachment types don't map cleanly to OpenAI formats without additional conversion infrastructure.",
+        "findings": [
+          {
+            "title": "Frontend: Attachments collected in Composer but never converted to request format",
+            "files": [
+              "ui/lib/chat/use-chat-stream.ts:353-358",
+              "ui/components/chat/composer.tsx:151-198",
+              "ui/lib/api/chat.ts:27-45"
+            ],
+            "rootCause": "The Composer collects files via addFiles (composer.tsx:151-198), stores them in ChatAttachment[] state, and passes them to sendMessage (use-chat-stream.ts:443). However, in runTurn (lines 347-375), when building the OpenAI request body, the code only includes message.content as a string (lines 355, 358), completely ignoring the attachments array. The ChatCompletionMessage type definition supports content as string | ChatCompletionContentPart[] (chat.ts line 29), but no code ever constructs the parts array from ChatMessage.attachments.",
+            "evidence": "use-chat-stream.ts lines 353-358 iterate messages and set { role: m.role, content: m.content } without checking for m.attachments. The sendMessage callback at line 443 accepts attachments parameter and stores it on userMsg, but runTurn never reads it. Composer.tsx successfully collects files and stores remoteUrl for images <1MB (line 175-177) but this remoteUrl never leaves the composer—it's not in the request payload.",
+            "fixSketch": "In use-chat-stream.ts around line 353-358, after collecting each message, check if it has attachments. If so, build a ChatCompletionContentPart[] array with a text part (if content is non-empty) followed by image_url/file/input_audio parts (one per attachment), and set message.content to that array instead of just the string.",
+            "severity": "critical"
+          },
+          {
+            "title": "Backend: ChatMessage.content only accepts strings, cannot deserialize parts arrays",
+            "files": [
+              "python/packages/corlinman-server/src/corlinman_server/gateway/routes/chat.py:82-90",
+              "python/packages/corlinman-server/src/corlinman_server/gateway_api/types.py:162-172"
+            ],
+            "rootCause": "The backend ChatMessage model (chat.py:82-90) defines content: str = \"\", and the gateway_api Message model (types.py:162-172) also defines content: str = \"\". Neither accepts the OpenAI-compatible Union[str, List[ContentPart]] format. When the fixed frontend sends a request with content as a list of parts, pydantic validation will coerce it to a string or reject it entirely, preventing attachments from reaching the ChatService.",
+            "evidence": "chat.py lines 82-90 show ChatMessage with role, content (string), name, tool_call_id fields only. types.py lines 162-172 show Message with role, content (string) only. The _build_internal_request function (chat.py:203-226) constructs Message(role=m.role, content=m.content) from ChatMessage, with no logic to detect or extract parts from content.",
+            "fixSketch": "Redefine ChatMessage.content as Union[str, List[dict]] or Any to accept array payloads. Add a validator/converter in _build_internal_request (chat.py:203) that detects when content is an array, extracts the ChatCompletionContentPart objects into req.attachments (which InternalChatRequest already has at types.py:223), and normalizes content back to a concatenated string before passing to ChatService.",
+            "severity": "critical"
+          },
+          {
+            "title": "Backend: Attachments accepted by ChatService but not persisted or returned in history",
+            "files": [
+              "python/packages/corlinman-server/src/corlinman_server/gateway/services/chat_service.py:414",
+              "ui/lib/chat/types.ts:47-49",
+              "ui/lib/chat/use-chat-stream.ts:85-86"
+            ],
+            "rootCause": "The ChatService._build_chat_start (chat_service.py:414) converts req.attachments to protobuf (line 414: attachments = [_attachment_to_proto(a) for a in req.attachments]) and passes them to the agent via gRPC. However, the persisted message history in the session store contains only the text content. When the frontend hydrates with chat history (use-chat-stream.ts:85-86) or calls /admin/sessions/{key} to get conversation metadata, there is no mechanism to serialize attachment info back, so ChatMessage.attachments is always empty for historical messages.",
+            "evidence": "chat_service.py line 414 creates attachments list for ChatStart proto but no corresponding serialization code exists in the session history model. The frontend ChatMessage interface (types.ts line 49) includes attachments?: ChatAttachment[] but it's only populated during the current turn from the Composer, never from history. When hydrating (use-chat-stream.ts:85), the frontend calls chat.hydrate with initialHistory which has no attachment info.",
+            "fixSketch": "Extend the session message persistence schema to include attachment metadata (kind, name, mime, url/file_id). Update the /admin/sessions/{key} API response to serialize attachment records alongside message content. Ensure attachment URLs are available (via finding #4 infrastructure) so the frontend can render historical attachments in message bubbles.",
+            "severity": "major"
+          },
+          {
+            "title": "No HTTP storage or retrieval endpoint for file attachments",
+            "files": [
+              "python/packages/corlinman-server/src/corlinman_server/gateway/routes/",
+              "ui/lib/api/chat.ts:285-292",
+              "ui/components/chat/composer.tsx:175-186",
+              "ui/components/chat/attachment-gallery.tsx:15-16"
+            ],
+            "rootCause": "File attachments can only be handled inline as data URLs for images <1MB (composer.tsx:175: att.remoteUrl = await fileToDataUrl(file)). For larger files and all non-image types (audio, video, documents), there is no server endpoint to store them or retrieve them. The composer and attachment-gallery components expect a remoteUrl (attachment-gallery.tsx:15 attachmentSrc checks att.remoteUrl ?? att.previewUrl) but no API provides it. Data URLs embedded in message history are impractical and unsafe.",
+            "evidence": "composer.tsx lines 175-186 only call fileToDataUrl for kind==='image' with size <1MB; all other files set uploading=false without remoteUrl. chat.ts line 285-292 has fileToDataUrl helper but no upload endpoint. The gateway/routes/ directory has no media, files, or upload routes. attachment-gallery.tsx line 15 reads from remoteUrl but it will always be undefined for non-inlined files.",
+            "fixSketch": "Implement a file storage layer (local filesystem, S3, etc.), add an HTTP route like POST /v1/files/upload (auth-gated, multipart/form-data) and GET /v1/files/{file_id} for retrieval. Modify composer to upload files on attachment and populate ChatAttachment.remoteUrl with the returned file URL. Update the session history API to include file_id or URL for each persisted attachment.",
+            "severity": "major"
+          },
+          {
+            "title": "Attachment type system doesn't map cleanly to OpenAI content-part types",
+            "files": [
+              "ui/lib/chat/types.ts:115",
+              "ui/lib/api/chat.ts:39-45",
+              "ui/components/chat/composer.tsx:157"
+            ],
+            "rootCause": "The frontend ChatAttachment.kind enum is 'image'|'audio'|'video'|'document' (types.ts:115), but OpenAI ChatCompletionContentPart.type is 'text'|'image_url'|'input_audio'|'file' (chat.ts:40). The mapping is incomplete and lacks implementation: (1) 'image' should map to image_url with data URL or remoteUrl, (2) 'audio' should map to input_audio with base64-encoded data, but composer.tsx:157 only creates data URLs for images, (3) 'video' has no standard OpenAI equivalent, (4) 'document' maps to 'file' but needs file_id/file_data/filename which aren't populated. There's no conversion function.",
+            "evidence": "composer.tsx line 157 calls attachmentKindFromMime which returns 'audio', 'video', 'document', or 'image' based on MIME type. No function converts these to OpenAI types. chat.ts lines 39-45 define ChatCompletionContentPart but file, input_audio fields are never populated by frontend code. The frontend never base64-encodes audio (required for input_audio).",
+            "fixSketch": "Define a conversion function (e.g., attachmentToContentPart) that maps: image→{type:'image_url', image_url:{url: dataUrl or remoteUrl}}, audio→{type:'input_audio', input_audio:{data: base64, format: mime}} (requires encoding step after file storage ready), document→{type:'file', file:{file_id or file_data, filename}}, video→{type:'file'} or omit unsupported. Use this when building request message.content in use-chat-stream.ts.",
+            "severity": "major"
+          }
+        ]
+      },
+      {
+        "key": "assistant-images",
+        "summary": "The platform uses a message-driven architecture where agents produce outbound content through three layers: (1) **Internal Chat Events** — the Python gateway translates gRPC ServerFrames into InternalChatEvent variants (TokenDelta, ToolCall, Done, Error) and streams them as OpenAI-compatible SSE; (2) **Channel Dispatch** — other channels (Telegram, Discord, QQ, Slack, Feishu, WeChat) subscribe to tool events and call their transport-specific send methods (send_photo, send_image, etc.); (3) **Frontend Merging** — the Next.js UI merges `/v1/chat/completions` SSE token chunks with `/admin/sessions/*/events/live` journal events into a unified ChatEvent stream for rendering. The web chat is broken at four critical junctures: (A) **No image event types** exist in the InternalChatEvent union or SSE response format, so images cannot flow from agent to UI; (B) **CorlinmanChannel has no send_attachment dispatch**, meaning the web channel never receives tool completion callbacks that other channels use to post media; (C) **Frontend has no image event handling** — no ChatEvent variant, no rendering logic, no attachment deserialization from SSE; (D) **Images are saved as local filesystem paths** with no HTTP serving mechanism, so even if the URL reached the browser, it could not be fetched.",
+        "findings": [
+          {
+            "title": "Missing image/media outbound event types in InternalChatEvent",
+            "files": [
+              "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway_api/types.py:310-397",
+              "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/routes/chat.py:537-576"
+            ],
+            "rootCause": "The `InternalChatEvent` union (gateway_api/types.py lines 310-397) only defines five event types: TokenDeltaEvent, ToolCallEvent, ToolResultEvent, DoneEvent, and ErrorEvent. There is NO event type for transmitting generated images/media from agent to UI. The `/v1/chat/completions` SSE streaming handler (routes/chat.py lines 537-576) only handles `TokenDeltaEvent`, `ToolCallEvent`, `DoneEvent`, and `ErrorEvent` — there are no cases for image/media events.",
+            "severity": "critical",
+            "evidence": "gateway_api/types.py defines: `InternalChatEvent = TokenDeltaEvent | ToolCallEvent | ToolResultEvent | DoneEvent | ErrorEvent` (lines 391-397). The chat.py `_sse_iter` function (lines 537-576) handles only `TokenDeltaEvent` (line 551-553), `ToolCallEvent` (line 554-559), `DoneEvent` (line 560-564), and `ErrorEvent` (line 565-574). Line 589 comment explicitly: `# ``awaiting`` and ``usage`` are not surfaced — pull next frame.`"
+          },
+          {
+            "title": "Chat service does not emit image/media frame handling",
+            "files": [
+              "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/services/chat_service.py:224-397"
+            ],
+            "rootCause": "The `_run_chat` function in chat_service.py (lines 224-397) switches on `frame.WhichOneof('kind')` with cases for 'token', 'tool_call', 'done', and 'error'. There is no handling path for image/media frames that might be emitted by the agent when image tools complete. The gRPC ServerFrame proto has no corresponding media/image frame variant.",
+            "severity": "critical",
+            "evidence": "chat_service.py lines 288-392 show the switch statement: cases for 'token' (line 289), 'tool_call' (line 296), 'done' (line 367), 'error' (line 379). Lines 389-391 comment: 'awaiting and usage are not surfaced — pull next frame. None (unset oneof) is treated the same way.' No image case exists."
+          },
+          {
+            "title": "No media/attachment event variant in ChatEvent union (frontend)",
+            "files": [
+              "/Users/cornna/project/corlinman/ui/lib/chat/event-merger.ts:27-102",
+              "/Users/cornna/project/corlinman/ui/lib/chat/types.ts:139-237"
+            ],
+            "rootCause": "The frontend `ChatEvent` discriminated union (types.ts lines 139-237) defines variants for text-delta, reasoning-delta, tool-input-delta, tool-running, tool-completed, subagent events, and approvals — but NO variant for image/media deltas or assistant-generated attachments. The event-merger.ts merger functions `chunkToChatEvents` (lines 27-102) and `liveEventToChatEvent` (lines 175-325) have no logic to consume or emit image events.",
+            "severity": "critical",
+            "evidence": "types.ts ChatEvent union (lines 139-237) lists 11 variant types, none for images. event-merger.ts `chunkToChatEvents` handles only `delta.content` and `delta.reasoning_content` and `delta.tool_calls` (lines 35-79). `liveEventToChatEvent` has no case for image events (the switch at line 179 covers 10 event types, no images)."
+          },
+          {
+            "title": "CorlinmanChannel outbound API cannot carry media/attachments",
+            "files": [
+              "/Users/cornna/project/corlinman/python/packages/corlinman-channels/src/corlinman_channels/corlinman.py:388-420"
+            ],
+            "rootCause": "The `CorlinmanChannel.send()` method signature (lines 388-396) is `async def send(session_key, text, *, message_id=None, role='assistant', extra=None)`. It only carries text + optional metadata in `extra` dict. The inbound `ingest()` method (lines 244-321) accepts `attachments: list[Attachment]`, but the outbound `send()` has no path for attaching binary media. Image tool results from agents have nowhere to be posted to the web channel.",
+            "severity": "major",
+            "evidence": "corlinman.py lines 388-396 show send() signature with no attachments parameter. Lines 408-415 show body construction: only text + ts + extra dict. Contrast with ingest() (lines 244-321) which accepts attachments parameter (line 248) and passes them to InboundEvent (line 313)."
+          },
+          {
+            "title": "Web channel not integrated into unified channel dispatch loop",
+            "files": [
+              "/Users/cornna/project/corlinman/python/packages/corlinman-channels/src/corlinman_channels/service.py:1-50",
+              "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_b/corlinman_channel.py:1-200"
+            ],
+            "rootCause": "The service.py module implements run_*_channel orchestrators for all 7 platform channels (QQ, Telegram, Discord, Slack, Feishu, WeChat, QQ Official). Each has a dedicated reply handler that subscribes to ToolCallEvent and dispatches send_attachment/send_photo (e.g., lines 2543-2579 for Telegram). The CorlinmanChannel is instantiated in routes_admin_b/state.py but is NOT wired into the service.py unified event dispatch — it is handled only as an HTTP request/response surface (corlinman_channel.py routes POST /send and GET /events). There is no event listener that calls `channel.send()` with tool results.",
+            "severity": "major",
+            "evidence": "service.py module docstring (lines 1-34) describes per-channel orchestration. Exports defined (implied): run_qq_onebot_channel, run_telegram_channel, run_discord_channel, etc. Each includes ToolCallEvent handling for send_attachment. corlinman_channel.py (lines 1-200) routes only HTTP POST /send and GET /events — no event subscription loop. No integration with the service.py handlers."
+          },
+          {
+            "title": "Image tool outputs reference local filesystem paths; no HTTP serving endpoint",
+            "files": [
+              "/Users/cornna/project/corlinman/python/packages/corlinman-agent/src/corlinman_agent/image/plain.py:196-214"
+            ],
+            "rootCause": "When `image_generate` tool completes (lines 141-214), it saves PNG bytes to local disk (line 197-199: `out_path = out_dir / f'{_ulid_like()}.png'`) and returns the filesystem path string as JSON (line 207: `'path': str(out_path)`). The gateway has no HTTP endpoint to serve files from the workspace directory, and the browser cannot access local filesystem paths directly. Even if the URL reached the frontend, it would fail with a CORS or file:// protocol error.",
+            "severity": "major",
+            "evidence": "plain.py lines 196-214: Image saved to local path, path string returned. No base64 encoding, no data: URL construction. No endpoint in gateway_api or routes to serve `GET /workspace/<path>`. Other channels (Telegram, Discord) use `send_attachment` which uploads to their respective CDNs; web has no upload path."
+          },
+          {
+            "title": "Missing attachment deserialization in ChatMessage frontend type",
+            "files": [
+              "/Users/cornna/project/corlinman/ui/lib/chat/types.ts:22-52"
+            ],
+            "rootCause": "The `ChatMessage` interface (lines 22-52) includes `attachments?: ChatAttachment[]` but this is documented as 'Attachments authored by the user' (line 47) — inbound only. There is no field for assistant-generated attachments/media. Even if the gateway could send images via the SSE stream, the frontend types have no place to store them for rendering.",
+            "severity": "minor",
+            "evidence": "types.ts lines 47-49: 'attachments?: ChatAttachment[];' with docstring 'Attachments authored by the user. Server resolves them to provider inputs before the model sees them.' No assistant-side equivalent. No rendering code in message-bubble.tsx for assistant attachments."
+          }
+        ]
+      },
+      {
+        "key": "imagegen-network-error",
+        "summary": "Image generation in web chat fails with network error because the /v1/chat/completions SSE stream lacks keep-alive heartbeats while image generation tools block for up to 120 seconds. When tools execute, the backend event stream blocks without emitting data, leaving TCP idle. Proxies with 30-60s idle timeouts kill the connection. Frontend receives socket error as network error with no retry logic. The admin sessions event stream sends 10-second heartbeats, but the chat stream does not.",
+        "findings": [
+          {
+            "title": "Missing SSE Heartbeat on Chat Stream During Long Tool Execution",
+            "severity": "critical",
+            "files": [
+              "python/packages/corlinman-server/src/corlinman_server/gateway/routes/chat.py:549-574",
+              "python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_b/infra/sessions_events.py:292-298"
+            ],
+            "rootCause": "The _sse_iter function (chat.py:549-574) is purely event-driven, yielding only on TokenDeltaEvent/ToolCallEvent/DoneEvent. During image_generate (up to 120s), service.run() blocks without emitting, leaving TCP idle. Admin sessions (sessions_events.py:292-298) wraps queue.get() in asyncio.wait_for(..., timeout=10.0) and yields heartbeat comment—the chat stream should follow this proven pattern."
+          },
+          {
+            "title": "Image Generation 120s Timeout Exceeds Proxy Read Timeouts",
+            "severity": "critical",
+            "files": [
+              "python/packages/corlinman-agent/src/corlinman_agent/image/generate.py:79",
+              "python/packages/corlinman-agent/src/corlinman_agent/image/generate.py:267-273"
+            ],
+            "rootCause": "CORLINMAN_IMAGE_TIMEOUT_SECS defaults to 120 seconds. Proxies typically have 30-60s idle timeouts. Without SSE heartbeat, proxies kill connection while backend awaits OpenAI. Tool may complete internally, but SSE breaks before frontend gets result."
+          },
+          {
+            "title": "Frontend Receives Raw Socket Error With No Retry or Timeout Detection",
+            "severity": "major",
+            "files": [
+              "ui/lib/chat/use-chat-stream.ts:410-416",
+              "ui/lib/api/chat.ts:119-125"
+            ],
+            "rootCause": "When SSE breaks (proxy timeout), browser throws TypeError 'network error'. Message passed directly to user. fetch() lacks timeout. Unlike live stream (exponential backoff 3→6→12→30s), chat has no retry logic. User sees cryptic error without context that tool may still be running."
+          }
+        ]
+      },
+      {
+        "key": "stop-interrupt",
+        "summary": "The chat system has a fully functional stop/interrupt mechanism across all layers. The UI exposes a stop button (Square icon) while streaming that swaps with the send button. Clicking it triggers AbortController.abort() on the fetch stream and calls POST /admin/sessions/{sessionKey}/cancel to the backend. The backend has the cancel endpoint wired to a process-level active-loops registry that calls ReasoningLoop.cancel(), which sets a _cancelled event. The loop cooperatively checks this event at safe points (round boundaries, tool-result collection) and terminates cleanly with ErrorEvent reason='cancelled'. Client disconnection is also detected and handled by the gateway checking request.is_disconnected(). \n\nThe one significant gap is that the Cancelling LiveEvent emitted by the backend (for immediate UI feedback that a cancel is in-flight) is silently dropped by the frontend event-merger, so users see no visual progress/spinner after clicking stop—the button just disappears and the message hangs in pending until the final TurnErrored event arrives. Additionally, all errors render identically; there is no user-facing distinction between 'I clicked stop' and 'network error' or 'backend error'.",
+        "findings": [
+          {
+            "title": "Stop/Abort Button Affordance Fully Implemented in UI",
+            "files": [
+              "ui/components/chat/composer.tsx:509-521",
+              "ui/components/chat/chat-area.tsx:252-254"
+            ],
+            "rootCause": "The stop button IS fully implemented. When isStreaming=true, a Square-icon button appears and is wired to onStop callback which calls chat.stop(). The button correctly swaps with the send button (tested in composer.test.tsx).",
+            "severity": "minor"
+          },
+          {
+            "title": "Frontend Client-Side Abort Controller Fully Wired",
+            "files": [
+              "ui/lib/chat/use-chat-stream.ts:220,377,478-485",
+              "ui/lib/api/chat.ts:115-167"
+            ],
+            "rootCause": "WORKING: The stop() function calls abortRef.current?.abort() which terminates the fetch stream immediately. The AbortController signal is passed to streamChatCompletions (line 383). AbortError is caught and converted to turn-errored event with error='cancelled' (line 402-407). Both frontend and backend cancel are called together.",
+            "severity": "minor"
+          },
+          {
+            "title": "Backend Cancel Endpoint Fully Implemented and Wired",
+            "files": [
+              "python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_a/sessions.py:202-261",
+              "ui/lib/api/chat.ts:233-240"
+            ],
+            "rootCause": "WORKING: POST /admin/sessions/{session_key}/cancel endpoint exists and is properly authenticated. It calls agent_servicer.cancel_session() which looks up the active loop from _ACTIVE_LOOPS_BY_SESSION registry and calls loop.cancel(reason='admin_abort'). Returns (status, turn_id) with status='cancelled'/'not_running'/404. Full test coverage in test_sessions_cancel.py.",
+            "severity": "minor"
+          },
+          {
+            "title": "ReasoningLoop Cancel Method Implements Cooperative Cancellation",
+            "files": [
+              "python/packages/corlinman-agent/src/corlinman_agent/reasoning_loop.py (cancel method + _cancelled checks)"
+            ],
+            "rootCause": "WORKING: ReasoningLoop.cancel() sets _cancelled event and _cancel_reason. The loop checks _cancelled.is_set() at safe points: round boundaries (line 1410), during tool-result collection (1691, 1767), and in _collect_results (2158). When set, loop emits ErrorEvent reason='cancelled' and exits cleanly. This is intentional cooperative cancellation, not hard abort.",
+            "severity": "minor"
+          },
+          {
+            "title": "Gateway Detects Client Disconnect and Sets Cancel Event",
+            "files": [
+              "python/packages/corlinman-server/src/corlinman_server/gateway/routes/chat.py:686-696"
+            ],
+            "rootCause": "WORKING: The streaming handler checks await request.is_disconnected() on each iteration. When true, it sets cancel.set() and breaks. The finally block also sets cancel, ensuring cleanup propagates to the loop.",
+            "severity": "minor"
+          },
+          {
+            "title": "Missing: Cancelling Event Rendering and In-Flight Visual Feedback",
+            "files": [
+              "ui/lib/chat/event-merger.ts:158,307",
+              "ui/lib/chat/use-chat-stream.ts (no Cancelling handler)"
+            ],
+            "rootCause": "The backend emits a 'Cancelling' LiveEvent (W3.1 feature per reasoning_loop docstring) to signal cancel in-flight, but the frontend event-merger explicitly drops it at line 307 ('Cancelling — UI doesn't render'). After the user clicks stop, the button disappears but there is NO visual feedback that cancellation is processing. The pending message stays in pending state until TurnErrored lands, leaving a visual gap.",
+            "severity": "major",
+            "fixSketch": "Add case for 'Cancelling' event in liveEventToChatEvent (line 306 area) that returns a cancelling ChatEvent. Add cancelling to ChatMessage.error or a separate cancelling flag. Render a spinner/label in message-bubble when this state is active, then transition to final error state on TurnErrored."
+          },
+          {
+            "title": "Missing: Error Message Differentiation for User-Initiated Cancel",
+            "files": [
+              "ui/components/chat/message-bubble.tsx",
+              "ui/lib/chat/use-chat-stream.ts:402-407"
+            ],
+            "rootCause": "All errors render identically. When error='cancelled' from AbortError, the UI doesn't distinguish 'I clicked stop' from 'network died' or 'backend error'. User sees generic error with no label.",
+            "severity": "minor",
+            "fixSketch": "In message error rendering, check if error='cancelled' and show user-facing label 'Cancelled' or 'Stopped by user' instead of blank error. Wire this to the Cancelling event's visual state."
+          }
+        ]
+      },
+      {
+        "key": "history-loading",
+        "summary": "The message history loading system has multiple critical issues spanning both frontend and backend involving unstable message IDs, premature hydration, hard-coded turn limits, missing pagination, and timestamp collisions. When returning to historical conversations, messages may not load, load incorrectly, or be permanently truncated beyond 500 turns. The key flow involves ChatPage fetching transcripts via replaySession() which calls _replay_from_journal with a 500-turn limit, transcriptToChatMessages generating unstable IDs from array indices, ChatArea hydrating too early when initialHistory is undefined, and MessageList losing scroll position because React keys become unstable.",
+        "findings": [
+          {
+            "title": "Unstable message IDs using array index causes mismatches when switching sessions or filtering",
+            "files": [
+              "/Users/cornna/project/corlinman/ui/app/(admin)/chat/page.tsx:89"
+            ],
+            "rootCause": "The transcriptToChatMessages function generates message IDs as hist_${i}_${created} where i is the array index. When the same session is revisited, the transcript may arrive in a different order, causing the same logical message to get different IDs. Since MessageList uses key={m.id}, React will destroy and recreate the DOM nodes instead of reusing them, losing scroll position and state.",
+            "severity": "major",
+            "fixSketch": "Generate stable message IDs based on immutable properties like turn_id and sequence from the backend instead of array index, since the backend already provides this metadata in turn_rows."
+          },
+          {
+            "title": "Premature hydration with undefined initialHistory causes messages to reset before data arrives",
+            "files": [
+              "/Users/cornna/project/corlinman/ui/components/chat/chat-area.tsx:75-86"
+            ],
+            "rootCause": "The hydration useEffect triggers when sessionKey changes but before initialHistory resolves. When switching sessions, initialHistory is undefined while loading, desiredLen becomes 0, hydrate is called with empty array [], then the full history arrives but the ref tracking prevents re-hydration. User sees blank messages until refresh.",
+            "severity": "major",
+            "fixSketch": "Add a check to return early when initialHistory === undefined, only hydrating when data is actually available (either [] after loading or actual messages)."
+          },
+          {
+            "title": "500-turn hard limit in replay endpoint silently truncates large conversations without indication",
+            "files": [
+              "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_a/_sessions_lib.py:567"
+            ],
+            "rootCause": "The _replay_from_journal function calls journal.list_session_turns(session_key, limit=500) with a hard-coded 500-turn limit. Conversations with over 500 turns only return the most recent 500, with no error or truncation indicator, leaving older messages invisible.",
+            "severity": "major",
+            "fixSketch": "Increase limit to 10000+ or implement pagination support using the before_turn_id cursor that journal.list_session_turns already supports."
+          },
+          {
+            "title": "Message ID collision when timestamps are missing or invalid",
+            "files": [
+              "/Users/cornna/project/corlinman/ui/app/(admin)/chat/page.tsx:77-92"
+            ],
+            "rootCause": "When m.ts is unparseable, createdAt is synthesized as Date.now() - (transcript.length - i) * 1000. Multiple messages with invalid timestamps can get identical synthesized createdAt values, making hist_${i}_${created} non-unique when i is the same.",
+            "severity": "minor",
+            "fixSketch": "Ensure ID uniqueness by including turn_id from the backend or appending role/message index to the ID generation."
+          },
+          {
+            "title": "Missing pagination support makes conversations with >500 turns permanently inaccessible on resume",
+            "files": [
+              "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_a/_sessions_lib.py:567-570"
+            ],
+            "rootCause": "The replay endpoint does not expose the before_turn_id pagination cursor that the underlying journal.list_session_turns supports. No way to fetch older turns beyond the 500 most recent.",
+            "severity": "critical",
+            "fixSketch": "Expose before_turn_id as an optional query parameter on the replay endpoint to support incremental fetching of conversation history."
+          }
+        ]
+      },
+      {
+        "key": "benchmark-gap",
+        "findings": [
+          {
+            "title": "No Continue/Extend Response Feature",
+            "files": [
+              "ui/lib/chat/use-chat-stream.ts:442-486",
+              "ui/components/chat/message-bubble.tsx:236-245"
+            ],
+            "rootCause": "Only regenerate available; no mechanism to extend incomplete assistant response",
+            "severity": "major"
+          },
+          {
+            "title": "No Message Virtualization",
+            "files": [
+              "ui/components/chat/message-list.tsx:51-114"
+            ],
+            "rootCause": "All messages rendered in DOM; performance degrades at 100+ messages",
+            "severity": "major"
+          },
+          {
+            "title": "No Optimistic Send / Failed Message Recovery",
+            "files": [
+              "ui/lib/chat/use-chat-stream.ts:442-454",
+              "ui/components/chat/message-bubble.tsx:362-370"
+            ],
+            "rootCause": "No optimistic draft UI or retry button when stream fails",
+            "severity": "major"
+          },
+          {
+            "title": "No LaTeX / KaTeX Math Notation",
+            "files": [
+              "ui/components/chat/markdown-message.tsx:1-147"
+            ],
+            "rootCause": "Math delimiters not recognized or rendered",
+            "severity": "major"
+          },
+          {
+            "title": "No Voice Input / Audio Transcription",
+            "files": [
+              "ui/components/chat/composer.tsx:1-543"
+            ],
+            "rootCause": "No microphone button or audio transcription support",
+            "severity": "major"
+          },
+          {
+            "title": "No Offline Support / Message Queueing",
+            "files": [
+              "ui/lib/chat/use-chat-stream.ts:380-437"
+            ],
+            "rootCause": "Failed sends not queued; no offline banner or reconnect handling",
+            "severity": "major"
+          },
+          {
+            "title": "No Conversation Sharing",
+            "files": [
+              "ui/components/chat/chat-area.tsx:163-168"
+            ],
+            "rootCause": "No ability to share conversations or generate read-only links",
+            "severity": "major"
+          },
+          {
+            "title": "No Accessibility Keyboard Navigation",
+            "files": [
+              "ui/components/chat/message-bubble.tsx:373-495"
+            ],
+            "rootCause": "Action buttons hidden on hover; no reliable tab order",
+            "severity": "major"
+          },
+          {
+            "title": "No Mobile Keyboard Avoidance",
+            "files": [
+              "ui/components/chat/composer.tsx:300-543"
+            ],
+            "rootCause": "Composer can be covered by mobile keyboard; no sticky drawer",
+            "severity": "major"
+          },
+          {
+            "title": "Markdown Table Styling Missing",
+            "files": [
+              "ui/components/chat/markdown-message.tsx:77-89"
+            ],
+            "rootCause": "Tables lack striping and visual hierarchy",
+            "severity": "minor"
+          },
+          {
+            "title": "No Inline Mermaid Diagrams",
+            "files": [
+              "ui/components/chat/markdown-message.tsx:189-190"
+            ],
+            "rootCause": "Mermaid only shown in artifact panel, not inline",
+            "severity": "minor"
+          },
+          {
+            "title": "No Search Term Highlighting",
+            "files": [
+              "ui/components/chat/conversation-search.tsx:41-45"
+            ],
+            "rootCause": "Search jumps to message but doesn't highlight term",
+            "severity": "minor"
+          },
+          {
+            "title": "No Code Block Linting",
+            "files": [
+              "ui/components/chat/code-highlighter.tsx:68-92"
+            ],
+            "rootCause": "No syntax error detection or linting",
+            "severity": "minor"
+          },
+          {
+            "title": "No Follow-Up Suggestions",
+            "files": [
+              "ui/components/chat/message-bubble.tsx:1-495"
+            ],
+            "rootCause": "No suggestion chips after assistant response",
+            "severity": "minor"
+          },
+          {
+            "title": "No Session Export",
+            "files": [
+              "ui/components/chat/chat-area.tsx:45-271"
+            ],
+            "rootCause": "No download/export as PDF or Markdown",
+            "severity": "minor"
+          },
+          {
+            "title": "No Composer Focus Shortcut",
+            "files": [
+              "ui/components/chat/composer.tsx:1-100"
+            ],
+            "rootCause": "No Cmd+/ shortcut to focus input",
+            "severity": "minor"
+          },
+          {
+            "title": "No Attachment Download",
+            "files": [
+              "ui/components/chat/attachment-gallery.tsx:32-95"
+            ],
+            "rootCause": "Attachments cannot be downloaded or saved",
+            "severity": "minor"
+          },
+          {
+            "title": "No Upload Progress Bar",
+            "files": [
+              "ui/components/chat/composer.tsx:151-188"
+            ],
+            "rootCause": "Large uploads show no progress feedback",
+            "severity": "minor"
+          },
+          {
+            "title": "No Parameter Regenerate Variants",
+            "files": [
+              "ui/components/chat/message-bubble.tsx:236-245"
+            ],
+            "rootCause": "Cannot regenerate with different temperature/top-k",
+            "severity": "minor"
+          },
+          {
+            "title": "No Message Pinning",
+            "files": [
+              "ui/components/chat/message-bubble.tsx:1-495"
+            ],
+            "rootCause": "Cannot pin/bookmark individual messages",
+            "severity": "minor"
+          }
+        ],
+        "summary": "The corlinman chat UI implements core table-stakes features: streaming markdown rendering (GFM tables, code blocks with copy/syntax highlighting, image lightbox), message actions (copy, edit+rerun, regenerate, branch, reply), tool-call display with collapsing, reasoning blocks, attachments, conversation search (Cmd+F), and sidebar management. Auto-scroll and memoization are well-optimized. Major gaps vs. ChatGPT/Claude standard: no continue/extend for truncated responses, no virtualization (100+ message performance), no optimistic send or retry UX, no math notation or inline mermaid, no voice input, no offline queuing, no export, no sharing, no follow-up suggestions, and incomplete accessibility. The Spatial Glass design is intentional; gaps are feature/UX gaps, not styling gaps."
+      }
+    ]
+  }
+}

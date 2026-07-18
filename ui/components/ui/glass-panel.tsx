@@ -51,15 +51,18 @@ export interface GlassPanelProps extends DivProps {
 // NOTE: a base `bg-sg-card` color cannot share an element with the gradient —
 // the class merger collapses two `bg-*` utilities — so the gradient stands in
 // as the single background, which is intentional.
+// Eclipse light grammar: resting surfaces carry only the moon edge — drop
+// shadows are reserved for floating layers (dialogs/drawers). The
+// bg-sg-card-grad token carries BOTH the matte fill and the sheen in one
+// background-image stack (a separate bg-color class alongside it would be
+// collapsed away by tailwind-merge).
 const variantClasses: Record<GlassPanelVariant, string> = {
-  // Eclipse light grammar: resting surfaces carry only the moon edge —
-  // drop shadows are reserved for floating layers (dialogs/drawers).
   subtle: cn(
-    "bg-sg-shell bg-sg-card-grad border-sg-border",
+    "bg-sg-card-grad border-sg-border",
     "shadow-sg-edge",
   ),
   soft: cn(
-    "bg-sg-card bg-sg-card-grad border-sg-border",
+    "bg-sg-card-grad border-sg-border",
     "shadow-sg-edge",
   ),
   strong: cn(
@@ -67,10 +70,10 @@ const variantClasses: Record<GlassPanelVariant, string> = {
     "shadow-sg-edge-strong",
   ),
   // "Most active" surface — the selected treatment: moon edge + a faint
-  // inset tint glow (whitelisted).
+  // inset tint glow (whitelisted; single source = --sg-shadow-selected).
   primary: cn(
-    "bg-sg-card bg-sg-card-grad border-sg-border-strong",
-    "shadow-[var(--sg-edge-top),inset_0_0_28px_-18px_var(--sg-tint-glow)]",
+    "bg-sg-card-grad border-sg-border-strong",
+    "shadow-sg-selected",
   ),
 };
 

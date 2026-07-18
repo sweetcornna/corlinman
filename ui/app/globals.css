@@ -108,9 +108,16 @@
 
     --sg-glow-primary: 0 0 20px -4px var(--sg-tint-glow), 0 0 52px -12px color-mix(in oklch, var(--sg-tint) 18%, transparent);
     --sg-shadow-primary: var(--sg-edge-top-strong), var(--sg-elev-2);
+    /* Selected/"most active" treatment — moon edge + inset tint glow.
+       Single source for .nav-active and shadow-sg-selected. */
+    --sg-shadow-selected: var(--sg-edge-top), inset 0 0 28px -18px var(--sg-tint-glow);
     --sg-grad-text: linear-gradient(115deg, #000, #555 60%, #888);
-    /* Matte sheen replacing the old faux-glass card gradient. */
-    --sg-card-sheen: linear-gradient(135deg, rgba(255, 255, 255, 0.6), transparent 42%);
+    /* Matte card fill + sheen in ONE background-image stack, so a bare
+       `bg-sg-card-grad` class carries its own base color (a separate
+       bg-color class would be dropped by tailwind-merge). */
+    --sg-card-sheen:
+      linear-gradient(135deg, rgba(255, 255, 255, 0.6), transparent 42%),
+      linear-gradient(var(--sg-glass-2-bg), var(--sg-glass-2-bg));
 
     /* ── st — touch & rhythm tier (theme-invariant, defined once). ── */
     --st-touch-min: 44px;
@@ -271,7 +278,9 @@
     --sg-glow-primary: 0 0 20px -4px var(--sg-tint-glow), 0 0 52px -12px color-mix(in oklch, var(--sg-tint) 18%, transparent);
     --sg-shadow-primary: var(--sg-edge-top-strong), var(--sg-elev-2);
     --sg-grad-text: linear-gradient(115deg, #ffffff, #b9b9b9 55%, #8a8a8a);
-    --sg-card-sheen: linear-gradient(135deg, rgba(255, 255, 255, 0.022), transparent 42%);
+    --sg-card-sheen:
+      linear-gradient(135deg, rgba(255, 255, 255, 0.022), transparent 42%),
+      linear-gradient(var(--sg-glass-2-bg), var(--sg-glass-2-bg));
 
     /* ── shadcn semantic vars — monochrome dark. */
     --background: 0 0% 0%;
@@ -401,7 +410,7 @@
   .nav-active {
     background: rgba(255, 255, 255, 0.07);
     border-color: var(--sg-border-strong);
-    box-shadow: var(--sg-edge-top), inset 0 0 28px -18px var(--sg-tint-glow);
+    box-shadow: var(--sg-shadow-selected);
   }
   :root:not(.dark) .nav-active {
     background: rgba(0, 0, 0, 0.06);
@@ -467,12 +476,6 @@
   }
 
   /* ── message bubbles (convex: moon edge, no big drop shadow) ─── */
-  .thread {
-    display: flex;
-    flex-direction: column;
-    gap: 14px;
-    width: 100%;
-  }
   .c-bubble {
     position: relative;
     max-width: min(600px, 86%);
@@ -529,119 +532,16 @@
       opacity: 1;
     }
   }
-  .caret {
-    display: inline-block;
-    width: 7px;
-    height: 1.1em;
-    vertical-align: text-bottom;
-    border-radius: 2px;
-    background: var(--sg-tint);
-    opacity: 0.85;
-    margin-left: 2px;
-    box-shadow: var(--sg-bloom-1);
-  }
-  .c-bubble .b-meta {
-    margin-top: 10px;
-    font-size: 11.5px;
-    font-family: var(--st-font-mono);
-    color: var(--sg-ink-5);
-    display: flex;
-    gap: 12px;
-    align-items: center;
-  }
   .c-bubble.error {
     border-color: color-mix(in oklch, var(--sg-err) 45%, transparent);
   }
-
-  /* ── tool call card (concave: sunk below the thread plane) ───── */
-  .c-tool {
-    align-self: flex-start;
-    width: min(600px, 86%);
-    border: 1px solid rgba(255, 255, 255, 0.07);
-    border-radius: 16px;
-    background: var(--sg-glass-1-bg);
-    overflow: hidden;
-    box-shadow: var(--sg-well-soft);
+  /* Paper light: the bubbles' drop shadows are calibrated for charcoal —
+     soften them to the elev scale's light weights. */
+  :root:not(.dark) .c-bubble.user {
+    box-shadow: var(--sg-edge-top-strong), 0 2px 8px -4px rgba(0, 0, 0, 0.14);
   }
-  :root:not(.dark) .c-tool {
-    border-color: rgba(0, 0, 0, 0.07);
-  }
-  .c-tool .t-head {
-    min-height: var(--st-touch-min);
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 0 14px;
-    cursor: pointer;
-  }
-  .t-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    flex: none;
-  }
-  .c-tool.running .t-dot {
-    background: var(--sg-tint);
-    box-shadow: var(--sg-bloom-2);
-    animation: thread-pulse 1.2s ease-in-out infinite;
-  }
-  .c-tool.ok .t-dot {
-    background: var(--sg-ok);
-  }
-  .c-tool.err .t-dot {
-    background: var(--sg-err);
-  }
-  .t-name {
-    font-family: var(--st-font-mono);
-    font-size: 13px;
-    color: var(--sg-ink-2);
-    font-weight: 500;
-  }
-  .t-state {
-    margin-left: auto;
-    font-family: var(--st-font-mono);
-    font-size: 11.5px;
-    color: var(--sg-ink-5);
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .c-tool .t-body {
-    border-top: 1px solid rgba(255, 255, 255, 0.06);
-    padding: 12px 14px;
-    font-family: var(--st-font-mono);
-    font-size: var(--st-mono-size);
-    line-height: 1.6;
-    color: var(--sg-ink-3);
-    white-space: pre-wrap;
-    overflow-x: auto;
-    background: rgba(0, 0, 0, 0.35);
-  }
-  :root:not(.dark) .c-tool .t-body {
-    border-top-color: rgba(0, 0, 0, 0.06);
-    background: rgba(0, 0, 0, 0.05);
-  }
-
-  /* ── reasoning block (the quietest element on screen) ────────── */
-  .c-reason .r-chip {
-    min-height: 36px;
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 0 14px;
-    border-radius: var(--st-pill-radius);
-    border: 1px dashed var(--sg-border-strong);
-    color: var(--sg-ink-4);
-    font-size: 12.5px;
-    cursor: pointer;
-  }
-  .c-reason .r-body {
-    margin-top: 8px;
-    padding: 4px 0 4px 14px;
-    border-left: 2px solid var(--sg-border-strong);
-    font-size: 13.5px;
-    line-height: 1.7;
-    color: var(--sg-ink-4);
+  :root:not(.dark) .c-bubble.agent {
+    box-shadow: var(--sg-edge-top), 0 1px 6px -3px rgba(0, 0, 0, 0.1);
   }
 
   /* ── chrome bars ─────────────────────────────────────────────── */
@@ -654,67 +554,6 @@
     background: var(--sg-space-0);
     border-top: 1px solid var(--sg-border);
     box-shadow: var(--sg-lift);
-  }
-
-  /* ── status banner (floating: shadow + moon edge) ────────────── */
-  .c-banner {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    min-height: 40px;
-    padding: 6px 16px;
-    border-radius: var(--st-pill-radius);
-    font-size: 13px;
-    border: 1px solid var(--sg-border-strong);
-    background: var(--sg-glass-opaque);
-    color: var(--sg-ink-3);
-    width: fit-content;
-    box-shadow: var(--sg-edge-top), var(--sg-elev-2);
-  }
-  .c-banner.warn {
-    border-color: color-mix(in oklch, var(--sg-warn) 45%, transparent);
-    color: var(--sg-warn);
-  }
-  .c-banner.err {
-    border-color: color-mix(in oklch, var(--sg-err) 45%, transparent);
-    color: var(--sg-err);
-  }
-
-  /* ── sheet (heaviest floating layer: elev-4 + strong edge) ───── */
-  .c-sheet {
-    background: var(--sg-glass-opaque);
-    border: 1px solid var(--sg-border-strong);
-    box-shadow: var(--sg-edge-top-strong), var(--sg-elev-4);
-  }
-
-  /* ── pill button family ──────────────────────────────────────── */
-  .ghost-pill {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    min-height: var(--st-touch-min);
-    padding: 10px 20px;
-    border-radius: var(--st-pill-radius);
-    border: 1px solid var(--sg-border-ghost);
-    background: transparent;
-    color: var(--sg-ink-3);
-    font-size: 15px;
-  }
-  .solid-pill {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    min-height: 50px;
-    padding: 10px 24px;
-    border-radius: var(--st-pill-radius);
-    border: none;
-    background: var(--sg-tint);
-    color: var(--sg-tint-ink);
-    font-size: 15.5px;
-    font-weight: 500;
-    box-shadow: var(--sg-glow-primary), 0 2px 8px -2px rgba(0, 0, 0, 0.6);
   }
 
   /* Skeleton pulse (matte — the moving shimmer highlight died with
@@ -824,7 +663,6 @@
   @media (prefers-reduced-motion: reduce) {
     .presence-orb,
     .c-bubble.agent.streaming::before,
-    .c-tool.running .t-dot,
     .shimmer,
     .sg-breathe,
     .sg-breathe-accent,

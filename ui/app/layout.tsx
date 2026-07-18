@@ -2,7 +2,6 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { jetbrainsMono, misans, mplus1 } from "./fonts";
 import { Providers } from "@/components/providers";
-import { ICON_SPRITE } from "@/components/icons/sprite";
 
 export const metadata: Metadata = {
   title: "corlinman admin",
@@ -46,7 +45,7 @@ const BOOT = `
     if(v&&typeof v.preset==="string"&&/^(dawn|ice|rose|moss|iris)$/.test(v.preset)){
       el.setAttribute("data-tint", v.preset);
     } else if(v&&typeof v.hue==="number"&&isFinite(v.hue)){
-      var H=((v.hue%360)+360)%360;
+      var H=((Math.round(v.hue)%360)+360)%360;
       var st=document.createElement("style");
       st.id="sg-tint-override";
       st.textContent=":root:not(.dark){--sg-tint:oklch(0.55 0.09 "+H+");--sg-tint-ink:#fff;--sg-tint-glow:oklch(0.55 0.09 "+H+" / 0.3);--sg-tint-soft:oklch(0.55 0.09 "+H+" / 0.08);}.dark{--sg-tint:oklch(0.85 0.09 "+H+");--sg-tint-ink:#000;--sg-tint-glow:oklch(0.85 0.09 "+H+" / 0.42);--sg-tint-soft:oklch(0.85 0.09 "+H+" / 0.1);}";
@@ -76,9 +75,9 @@ export default function RootLayout({
           halo + vignette are painted on <html> by globals.css (pre-hydration,
           zero JS) and must show through everywhere. */}
       <body className="min-h-dvh font-sans text-foreground antialiased">
-        {/* Eclipse icon sprite — one hidden <svg> of <symbol>s; every icon
-            renders as <use href="#i-…"> against it (static-export safe). */}
-        <div aria-hidden dangerouslySetInnerHTML={{ __html: ICON_SPRITE }} />
+        {/* Icons resolve against the external sprite (public/icons-sprite
+            .svg) via <use href> — fetched once, cached across routes, and
+            absent from both the HTML and the RSC flight payload. */}
         <Providers>{children}</Providers>
       </body>
     </html>
