@@ -266,3 +266,129 @@ async def test_response_missing_image(tmp_path, monkeypatch) -> None:
     )
     assert out["ok"] is False
     assert out["error"] == "image_generation_failed"
+
+
+# ---------------------------------------------------------------------------
+# Fast-fail contract: unrecoverable errors + endpoint cooldown breaker.
+# ---------------------------------------------------------------------------
+
+
+def _provider_at(base_url: str) -> SimpleNamespace:
+    return SimpleNamespace(_api_key="sk-test", _base_url=base_url, name="openai")
+
+
+async def test_auth_reject_is_unrecoverable_and_trips_breaker(
+    tmp_path, monkeypatch
+) -> None:
+    from corlinman_agent.image import generate as gen
+
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(gen, "_UNAVAILABLE_UNTIL", {})
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(401, json={"error": "bad key"})
+
+    transport = httpx.MockTransport(handler)
+    provider = _provider_at("https://img-a.test/v1")
+    out = json.loads(
+        await dispatch_image_generate(
+            args_json=json.dumps({"prompt": "hi"}).encode(),
+            provider=provider,
+            transport=transport,
+        )
+    )
+    assert out["ok"] is False
+    assert "image_generation_unavailable" in out["message"]
+    assert "不要重试" in out["message"]
+    assert calls["n"] == 1
+
+    # Second call fails instantly from the breaker — no HTTP hit.
+    out2 = json.loads(
+        await dispatch_image_generate(
+            args_json=json.dumps({"prompt": "hi"}).encode(),
+            provider=provider,
+            transport=transport,
+        )
+    )
+    assert out2["ok"] is False
+    assert "image_generation_unavailable" in out2["message"]
+    assert calls["n"] == 1
+
+
+async def test_connect_error_is_unrecoverable(tmp_path, monkeypatch) -> None:
+    from corlinman_agent.image import generate as gen
+
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(gen, "_UNAVAILABLE_UNTIL", {})
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    transport = httpx.MockTransport(handler)
+    out = json.loads(
+        await dispatch_image_generate(
+            args_json=json.dumps({"prompt": "hi"}).encode(),
+            provider=_provider_at("https://img-b.test/v1"),
+            transport=transport,
+        )
+    )
+    assert out["ok"] is False
+    assert "image_generation_unavailable" in out["message"]
+    assert "不要重试" in out["message"]
+
+
+async def test_http_500_stays_retryable(tmp_path, monkeypatch) -> None:
+    """5xx is transient — must NOT trip the breaker or carry the hint."""
+    from corlinman_agent.image import generate as gen
+
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(gen, "_UNAVAILABLE_UNTIL", {})
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(500, json={"error": "boom"})
+
+    transport = httpx.MockTransport(handler)
+    provider = _provider_at("https://img-c.test/v1")
+    for _ in range(2):
+        out = json.loads(
+            await dispatch_image_generate(
+                args_json=json.dumps({"prompt": "hi"}).encode(),
+                provider=provider,
+                transport=transport,
+            )
+        )
+        assert out["ok"] is False
+        assert "不要重试" not in out["message"]
+    assert calls["n"] == 2
+
+
+async def test_success_clears_breaker_state(tmp_path, monkeypatch) -> None:
+    from corlinman_agent.image import generate as gen
+
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    root = "https://img-d.test/v1"
+    monkeypatch.setattr(
+        gen, "_UNAVAILABLE_UNTIL", {root: (float("inf"), "stale")}
+    )
+    # Expired/stale entries block until TTL — simulate expiry instead.
+    gen._UNAVAILABLE_UNTIL[root] = (0.0, "stale")
+    transport = httpx.MockTransport(_ok_handler())
+    out = json.loads(
+        await dispatch_image_generate(
+            args_json=json.dumps({"prompt": "hi"}).encode(),
+            provider=_provider_at(root),
+            transport=transport,
+        )
+    )
+    assert out["ok"] is True
+    assert root not in gen._UNAVAILABLE_UNTIL
+
+
+def test_default_timeout_is_five_minutes() -> None:
+    from corlinman_agent.image import generate as gen
+
+    assert gen._DEFAULT_TIMEOUT_SECS == 300.0

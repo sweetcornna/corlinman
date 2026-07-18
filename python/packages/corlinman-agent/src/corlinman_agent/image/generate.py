@@ -35,7 +35,16 @@ Config read at runtime
 * ``CORLINMAN_IMAGE_QUALITY`` — env override for the quality knob;
   defaults to ``medium`` (matches hermes-agent's setting).
 * ``CORLINMAN_IMAGE_TIMEOUT_SECS`` — HTTP timeout for the OpenAI call;
-  defaults to ``120`` seconds.
+  defaults to ``300`` seconds (image models legitimately take minutes).
+
+Fast-fail contract
+------------------
+Obvious non-transient failures — auth/config rejections (401/403/404)
+and connection-level errors — are UNRECOVERABLE: they raise with a
+message that tells the model to stop retrying and to tell the user the
+feature is unusable, and they trip a per-endpoint cooldown
+(:data:`_BREAKER_TTL_SECS`) so follow-up calls fail instantly instead
+of re-dialing a dead endpoint. Timeouts and 5xx/429 stay retryable.
 """
 
 from __future__ import annotations
@@ -43,6 +52,7 @@ from __future__ import annotations
 import base64
 import mimetypes
 import os
+import time
 from pathlib import Path
 from typing import Any, Literal
 
@@ -76,7 +86,21 @@ _ASPECT_TO_SIZE: dict[str, str] = {
 
 _DEFAULT_MODEL: str = "gpt-image-1"
 _DEFAULT_QUALITY: str = "medium"
-_DEFAULT_TIMEOUT_SECS: float = 120.0
+_DEFAULT_TIMEOUT_SECS: float = 300.0
+
+#: Cooldown after an unrecoverable endpoint failure — subsequent calls
+#: to the same endpoint fail instantly (no HTTP) until it expires.
+_BREAKER_TTL_SECS: float = 600.0
+
+#: ``{endpoint_root: (monotonic_expiry, reason)}`` — process-global.
+_UNAVAILABLE_UNTIL: dict[str, tuple[float, str]] = {}
+
+#: Guidance folded into unrecoverable error strings. The tool result is
+#: what the model reads, so the retry-stop instruction lives here.
+_UNAVAILABLE_HINT = (
+    "图片生成服务当前不可用，请不要重试该工具；"
+    "直接告知用户图片功能暂时无法使用，并继续完成其余任务。"
+)
 
 
 def resolve_image_provider_name(
@@ -183,7 +207,33 @@ class ImageGenerationError(RuntimeError):
     """Generic failure raised by :func:`generate_with_refs` on any
     non-success path. The tool dispatcher catches this + folds the
     message into its JSON envelope so the model gets a clean error
-    string."""
+    string. ``unrecoverable`` marks failures no retry can fix (auth /
+    config / dead endpoint); the message then carries the stop-retrying
+    guidance for the model."""
+
+    def __init__(self, message: str, *, unrecoverable: bool = False):
+        super().__init__(message)
+        self.unrecoverable = unrecoverable
+
+
+def _breaker_active(root: str) -> str | None:
+    """Return the trip reason when ``root`` is inside its cooldown."""
+    entry = _UNAVAILABLE_UNTIL.get(root)
+    if entry is None:
+        return None
+    expiry, reason = entry
+    if time.monotonic() >= expiry:
+        _UNAVAILABLE_UNTIL.pop(root, None)
+        return None
+    return reason
+
+
+def _breaker_trip(root: str, reason: str) -> None:
+    _UNAVAILABLE_UNTIL[root] = (time.monotonic() + _BREAKER_TTL_SECS, reason)
+
+
+def _breaker_clear(root: str) -> None:
+    _UNAVAILABLE_UNTIL.pop(root, None)
 
 
 class ImageProviderUnavailable(ImageGenerationError):
@@ -291,6 +341,13 @@ async def _post_responses_image(
     root = (base_url or "https://api.openai.com/v1").rstrip("/")
     endpoint = f"{root}/responses"
 
+    tripped = _breaker_active(root)
+    if tripped is not None:
+        raise ImageGenerationError(
+            f"image_generation_unavailable: {tripped} — {_UNAVAILABLE_HINT}",
+            unrecoverable=True,
+        )
+
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -306,19 +363,40 @@ async def _post_responses_image(
         async with httpx.AsyncClient(**client_kwargs) as client:
             response = await client.post(endpoint, json=payload)
     except httpx.TimeoutException as exc:
+        # A slow generation, not a broken endpoint — retryable.
         raise ImageGenerationError(
             f"image_generation_timeout: {exc}"
+        ) from exc
+    except (httpx.ConnectError, httpx.UnsupportedProtocol) as exc:
+        # Instant connection-level failure: endpoint is down/misconfigured.
+        reason = f"endpoint unreachable ({exc})"
+        _breaker_trip(root, reason)
+        raise ImageGenerationError(
+            f"image_generation_unavailable: {reason} — {_UNAVAILABLE_HINT}",
+            unrecoverable=True,
         ) from exc
     except httpx.HTTPError as exc:
         raise ImageGenerationError(
             f"image_generation_http_error: {exc}"
         ) from exc
 
+    if response.status_code in (401, 403, 404):
+        # Auth/config rejection — no amount of retrying fixes this.
+        reason = (
+            f"server rejected the request with {response.status_code}"
+            f" — {response.text[:300]}"
+        )
+        _breaker_trip(root, reason)
+        raise ImageGenerationError(
+            f"image_generation_unavailable: {reason} — {_UNAVAILABLE_HINT}",
+            unrecoverable=True,
+        )
     if response.status_code >= 400:
         raise ImageGenerationError(
             f"image_generation_http_status: server returned "
             f"{response.status_code} — {response.text[:500]}"
         )
+    _breaker_clear(root)
     try:
         body = response.json()
     except ValueError as exc:
