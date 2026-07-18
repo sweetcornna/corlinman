@@ -135,9 +135,17 @@ function applyEvent(draft: ChatMessage, ev: ChatEvent): void {
     case "text-delta":
       draft.content += ev.text;
       break;
-    case "reasoning-delta":
-      draft.reasoning = (draft.reasoning ?? "") + ev.text;
+    case "reasoning-delta": {
+      const prev = draft.reasoning ?? "";
+      // Agent steps stream as separate reasoning blocks with no separator
+      // of their own (block boundaries are dropped below the merger). A
+      // summary-part headline (**…**) starting flush against the previous
+      // step's text glues paragraphs together — keep them apart.
+      const needsBreak =
+        prev.length > 0 && !/\s$/.test(prev) && ev.text.startsWith("**");
+      draft.reasoning = prev + (needsBreak ? "\n\n" : "") + ev.text;
       break;
+    }
     case "tool-input-delta": {
       const tc = (draft.toolCalls ??= []).find((t) => t.callId === ev.callId);
       if (tc) tc.argsJson += ev.delta;
