@@ -27,12 +27,11 @@ export function TopNav() {
   return (
     <header
       className={cn(
-        "sticky top-2 md:top-4 z-40 flex h-14 items-center justify-between gap-2 md:gap-4 rounded-sg-lg border border-sg-border bg-sg-shell px-3 md:px-4",
-        "shadow-sg-2",
-        // Liquid Glass optics — light-aware edge ring + chromatic inner
-        // lensing, matching the sidebar rail so the shell reads as one
-        // continuous bent-light material. Blur-free.
-        "",
+        "sticky top-2 md:top-4 z-40 flex h-14 items-center justify-between gap-2 md:gap-4 rounded-sg-lg px-3 md:px-4",
+        // Eclipse app bar: canvas-colored (reads as transparent over the
+        // pure-black backdrop, stays legible when content scrolls under),
+        // hairline bottom border + downward scrim.
+        "c-appbar bg-sg-space-0",
       )}
     >
       <div className="flex min-w-0 flex-1 items-center gap-2 md:gap-3">
