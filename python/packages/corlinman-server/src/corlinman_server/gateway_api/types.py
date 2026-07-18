@@ -361,6 +361,13 @@ class ToolResultEvent:
 
     Mirrors hermes-agent's ``tool_progress_callback("tool.completed",
     duration=..., is_error=...)`` shape.
+
+    ``payload_json`` optionally carries the tool's parsed result envelope
+    (the same dict the agent saw) as a JSON string, so observers such as
+    the scheduler ``qzone.daily_publish`` builtin can harvest fields like
+    ``tid`` / ``qzone_url`` without a second dispatch. It is best-effort:
+    empty when the result wasn't a dict or exceeded the forwarding cap.
+    Optional-with-default so duck-typed channel events stay compatible.
     """
 
     plugin: str
@@ -369,6 +376,7 @@ class ToolResultEvent:
     duration_ms: int
     is_error: bool = False
     error_summary: str = ""
+    payload_json: str = ""
     kind: Literal["tool_result"] = field(default="tool_result", init=False)
 
 
