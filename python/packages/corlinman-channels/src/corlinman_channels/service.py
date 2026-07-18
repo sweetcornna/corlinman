@@ -447,6 +447,7 @@ async def run_qq_channel(
     router = ChannelRouter(
         group_keywords=_coerce_keywords(_attr(cfg, "group_keywords", {})),
         self_ids=self_ids,
+        group_replies_enabled=bool(_attr(cfg, "group_replies_enabled", True)),
     ).with_rate_limits(group_limiter, sender_limiter)
     if params.rate_limit_hook is not None:
         router = router.with_rate_limit_hook(params.rate_limit_hook)

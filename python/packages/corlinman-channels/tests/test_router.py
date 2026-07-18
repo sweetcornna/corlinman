@@ -97,6 +97,35 @@ class TestKeywordAndMention:
         assert req.content == "随便聊聊"
         assert req.binding.thread == "9999"
 
+    def test_group_replies_disabled_drops_everything_in_groups(self) -> None:
+        """The emergency mute: with group_replies_enabled=False every
+        group message drops — even an @mention — while private chat
+        still dispatches."""
+        router = ChannelRouter(
+            group_keywords={}, self_ids=[100], group_replies_enabled=False
+        )
+        plain = _group_event("随便聊聊", [TextSegment(text="随便聊聊")], 9999)
+        assert router.dispatch(plain) is None
+        mention = _group_event(
+            "@bot help",
+            [AtSegment(qq="100"), TextSegment(text=" help")],
+            9999,
+        )
+        assert router.dispatch(mention) is None
+        private = MessageEvent(
+            self_id=100,
+            message_type=MessageType.PRIVATE,
+            sub_type="friend",
+            group_id=None,
+            user_id=200,
+            message_id=1,
+            message=[TextSegment(text="hi")],
+            raw_message="hi",
+            time=1_700_000_000,
+            sender=Sender(),
+        )
+        assert router.dispatch(private) is not None
+
     def test_keyword_match_is_case_insensitive(self) -> None:
         router = ChannelRouter(
             group_keywords={"123": ["格兰", "Aemeath"]},
