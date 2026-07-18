@@ -424,6 +424,7 @@
 
   /* ── signature: eclipse pearl (presence orb) ─────────────────── */
   .presence-orb {
+    display: inline-block;
     width: 22px;
     height: 22px;
     border-radius: 50%;

@@ -18,7 +18,7 @@ export function Breadcrumbs() {
 
   if (segments.length === 0) {
     return (
-      <span className="text-sm font-medium text-foreground">
+      <span className="whitespace-nowrap text-sm font-medium text-foreground">
         {t("breadcrumbs.dashboard")}
       </span>
     );
