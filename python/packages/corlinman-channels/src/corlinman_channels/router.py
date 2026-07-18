@@ -24,6 +24,7 @@ type the gateway-side Python service ends up adopting.
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -205,6 +206,33 @@ class ChannelRouter:
     unaffected) — the emergency mute for a bot misbehaving in groups.
     Config: ``[channels.qq].group_replies_enabled``."""
 
+    group_whitelist: frozenset[str] | None = None
+    """Hard allow-list of group ids (stringified). ``None`` ⇒ no
+    whitelist (all groups pass this gate); a set — even an empty one —
+    means ONLY listed groups are ever answered. @mentions do NOT
+    bypass it. Config: ``[channels.qq].group_whitelist``."""
+
+    group_reply_policy: str = "mention_or_keyword"
+    """How non-mention group messages qualify for a reply.
+
+    * ``"mention_or_keyword"`` (default) — reply only to @mentions or
+      messages matching an EXPLICITLY configured keyword list for that
+      group. No keyword list ⇒ mention-only. This is the human-shaped
+      default: a person doesn't answer every message in a group.
+    * ``"all"`` — legacy dispatch-all: no keyword list means every
+      message triggers a reply. Opt back in via
+      ``[channels.qq].group_reply_policy = "all"``.
+    """
+
+    group_reply_cooldown_secs: float = 0.0
+    """Minimum gap between NON-mention replies in the same group.
+    ``0`` disables. @mentions always answer (a human replies when
+    called) and reset the clock. Config:
+    ``[channels.qq].group_reply_cooldown_secs``."""
+
+    _last_group_reply_mono: dict[str, float] = field(default_factory=dict)
+    """Per-group monotonic timestamp of the last accepted dispatch."""
+
     self_ids: list[int] = field(default_factory=list)
     """``@mention`` targets that always trigger, independent of
     keywords. In OneBot this is the bot's own ``self_id``."""
@@ -313,7 +341,18 @@ class ChannelRouter:
             group_id = event.group_id
             if group_id is None:
                 return None
-            if not mentioned and not self._keyword_match(group_id, text):
+            # Whitelist is a hard gate — checked before mention/keyword so
+            # even an @mention in a non-whitelisted group stays silent.
+            if (
+                self.group_whitelist is not None
+                and str(group_id) not in self.group_whitelist
+            ):
+                return None
+            # Slash commands are an explicit summons, same as an @mention —
+            # they bypass the reply policy + cooldown (their own access
+            # control runs later via the slash policy).
+            explicit = mentioned or match_command_with_args(text) is not None
+            if not self._group_reply_allowed(group_id, text, explicit):
                 return None
             binding = ChannelBinding.qq_group(event.self_id, group_id, event.user_id)
         else:
@@ -448,6 +487,37 @@ class ChannelRouter:
         # The bus's ``emit_nonblocking`` is the right shape for a
         # synchronous hot-path emission (matches Rust ``bus.emit_nonblocking``).
         self.hook_bus.emit_nonblocking(ev)
+
+    def _group_reply_allowed(
+        self, group_id: int, text: str, explicit: bool
+    ) -> bool:
+        """Human-shaped reply gating for non-whitelist-blocked groups.
+
+        Explicit summons (@mention / slash command) always answer and
+        reset the cooldown clock. Other messages must qualify under
+        :attr:`group_reply_policy`, then clear the per-group cooldown.
+        """
+        gid = str(group_id)
+        now = time.monotonic()
+        if explicit:
+            self._last_group_reply_mono[gid] = now
+            return True
+        if self.group_reply_policy == "all":
+            matched = self._keyword_match(group_id, text)
+        else:
+            # "mention_or_keyword": keywords must be explicitly
+            # configured — a missing/empty list means mention-only.
+            kws = self.group_keywords.get(gid) or []
+            lower = text.lower()
+            matched = any(kw.lower() in lower for kw in kws)
+        if not matched:
+            return False
+        if self.group_reply_cooldown_secs > 0:
+            last = self._last_group_reply_mono.get(gid)
+            if last is not None and (now - last) < self.group_reply_cooldown_secs:
+                return False
+        self._last_group_reply_mono[gid] = now
+        return True
 
     def _keyword_match(self, group_id: int, text: str) -> bool:
         kws = self.group_keywords.get(str(group_id))

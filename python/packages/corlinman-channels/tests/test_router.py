@@ -90,7 +90,7 @@ class TestParseGroupKeywords:
 
 class TestKeywordAndMention:
     def test_dispatch_all_when_group_absent_from_map(self) -> None:
-        router = ChannelRouter(group_keywords={}, self_ids=[100])
+        router = ChannelRouter(group_keywords={}, self_ids=[100], group_reply_policy="all")
         ev = _group_event("随便聊聊", [TextSegment(text="随便聊聊")], 9999)
         req = router.dispatch(ev)
         assert req is not None
@@ -125,6 +125,69 @@ class TestKeywordAndMention:
             sender=Sender(),
         )
         assert router.dispatch(private) is not None
+
+    def test_whitelist_blocks_even_mentions(self) -> None:
+        """群组白名单是硬门禁：不在名单里，连 @提及 也不回。"""
+        router = ChannelRouter(
+            group_keywords={},
+            self_ids=[100],
+            group_whitelist=frozenset({"111"}),
+        )
+        blocked = _group_event(
+            "@bot help",
+            [AtSegment(qq="100"), TextSegment(text=" help")],
+            9999,
+        )
+        assert router.dispatch(blocked) is None
+        allowed = _group_event(
+            "@bot help",
+            [AtSegment(qq="100"), TextSegment(text=" help")],
+            111,
+        )
+        assert router.dispatch(allowed) is not None
+
+    def test_empty_whitelist_blocks_all_groups(self) -> None:
+        router = ChannelRouter(
+            group_keywords={}, self_ids=[100], group_whitelist=frozenset()
+        )
+        ev = _group_event(
+            "@bot hi", [AtSegment(qq="100"), TextSegment(text=" hi")], 42
+        )
+        assert router.dispatch(ev) is None
+
+    def test_default_policy_is_mention_only_without_keywords(self) -> None:
+        """新默认 mention_or_keyword：没配关键词 ⇒ 只回 @提及。"""
+        router = ChannelRouter(group_keywords={}, self_ids=[100])
+        plain = _group_event("随便聊聊", [TextSegment(text="随便聊聊")], 9999)
+        assert router.dispatch(plain) is None
+        mention = _group_event(
+            "@bot 在吗", [AtSegment(qq="100"), TextSegment(text=" 在吗")], 9999
+        )
+        assert router.dispatch(mention) is not None
+
+    def test_default_policy_honours_explicit_keywords(self) -> None:
+        router = ChannelRouter(
+            group_keywords={"9999": ["天气"]}, self_ids=[100]
+        )
+        hit = _group_event("今天天气如何", [TextSegment(text="今天天气如何")], 9999)
+        assert router.dispatch(hit) is not None
+        miss = _group_event("吃了吗", [TextSegment(text="吃了吗")], 9999)
+        assert router.dispatch(miss) is None
+
+    def test_cooldown_gates_keyword_replies_but_not_mentions(self) -> None:
+        router = ChannelRouter(
+            group_keywords={"9999": ["天气"]},
+            self_ids=[100],
+            group_reply_cooldown_secs=3600.0,
+        )
+        first = _group_event("天气咋样", [TextSegment(text="天气咋样")], 9999)
+        assert router.dispatch(first) is not None
+        second = _group_event("又问天气", [TextSegment(text="又问天气")], 9999)
+        assert router.dispatch(second) is None  # within cooldown
+        mention = _group_event(
+            "@bot 天气", [AtSegment(qq="100"), TextSegment(text=" 天气")], 9999
+        )
+        assert router.dispatch(mention) is not None  # mentions bypass
 
     def test_keyword_match_is_case_insensitive(self) -> None:
         router = ChannelRouter(
@@ -176,7 +239,7 @@ class TestKeywordAndMention:
     def test_dispatch_tracks_self_id_change(self) -> None:
         """A NapCat re-login under a different account is tracked live:
         the new ``self_id`` is appended; previously-known ids stay."""
-        router = ChannelRouter(group_keywords={}, self_ids=[100])
+        router = ChannelRouter(group_keywords={}, self_ids=[100], group_reply_policy="all")
         ev = _group_event(
             "hi", [TextSegment(text="hi")], 9999, self_id=2952532060
         )
@@ -185,7 +248,7 @@ class TestKeywordAndMention:
         assert 100 in router.self_ids
 
     def test_private_message_always_dispatches(self) -> None:
-        router = ChannelRouter(group_keywords={}, self_ids=[100])
+        router = ChannelRouter(group_keywords={}, self_ids=[100], group_reply_policy="all")
         ev = MessageEvent(
             self_id=100,
             message_type=MessageType.PRIVATE,
@@ -204,12 +267,12 @@ class TestKeywordAndMention:
         assert req.binding.thread == "77"
 
     def test_empty_group_message_drops(self) -> None:
-        router = ChannelRouter(group_keywords={}, self_ids=[100])
+        router = ChannelRouter(group_keywords={}, self_ids=[100], group_reply_policy="all")
         ev = _group_event("", [], 123)
         assert router.dispatch(ev) is None
 
     def test_session_key_stable_across_events(self) -> None:
-        router = ChannelRouter(group_keywords={}, self_ids=[100])
+        router = ChannelRouter(group_keywords={}, self_ids=[100], group_reply_policy="all")
         ev1 = _group_event("一号消息", [TextSegment(text="一号消息")], 321)
         ev2 = _group_event("二号消息", [TextSegment(text="二号消息")], 321)
         r1 = router.dispatch(ev1)
@@ -240,7 +303,7 @@ class TestRateLimitDispatch:
         group_bucket = TokenBucket.per_minute(1)
         calls, hook = _count_hook()
         router = (
-            ChannelRouter(group_keywords={}, self_ids=[100])
+            ChannelRouter(group_keywords={}, self_ids=[100], group_reply_policy="all")
             .with_rate_limits(group_bucket, None)
             .with_rate_limit_hook(hook)
         )
@@ -255,7 +318,7 @@ class TestRateLimitDispatch:
         sender_bucket = TokenBucket.per_minute(1)
         calls, hook = _count_hook()
         router = (
-            ChannelRouter(group_keywords={}, self_ids=[100])
+            ChannelRouter(group_keywords={}, self_ids=[100], group_reply_policy="all")
             .with_rate_limits(None, sender_bucket)
             .with_rate_limit_hook(hook)
         )
@@ -268,7 +331,7 @@ class TestRateLimitDispatch:
 
     def test_rate_limit_drops_do_not_cross_groups(self) -> None:
         group_bucket = TokenBucket.per_minute(1)
-        router = ChannelRouter(group_keywords={}, self_ids=[100]).with_rate_limits(
+        router = ChannelRouter(group_keywords={}, self_ids=[100], group_reply_policy="all").with_rate_limits(
             group_bucket, None
         )
         a1 = _group_event("msg", [TextSegment(text="msg")], 1)
@@ -300,7 +363,7 @@ class TestHookBusMirror:
         sub = bus.subscribe(HookPriority.NORMAL)
 
         router = (
-            ChannelRouter(group_keywords={}, self_ids=[100])
+            ChannelRouter(group_keywords={}, self_ids=[100], group_reply_policy="all")
             .with_rate_limits(group_bucket, None)
             .with_rate_limit_hook(hook)
             .with_hook_bus(bus)
@@ -329,7 +392,7 @@ class TestHookBusMirror:
         group_bucket = TokenBucket.per_minute(1)
         calls, hook = _count_hook()
         router = (
-            ChannelRouter(group_keywords={}, self_ids=[100])
+            ChannelRouter(group_keywords={}, self_ids=[100], group_reply_policy="all")
             .with_rate_limits(group_bucket, None)
             .with_rate_limit_hook(hook)
         )
