@@ -36,6 +36,9 @@ root-owned repo path.
 ssh root@43.133.12.98
 
 cd /opt/corlinman/repo
+# `uv run` (agent service start) rewrites one uv.lock line on this box —
+# restore it so the cleanliness gate below doesn't trip on a stale drift.
+git checkout -- uv.lock
 git status --short
 git rev-parse HEAD
 git describe --tags --always --dirty || true
