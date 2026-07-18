@@ -4,6 +4,44 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.32.0] — 2026-07-18 — ask_user question cards + per-family reasoning tiers
+
+### Added
+- **web chat ask_user question cards**: the agent's `ask_user`
+  clarification questions now render on the web — options appear as
+  tappable pills under the assistant bubble (single-pick sends
+  immediately; multi-pick submits joined labels; historical turns show
+  inert options). Previously the options were silently lost on web
+  (Telegram had buttons, QQ-family had lists, web had nothing). A
+  still-streaming call stays visible in the tool trace until its args
+  parse. New design-system card `components/question-card.html`.
+- **per-model-family reasoning-effort tiers**: the composer's thinking
+  control is no longer a hardcoded 低/中/高. A backend registry
+  (`corlinman_providers.reasoning_tiers`) maps each *resolved* model id
+  to its real ladder — gpt-5.6 six tiers (none…max), gpt-5.2/5.4/5.5
+  five, gpt-5.1 four, o-series three, Claude 4.6+/Fable four/five
+  (`output_config.effort` + adaptive thinking), Gemini 3.x
+  `thinking_level` / 2.5 `thinking_budget`, grok-3-mini/4.5, DeepSeek
+  V4 `thinking.type` + high/max, Qwen `enable_thinking` + budget,
+  GLM-5 / GLM-4.x, Kimi k2.x toggles. `/admin/models` advertises
+  `reasoning_tiers` per alias (relay aliases resolve to the upstream
+  id); the UI renders exactly those options, hides the control for
+  no-knob models, and requests are clamped to the nearest supported
+  tier per family — never a 400 for an out-of-ladder pick. Anthropic
+  and Google providers gained thinking-parameter support (previously
+  absent entirely).
+
+### Fixed
+- **streaming thread line**: the luminous left-edge thread started
+  inside the bubble's 20px corner arc and visibly floated outside the
+  outline; it now spans only the straight left-edge segment. Same fix
+  back-synced to all 15 design-system cards; the legacy Spatial Glass
+  `styles.css` is gone from the design project.
+- **CORS preflights on protected routes**: the API-key auth middleware
+  401'd `OPTIONS` requests (preflights carry no credentials by spec),
+  stranding every cross-origin browser client before the CORS
+  middleware could answer.
+
 ## [1.31.1] — 2026-07-18 — reasoning summaries stay in the thinking block
 
 ### Fixed
