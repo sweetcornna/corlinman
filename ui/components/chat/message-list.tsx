@@ -32,6 +32,8 @@ interface MessageListProps {
   hasEarlier?: boolean;
   loadingEarlier?: boolean;
   onLoadEarlier?: () => void;
+  /** Sends an `ask_user` option pick as the user's next message. */
+  onQuestionAnswer?: (text: string) => void;
 }
 
 const NEAR_BOTTOM_PX = 60;
@@ -61,6 +63,7 @@ export function MessageList({
   hasEarlier,
   loadingEarlier,
   onLoadEarlier,
+  onQuestionAnswer,
 }: MessageListProps) {
   const { t } = useTranslation();
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
@@ -254,6 +257,7 @@ export function MessageList({
               onReply={onReply}
               onOpenArtifact={onOpenArtifact}
               showActionTrace={showActionTrace}
+              onQuestionAnswer={onQuestionAnswer}
             />
           ))}
         </ol>

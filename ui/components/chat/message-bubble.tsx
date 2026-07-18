@@ -30,6 +30,8 @@ import { ToolCallCard } from "@/components/chat/tool-call-card";
 import { ReasoningBlock } from "@/components/chat/reasoning-block";
 import { SubagentCard } from "@/components/chat/subagent-card";
 import { ApprovalPrompt } from "@/components/chat/approval-prompt";
+import { QuestionCard } from "@/components/chat/question-card";
+import { ASK_USER_TOOL_NAME, askUserQuestions } from "@/lib/chat/ask-user";
 
 interface MessageBubbleProps {
   message: ChatMessage;
@@ -52,6 +54,14 @@ interface MessageBubbleProps {
   showActionTrace?: boolean;
   /** Latest message in the thread — gets the entrance animation. */
   isLatest?: boolean;
+  /** Sends an `ask_user` option pick as the user's next message. */
+  onQuestionAnswer?: (text: string) => void;
+}
+
+/** Tool calls that belong in the action trace — `ask_user` renders as a
+ *  QuestionCard below the bubble instead of a generic tool row. */
+function traceCallsOf(message: ChatMessage) {
+  return message.toolCalls?.filter((tc) => tc.toolName !== ASK_USER_TOOL_NAME);
 }
 
 function formatTime(ms: number): string {
@@ -100,6 +110,7 @@ export const MessageBubble = React.memo(function MessageBubble({
   onNextVersion,
   showActionTrace = true,
   isLatest = false,
+  onQuestionAnswer,
 }: MessageBubbleProps) {
   const { t } = useTranslation();
   const { liquidRise } = useMotionVariants();
@@ -119,13 +130,24 @@ export const MessageBubble = React.memo(function MessageBubble({
   const [toolsCollapsed, setToolsCollapsed] = React.useState(
     () =>
       !message.pending &&
-      (message.toolCalls?.length ?? 0) + (message.subagents?.length ?? 0) > 0,
+      (traceCallsOf(message)?.length ?? 0) +
+        (message.subagents?.length ?? 0) >
+        0,
+  );
+
+  const traceToolCalls = React.useMemo(
+    () => traceCallsOf(message),
+    [message],
+  );
+  const questions = React.useMemo(
+    () => askUserQuestions(message.toolCalls),
+    [message],
   );
 
   // Bulk collapse switches on automatically when the assistant fires
   // many tool calls — keeps the bubble compact during long agent loops.
   // The user can re-expand any time via the hamburger.
-  const toolCount = message.toolCalls?.length ?? 0;
+  const toolCount = traceToolCalls?.length ?? 0;
   const subagentCount = message.subagents?.length ?? 0;
   const shouldShowActionTrace = showActionTrace !== false;
   React.useEffect(() => {
@@ -396,7 +418,7 @@ export const MessageBubble = React.memo(function MessageBubble({
           ) : null}
         </div>
       )}
-      {shouldShowActionTrace && !toolsCollapsed && message.toolCalls?.map((tc) => (
+      {shouldShowActionTrace && !toolsCollapsed && traceToolCalls?.map((tc) => (
         <ToolCallCard key={tc.callId} tool={tc} />
       ))}
       {shouldShowActionTrace && !toolsCollapsed && message.subagents?.map((sa) => (
@@ -606,6 +628,26 @@ export const MessageBubble = React.memo(function MessageBubble({
             {trace}
           </div>
         )}
+
+        {/* ask_user options live OUTSIDE the bubble — the web analogue of
+          * Telegram's inline keyboard under the message. Clickable only on
+          * the settled thread tail; history renders them inert. */}
+        {isAssistant
+          ? questions.map((q, i) => (
+              <QuestionCard
+                key={`ask-user-${i}`}
+                question={q}
+                interactive={Boolean(
+                  isLatest &&
+                    !message.pending &&
+                    !message.error &&
+                    onQuestionAnswer,
+                )}
+                showQuestion={!message.content.includes(q.question)}
+                onAnswer={onQuestionAnswer}
+              />
+            ))
+          : null}
 
         {actionBar}
       </div>
