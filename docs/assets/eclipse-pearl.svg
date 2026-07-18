@@ -51,14 +51,11 @@
     <!-- the eclipsing disc -->
     <circle cx="120" cy="120" r="57" fill="#000000"/>
 
-    <!-- cute face — moon-white on the dark side -->
+    <!-- cute face — tiny moon-white dots + a soft smile -->
     <g fill="#ffffff">
-      <ellipse class="eye" cx="99" cy="112" rx="7.5" ry="11"/>
-      <ellipse class="eye eye-r" cx="141" cy="112" rx="7.5" ry="11"/>
-      <!-- eye sparkles -->
-      <circle cx="102" cy="107" r="2.4" fill="#000000" opacity="0.85"/>
-      <circle cx="144" cy="107" r="2.4" fill="#000000" opacity="0.85"/>
+      <circle class="eye" cx="102" cy="114" r="3.6"/>
+      <circle class="eye eye-r" cx="138" cy="114" r="3.6"/>
     </g>
-    <path class="mouth" d="M105 137 Q120 150 135 137" fill="none" stroke="#ffffff" stroke-width="5" stroke-linecap="round"/>
+    <path class="mouth" d="M108 134 Q120 143 132 134" fill="none" stroke="#ffffff" stroke-width="4" stroke-linecap="round"/>
   </g>
 </svg>
