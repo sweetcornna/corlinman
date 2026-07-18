@@ -54,7 +54,7 @@ export function ArgsDialog({ approval }: { approval: Approval }) {
       <DialogContent
         className={cn(
           "max-w-2xl rounded-2xl border-sg-border bg-sg-card-strong p-6",
-          "backdrop-blur-glass-strong backdrop-saturate-glass-strong",
+          "",
           "shadow-sg-3",
         )}
       >

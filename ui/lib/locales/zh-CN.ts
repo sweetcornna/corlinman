@@ -484,21 +484,19 @@ export const zhCN = {
   },
 
   nav: {
-    themeStudio: {
-      label: "主题工坊",
-      themesTitle: "设计主题",
+    tint: {
+      label: "月光配色",
+      presetsTitle: "给光换色",
       customTitle: "自定义",
-      accentHue: "主题色相",
-      canvasHue: "画布色相",
-      glassOpacity: "玻璃不透明度",
-      reset: "恢复默认",
-      themes: {
-        deepSpace: "深空",
-        aurora: "极光",
-        dusk: "暮霭",
+      hue: "色相",
+      reset: "恢复月光",
+      presets: {
+        moonlight: "月光",
+        dawn: "晨昏",
+        ice: "冰蓝",
         rose: "玫瑰",
-        obsidian: "墨玉",
-        gilded: "鎏金",
+        moss: "苔绿",
+        iris: "鸢尾",
       },
     },
     sections: {

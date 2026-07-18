@@ -132,7 +132,7 @@ export function SkillCard({
     <div
       className={cn(
         "group block focus-visible:outline-none",
-        !reduced && "lg-gel hover:-translate-y-0.5",
+        !reduced && " hover:-translate-y-0.5",
         className,
       )}
       data-testid={`skill-card-${skill.name}`}

@@ -2,7 +2,6 @@
 
 import * as React from "react";
 import { cn } from "@/lib/utils";
-import { useSpecular } from "@/lib/use-specular";
 
 /**
  * Spatial Glass surface primitive — the core depth API of the design system.
@@ -39,9 +38,9 @@ export interface GlassPanelProps extends DivProps {
   /** Render as a different HTML tag. Constrained to block-level semantic tags. */
   as?: GlassPanelTag;
   /**
-   * Liquid Glass optics: light-aware gradient edge, chromatic refraction
-   * rim, hover sheen sweep, and a pointer-tracked specular highlight.
-   * Reserved for hero/interactive surfaces — keep dense lists plain.
+   * @deprecated Liquid Glass optics were removed with the Eclipse
+   * redesign — matte surfaces have no specular layer. Accepted and
+   * ignored so legacy call sites keep compiling until the sweep.
    */
   lively?: boolean;
 }
@@ -77,37 +76,26 @@ export const GlassPanel = React.forwardRef<HTMLDivElement, GlassPanelProps>(
       variant = "soft",
       rounded = "rounded-sg-lg",
       as: Tag = "div",
-      lively = false,
+      lively: _lively,
       className,
       children,
       ...rest
     },
     ref,
   ) {
-    // Pointer-tracked specular light for lively panels. The hook writes CSS
-    // vars straight onto the node, so there is zero per-move React work.
-    const specularRef = useSpecular<HTMLDivElement>();
-    const setRefs = React.useCallback(
-      (node: HTMLDivElement | null) => {
-        specularRef.current = node;
-        if (typeof ref === "function") ref(node);
-        else if (ref) (ref as React.MutableRefObject<HTMLDivElement | null>).current = node;
-      },
-      [ref, specularRef],
-    );
-    // Each panel carries a top inset highlight via a pseudo-like layer — we use
-    // a real child element so shadow layering doesn't interfere with the outer
-    // shadow from the variant. This is a 1px highlight at the top edge that
-    // makes the glass feel lit rather than painted.
+    void _lively;
+    // Each panel carries a top inset highlight via a real child element so
+    // shadow layering doesn't interfere with the outer shadow from the
+    // variant: a 1px moon-edge line at the top that makes the matte surface
+    // feel lit rather than painted.
     const mergedClassName = cn(
       "relative border",
       rounded,
       variantClasses[variant],
-      lively && "lg-edge lg-refract lg-sheen lg-specular",
       className,
     );
     const commonProps = {
-      ref: lively ? setRefs : (ref as React.Ref<HTMLDivElement>),
+      ref: ref as React.Ref<HTMLDivElement>,
       className: mergedClassName,
       "data-glass-variant": variant,
       ...(rest as DivProps),

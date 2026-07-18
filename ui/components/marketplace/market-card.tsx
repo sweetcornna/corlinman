@@ -70,7 +70,7 @@ export function MarketCard({
       data-testid={`market-card-${item.slug}`}
       className={cn(
         "group block focus-visible:outline-none",
-        !reduced && "lg-gel hover:-translate-y-0.5",
+        !reduced && " hover:-translate-y-0.5",
         className,
       )}
     >

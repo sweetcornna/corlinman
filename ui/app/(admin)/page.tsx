@@ -215,7 +215,7 @@ export default function DashboardPage() {
         <div className="relative grid items-end gap-9 md:grid-cols-[1fr_auto]">
           <div className="flex min-w-0 flex-col gap-4">
             <HeroLead systemsOk={`${okChecks}/${totalChecks || 7}`} />
-            <h1 className="sg-grad-text text-balance font-sans text-[34px] font-semibold leading-[1.12] tracking-[-0.028em] sm:text-[38px]">
+            <h1 className="text-sg-ink text-balance font-sans text-[34px] font-semibold leading-[1.12] tracking-[-0.028em] sm:text-[38px]">
               {t("dashboard.tp.greeting", { name: displayName })}
               <br />
               {t("dashboard.tp.agentsAre")} {statusWord}.
@@ -233,7 +233,7 @@ export default function DashboardPage() {
               <button
                 type="button"
                 onClick={onRunPalette}
-                className="lg-gel inline-flex items-center gap-2 rounded-full border border-sg-border bg-sg-inset px-3.5 py-2 text-[13px] font-medium text-sg-ink-2 shadow-sg-1 transition-all duration-200 hover:-translate-y-px hover:border-sg-accent/30 hover:bg-sg-accent-soft hover:text-sg-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40"
+                className=" inline-flex items-center gap-2 rounded-full border border-sg-border bg-sg-inset px-3.5 py-2 text-[13px] font-medium text-sg-ink-2 shadow-sg-1 transition-all duration-200 hover:-translate-y-px hover:border-sg-accent/30 hover:bg-sg-accent-soft hover:text-sg-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40"
               >
                 <Search className="h-3.5 w-3.5" />
                 {t("dashboard.tp.ctaPalette")}
@@ -244,7 +244,7 @@ export default function DashboardPage() {
               {pendingApprovals > 0 ? (
                 <Link
                   href="/approvals"
-                  className="lg-gel inline-flex items-center gap-2 rounded-full border border-sg-accent/30 bg-sg-accent-soft px-3.5 py-2 text-[13px] font-medium text-sg-accent transition-all duration-200 hover:-translate-y-px hover:border-sg-accent/50 hover:shadow-sg-glow"
+                  className=" inline-flex items-center gap-2 rounded-full border border-sg-accent/30 bg-sg-accent-soft px-3.5 py-2 text-[13px] font-medium text-sg-accent transition-all duration-200 hover:-translate-y-px hover:border-sg-accent/50 hover:shadow-sg-glow"
                 >
                   {t("dashboard.tp.ctaReview", { n: pendingApprovals })}
                   <ArrowUpRight className="h-3.5 w-3.5 opacity-70" />
@@ -252,7 +252,7 @@ export default function DashboardPage() {
               ) : (
                 <Link
                   href="/logs"
-                  className="lg-gel inline-flex items-center gap-2 rounded-full border border-sg-border bg-sg-inset px-3.5 py-2 text-[13px] font-medium text-sg-ink-2 transition-all duration-200 hover:-translate-y-px hover:border-sg-accent/30 hover:bg-sg-accent-soft hover:text-sg-ink"
+                  className=" inline-flex items-center gap-2 rounded-full border border-sg-border bg-sg-inset px-3.5 py-2 text-[13px] font-medium text-sg-ink-2 transition-all duration-200 hover:-translate-y-px hover:border-sg-accent/30 hover:bg-sg-accent-soft hover:text-sg-ink"
                 >
                   {t("dashboard.tp.ctaLogs")}
                   <ArrowUpRight className="h-3.5 w-3.5 opacity-70" />

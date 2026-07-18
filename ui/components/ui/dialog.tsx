@@ -17,7 +17,7 @@ const DialogOverlay = React.forwardRef<
   <DialogPrimitive.Overlay
     ref={ref}
     className={cn(
-      "fixed inset-0 z-50 bg-black/60 backdrop-blur-sm data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
+      "fixed inset-0 z-50 bg-black/60 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
       className,
     )}
     {...props}
@@ -36,11 +36,11 @@ const DialogContent = React.forwardRef<
       className={cn(
         "fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 p-6",
         "rounded-sg-xl border border-sg-border-strong bg-sg-overlay shadow-sg-4",
-        "backdrop-blur-sg-overlay backdrop-saturate-sg-overlay",
+        "",
         // Liquid Glass optics — light-aware edge ring + chromatic inner
         // lensing on the overlay surface (blur-free, composes with the blur
         // recipe above).
-        "lg-edge lg-refract",
+        "",
         // Springy overshoot on the zoom-in entrance — the open zoom starts at
         // 0.96 and settles past 1 on the bouncy cubic-bezier curve.
         "duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]",

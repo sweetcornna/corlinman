@@ -65,7 +65,7 @@ function HeroColumn() {
           aside only adds the accent-hued nebulae + a faint noise grain. */}
       <div
         aria-hidden
-        className="pointer-events-none absolute inset-0 sg-drift lg-hue-drift"
+        className="pointer-events-none absolute inset-0 sg-drift"
         style={{
           backgroundImage:
             "radial-gradient(760px 520px at 18% 12%, var(--sg-nebula-1), transparent 60%), " +
@@ -76,11 +76,11 @@ function HeroColumn() {
       {/* Twinkling starfield (dark theme only — hidden in daylight via CSS). */}
       <div
         aria-hidden
-        className="pointer-events-none absolute inset-0 lg-stars"
+        className="pointer-events-none absolute inset-0"
       />
       <div
         aria-hidden
-        className="pointer-events-none absolute inset-0 sg-noise opacity-[0.03]"
+        className="pointer-events-none absolute inset-0 opacity-[0.03]"
       />
 
       <div className="relative z-10 flex items-center gap-2">
@@ -169,7 +169,7 @@ function LoginForm() {
 
   return (
     <motion.div
-      className="lg-edge lg-refract sg-glass-overlay w-full max-w-sm space-y-6 rounded-sg-xl p-8 shadow-sg-4"
+      className=" sg-glass-overlay w-full max-w-sm space-y-6 rounded-sg-xl p-8 shadow-sg-4"
       variants={variants.liquidSurface}
       initial="hidden"
       animate="visible"

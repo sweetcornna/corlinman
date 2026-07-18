@@ -147,7 +147,7 @@ function HeroColumn() {
       {/* Deep-space showcase — nebula glows + grain over the <html> gradient. */}
       <div
         aria-hidden
-        className="pointer-events-none absolute inset-0 sg-drift lg-hue-drift"
+        className="pointer-events-none absolute inset-0 sg-drift"
         style={{
           backgroundImage:
             "radial-gradient(760px 520px at 18% 12%, var(--sg-nebula-1), transparent 60%), " +
@@ -158,11 +158,11 @@ function HeroColumn() {
       {/* Twinkling starfield (dark theme only — hidden in daylight via CSS). */}
       <div
         aria-hidden
-        className="pointer-events-none absolute inset-0 lg-stars"
+        className="pointer-events-none absolute inset-0"
       />
       <div
         aria-hidden
-        className="pointer-events-none absolute inset-0 sg-noise opacity-[0.03]"
+        className="pointer-events-none absolute inset-0 opacity-[0.03]"
       />
 
       <div className="relative z-10 flex items-center gap-2">
@@ -874,7 +874,7 @@ function PersonaStep({
               disabled={submitting !== null}
               data-testid={c.testid}
               className={cn(
-                "lg-edge lg-sheen lg-gel sg-card relative block w-full overflow-hidden rounded-sg-lg p-4 text-left shadow-sg-2 transition-all duration-200",
+                " sg-card relative block w-full overflow-hidden rounded-sg-lg p-4 text-left shadow-sg-2 transition-all duration-200",
                 submitting === null &&
                   "hover:-translate-y-px hover:border-sg-accent/30 hover:shadow-sg-3",
                 submitting !== null && submitting !== c.choice && "opacity-50",
@@ -1124,7 +1124,7 @@ function ImageProviderStep({
               disabled={submitting !== null}
               data-testid={c.testid}
               className={cn(
-                "lg-edge lg-sheen lg-gel sg-card relative block w-full overflow-hidden rounded-sg-lg p-4 text-left shadow-sg-2 transition-all duration-200",
+                " sg-card relative block w-full overflow-hidden rounded-sg-lg p-4 text-left shadow-sg-2 transition-all duration-200",
                 submitting === null &&
                   "hover:-translate-y-px hover:border-sg-accent/30 hover:shadow-sg-3",
                 submitting !== null && submitting !== c.key && "opacity-50",

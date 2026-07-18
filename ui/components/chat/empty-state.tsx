@@ -40,7 +40,7 @@ export function ChatEmptyState({ onPick }: ChatEmptyStateProps) {
       </motion.div>
       <motion.h2
         variants={liquidRise}
-        className="sg-grad-text text-2xl font-semibold tracking-tight"
+        className="text-sg-ink text-2xl font-semibold tracking-tight"
       >
         {t("chat.emptyTitle")}
       </motion.h2>
@@ -60,7 +60,7 @@ export function ChatEmptyState({ onPick }: ChatEmptyStateProps) {
             <button
               type="button"
               onClick={() => onPick?.(s)}
-              className="lg-gel inline-flex items-center gap-1.5 rounded-full border border-sg-border bg-sg-inset px-3.5 py-1.5 text-left text-[12px] text-sg-ink-3 hover:border-sg-accent/30 hover:bg-sg-accent-soft hover:text-sg-ink"
+              className=" inline-flex items-center gap-1.5 rounded-full border border-sg-border bg-sg-inset px-3.5 py-1.5 text-left text-[12px] text-sg-ink-3 hover:border-sg-accent/30 hover:bg-sg-accent-soft hover:text-sg-ink"
             >
               <Sparkles
                 className="h-3 w-3 shrink-0 text-sg-accent"

@@ -28,11 +28,11 @@ export function TopNav() {
     <header
       className={cn(
         "sticky top-2 md:top-4 z-40 flex h-14 items-center justify-between gap-2 md:gap-4 rounded-sg-lg border border-sg-border bg-sg-shell px-3 md:px-4",
-        "shadow-sg-2 backdrop-blur-sg-shell backdrop-saturate-sg-shell",
+        "shadow-sg-2",
         // Liquid Glass optics — light-aware edge ring + chromatic inner
         // lensing, matching the sidebar rail so the shell reads as one
         // continuous bent-light material. Blur-free.
-        "lg-edge lg-refract",
+        "",
       )}
     >
       <div className="flex min-w-0 flex-1 items-center gap-2 md:gap-3">
@@ -43,7 +43,7 @@ export function TopNav() {
           aria-expanded={open}
           aria-controls="admin-sidebar"
           data-testid="mobile-nav-trigger"
-          className="lg-gel -ml-1 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-sg-sm text-sg-ink-2 transition-colors hover:bg-sg-inset-hover hover:text-sg-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40 md:hidden"
+          className=" -ml-1 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-sg-sm text-sg-ink-2 transition-colors hover:bg-sg-inset-hover hover:text-sg-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40 md:hidden"
         >
           <Menu className="h-5 w-5" aria-hidden />
         </button>

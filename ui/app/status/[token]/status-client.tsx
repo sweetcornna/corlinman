@@ -25,7 +25,6 @@ import { useTranslation } from "react-i18next";
 import { Loader2, LinkIcon, AlertTriangle, WifiOff } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { useSpecular } from "@/lib/use-specular";
 import type { LiveEvent } from "@/lib/sessions/event-stream";
 import { TimelineProvider } from "@/lib/sessions/store";
 import { EventTimelineBody } from "@/components/sessions/event-timeline";
@@ -250,7 +249,7 @@ function StatusBackdrop() {
     >
       {/* Nebula glow blobs — soft accent-hued radials, slow drift + hue drift. */}
       <div
-        className="absolute inset-0 sg-drift lg-hue-drift pointer-events-none"
+        className="absolute inset-0 sg-drift pointer-events-none"
         style={{
           backgroundImage:
             "radial-gradient(900px 560px at 15% 8%, var(--sg-nebula-1), transparent 60%), " +
@@ -259,7 +258,7 @@ function StatusBackdrop() {
         }}
       />
       {/* Twinkling starfield (dark theme only — hidden in daylight via CSS). */}
-      <div className="absolute inset-0 lg-stars pointer-events-none" />
+      <div className="absolute inset-0 pointer-events-none" />
       {/* Depth vignette — fade toward the edges so corners keep spatial depth. */}
       <div
         className="absolute inset-0 pointer-events-none"
@@ -269,7 +268,7 @@ function StatusBackdrop() {
         }}
       />
       {/* Fractal noise — breaks gradient banding at ~3%. */}
-      <div className="absolute inset-0 sg-noise opacity-[0.03] pointer-events-none" />
+      <div className="absolute inset-0 opacity-[0.03] pointer-events-none" />
     </div>
   );
 }
@@ -440,29 +439,22 @@ function StatusReady({
   );
   const active = isActiveState(snapshot.status);
 
-  // Pointer-tracked specular light for the hero — the showcase moment.
-  const heroRef = useSpecular<HTMLElement>();
-
   return (
     <div className="relative min-h-dvh">
       <StatusBackdrop />
       <div className="mx-auto flex w-full max-w-xl flex-col gap-5 px-4 py-8 sm:px-6 sm:py-12">
-        {/* Hero card — the showcase surface. This is the one budgeted real
-            blur on a content page: a floating overlay-tier glass panel with
-            the full Liquid Glass optic stack (light-aware edge, chromatic
-            refraction rim, hover sheen sweep, pointer-tracked specular).
-            Persona avatar with accent ring glow, agent name in gradient
-            display text, live-ticking elapsed timer in font-mono. No admin
-            nav, no shell: a standalone, mobile-friendly public card. */}
+        {/* Hero card — the showcase surface: a floating matte panel
+            (opaque charcoal, strong moon edge, elev-4). Persona avatar,
+            live-ticking elapsed timer in font-mono. No admin nav, no
+            shell: a standalone, mobile-friendly public card. */}
         <header
-          ref={heroRef}
-          className="lg-edge lg-refract lg-sheen lg-specular sg-glass-overlay relative overflow-hidden rounded-sg-xl p-6 shadow-sg-4 animate-sg-rise sm:p-7"
+          className="sg-glass-overlay relative overflow-hidden rounded-sg-xl p-6 animate-sg-rise sm:p-7"
         >
           <div className="flex items-start justify-between gap-3">
             <div className="flex min-w-0 items-center gap-3.5">
               <PersonaAvatar personaId={snapshot.persona_id} />
               <div className="min-w-0">
-                <h1 className="sg-grad-text truncate text-xl font-semibold tracking-tight sm:text-2xl">
+                <h1 className="text-sg-ink truncate text-xl font-semibold tracking-tight sm:text-2xl">
                   {t("status.agentStatus")}
                 </h1>
                 <span className="mt-0.5 block truncate font-mono text-[11px] text-sg-ink-4">

@@ -133,7 +133,7 @@ export const StatChip = React.forwardRef<HTMLDivElement, StatChipProps>(
           <span
             className={cn(
               "font-sans text-[34px] font-medium leading-none tracking-[-0.03em] tabular-nums animate-sg-tick-up",
-              isPrimary ? "sg-grad-text" : "text-sg-ink",
+              isPrimary ? "text-sg-ink" : "text-sg-ink",
             )}
           >
             {value}

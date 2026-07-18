@@ -90,7 +90,7 @@ export function ReplayDialog({ session, onClose }: ReplayDialogProps) {
       <DialogContent
         className={cn(
           "max-w-3xl gap-0 rounded-sg-xl border-sg-border-strong bg-sg-overlay p-0",
-          "backdrop-blur-glass-strong backdrop-saturate-glass-strong",
+          "",
           "shadow-sg-4",
         )}
         data-testid="replay-dialog"

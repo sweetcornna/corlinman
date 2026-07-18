@@ -170,7 +170,7 @@ export function ProfileSwitcher({
           className={cn(
             // Floating popover = overlay tier: real blur so content behind
             // never bleeds through the glass (Apple "regular" material).
-            "sg-glass-overlay lg-edge absolute right-0 top-[calc(100%+4px)] z-50 min-w-[200px] overflow-hidden rounded-sg-md p-1 shadow-sg-4",
+            "sg-glass-overlay absolute right-0 top-[calc(100%+4px)] z-50 min-w-[200px] overflow-hidden rounded-sg-md p-1 shadow-sg-4",
           )}
         >
           {loading && profiles.length === 0 ? (

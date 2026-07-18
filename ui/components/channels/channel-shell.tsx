@@ -18,7 +18,6 @@ import {
 import { cn } from "@/lib/utils";
 import { LiveDot } from "@/components/ui/live-dot";
 import { useMotion } from "@/components/ui/motion-safe";
-import { useSpecular } from "@/lib/use-specular";
 
 /**
  * Maps a stable channel id to the same lucide glyph the sidebar uses, so the
@@ -92,9 +91,6 @@ export function ChannelShell({
   children,
 }: ChannelShellProps) {
   const { reduced } = useMotion();
-  // Pointer-tracked specular light for the channel identity tile — makes the
-  // page's one hero element read as lit glass material, not a flat well.
-  const identityRef = useSpecular<HTMLSpanElement>();
 
   const label = connectionLabel ?? (connected ? "Live" : "Offline");
   const variant = connected ? "ok" : "err";
@@ -108,12 +104,10 @@ export function ChannelShell({
     >
       <header className="flex items-start justify-between gap-4">
         <div className="flex min-w-0 items-start gap-3.5">
-          {/* Channel identity tile — accent-soft well with the nav glyph.
-              Liquid Glass optics make it read as the page's lit hero element. */}
+          {/* Channel identity tile — matte well with the nav glyph. */}
           <span
-            ref={identityRef}
             aria-hidden
-            className="lg-edge lg-refract lg-specular mt-0.5 grid h-11 w-11 shrink-0 place-items-center rounded-sg-md border border-sg-border bg-sg-accent-soft text-sg-accent shadow-sg-1"
+            className="mt-0.5 grid h-11 w-11 shrink-0 place-items-center rounded-sg-md border border-sg-border bg-sg-inset text-sg-ink-2 shadow-sg-edge"
           >
             <Icon className="h-5 w-5" />
           </span>
@@ -168,7 +162,7 @@ export function ChannelShell({
           {tabs.map((tab) => {
             const active = tab.id === activeTabId;
             const className = cn(
-              "lg-gel relative inline-flex h-9 items-center px-3 text-sm font-medium transition-colors",
+              " relative inline-flex h-9 items-center px-3 text-sm font-medium transition-colors",
               active
                 ? "text-sg-ink"
                 : "text-sg-ink-4 hover:text-sg-ink",

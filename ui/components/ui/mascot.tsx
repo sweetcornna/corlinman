@@ -35,7 +35,7 @@ export function Mascot({ size = 132, still = false, className, ...rest }: Mascot
           filter: "blur(2px)",
         }}
       />
-      <div className={cn("relative", !still && "lg-float")}>
+      <div className={cn("relative", !still && "")}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src="/mascot.png"

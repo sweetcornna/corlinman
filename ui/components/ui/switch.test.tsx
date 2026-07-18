@@ -13,10 +13,10 @@ describe("Switch", () => {
     );
 
     const control = screen.getByRole("switch", { name: "Demo switch" });
-    expect(control.className).not.toContain("backdrop-blur-glass");
+    expect(control.className).not.toContain("backdrop-");
     expect(control.className).toContain("bg-sg-inset");
 
     const thumb = control.querySelector("span");
-    expect(thumb?.className).not.toContain("backdrop-blur-glass");
+    expect(thumb?.className).not.toContain("backdrop-");
   });
 });

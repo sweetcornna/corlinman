@@ -144,7 +144,7 @@ function AttachmentLightbox({ src, onClose }: { src: string; onClose: () => void
       role="dialog"
       aria-modal="true"
       data-testid="attachment-lightbox"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6"
       onClick={onClose}
     >
       <button

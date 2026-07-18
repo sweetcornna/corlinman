@@ -7,16 +7,16 @@ import { cn } from "@/lib/utils";
 
 // Liquid Glass buttons: full-pill `rounded-full`, semibold weight, generous
 // horizontal padding. Solid accent fill on the default CTA with a soft accent
-// glow on hover. `.lg-gel` gives the press a springy overshoot release
+// glow on hover. `.` gives the press a springy overshoot release
 // (non-linear gel physics) and the primary CTA carries a specular sheen
 // sweep on hover.
 const buttonVariants = cva(
-  "lg-gel inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-full text-sm font-semibold transition-[color,background-color,border-color,box-shadow,opacity] hover:-translate-y-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
+  " inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-full text-sm font-semibold transition-[color,background-color,border-color,box-shadow,opacity] hover:-translate-y-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
   {
     variants: {
       variant: {
         default:
-          "lg-sheen bg-primary text-primary-foreground shadow-sg-1 hover:bg-primary/90 hover:shadow-sg-glow",
+          " bg-primary text-primary-foreground shadow-sg-1 hover:bg-primary/90 hover:shadow-sg-glow",
         destructive:
           "bg-sg-err text-primary-foreground shadow-sg-1 hover:bg-sg-err/90 hover:shadow-sg-2 hover:ring-2 hover:ring-sg-err/40",
         outline:

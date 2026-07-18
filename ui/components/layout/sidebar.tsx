@@ -153,12 +153,12 @@ export function Sidebar({ user }: SidebarProps) {
         // <MobileDrawerProvider>.
         "flex flex-col overflow-hidden rounded-[24px]",
         "bg-sg-shell border border-sg-border",
-        "backdrop-blur-sg-shell backdrop-saturate-sg-shell",
+        "",
         "shadow-sg-3",
         // Liquid Glass optics — light-aware edge ring + chromatic inner
         // lensing so the rail reads as a bent-light material, not a tinted
         // panel. Blur-free, composes on top of the shell recipe above.
-        "lg-edge lg-refract",
+        "",
         // Desktop ≥md: sticky inline flex member.
         "md:relative md:sticky md:top-4 md:self-start md:max-h-[calc(100dvh-2rem)]",
         "md:shrink-0 md:translate-x-0",
@@ -355,9 +355,9 @@ function SidebarItem({
       onKeyDown={onKeyDown}
       className={cn(
         "group relative flex min-h-9 items-center gap-2.5 rounded-sg-md px-2.5 py-1.5 text-[13px] transition-colors",
-        // Springy press physics on tap (lg-gel composes its own transform
+        // Springy press physics on tap ( composes its own transform
         // transition; transition-colors above keeps the hue change).
-        "lg-gel",
+        "",
         // Active: full accent-tinted glass pill with a hairline accent border.
         // Inactive: text lift + sunken hover well.
         active
@@ -494,7 +494,7 @@ function SidebarGroup({
         className={cn(
           "relative flex min-h-9 w-full items-center gap-2.5 rounded-sg-md border border-transparent px-2.5 py-1.5 text-[13px] transition-colors",
           // Springy press physics on tap, matching SidebarItem.
-          "lg-gel",
+          "",
           // Active child lifts the label to medium weight; inactive groups get
           // a sunken hover well, matching SidebarItem.
           hasActiveChild

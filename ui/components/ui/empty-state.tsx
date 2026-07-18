@@ -50,7 +50,7 @@ export const EmptyState = React.forwardRef<HTMLDivElement, EmptyStateProps>(
         {description ? (
           <div className="text-xs text-sg-ink-3">{description}</div>
         ) : null}
-        {action ? <div className="lg-gel mt-2">{action}</div> : null}
+        {action ? <div className=" mt-2">{action}</div> : null}
       </motion.div>
     );
   },

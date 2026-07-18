@@ -50,21 +50,11 @@ describe("LoginPage", () => {
     expect(screen.getByRole("button", { name: "登录" })).toBeInTheDocument();
   });
 
-  it("renders decorative Spatial Glass backdrop layers", () => {
-    render(<LoginPage />);
-    // The hero column's deep-space showcase composes two aria-hidden,
-    // CSS-driven decoration layers: a drifting nebula glow (.sg-drift) and a
-    // faint fractal-noise grain (.sg-noise). Reduced-motion is honoured via a
-    // @media block in globals.css, so the DOM stays stable — the assertion is
-    // just that the design-system classes are present.
-    const nebula = document.querySelector(".sg-drift");
-    const noise = document.querySelector(".sg-noise");
-    expect(nebula).not.toBeNull();
-    expect(noise).not.toBeNull();
-    // The motion comes from globals.css keyframes (.sg-drift), not Tailwind
-    // `animate-*` utilities on these decoration layers.
-    expect(nebula?.className).not.toMatch(/\banimate-/);
-    expect(noise?.className).not.toMatch(/\banimate-/);
+  it("uses no backdrop blur anywhere on the page (Eclipse: matte only)", () => {
+    const { container } = render(<LoginPage />);
+    // The canvas (pure black + moonrise halo) is painted on <html> by
+    // globals.css — the page composes no blur layers of its own.
+    expect(container.innerHTML).not.toContain("backdrop-");
   });
 
   it("calls /admin/login and redirects on success", async () => {

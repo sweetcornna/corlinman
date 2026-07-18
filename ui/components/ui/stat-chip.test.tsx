@@ -47,7 +47,7 @@ describe("StatChip", () => {
     );
     const panel = container.querySelector("[data-glass-variant]");
     expect(panel).toHaveAttribute("data-glass-variant", "subtle");
-    expect(panel).not.toHaveClass("backdrop-blur-glass");
+    expect(panel).not.toHaveClass("backdrop-blur-md");
   });
 
   it("wraps in a GlassPanel with the primary variant when variant=primary", () => {

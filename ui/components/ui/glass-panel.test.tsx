@@ -12,7 +12,7 @@ describe("GlassPanel", () => {
     const el = screen.getByTestId("panel");
     expect(el).toHaveAttribute("data-glass-variant", "soft");
     expect(el).toHaveClass("bg-sg-card-grad");
-    expect(el).not.toHaveClass("backdrop-blur-glass");
+    expect(el).not.toHaveClass("backdrop-blur-md");
   });
 
   it("renders subtle variant without backdrop blur", () => {
@@ -24,7 +24,7 @@ describe("GlassPanel", () => {
     const el = screen.getByTestId("panel");
     expect(el).toHaveAttribute("data-glass-variant", "subtle");
     expect(el).toHaveClass("bg-sg-card-grad");
-    expect(el).not.toHaveClass("backdrop-blur-glass");
+    expect(el).not.toHaveClass("backdrop-blur-md");
   });
 
   it("renders the primary ring/glow when variant=primary", () => {

@@ -437,16 +437,16 @@ function TestChatDrawer({ onClose }: { onClose: () => void }) {
       className="fixed inset-0 z-[60] flex items-start justify-center px-4 pt-[10vh]"
     >
       <div
-        className="absolute inset-0 bg-black/60 backdrop-blur-sm animate-in fade-in-0 duration-150"
+        className="absolute inset-0 bg-black/60 animate-in fade-in-0 duration-150"
         onClick={onClose}
         aria-hidden
       />
       <div
         className={cn(
-          "relative z-10 flex w-full max-w-2xl flex-col gap-3 rounded-sg-xl border border-sg-border-strong bg-sg-overlay p-4 shadow-sg-4 backdrop-blur-sg-overlay backdrop-saturate-sg-overlay",
+          "relative z-10 flex w-full max-w-2xl flex-col gap-3 rounded-sg-xl border border-sg-border-strong bg-sg-overlay p-4 shadow-sg-4",
           // Liquid Glass optics + springy overshoot entrance, matching the
           // dialog/palette overlay surfaces.
-          "lg-edge lg-refract",
+          "",
           "animate-in fade-in-0 zoom-in-95 duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]",
         )}
       >
@@ -470,7 +470,7 @@ function TestChatDrawer({ onClose }: { onClose: () => void }) {
             <button
               type="submit"
               disabled={submitting || !prompt.trim()}
-              className="lg-gel inline-flex h-8 items-center rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+              className=" inline-flex h-8 items-center rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
             >
               {submitting ? t("cmdk.sending") : t("cmdk.send")}
             </button>

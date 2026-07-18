@@ -1,13 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import { GeistSans } from "geist/font/sans";
-import { GeistMono } from "geist/font/mono";
+import { jetbrainsMono, misans, mplus1 } from "./fonts";
 import { Providers } from "@/components/providers";
-
-// Tidepool display serif (Phase 0). Used only where explicitly opted in
-// via `font-serif` (hero greeting, uptime streak card, italic emphasis).
-// The CSS variable is defined in globals.css using local system fallbacks so
-// Docker builds do not depend on Google Fonts availability.
 
 export const metadata: Metadata = {
   title: "corlinman admin",
@@ -15,17 +9,17 @@ export const metadata: Metadata = {
     "corlinman admin UI — Rust gateway + Python AI layer + Next.js control plane.",
 };
 
-// Inline boot script. Runs before React hydrates to restore the Tidepool theme
-// (light/dark) from localStorage so theme-sensitive surfaces (aurora, glass,
-// palette outline) paint in the correct mode on first paint, not after React.
+// Inline boot script. Runs before React hydrates to restore the Eclipse theme
+// (light/dark) and tint from localStorage so theme-sensitive surfaces paint in
+// the correct mode on first paint, not after React.
 // Do not mutate language here: exported static HTML is zh-CN and the client
 // must match it for the first render. The provider applies the user's
 // persisted/browser language after hydration.
 const BOOT = `
 (function(){try{
   var el = document.documentElement;
-  // Theme (Tidepool). URL ?theme=light|dark wins over storage (handy for
-  // demos / screenshot testing) — and is persisted to localStorage so that
+  // Theme. URL ?theme=light|dark wins over storage (handy for demos /
+  // screenshot testing) — and is persisted to localStorage so that
   // next-themes (initialised later inside React) sees the same value and
   // doesn't override our choice. Otherwise falls back to stored value,
   // then the legacy next-themes key, then dark as the default.
@@ -37,25 +31,26 @@ const BOOT = `
   if (qs) { try { localStorage.setItem(tk, t); } catch(_){} }
   el.setAttribute("data-theme", t);
   if (t==="dark") el.classList.add("dark"); else el.classList.remove("dark");
-  // Theme Studio: the full generated CSS is persisted verbatim by
-  // lib/theme-studio.ts — inject it as-is before first paint (no logic
-  // duplication, no flash). Falls back to the legacy accent-only key.
-  var tc=localStorage.getItem("corlinman-theme-css");
-  if(tc){
-    var tst=document.createElement("style");
-    tst.id="sg-accent-override";
-    tst.textContent=tc;
-    document.head.appendChild(tst);
-  }
-  // Legacy custom accent (corlinman-accent = oklch hue). Mirrors
-  // lib/accent.ts buildAccentCss — keep the two generators in sync.
-  var ah=tc?null:localStorage.getItem("corlinman-accent");
-  if(ah!==null&&ah!==""&&isFinite(Number(ah))){
-    var H=((Number(ah)%360)+360)%360, H2=(H+55)%360, H3=(H-15+360)%360, HH=Math.round((H-18+360)%360);
-    var st=document.createElement("style");
-    st.id="sg-accent-override";
-    st.textContent=":root{--sg-accent:oklch(0.5 0.16 "+H+");--sg-accent-soft:oklch(0.5 0.16 "+H+" / 0.1);--sg-accent-glow:oklch(0.55 0.16 "+H+" / 0.3);--sg-accent-2:oklch(0.47 0.2 "+H2+");--sg-accent-2-soft:oklch(0.47 0.2 "+H2+" / 0.1);--sg-accent-3:oklch(0.55 0.1 "+H3+");--sg-accent-3-soft:oklch(0.55 0.1 "+H3+" / 0.1);--sg-grad-text:linear-gradient(115deg, oklch(0.46 0.17 "+H+"), oklch(0.52 0.12 "+H3+") 45%, oklch(0.44 0.21 "+H2+"));--primary:"+HH+" 70% 45%;--ring:"+HH+" 75% 55%;}.dark{--sg-accent:oklch(0.78 0.13 "+H+");--sg-accent-soft:oklch(0.78 0.13 "+H+" / 0.14);--sg-accent-glow:oklch(0.78 0.13 "+H+" / 0.45);--sg-accent-2:oklch(0.7 0.17 "+H2+");--sg-accent-2-soft:oklch(0.7 0.17 "+H2+" / 0.14);--sg-accent-3:oklch(0.85 0.07 "+H3+");--sg-accent-3-soft:oklch(0.85 0.07 "+H3+" / 0.14);--sg-grad-text:linear-gradient(115deg, oklch(0.86 0.11 "+H+"), oklch(0.92 0.05 "+H3+") 45%, oklch(0.76 0.17 "+H2+"));--primary:"+HH+" 75% 70%;--ring:"+HH+" 80% 70%;}";
-    document.head.appendChild(st);
+  // Purge Spatial Glass era theme keys: their persisted CSS blobs would
+  // override Eclipse tokens with pre-redesign colors on first paint.
+  try{
+    ["corlinman-theme-css","corlinman-theme-studio","corlinman-accent"].forEach(function(k){localStorage.removeItem(k);});
+  }catch(_){}
+  // Tint (corlinman-tint = {"preset":"ice"} or {"hue":210}). Presets map to
+  // the pure-CSS data-tint rules in globals.css; custom hues inject the same
+  // two-block CSS lib/tint.ts generates — keep the two generators in sync.
+  var raw=localStorage.getItem("corlinman-tint");
+  if(raw){
+    var v=JSON.parse(raw);
+    if(v&&typeof v.preset==="string"&&/^(dawn|ice|rose|moss|iris)$/.test(v.preset)){
+      el.setAttribute("data-tint", v.preset);
+    } else if(v&&typeof v.hue==="number"&&isFinite(v.hue)){
+      var H=((v.hue%360)+360)%360;
+      var st=document.createElement("style");
+      st.id="sg-tint-override";
+      st.textContent=":root:not(.dark){--sg-tint:oklch(0.55 0.09 "+H+");--sg-tint-ink:#fff;--sg-tint-glow:oklch(0.55 0.09 "+H+" / 0.3);--sg-tint-soft:oklch(0.55 0.09 "+H+" / 0.08);}.dark{--sg-tint:oklch(0.85 0.09 "+H+");--sg-tint-ink:#000;--sg-tint-glow:oklch(0.85 0.09 "+H+" / 0.42);--sg-tint-soft:oklch(0.85 0.09 "+H+" / 0.1);}";
+      document.head.appendChild(st);
+    }
   }
 }catch(e){}})();
 `;
@@ -64,22 +59,21 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   // `suppressHydrationWarning` is required by next-themes when it toggles the
-  // dark/light class on <html>. Geist sans + mono are exposed as CSS vars
-  // (`--font-geist-sans`, `--font-geist-mono`) consumed by tailwind.config.ts.
+  // dark/light class on <html>. The font CSS vars (--font-misans, --font-mplus,
+  // --font-jetbrains-mono) are consumed by tailwind.config.ts and the
+  // --st-font-* stacks in globals.css.
   return (
     <html
       lang="zh-CN"
       suppressHydrationWarning
-      className={`${GeistSans.variable} ${GeistMono.variable}`}
+      className={`${misans.variable} ${mplus1.variable} ${jetbrainsMono.variable}`}
     >
       <head>
         <script dangerouslySetInnerHTML={{ __html: BOOT }} />
       </head>
-      {/* Body does NOT paint a background. Admin routes mount their own
-          <AuroraBackground />, login/status build their own nebula layers.
-          Route groups that need a solid color set it on their own wrapper.
-          This lets the deep-space backdrop painted on <html> show through —
-          otherwise bg-background sits on top of the fixed -z-10 layer. */}
+      {/* Body does NOT paint a background: the pure-black canvas + moonrise
+          halo + vignette are painted on <html> by globals.css (pre-hydration,
+          zero JS) and must show through everywhere. */}
       <body className="min-h-dvh font-sans text-foreground antialiased">
         <Providers>{children}</Providers>
       </body>
