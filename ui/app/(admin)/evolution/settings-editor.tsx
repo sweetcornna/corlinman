@@ -66,12 +66,19 @@ export function EvolutionSettingsDialog({
   const [error, setError] = useState<string | null>(null);
   const [disabled, setDisabled] = useState(false);
   const [approverInput, setApproverInput] = useState("");
+  // Numeric fine-tuning (per-kind budget caps, auto-rollback thresholds)
+  // all has server defaults, so it collapses behind per-section "advanced"
+  // disclosures; the section enable switches stay visible.
+  const [showBudgetAdvanced, setShowBudgetAdvanced] = useState(false);
+  const [showRollbackAdvanced, setShowRollbackAdvanced] = useState(false);
 
   // Load on open; reset transient state when closed.
   useEffect(() => {
     if (!open) {
       setError(null);
       setApproverInput("");
+      setShowBudgetAdvanced(false);
+      setShowRollbackAdvanced(false);
       return;
     }
     let cancelled = false;
@@ -301,28 +308,36 @@ export function EvolutionSettingsDialog({
                   testid="budget-weekly-total"
                 />
               </Field>
-              <div className="flex flex-col gap-1.5">
-                <span className="text-[11.5px] text-sg-ink-3">
-                  {t("evolution.settings.perKind")}
-                </span>
-                {perKindRows.map((row) => (
-                  <div
-                    key={row.kind}
-                    className="flex items-center justify-between gap-2"
-                  >
-                    <Label className="font-mono text-[12px] text-sg-ink-2">
-                      {row.kind}
-                    </Label>
-                    <NumberInput
-                      value={row.value}
-                      min={0}
-                      onChange={(n) => setPerKind(row.kind, n)}
-                      testid={`budget-perkind-${row.kind}`}
-                      className="w-24"
-                    />
-                  </div>
-                ))}
-              </div>
+              <button
+                type="button"
+                onClick={() => setShowBudgetAdvanced((v) => !v)}
+                data-testid="budget-toggle-advanced"
+                className="self-start text-[11px] text-sg-ink-3 underline-offset-2 hover:text-sg-ink hover:underline focus-visible:outline-none focus-visible:underline"
+              >
+                {showBudgetAdvanced ? "—" : "+"}{" "}
+                {t("evolution.settings.perKind")}
+              </button>
+              {showBudgetAdvanced ? (
+                <div className="flex flex-col gap-1.5">
+                  {perKindRows.map((row) => (
+                    <div
+                      key={row.kind}
+                      className="flex items-center justify-between gap-2"
+                    >
+                      <Label className="font-mono text-[12px] text-sg-ink-2">
+                        {row.kind}
+                      </Label>
+                      <NumberInput
+                        value={row.value}
+                        min={0}
+                        onChange={(n) => setPerKind(row.kind, n)}
+                        testid={`budget-perkind-${row.kind}`}
+                        className="w-24"
+                      />
+                    </div>
+                  ))}
+                </div>
+              ) : null}
             </section>
 
             {/* ── Auto-rollback ── */}
@@ -342,6 +357,19 @@ export function EvolutionSettingsDialog({
                     data-testid="auto-rollback-enabled"
                   />
                 </div>
+                <button
+                  type="button"
+                  onClick={() => setShowRollbackAdvanced((v) => !v)}
+                  data-testid="rollback-toggle-advanced"
+                  className="self-start text-[11px] text-sg-ink-3 underline-offset-2 hover:text-sg-ink hover:underline focus-visible:outline-none focus-visible:underline"
+                >
+                  {showRollbackAdvanced ? "—" : "+"}{" "}
+                  {t("evolution.settings.thresholdsAdvanced", {
+                    defaultValue: "阈值调优",
+                  })}
+                </button>
+                {showRollbackAdvanced ? (
+                  <>
                 <Field
                   label={t("evolution.settings.graceWindowHours")}
                   hint={t("evolution.settings.graceWindowHint")}
@@ -389,6 +417,8 @@ export function EvolutionSettingsDialog({
                     testid="threshold-min-baseline"
                   />
                 </Field>
+                  </>
+                ) : null}
               </section>
             ) : null}
 

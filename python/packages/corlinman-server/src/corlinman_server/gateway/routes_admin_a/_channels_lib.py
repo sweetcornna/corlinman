@@ -207,6 +207,10 @@ class ChannelConfigBody(BaseModel):
     ids: dict[str, list[str]] | None = None
     filters: dict[str, list[str]] | None = None
     flags: dict[str, bool] | None = None
+    numbers: dict[str, float] | None = None
+    """Typed numeric knobs (``number_keys``): written as TOML numbers
+    (int when integral) so runtime ``float()``/``int()`` reads round-trip
+    without string coercion."""
 
 
 class ChannelConfigOut(BaseModel):
@@ -231,11 +235,26 @@ class ChannelConfigOut(BaseModel):
 _CHANNEL_EDITABLE: dict[str, dict[str, list[str]]] = {
     "qq": {
         "secret_keys": ["access_token", "napcat_access_token"],
-        "url_keys": ["ws_url", "napcat_url"],
-        "int_list_keys": ["self_ids"],
+        # group_reply_policy / proactive_prompt are plain strings — they
+        # ride the url_keys (string) group like app_id does.
+        "url_keys": [
+            "ws_url",
+            "napcat_url",
+            "group_reply_policy",
+            "proactive_prompt",
+        ],
+        "int_list_keys": ["self_ids", "group_whitelist", "proactive_groups"],
         "str_list_keys": [],
         "filter_keys": [],
-        "bool_keys": [],
+        "bool_keys": ["group_replies_enabled", "proactive_enabled"],
+        "number_keys": [
+            "group_reply_cooldown_secs",
+            "proactive_min_gap_minutes",
+            "proactive_max_gap_minutes",
+            "proactive_daily_max",
+            "proactive_active_start_hour",
+            "proactive_active_end_hour",
+        ],
     },
     "telegram": {
         "secret_keys": ["bot_token", "secret_token"],
@@ -530,6 +549,20 @@ def _apply_channel_config(
                     "unknown_field", f"{key} is not an editable flag for {name}"
                 )
             section[key] = bool(flag_val)
+            wrote.append(key)
+
+    if body.numbers:
+        allowed = set(spec.get("number_keys", []))
+        for key, num_val in body.numbers.items():
+            if key not in allowed:
+                raise _bad_request(
+                    "unknown_field",
+                    f"{key} is not an editable number for {name}",
+                )
+            fval = float(num_val)
+            # Integral values persist as TOML ints (hours / counts read
+            # cleaner in the file); genuine fractions stay floats.
+            section[key] = int(fval) if fval.is_integer() else fval
             wrote.append(key)
 
     return sorted(set(wrote))

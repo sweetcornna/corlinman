@@ -555,7 +555,7 @@ describe("PersonaPage — editor modal", () => {
     });
   });
 
-  it("enables reset-to-default for builtins; test box stays disabled", async () => {
+  it("enables reset-to-default for builtins; no dead test box", async () => {
     fetchPersonasMock.mockResolvedValue([SAMPLE_BUILTIN]);
     stubHumanlikeOff();
 
@@ -569,10 +569,134 @@ describe("PersonaPage — editor modal", () => {
     // Reset-to-default only shows when editing a builtin, and is now live.
     const resetBtn = await screen.findByTestId("persona-reset-default");
     expect(resetBtn).not.toBeDisabled();
-    // Test box is always present in the editor; both bits still disabled
-    // (no preview endpoint yet — deferred).
-    expect(screen.getByTestId("persona-test-input")).toBeDisabled();
-    expect(screen.getByTestId("persona-test-button")).toBeDisabled();
+    // The permanently-disabled preview "test box" was removed — the
+    // backend has no preview endpoint.
+    expect(screen.queryByTestId("persona-test-box")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("persona-test-input")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("persona-test-button")).not.toBeInTheDocument();
+  });
+
+  it("auto-derives the slug from the display name in create mode", async () => {
+    fetchPersonasMock.mockResolvedValue([]);
+    stubHumanlikeOff();
+
+    render(
+      <Harness>
+        <PersonaPage />
+      </Harness>,
+    );
+
+    await screen.findByTestId("personas-empty");
+    fireEvent.click(screen.getByTestId("persona-new"));
+
+    const idInput = (await screen.findByTestId(
+      "persona-id-input",
+    )) as HTMLInputElement;
+    fireEvent.change(screen.getByTestId("persona-display-name-input"), {
+      target: { value: "Alyssa P. Hacker" },
+    });
+    expect(idInput.value).toBe("alyssa-p-hacker");
+
+    // Clearing the display name clears the derived slug again.
+    fireEvent.change(screen.getByTestId("persona-display-name-input"), {
+      target: { value: "" },
+    });
+    expect(idInput.value).toBe("");
+  });
+
+  it("falls back to a stable persona-<rand> slug for CJK display names", async () => {
+    fetchPersonasMock.mockResolvedValue([]);
+    stubHumanlikeOff();
+
+    render(
+      <Harness>
+        <PersonaPage />
+      </Harness>,
+    );
+
+    await screen.findByTestId("personas-empty");
+    fireEvent.click(screen.getByTestId("persona-new"));
+
+    const idInput = (await screen.findByTestId(
+      "persona-id-input",
+    )) as HTMLInputElement;
+    fireEvent.change(screen.getByTestId("persona-display-name-input"), {
+      target: { value: "格兰" },
+    });
+    expect(idInput.value).toMatch(/^persona-[a-z0-9]{4}$/);
+    const first = idInput.value;
+
+    // Deterministic across keystrokes — the suffix must not re-roll.
+    fireEvent.change(screen.getByTestId("persona-display-name-input"), {
+      target: { value: "格兰特利" },
+    });
+    expect(idInput.value).toBe(first);
+  });
+
+  it("stops auto-deriving once the slug is manually edited", async () => {
+    fetchPersonasMock.mockResolvedValue([]);
+    stubHumanlikeOff();
+
+    render(
+      <Harness>
+        <PersonaPage />
+      </Harness>,
+    );
+
+    await screen.findByTestId("personas-empty");
+    fireEvent.click(screen.getByTestId("persona-new"));
+
+    const idInput = (await screen.findByTestId(
+      "persona-id-input",
+    )) as HTMLInputElement;
+    fireEvent.change(screen.getByTestId("persona-display-name-input"), {
+      target: { value: "Alyssa" },
+    });
+    expect(idInput.value).toBe("alyssa");
+
+    fireEvent.change(idInput, { target: { value: "custom-slug" } });
+    fireEvent.change(screen.getByTestId("persona-display-name-input"), {
+      target: { value: "Ben Bitdiddle" },
+    });
+    expect(idInput.value).toBe("custom-slug");
+  });
+
+  it("create flow allows an empty short summary", async () => {
+    fetchPersonasMock.mockResolvedValueOnce([]);
+    fetchPersonasMock.mockResolvedValueOnce([SAMPLE_CUSTOM]);
+    createPersonaMock.mockResolvedValue(SAMPLE_CUSTOM);
+    stubHumanlikeOff();
+
+    render(
+      <Harness>
+        <PersonaPage />
+      </Harness>,
+    );
+
+    await screen.findByTestId("personas-empty");
+    fireEvent.click(screen.getByTestId("persona-new"));
+
+    fireEvent.change(await screen.findByTestId("persona-display-name-input"), {
+      target: { value: "Alyssa P. Hacker" },
+    });
+    fireEvent.change(screen.getByTestId("persona-system-prompt-textarea"), {
+      target: { value: "# Alyssa\nYou are Alyssa." },
+    });
+    fireEvent.click(screen.getByTestId("persona-editor-save"));
+
+    await waitFor(() => {
+      expect(createPersonaMock).toHaveBeenCalledWith({
+        id: "alyssa-p-hacker",
+        display_name: "Alyssa P. Hacker",
+        short_summary: "",
+        system_prompt: "# Alyssa\nYou are Alyssa.",
+        model_bindings: {
+          text: { provider: null, model: null },
+          image: { provider: null, model: null },
+          voice: { provider: null, model: null },
+        },
+      });
+    });
   });
 });
 

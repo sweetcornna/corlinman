@@ -8,9 +8,11 @@
  *
  * Layout (mirrors the persona + scheduler admin pages):
  *   [ page header with title + one-click "Enable daily 说说" button
- *     (works for ANY persona — uses the form selection) ]
- *   [ Create-job card — persona dropdown, prompt template, cron,
- *     toggle + helper showing "next fire at …" ]
+ *     (quick path — uses the form's persona selection) ]
+ *   [ Edit card — persona dropdown (job name derived as
+ *     `${personaId}.daily_qzone`), prefilled prompt template, cron
+ *     preset select with advanced raw-cron reveal, toggle + helper
+ *     showing "next fire at …" ]
  *   [ Jobs table — name · cron · persona · enabled · last-run
  *     summary · actions (run now, link to last qzone url) ]
  *
@@ -44,6 +46,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { FieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -84,12 +87,18 @@ const DEFAULT_DAILY_PROMPT =
   "语气可以轻松随意，可以聊聊今天的心情、关注到的小事或正在做的事。" +
   "结尾必须调用 qzone_publish 工具发布（可以使用 generate 字段生成配图）。";
 
-/** Slug regex mirroring the backend `_JOB_NAME_RE`. Client-side gate
- * so a typo doesn't survive the round-trip. */
-const JOB_NAME_RE = /^[a-z0-9_.-]{1,128}$/;
+/** Cron choices surfaced in the preset select. Anything else lives
+ * behind the 自定义 advanced reveal (raw 5-field cron input). */
+const CRON_PRESETS = [
+  { cron: "0 9 * * *", key: "cronPreset09", fallback: "每天 09:00" },
+  { cron: "0 12 * * *", key: "cronPreset12", fallback: "每天 12:00" },
+  { cron: "0 21 * * *", key: "cronPreset21", fallback: "每天 21:00" },
+] as const;
+
+/** Sentinel select value that reveals the raw cron input. */
+const CRON_CUSTOM = "__custom__";
 
 interface FormState {
-  name: string;
   personaId: string;
   promptTemplate: string;
   cron: string;
@@ -97,12 +106,17 @@ interface FormState {
 }
 
 const DEFAULT_FORM: FormState = {
-  name: "",
   personaId: "",
-  promptTemplate: "",
+  promptTemplate: DEFAULT_DAILY_PROMPT,
   cron: DEFAULT_CRON,
   enabled: true,
 };
+
+/** Job name is mechanically derived from the persona — one daily job
+ * per persona, so re-saving the same persona upserts in place. */
+function deriveJobName(personaId: string): string {
+  return `${personaId}.daily_qzone`;
+}
 
 /** IANA zone the operator's browser lives in. Sent with every job so the
  * backend evaluates the cron on this wall clock — which is exactly what
@@ -121,6 +135,8 @@ export default function QzoneSchedulerPage() {
   const qc = useQueryClient();
 
   const [form, setForm] = React.useState<FormState>(DEFAULT_FORM);
+  // Whether the operator opened the advanced raw-cron input (自定义).
+  const [cronCustom, setCronCustom] = React.useState(false);
 
   // 1-Hz tick so the "next fire at" preview stays roughly current
   // without a busy redraw. The preview is the only time-sensitive
@@ -144,7 +160,7 @@ export default function QzoneSchedulerPage() {
   const createMutation = useMutation({
     mutationFn: () =>
       createSchedulerJob({
-        name: form.name.trim(),
+        name: deriveJobName(form.personaId),
         cron: form.cron.trim(),
         action_type: QZONE_DAILY_ACTION_TYPE,
         timezone: browserTimeZone(),
@@ -160,6 +176,7 @@ export default function QzoneSchedulerPage() {
         }),
       );
       setForm(DEFAULT_FORM);
+      setCronCustom(false);
       qc.invalidateQueries({ queryKey: JOBS_QUERY_KEY });
     },
     onError: (err) => {
@@ -180,7 +197,7 @@ export default function QzoneSchedulerPage() {
   const enableDailyMutation = useMutation({
     mutationFn: (persona: Persona) =>
       createSchedulerJob({
-        name: `${persona.id}.daily_qzone`,
+        name: deriveJobName(persona.id),
         cron: DEFAULT_CRON,
         action_type: QZONE_DAILY_ACTION_TYPE,
         timezone: browserTimeZone(),
@@ -278,9 +295,7 @@ export default function QzoneSchedulerPage() {
     return nextFireTime(form.cron.trim(), now);
   }, [form.cron, now]);
 
-  const nameValid = JOB_NAME_RE.test(form.name.trim());
   const canSubmit =
-    nameValid &&
     form.personaId.trim().length > 0 &&
     form.promptTemplate.trim().length > 0 &&
     nextFirePreview !== null;
@@ -295,10 +310,7 @@ export default function QzoneSchedulerPage() {
           </h1>
           <p className="max-w-2xl text-sm text-muted-foreground">
             {t("schedulerQzone.lede", {
-              defaultValue:
-                "Drive a persona's daily QQ-空间 说说 pipeline on a cron schedule. " +
-                "Each job runs one agent turn under the persona's voice and asserts " +
-                "it ends with a qzone_publish tool call.",
+              defaultValue: "让人格按计划每天自动发布一条 QQ 空间说说。",
             })}
           </p>
         </div>
@@ -333,40 +345,20 @@ export default function QzoneSchedulerPage() {
         </div>
       </header>
 
-      {/* Create / upsert form ------------------------------------------------ */}
+      {/* Edit / upsert form -------------------------------------------------- */}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">
             <Plus className="mr-1 inline h-4 w-4 align-text-bottom" aria-hidden />
-            {t("schedulerQzone.create", { defaultValue: "Create a daily QZone job" })}
+            {t("schedulerQzone.create", { defaultValue: "配置每日说说任务" })}
           </CardTitle>
           <CardDescription>
             {t("schedulerQzone.createHelp", {
-              defaultValue:
-                "Re-submitting the same name updates the existing job in place — useful " +
-                "for editing the cron or prompt without churning the registry.",
+              defaultValue: "选择人格并保存；同一人格重复保存会就地更新任务。",
             })}
           </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-4 md:grid-cols-2">
-          <div className="space-y-1.5 md:col-span-1">
-            <Label htmlFor="qzone-job-name">
-              {t("schedulerQzone.fieldName", { defaultValue: "Job name" })}
-            </Label>
-            <Input
-              id="qzone-job-name"
-              value={form.name}
-              onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-              placeholder="grantley.daily_qzone"
-              spellCheck={false}
-              aria-invalid={form.name.length > 0 && !nameValid}
-            />
-            <p className="text-xs text-muted-foreground">
-              {t("schedulerQzone.fieldNameHelp", {
-                defaultValue: "[a-z0-9_.-]{1,128} — used as the unique key in the registry.",
-              })}
-            </p>
-          </div>
           <div className="space-y-1.5 md:col-span-1">
             <Label htmlFor="qzone-job-persona">
               {t("schedulerQzone.fieldPersona", { defaultValue: "Persona" })}
@@ -396,18 +388,24 @@ export default function QzoneSchedulerPage() {
               ))}
             </select>
             {personasQuery.isPending ? (
-              <p className="text-xs text-muted-foreground">
+              <FieldHint>
                 {t("schedulerQzone.loadingPersonas", {
                   defaultValue: "Loading personas…",
                 })}
-              </p>
+              </FieldHint>
+            ) : null}
+            {form.personaId ? (
+              <FieldHint id="qzone-derived-name">
+                {t("schedulerQzone.derivedName", {
+                  defaultValue: "任务名：{{name}}",
+                  name: deriveJobName(form.personaId),
+                })}
+              </FieldHint>
             ) : null}
           </div>
           <div className="space-y-1.5 md:col-span-2">
             <Label htmlFor="qzone-job-prompt">
-              {t("schedulerQzone.fieldPrompt", {
-                defaultValue: "Prompt template (user turn)",
-              })}
+              {t("schedulerQzone.fieldPrompt", { defaultValue: "提示词" })}
             </Label>
             <textarea
               id="qzone-job-prompt"
@@ -426,27 +424,62 @@ export default function QzoneSchedulerPage() {
                 "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
               )}
             />
-            <p className="text-xs text-muted-foreground">
-              {t("schedulerQzone.fieldPromptHelp", {
+            <FieldHint
+              detail={t("schedulerQzone.fieldPromptDetail", {
                 defaultValue:
-                  "Sent verbatim as the user turn. The persona system prompt + a " +
-                  "tail instructing the agent to end with qzone_publish are appended " +
-                  "automatically.",
+                  "内容会原样作为用户消息发送；人格设定与发布指令由系统自动附加。",
               })}
-            </p>
+            >
+              {t("schedulerQzone.fieldPromptHelp", {
+                defaultValue: "告诉人格每天写什么，可随时修改。",
+              })}
+            </FieldHint>
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="qzone-job-cron">
-              {t("schedulerQzone.fieldCron", { defaultValue: "Cron expression" })}
+            <Label htmlFor="qzone-job-cron-preset">
+              {t("schedulerQzone.fieldCron", { defaultValue: "发布时间" })}
             </Label>
-            <Input
-              id="qzone-job-cron"
-              value={form.cron}
-              onChange={(e) => setForm((f) => ({ ...f, cron: e.target.value }))}
-              placeholder={DEFAULT_CRON}
-              spellCheck={false}
-              aria-invalid={form.cron.length > 0 && nextFirePreview === null}
-            />
+            <select
+              id="qzone-job-cron-preset"
+              value={cronCustom ? CRON_CUSTOM : form.cron}
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v === CRON_CUSTOM) {
+                  setCronCustom(true);
+                } else {
+                  setCronCustom(false);
+                  setForm((f) => ({ ...f, cron: v }));
+                }
+              }}
+              className={cn(
+                "flex h-9 w-full rounded-md border border-input bg-transparent",
+                "px-3 py-1 text-sm shadow-sm transition-colors",
+                "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+              )}
+            >
+              {CRON_PRESETS.map((preset) => (
+                <option key={preset.cron} value={preset.cron}>
+                  {t(`schedulerQzone.${preset.key}`, {
+                    defaultValue: preset.fallback,
+                  })}
+                </option>
+              ))}
+              <option value={CRON_CUSTOM}>
+                {t("schedulerQzone.cronPresetCustom", { defaultValue: "自定义…" })}
+              </option>
+            </select>
+            {cronCustom ? (
+              <Input
+                id="qzone-job-cron"
+                value={form.cron}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, cron: e.target.value }))
+                }
+                placeholder={DEFAULT_CRON}
+                spellCheck={false}
+                aria-invalid={form.cron.length > 0 && nextFirePreview === null}
+              />
+            ) : null}
             <p
               className={cn(
                 "text-xs",
@@ -499,8 +532,7 @@ export default function QzoneSchedulerPage() {
           <CardDescription>
             {t("schedulerQzone.tableHelp", {
               defaultValue:
-                'Only jobs with action_type="qzone.daily_publish" are shown here. ' +
-                'Manage non-qzone jobs from the main /admin/scheduler page.',
+                "此处仅显示每日说说任务，其他定时任务请在「定时任务」页面管理。",
             })}
           </CardDescription>
         </CardHeader>
@@ -514,8 +546,7 @@ export default function QzoneSchedulerPage() {
           ) : qzoneJobs.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               {t("schedulerQzone.empty", {
-                defaultValue:
-                  "No QZone daily jobs yet. Use the form above or enable the Grantley template.",
+                defaultValue: "暂无每日说说任务，在上方选择人格并保存即可创建。",
               })}
             </p>
           ) : (

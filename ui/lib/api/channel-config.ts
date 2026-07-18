@@ -4,16 +4,29 @@
  *   PUT /admin/channels/{channel}/config  → ChannelConfigOut
  *
  * The backend (`routes_admin_a/channels.py`) expects a STRUCTURED body —
- * `{ secrets, urls, ids, filters, flags }` — validated against a per-channel
- * editable-field spec; any key not in the spec is rejected `unknown_field`.
- * Secrets honour the `***REDACTED***`-or-omit convention: an omitted secret
- * key keeps the current on-disk value, so the editor simply leaves blank
- * secret inputs out of the payload.
+ * `{ secrets, urls, ids, filters, flags, numbers }` — validated against a
+ * per-channel editable-field spec; any key not in the spec is rejected
+ * `unknown_field`. Secrets honour the `***REDACTED***`-or-omit convention:
+ * an omitted secret key keeps the current on-disk value, so the editor
+ * simply leaves blank secret inputs out of the payload.
  *
  * `CHANNEL_CONFIG_SPEC` mirrors `_CHANNEL_EDITABLE` field-for-field (the
  * backend's `int_list_keys` + `str_list_keys` are merged here into `ids`,
  * since the wire shape groups both under `ids` and the backend coerces
- * int lists from string values).
+ * int lists from string values). Wire-group semantics per field kind:
+ *
+ * - `urls` is the backend's PLAIN-STRING group (`url_keys`) — endpoint
+ *   overrides, public client ids (`app_id`), and now also enum/text
+ *   strings (`group_reply_policy` / `proactive_prompt`), all written
+ *   verbatim as strings.
+ * - `numbers` is the TYPED numeric group: values cross the wire as JSON
+ *   numbers (never stringified) so the TOML round-trips typed.
+ * - `flags` are typed booleans; `ids`/`filters` are string lists (the
+ *   backend coerces int lists).
+ *
+ * Each field is a `ChannelFieldSpec`; `advanced: true` marks expert-only
+ * fields the editor folds behind its "advanced" disclosure (endpoint
+ * overrides have sane adapter defaults; tuning numbers are niche).
  */
 
 import { apiFetch } from "@/lib/api";
@@ -28,66 +41,129 @@ export type ConfigEditableChannel =
   | "wechat_official"
   | "qq_official";
 
+/** One editable field. The declarative `advanced` flag drives the editor's
+ * disclosure split — no per-channel render logic. */
+export interface ChannelFieldSpec {
+  key: string;
+  /** Expert-only: rendered inside the collapsed "advanced" section. */
+  advanced?: boolean;
+  /** Widget override for plain-string (`urls` group) fields. */
+  input?: "select" | "textarea";
+  /** Allowed values for `input: "select"`. FIRST option = adapter default
+   * (used to seed the select when the key is absent on disk). */
+  options?: readonly string[];
+  /** Adapter default, shown as the input placeholder (number fields). */
+  placeholder?: string;
+}
+
 export interface ChannelConfigSpec {
-  secrets: string[];
-  urls: string[];
-  ids: string[];
-  filters: string[];
-  flags: string[];
+  secrets: ChannelFieldSpec[];
+  /** Plain-string wire group (`url_keys`): endpoints, app_id, enum/text. */
+  urls: ChannelFieldSpec[];
+  ids: ChannelFieldSpec[];
+  filters: ChannelFieldSpec[];
+  flags: ChannelFieldSpec[];
+  /** Typed numeric wire group — sent as JSON numbers. */
+  numbers: ChannelFieldSpec[];
 }
 
 /** Mirror of the backend `_CHANNEL_EDITABLE` spec. Keep in sync. */
 export const CHANNEL_CONFIG_SPEC: Record<ConfigEditableChannel, ChannelConfigSpec> = {
   qq: {
-    secrets: ["access_token", "napcat_access_token"],
-    urls: ["ws_url", "napcat_url"],
-    ids: ["self_ids"],
+    secrets: [{ key: "access_token" }, { key: "napcat_access_token" }],
+    urls: [
+      { key: "ws_url", advanced: true },
+      { key: "napcat_url", advanced: true },
+      {
+        key: "group_reply_policy",
+        input: "select",
+        options: ["mention_or_keyword", "all"],
+      },
+      { key: "proactive_prompt", input: "textarea", advanced: true },
+    ],
+    ids: [
+      { key: "self_ids" },
+      { key: "group_whitelist" },
+      { key: "proactive_groups", advanced: true },
+    ],
     filters: [],
-    flags: [],
+    flags: [{ key: "group_replies_enabled" }, { key: "proactive_enabled" }],
+    numbers: [
+      { key: "group_reply_cooldown_secs", advanced: true, placeholder: "20" },
+      { key: "proactive_min_gap_minutes", advanced: true, placeholder: "45" },
+      { key: "proactive_max_gap_minutes", advanced: true, placeholder: "180" },
+      { key: "proactive_daily_max", advanced: true, placeholder: "4" },
+      { key: "proactive_active_start_hour", advanced: true, placeholder: "9" },
+      { key: "proactive_active_end_hour", advanced: true, placeholder: "23" },
+    ],
   },
   telegram: {
-    secrets: ["bot_token", "secret_token"],
-    urls: ["base_url", "webhook_url"],
-    ids: ["allowed_chat_ids"],
-    filters: ["keyword_filter"],
-    flags: ["require_mention_in_groups", "drop_pending_updates"],
+    secrets: [{ key: "bot_token" }, { key: "secret_token" }],
+    urls: [
+      { key: "base_url", advanced: true },
+      { key: "webhook_url", advanced: true },
+    ],
+    ids: [{ key: "allowed_chat_ids" }],
+    filters: [{ key: "keyword_filter" }],
+    flags: [{ key: "require_mention_in_groups" }, { key: "drop_pending_updates" }],
+    numbers: [],
   },
   discord: {
-    secrets: ["bot_token"],
-    urls: ["gateway_url", "rest_base"],
-    ids: ["allowed_channel_ids"],
-    filters: ["keyword_filter"],
-    flags: ["respond_to_all"],
+    secrets: [{ key: "bot_token" }],
+    urls: [
+      { key: "gateway_url", advanced: true },
+      { key: "rest_base", advanced: true },
+    ],
+    ids: [{ key: "allowed_channel_ids" }],
+    filters: [{ key: "keyword_filter" }],
+    flags: [{ key: "respond_to_all" }],
+    numbers: [],
   },
   slack: {
-    secrets: ["app_token", "bot_token"],
-    urls: ["api_base"],
-    ids: ["allowed_channel_ids"],
-    filters: ["keyword_filter"],
-    flags: ["respond_to_all"],
+    secrets: [{ key: "app_token" }, { key: "bot_token" }],
+    urls: [{ key: "api_base", advanced: true }],
+    ids: [{ key: "allowed_channel_ids" }],
+    filters: [{ key: "keyword_filter" }],
+    flags: [{ key: "respond_to_all" }],
+    numbers: [],
   },
   feishu: {
-    secrets: ["app_secret"],
-    urls: ["app_id", "api_base"],
-    ids: ["allowed_chat_ids"],
-    filters: ["keyword_filter"],
-    flags: ["respond_to_all"],
+    secrets: [{ key: "app_secret" }],
+    urls: [{ key: "app_id" }, { key: "api_base", advanced: true }],
+    ids: [{ key: "allowed_chat_ids" }],
+    filters: [{ key: "keyword_filter" }],
+    flags: [{ key: "respond_to_all" }],
+    numbers: [],
   },
   wechat_official: {
-    secrets: ["app_secret", "token"],
-    urls: ["app_id", "api_base"],
+    secrets: [{ key: "app_secret" }, { key: "token" }],
+    urls: [{ key: "app_id" }, { key: "api_base", advanced: true }],
     ids: [],
     filters: [],
     flags: [],
+    numbers: [],
   },
   qq_official: {
-    secrets: ["app_secret"],
-    urls: ["app_id", "api_base"],
-    ids: ["intents"],
+    secrets: [{ key: "app_secret" }],
+    urls: [{ key: "app_id" }, { key: "api_base", advanced: true }],
+    ids: [{ key: "intents" }],
     filters: [],
-    flags: ["sandbox"],
+    flags: [{ key: "sandbox" }],
+    numbers: [],
   },
 };
+
+/** True when any field of the channel is marked `advanced`. */
+export function specHasAdvanced(spec: ChannelConfigSpec): boolean {
+  return [
+    ...spec.secrets,
+    ...spec.urls,
+    ...spec.ids,
+    ...spec.filters,
+    ...spec.flags,
+    ...spec.numbers,
+  ].some((f) => f.advanced === true);
+}
 
 export interface ChannelConfigBody {
   secrets?: Record<string, string>;
@@ -95,6 +171,8 @@ export interface ChannelConfigBody {
   ids?: Record<string, string[]>;
   filters?: Record<string, string[]>;
   flags?: Record<string, boolean>;
+  /** Typed numbers — JSON numbers on the wire, never stringified. */
+  numbers?: Record<string, number>;
 }
 
 export interface ChannelConfigOut {
@@ -105,13 +183,15 @@ export interface ChannelConfigOut {
 
 /** Editor's local draft. `secrets` start blank (blank = keep current). The
  * list-bearing groups (`ids`/`filters`) are held as raw text the operator
- * types (comma/newline separated) and parsed at submit. */
+ * types (comma/newline separated) and parsed at submit; `numbers` are held
+ * as raw text too and parsed to typed numbers at submit. */
 export interface ChannelConfigDraft {
   secrets: Record<string, string>;
   urls: Record<string, string>;
   ids: Record<string, string>;
   filters: Record<string, string>;
   flags: Record<string, boolean>;
+  numbers: Record<string, string>;
 }
 
 /** Split a comma/newline-separated text field into a trimmed, non-empty list. */
@@ -128,7 +208,9 @@ function listEq(a: string[], b: string[]): boolean {
 }
 
 /** Seed a draft from the channel's current non-secret config keys. Secrets
- * always start blank (the backend never echoes them). */
+ * always start blank (the backend never echoes them). Select fields with
+ * no on-disk value seed to their first option (= the adapter default), so
+ * the widget always shows a real value without marking the form dirty. */
 export function seedDraft(
   channel: ConfigEditableChannel,
   configKeys: ChannelConfigKeys,
@@ -136,17 +218,28 @@ export function seedDraft(
   const spec = CHANNEL_CONFIG_SPEC[channel];
   const asStr = (v: string | string[] | undefined): string =>
     Array.isArray(v) ? v.join(", ") : v == null ? "" : String(v);
-  const draft: ChannelConfigDraft = { secrets: {}, urls: {}, ids: {}, filters: {}, flags: {} };
-  for (const k of spec.secrets) draft.secrets[k] = "";
-  for (const k of spec.urls) draft.urls[k] = asStr(configKeys[k]);
-  for (const k of spec.ids) draft.ids[k] = asStr(configKeys[k]);
-  for (const k of spec.filters) draft.filters[k] = asStr(configKeys[k]);
-  for (const k of spec.flags) {
+  const draft: ChannelConfigDraft = {
+    secrets: {},
+    urls: {},
+    ids: {},
+    filters: {},
+    flags: {},
+    numbers: {},
+  };
+  for (const f of spec.secrets) draft.secrets[f.key] = "";
+  for (const f of spec.urls) {
+    const v = asStr(configKeys[f.key]);
+    draft.urls[f.key] = !v && f.options?.length ? f.options[0] : v;
+  }
+  for (const f of spec.ids) draft.ids[f.key] = asStr(configKeys[f.key]);
+  for (const f of spec.filters) draft.filters[f.key] = asStr(configKeys[f.key]);
+  for (const f of spec.flags) {
     // The status route emits bool keys as the string "true"/"false"
     // (str(bool) on the backend), so compare against the string forms.
-    const v = configKeys[k];
-    draft.flags[k] = v === "true" || v === "True";
+    const v = configKeys[f.key];
+    draft.flags[f.key] = v === "true" || v === "True";
   }
+  for (const f of spec.numbers) draft.numbers[f.key] = asStr(configKeys[f.key]);
   return draft;
 }
 
@@ -164,44 +257,69 @@ export function buildChannelConfigBody(
   const body: ChannelConfigBody = {};
 
   const secrets: Record<string, string> = {};
-  for (const k of spec.secrets) {
-    const v = (draft.secrets[k] ?? "").trim();
-    if (v) secrets[k] = v; // blank = keep current (omit)
+  for (const f of spec.secrets) {
+    const v = (draft.secrets[f.key] ?? "").trim();
+    if (v) secrets[f.key] = v; // blank = keep current (omit)
   }
   if (Object.keys(secrets).length) body.secrets = secrets;
 
   const urls: Record<string, string> = {};
-  for (const k of spec.urls) {
-    if ((draft.urls[k] ?? "") !== (initial.urls[k] ?? "")) urls[k] = draft.urls[k] ?? "";
+  for (const f of spec.urls) {
+    if ((draft.urls[f.key] ?? "") !== (initial.urls[f.key] ?? "")) {
+      urls[f.key] = draft.urls[f.key] ?? "";
+    }
   }
   if (Object.keys(urls).length) body.urls = urls;
 
   const ids: Record<string, string[]> = {};
-  for (const k of spec.ids) {
-    const next = parseList(draft.ids[k]);
-    if (!listEq(next, parseList(initial.ids[k]))) ids[k] = next;
+  for (const f of spec.ids) {
+    const next = parseList(draft.ids[f.key]);
+    if (!listEq(next, parseList(initial.ids[f.key]))) ids[f.key] = next;
   }
   if (Object.keys(ids).length) body.ids = ids;
 
   const filters: Record<string, string[]> = {};
-  for (const k of spec.filters) {
-    const next = parseList(draft.filters[k]);
-    if (!listEq(next, parseList(initial.filters[k]))) filters[k] = next;
+  for (const f of spec.filters) {
+    const next = parseList(draft.filters[f.key]);
+    if (!listEq(next, parseList(initial.filters[f.key]))) filters[f.key] = next;
   }
   if (Object.keys(filters).length) body.filters = filters;
 
   const flags: Record<string, boolean> = {};
-  for (const k of spec.flags) {
-    if (!!draft.flags[k] !== !!initial.flags[k]) flags[k] = !!draft.flags[k];
+  for (const f of spec.flags) {
+    if (!!draft.flags[f.key] !== !!initial.flags[f.key]) {
+      flags[f.key] = !!draft.flags[f.key];
+    }
   }
   if (Object.keys(flags).length) body.flags = flags;
+
+  const numbers: Record<string, number> = {};
+  for (const f of spec.numbers) {
+    const raw = (draft.numbers[f.key] ?? "").trim();
+    const before = (initial.numbers[f.key] ?? "").trim();
+    if (raw === before) continue;
+    // Blank = leave the on-disk value alone (this route can't unset keys);
+    // non-numeric input never reaches the wire.
+    if (!raw) continue;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) continue;
+    numbers[f.key] = n;
+  }
+  if (Object.keys(numbers).length) body.numbers = numbers;
 
   return body;
 }
 
 /** True when the body carries no changes. */
 export function isEmptyConfigBody(body: ChannelConfigBody): boolean {
-  return !body.secrets && !body.urls && !body.ids && !body.filters && !body.flags;
+  return (
+    !body.secrets &&
+    !body.urls &&
+    !body.ids &&
+    !body.filters &&
+    !body.flags &&
+    !body.numbers
+  );
 }
 
 /** PUT the structured config body. Returns the echoed non-secret keys. */

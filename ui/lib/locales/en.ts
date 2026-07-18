@@ -64,7 +64,7 @@ export const en = {
     sessionHint: "Session backed by argon2 · HttpOnly cookie.",
     forgotPassword: "Forgot password?",
     forgotPasswordBody:
-      "No in-app reset yet. SSH into the gateway host and replace the argon2 hash in ~/.corlinman/config.toml [admin] password_hash, then restart the container. Generate a new hash with `python -c \"from argon2 import PasswordHasher; print(PasswordHasher().hash('NEW_PASS'))\"`.",
+      "Ask your server administrator to reset the admin password on the host, then sign in again.",
     resetIntro:
       "Self-service reset uses a one-time token written to the gateway host. Clicking below mints the token; you'll SSH in to read it, then paste it back here with a new password.",
     resetMint: "Generate reset token",
@@ -826,7 +826,7 @@ export const en = {
   rag: {
     title: "RAG",
     subtitle:
-      "`/admin/rag/stats` · `/query` · `/rebuild` — BM25 debug scan; dense vectors via embedding service.",
+      "Search the knowledge base, view stats, and rebuild the index when needed.",
     chunks: "Chunks",
     files: "Files",
     tags: "Tags",
@@ -836,10 +836,6 @@ export const en = {
     topKAria: "top-k",
     search: "Search",
     searching: "Querying…",
-    tagsLabel: "Tags",
-    addTagPlaceholder: "add tag...",
-    removeTagAria: "Remove tag {{name}}",
-    tagFilterHint: "(tag filter sent to server once the endpoint supports it)",
     hits: "{{n}} hits · backend={{backend}}",
     noHits: "no hits",
     rebuildTitle: "Rebuild FTS index",
@@ -1282,30 +1278,34 @@ export const en = {
   schedulerQzone: {
     title: "QZone daily publishing",
     lede: "Post a daily QZone update in each persona's own voice, on a schedule you set.",
-    create: "Create a daily QZone job",
-    createHelp: "Re-submitting the same name updates the existing job in place — useful for editing the cron or prompt without churning the registry.",
+    create: "Configure the daily post job",
+    createHelp: "Pick a persona and save; saving the same persona again updates its job in place.",
     created: "Saved scheduler job {{name}}",
     createFail: "Failed to save scheduler job: {{msg}}",
     enableDaily: "Enable daily posts",
     needPersona: "Pick a persona in the form below first.",
     dailyEnabled: "Daily QZone job enabled for {{persona}} ({{name}})",
     dailyEnableFail: "Failed to enable daily job: {{msg}}",
-    fieldName: "Job name",
-    fieldNameHelp: "[a-z0-9_.-]{1,128} — used as the unique key in the registry.",
     fieldPersona: "Persona",
     fieldPersonaPlaceholder: "— pick a persona —",
     loadingPersonas: "Loading personas…",
-    fieldPrompt: "Prompt template (user turn)",
-    fieldPromptHelp: "Sent verbatim as the user turn. The persona system prompt + a tail instructing the agent to end with qzone_publish are appended automatically.",
+    fieldPrompt: "Prompt",
+    fieldPromptHelp: "Tell the persona what to write each day; edit any time.",
+    fieldPromptDetail: "Sent as-is as the user message; the persona profile and publishing instructions are appended automatically.",
     fieldPromptPlaceholder: "用今日的视角写一条 200 字以内的 QQ 空间说说，配一张你最近状态的立绘图。",
-    fieldCron: "Cron expression",
+    fieldCron: "Publish time",
+    derivedName: "Job name: {{name}}",
+    cronPreset09: "Daily at 09:00",
+    cronPreset12: "Daily at 12:00",
+    cronPreset21: "Daily at 21:00",
+    cronPresetCustom: "Custom…",
     cronInvalid: "Use 5-field cron (min hour dom mon dow).",
     cronNext: "Next fire: {{when}}",
     save: "Save job",
     refresh: "Refresh",
     tableTitle: "QZone daily jobs",
-    tableHelp: 'Only jobs with action_type="qzone.daily_publish" are shown here. Manage non-qzone jobs from the main /admin/scheduler page.',
-    empty: "No QZone daily jobs yet. Use the form above or enable the Grantley template.",
+    tableHelp: "Only daily post jobs are shown here; manage other scheduled jobs on the Scheduler page.",
+    empty: "No daily post jobs yet — pick a persona above and save to create one.",
     toggleOn: "Enabled",
     toggleOff: "Paused",
     triggered: "{{name}} published — {{url}}",
@@ -1333,7 +1333,7 @@ export const en = {
   scheduler: {
     title: "Scheduler",
     subtitle:
-      "`[[scheduler.jobs]]` snapshot. Cron runtime lands in M7; trigger is recorded but a 501 means it was a dry run.",
+      "View and manually trigger scheduled jobs.",
     colName: "Name",
     colCron: "Cron",
     colTz: "TZ",
@@ -1415,7 +1415,7 @@ export const en = {
   approvals: {
     title: "Approvals",
     subtitle:
-      "Pending tool calls gated by `[[approvals.rules]]`. Backed by corlinman-gateway::middleware::approval.",
+      "Tool calls waiting for human approval.",
     tabsAria: "approvals tabs",
     tabPending: "Pending",
     tabHistory: "History",
@@ -1525,7 +1525,7 @@ export const en = {
   models: {
     title: "Models",
     subtitle:
-      "`/admin/models` · `/admin/models/aliases`. Provider enable toggle lives in the config editor (flips `[providers.*]`).",
+      "Manage model aliases and routing.",
     providers: "Providers",
     providersEmpty: "No providers configured.",
     keyKind: "key: {{kind}}",
@@ -1609,7 +1609,7 @@ export const en = {
     },
     title: "Providers",
     subtitle:
-      "`/admin/providers` — dynamic provider registry. Add any OpenAI-compatible endpoint or first-party vendor.",
+      "Connect any OpenAI-compatible endpoint or first-party vendor.",
     add: "+ Add provider",
     edit: "Edit",
     remove: "Remove",
@@ -1870,7 +1870,7 @@ export const en = {
   profiles: {
     title: "Profiles",
     subtitle:
-      "`/admin/profiles` — agent personas. Each profile owns its own SOUL, memory and skills directory.",
+      "Each profile is a self-contained persona with its own memory and skills.",
     create: "Create profile",
     creating: "Creating…",
     cancel: "Cancel",
@@ -2971,6 +2971,7 @@ export const en = {
       action: "Run",
     },
     settings: {
+      thresholdsAdvanced: "Threshold tuning",
       title: "Evolution settings",
       subtitle: "Meta approvers, weekly proposal budget, and auto-rollback thresholds.",
       loading: "Loading…",
@@ -3396,12 +3397,25 @@ export const en = {
 
   channelConfig: {
     title: "Channel configuration",
-    description:
-      "Edit this channel's credentials, endpoints, and routing. Changes persist to config.toml; secrets left blank keep their current value. Some edits take effect on the next message; channel enable/disable needs a restart.",
+    description: "Edit this channel's credentials and behavior; blank secrets keep their current values.",
+    advancedToggle: "Advanced",
     secretsLegend: "Secrets",
     secretPlaceholder: "Leave blank to keep the current value",
     listPlaceholder: "comma- or newline-separated",
     listHint: "Separate multiple values with commas.",
+    hint: {
+      group_replies_enabled: "Off = silent in every group; private chat is unaffected.",
+      group_whitelist: "Only listed groups get replies; empty mutes all groups.",
+      group_reply_policy: "Default answers only @mentions, commands, and configured keywords.",
+      proactive_enabled: "Occasionally posts in groups at a human pace; off by default.",
+      proactive_groups: "Empty falls back to the group whitelist.",
+    },
+    option: {
+      group_reply_policy: {
+        mention_or_keyword: "@mention / keyword only",
+        all: "Every message (legacy)",
+      },
+    },
     save: "Save channel config",
     saving: "Saving…",
     saved: "Channel config saved ({{count}} field(s))",
@@ -3429,6 +3443,19 @@ export const en = {
       drop_pending_updates: "Drop pending updates on start",
       respond_to_all: "Respond to all messages",
       sandbox: "Sandbox mode",
+      napcat_url: "NapCat URL",
+      group_replies_enabled: "Group replies",
+      group_whitelist: "Group whitelist",
+      group_reply_policy: "Group reply policy",
+      group_reply_cooldown_secs: "Reply cooldown (s)",
+      proactive_enabled: "Proactive posts",
+      proactive_groups: "Proactive groups",
+      proactive_prompt: "Proactive prompt",
+      proactive_min_gap_minutes: "Min gap (min)",
+      proactive_max_gap_minutes: "Max gap (min)",
+      proactive_daily_max: "Daily max per group",
+      proactive_active_start_hour: "Active from (hour)",
+      proactive_active_end_hour: "Active until (hour)",
     },
   },
 
@@ -3538,6 +3565,7 @@ export const en = {
     fieldIdHint: "Stable ID, lowercase a–z / 0–9 / hyphens. Cannot be changed after creation.",
     fieldDisplayName: "Display name",
     fieldDisplayNamePlaceholder: "Grantley Bell",
+    fieldIdAutoHint: "Auto-filled from the display name — edit to override. Lowercase letters/digits/hyphens; cannot be changed after creation.",
     fieldShortSummary: "Short summary",
     fieldShortSummaryHint: "One or two lines — shown in the list row.",
     fieldSystemPrompt: "System prompt (markdown)",
@@ -3562,15 +3590,10 @@ export const en = {
     resetToDefault: "Reset to default",
     resetToDefaultTooltip: "Not implemented yet",
     // Test box (disabled placeholder)
-    testBoxTitle: "Test message",
-    testBoxPlaceholder: "Send a fake message to preview…",
-    testBoxButton: "Test",
-    testBoxTooltip: "To test, send a real message to @QQbot",
     // Validation
     errIdRequired: "Slug is required",
     errIdInvalid: "Slug must be lowercase a–z, 0–9, hyphens",
     errDisplayNameRequired: "Display name is required",
-    errSummaryRequired: "Summary is required",
     errPromptRequired: "System prompt cannot be empty",
     // W2 — asset upload zones (emoji + reference packs)
     assetsSaveFirstHint:

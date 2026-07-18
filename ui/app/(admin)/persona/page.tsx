@@ -110,14 +110,11 @@ import {
  *      friendly toast). Custom ones can be edited or removed.
  *   3. **Editor modal** — `Dialog`-based editor for both create and
  *      update flows. `id` is read-only when editing (the URL is the
- *      source of truth; rename is a future endpoint). The system-prompt
- *      `<textarea>` is monospace with a 400px minimum height so 5–10k
- *      char markdown bodies are comfortable to scan.
- *
- * The "test box" (single-input preview) stays intentionally disabled —
- * the backend has no preview endpoint yet, so showing it avoids a
- * surprising "the button disappeared" rather than a surprising "this
- * button does nothing" UX.
+ *      source of truth; rename is a future endpoint); in the create flow
+ *      it auto-derives from the display name until the operator edits it
+ *      by hand. The system-prompt `<textarea>` is monospace with a 400px
+ *      minimum height so 5–10k char markdown bodies are comfortable to
+ *      scan.
  *
  * W3 — the editor also surfaces the persona's **life layer**: a Life-state
  * card (mood / fatigue / recent topics + "Run decay now"), a read-only
@@ -135,6 +132,32 @@ const humanlikeQueryKey = (channel: HumanlikeChannel) =>
  * shape as the backend slug validator for custom providers — keep it
  * narrow so a stray space or capital letter is caught client-side. */
 const SLUG_RE = /^[a-z0-9][a-z0-9-]*$/;
+
+/** Derive a persona slug from a display name. Backend accepts
+ * `^[a-z0-9_-]+$` but we stay inside the narrower `SLUG_RE` so the
+ * derived value always passes client-side validation. CJK / emoji names
+ * don't latinize — callers fall back to `persona-<suffix>` when this
+ * comes out empty. */
+function slugifyPersonaId(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64)
+    .replace(/-+$/, "");
+}
+
+/** 4 lowercase alphanumerics for the `persona-<suffix>` fallback slug.
+ * Generated once per editor open so the derived id is deterministic
+ * across keystrokes. */
+function randomSlugSuffix(): string {
+  const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
+  let out = "";
+  for (let i = 0; i < 4; i += 1) {
+    out += alphabet[Math.floor(Math.random() * alphabet.length)]!;
+  }
+  return out;
+}
 
 const MODEL_BINDING_KINDS = [
   { kind: "text", icon: Brain, labelKey: "persona.modelKindText" },
@@ -815,6 +838,12 @@ function PersonaEditorDialog({
   const queryClient = useQueryClient();
 
   const [id, setId] = React.useState("");
+  // Create flow: `id` auto-derives from the display name until the
+  // operator types into the slug input directly (clearing it re-enables
+  // auto-derive). The random fallback suffix is seeded once per open so
+  // CJK names get a stable `persona-<4 chars>` id across keystrokes.
+  const [idTouched, setIdTouched] = React.useState(false);
+  const fallbackIdRef = React.useRef("");
   const [displayName, setDisplayName] = React.useState("");
   const [shortSummary, setShortSummary] = React.useState("");
   const [systemPrompt, setSystemPrompt] = React.useState("");
@@ -862,7 +891,9 @@ function PersonaEditorDialog({
       setShortSummary("");
       setSystemPrompt("");
       setModelBindings(emptyModelBindings());
+      fallbackIdRef.current = `persona-${randomSlugSuffix()}`;
     }
+    setIdTouched(false);
     setModelPickerKind(null);
     setErrors({});
   }, [open, existing]);
@@ -890,7 +921,7 @@ function PersonaEditorDialog({
         next.id = t("persona.errIdInvalid");
     }
     if (!displayName.trim()) next.display_name = t("persona.errDisplayNameRequired");
-    if (!shortSummary.trim()) next.short_summary = t("persona.errSummaryRequired");
+    // `short_summary` is optional — the backend defaults it to "".
     if (!systemPrompt.trim()) next.system_prompt = t("persona.errPromptRequired");
     setErrors(next);
     return Object.keys(next).length === 0;
@@ -964,13 +995,24 @@ function PersonaEditorDialog({
               <Input
                 id="persona-id"
                 value={id}
-                onChange={(e) => setId(e.target.value)}
+                onChange={(e) => {
+                  setId(e.target.value);
+                  // Clearing the field hands control back to auto-derive.
+                  setIdTouched(e.target.value !== "");
+                }}
                 disabled={existing !== null}
                 data-testid="persona-id-input"
                 placeholder="grantley"
                 className="font-mono"
               />
-              <p className="text-[11px] text-sg-ink-3">{t("persona.fieldIdHint")}</p>
+              <p className="text-[11px] text-sg-ink-3">
+                {existing
+                  ? t("persona.fieldIdHint")
+                  : t("persona.fieldIdAutoHint", {
+                      defaultValue:
+                        "Auto-filled from the display name — edit to override. Lowercase a–z / 0–9 / hyphens; cannot be changed after creation.",
+                    })}
+              </p>
               {errors.id ? (
                 <p className="text-xs text-destructive" data-testid="persona-id-error">
                   {errors.id}
@@ -985,7 +1027,14 @@ function PersonaEditorDialog({
               <Input
                 id="persona-display-name"
                 value={displayName}
-                onChange={(e) => setDisplayName(e.target.value)}
+                onChange={(e) => {
+                  const name = e.target.value;
+                  setDisplayName(name);
+                  if (!existing && !idTouched) {
+                    const slug = slugifyPersonaId(name);
+                    setId(name.trim() ? slug || fallbackIdRef.current : "");
+                  }
+                }}
                 data-testid="persona-display-name-input"
                 placeholder={t("persona.fieldDisplayNamePlaceholder", {
                   defaultValue: "格兰特利·贝尔",
@@ -1008,9 +1057,6 @@ function PersonaEditorDialog({
                 placeholder="..."
               />
               <p className="text-[11px] text-sg-ink-3">{t("persona.fieldShortSummaryHint")}</p>
-              {errors.short_summary ? (
-                <p className="text-xs text-destructive">{errors.short_summary}</p>
-              ) : null}
             </div>
 
             <fieldset
@@ -1115,39 +1161,6 @@ function PersonaEditorDialog({
                 <p className="text-xs text-destructive">{errors.system_prompt}</p>
               ) : null}
             </div>
-
-            {/* Test box — server has no preview endpoint yet, so the input
-                + button are disabled with a tooltip pointing at the real-
-                world test path (DM @QQbot). Keeps the affordance visible
-                so the operator knows the surface exists; flips on once
-                the backend lands. */}
-            <fieldset
-              className="space-y-1 rounded-md border border-dashed border-sg-border px-3 py-2"
-              data-testid="persona-test-box"
-            >
-              <Label className="text-xs uppercase tracking-wider text-sg-ink-3">
-                {t("persona.testBoxTitle")}
-              </Label>
-              <div className="flex items-center gap-2">
-                <Input
-                  disabled
-                  placeholder={t("persona.testBoxPlaceholder")}
-                  title={t("persona.testBoxTooltip")}
-                  data-testid="persona-test-input"
-                />
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  disabled
-                  title={t("persona.testBoxTooltip")}
-                  data-testid="persona-test-button"
-                >
-                  {t("persona.testBoxButton")}
-                </Button>
-              </div>
-              <p className="text-[11px] text-sg-ink-3">{t("persona.testBoxTooltip")}</p>
-            </fieldset>
 
             {/* Asset sections + life layer — only meaningful once the
                 persona has a real id (the URLs all hang off the slug). Until

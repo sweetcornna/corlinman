@@ -121,6 +121,9 @@ describe("CreateTenantDialog — submission flow", () => {
     fireEvent.change(screen.getByTestId("tenant-slug"), {
       target: { value: "acme" },
     });
+    // display_name sits behind the collapsed "advanced" disclosure.
+    expect(screen.queryByTestId("tenant-display-name")).toBeNull();
+    fireEvent.click(screen.getByTestId("tenant-toggle-advanced"));
     fireEvent.change(screen.getByTestId("tenant-display-name"), {
       target: { value: "ACME Industries" },
     });

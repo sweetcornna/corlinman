@@ -3,8 +3,9 @@
 /**
  * Create-tenant dialog (Phase 4 W1 4-1B).
  *
- * Renders a four-field form (slug, optional display name, admin username,
- * admin password) inside a shadcn `Dialog`. Submission flow:
+ * Renders a four-field form (slug, admin username, admin password, plus an
+ * optional display name behind a collapsed "advanced" disclosure — the
+ * backend defaults it to the slug) inside a shadcn `Dialog`. Submission flow:
  *
  *   1. Local validation: catch empty slug + uppercase slug for typing-time
  *      polish. Everything else (length > 63, illegal chars in the middle)
@@ -81,6 +82,9 @@ export function CreateTenantDialog({
   const qc = useQueryClient();
   const [form, setForm] = React.useState<FormState>(BLANK);
   const [errors, setErrors] = React.useState<FormErrors>({});
+  // display_name is optional (the backend defaults it to the slug), so it
+  // lives behind a collapsed "advanced" disclosure.
+  const [showAdvanced, setShowAdvanced] = React.useState(false);
 
   // Reset whenever the dialog re-opens — staying open with stale state
   // is confusing after a successful create or a cancel.
@@ -88,6 +92,7 @@ export function CreateTenantDialog({
     if (open) {
       setForm(BLANK);
       setErrors({});
+      setShowAdvanced(false);
     }
   }, [open]);
 
@@ -219,25 +224,6 @@ export function CreateTenantDialog({
           </div>
 
           <div className="space-y-1">
-            <Label htmlFor="tenant-display-name">
-              {t("tenants.fieldDisplayName")}
-            </Label>
-            <Input
-              id="tenant-display-name"
-              data-testid="tenant-display-name"
-              autoComplete="off"
-              placeholder={t("tenants.fieldDisplayNamePlaceholder")}
-              value={form.display_name}
-              onChange={(e) =>
-                setForm((s) => ({ ...s, display_name: e.target.value }))
-              }
-            />
-            <p className="text-[11px] text-sg-ink-3">
-              {t("tenants.fieldDisplayNameHint")}
-            </p>
-          </div>
-
-          <div className="space-y-1">
             <Label htmlFor="tenant-admin-username">
               {t("tenants.fieldAdminUsername")}
             </Label>
@@ -289,6 +275,39 @@ export function CreateTenantDialog({
               </p>
             ) : null}
           </div>
+
+          <div>
+            <button
+              type="button"
+              onClick={() => setShowAdvanced((v) => !v)}
+              data-testid="tenant-toggle-advanced"
+              className="text-[11px] text-sg-ink-3 underline-offset-2 hover:text-sg-ink hover:underline focus-visible:outline-none focus-visible:underline"
+            >
+              {showAdvanced ? "—" : "+"}{" "}
+              {t("common.advancedOptions", { defaultValue: "高级选项" })}
+            </button>
+          </div>
+
+          {showAdvanced ? (
+            <div className="space-y-1">
+              <Label htmlFor="tenant-display-name">
+                {t("tenants.fieldDisplayName")}
+              </Label>
+              <Input
+                id="tenant-display-name"
+                data-testid="tenant-display-name"
+                autoComplete="off"
+                placeholder={t("tenants.fieldDisplayNamePlaceholder")}
+                value={form.display_name}
+                onChange={(e) =>
+                  setForm((s) => ({ ...s, display_name: e.target.value }))
+                }
+              />
+              <p className="text-[11px] text-sg-ink-3">
+                {t("tenants.fieldDisplayNameHint")}
+              </p>
+            </div>
+          ) : null}
 
           <DialogFooter className="pt-2">
             <Button
