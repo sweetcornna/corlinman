@@ -632,6 +632,13 @@ class OpenAIProvider:
             if client is not None:
                 await _safe_close(client)
 
+        # Stream exhausted without a finish_reason (relay dropped it): a
+        # still-buffered summary body must not vanish — surface it as
+        # content, matching the default "stop" semantics below.
+        flushed = _flush_summary(as_reasoning=False)
+        if flushed is not None:
+            yield flushed
+
         yield ProviderChunk(kind="done", finish_reason=finish_reason)
 
     async def embed(

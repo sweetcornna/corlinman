@@ -254,3 +254,19 @@ async def test_multiple_summary_parts_join_with_separators(
     assert _reasoning_text(out) == (
         "**Part one**\n\nFirst body.\n\n**Part two**\n\nSecond body."
     )
+
+
+@pytest.mark.asyncio
+async def test_stream_ends_without_finish_flushes_buffer_as_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A relay that drops finish_reason must not swallow buffered text."""
+    out = await _run(
+        monkeypatch,
+        [
+            _reasoning("**Header**"),
+            _text("orphaned tail"),
+        ],
+    )
+    assert _content_text(out) == "orphaned tail"
+    assert out[-1].kind == "done"
