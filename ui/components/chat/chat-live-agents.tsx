@@ -20,7 +20,7 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { Bot, PanelRightClose, PanelRightOpen } from "lucide-react";
+import { Bot, PanelRightClose, PanelRightOpen } from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import {

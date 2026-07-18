@@ -21,16 +21,94 @@ function varIn(block: string, name: string): string {
   return match?.[1].trim() ?? "";
 }
 
-describe("Spatial Glass invariants", () => {
-  it("defines the sg glass tiers in both themes", () => {
+function filesMatching(pattern: string): string[] {
+  try {
+    const out = execSync(
+      `grep -rlE '${pattern}' app components lib --include='*.tsx' --include='*.ts' | grep -v '\\.test\\.' | sort`,
+      { cwd: UI_ROOT, encoding: "utf8" },
+    );
+    return out.split("\n").filter(Boolean);
+  } catch {
+    return []; // grep exits 1 on zero matches
+  }
+}
+
+describe("Eclipse token grammar", () => {
+  it("defines the full token family in both themes", () => {
     for (const block of [rootBlock, darkBlock]) {
+      // matte surfaces
       varIn(block, "--sg-glass-1-bg");
       varIn(block, "--sg-glass-2-bg");
       varIn(block, "--sg-glass-3-bg");
-      varIn(block, "--sg-inset-bg");
       varIn(block, "--sg-glass-opaque");
-      varIn(block, "--sg-accent");
+      varIn(block, "--sg-inset-bg");
+      // borders incl. the ghost tier
+      varIn(block, "--sg-border");
+      varIn(block, "--sg-border-strong");
+      varIn(block, "--sg-border-ghost");
+      // ink scale
+      for (const ink of ["--sg-ink", "--sg-ink-2", "--sg-ink-3", "--sg-ink-4", "--sg-ink-5"]) {
+        varIn(block, ink);
+      }
+      // tint pipeline
+      varIn(block, "--sg-tint");
+      varIn(block, "--sg-tint-ink");
+      varIn(block, "--sg-tint-glow");
+      varIn(block, "--sg-tint-soft");
+      // light grammar
+      varIn(block, "--sg-edge-top");
+      varIn(block, "--sg-edge-top-strong");
+      varIn(block, "--sg-well");
+      varIn(block, "--sg-well-soft");
+      for (const elev of ["--sg-elev-1", "--sg-elev-2", "--sg-elev-3", "--sg-elev-4"]) {
+        varIn(block, elev);
+      }
+      varIn(block, "--sg-lift");
+      varIn(block, "--sg-scrim-down");
+      varIn(block, "--sg-bloom-1");
+      varIn(block, "--sg-bloom-2");
+      varIn(block, "--sg-bloom-3");
+      // canvas
+      varIn(block, "--sg-moonrise");
+      varIn(block, "--sg-vignette");
+      // status + misc
+      varIn(block, "--sg-ok");
+      varIn(block, "--sg-warn");
+      varIn(block, "--sg-err");
       varIn(block, "--sg-row-alt");
+      varIn(block, "--sg-grad-text");
+      varIn(block, "--sg-card-sheen");
+    }
+  });
+
+  it("aliases the legacy accent family onto the tint pipeline", () => {
+    for (const block of [rootBlock, darkBlock]) {
+      expect(varIn(block, "--sg-accent")).toBe("var(--sg-tint)");
+      expect(varIn(block, "--sg-accent-soft")).toBe("var(--sg-tint-soft)");
+      expect(varIn(block, "--sg-accent-glow")).toBe("var(--sg-tint-glow)");
+    }
+  });
+
+  it("keeps the skeleton un-tinted: status colors never reference tint", () => {
+    for (const block of [rootBlock, darkBlock]) {
+      for (const name of ["--sg-ok", "--sg-warn", "--sg-err", "--sg-border", "--sg-ink"]) {
+        expect(varIn(block, name)).not.toContain("--sg-tint");
+      }
+    }
+  });
+
+  it("defines every tint preset for both themes", () => {
+    for (const preset of ["dawn", "ice", "rose", "moss", "iris"]) {
+      expect(css).toMatch(new RegExp(`\\.dark\\[data-tint="${preset}"\\]`));
+      expect(css).toMatch(new RegExp(`:root\\[data-tint="${preset}"\\]:not\\(\\.dark\\)`));
+    }
+  });
+
+  it("retires the nebula layer — transparent aliases only", () => {
+    for (const block of [rootBlock, darkBlock]) {
+      expect(varIn(block, "--sg-nebula-1")).toBe("transparent");
+      expect(varIn(block, "--sg-nebula-2")).toBe("transparent");
+      expect(varIn(block, "--sg-nebula-3")).toBe("transparent");
     }
   });
 
@@ -40,98 +118,67 @@ describe("Spatial Glass invariants", () => {
     expect(css).not.toMatch(/\b(emboss|pattern-active|relief-text|ridge-divider|dot-grid)\b/);
   });
 
-  it("blurs shell and overlay tiers but never the content-card tier", () => {
-    const shell = blockOf(/\.sg-glass-shell\s*\{([\s\S]*?)\}/);
-    expect(shell).toContain("backdrop-filter: blur(");
-    expect(shell).toContain("-webkit-backdrop-filter: blur(");
-
-    const overlay = blockOf(/\.sg-glass-overlay\s*\{([\s\S]*?)\}/);
-    expect(overlay).toContain("backdrop-filter: blur(");
-
-    const card = blockOf(/\.sg-card\s*\{([\s\S]*?)\}/);
-    expect(card).not.toContain("backdrop-filter");
-    expect(card).toContain("background-image: linear-gradient(");
+  it("contains no liquid-glass remnants", () => {
+    expect(css).not.toMatch(/\.lg-/);
+    expect(css).not.toMatch(/--sg-noise/);
+    expect(css).not.toMatch(/sg-aurora/);
+    expect(css).not.toMatch(/--sg-grad-border/);
   });
 
-  it("provides an opaque fallback when backdrop-filter is unsupported", () => {
-    const supports = blockOf(
-      /@supports not \(backdrop-filter: blur\(1px\)\)\s*\{([\s\S]*?)\n\s*\}/,
-    );
-    expect(supports).toContain(".sg-glass-shell");
-    expect(supports).toContain(".sg-glass-overlay");
-    expect(supports).toContain("var(--sg-glass-opaque)");
-  });
-
-  it("paints the backdrop as pure CSS gradient — no texture JPGs anywhere", () => {
+  it("paints the canvas on <html>: moonrise + vignette, fixed, no texture files", () => {
     expect(css).not.toContain('url("/bg/');
     const html = blockOf(/\n\s*html\s*\{([\s\S]*?)\}/);
-    expect(html).toContain("background-image: linear-gradient(");
+    expect(html).toContain("var(--sg-vignette)");
+    expect(html).toContain("var(--sg-moonrise)");
     expect(html).toContain("background-attachment: fixed");
   });
 });
 
-describe("blur budget (repo-wide static check)", () => {
-  // The real-blur tiers may only appear on shell surfaces and floating
-  // overlays. Content cards/rows must stay faux-glass so scrolling lists
-  // and SSE feeds never trigger re-blurs. If you add a file here, it must
-  // be a floating overlay (dialog/drawer/popover/lightbox/scrim) — not a
-  // content surface.
-  const SHELL_FILES = ["components/layout/sidebar.tsx", "components/layout/nav.tsx"];
-  const OVERLAY_FILES = [
-    ...SHELL_FILES,
-    "app/(admin)/layout.tsx", // mobile drawer scrim
-    "app/login/page.tsx", // public overlay card
-    "app/status/[token]/status-client.tsx", // showcase hero (spec-exempted)
-    "components/approvals/ArgsDialog.tsx",
-    "components/approvals/DenyReasonDialog.tsx",
-    "components/chat/attachment-gallery.tsx", // lightbox
-    "components/chat/composer-mention-menu.tsx",
-    "components/chat/composer-slash-menu.tsx",
-    "components/chat/conversation-search.tsx",
-    "components/chat/emoji-picker.tsx",
-    "components/chat/markdown-message.tsx", // lightbox
-    "components/cmdk-palette.tsx",
-    "components/ui/accent-picker.tsx", // theme-color popover
-
-    "components/layout/profile-switcher.tsx", // popover
-    "components/playground/agent-picker.tsx", // popover
-    "components/providers.tsx", // sonner toasts
-    "components/sessions/replay-dialog.tsx",
-    "components/ui/command-palette.tsx",
-    "components/ui/dialog.tsx",
-    "components/ui/drawer.tsx",
-  ];
-
-  function filesMatching(pattern: string): string[] {
-    try {
-      const out = execSync(
-        `grep -rlE '${pattern}' app components --include='*.tsx' | grep -v '\\.test\\.' | sort`,
-        { cwd: UI_ROOT, encoding: "utf8" },
-      );
-      return out.split("\n").filter(Boolean);
-    } catch {
-      return []; // grep exits 1 on zero matches
-    }
-  }
-
-  it("keeps real blur inside the shell/overlay whitelist", () => {
-    const realBlurUsers = filesMatching(
-      "backdrop-blur-(sg-shell|sg-overlay|glass-strong|sm|md|lg|xl|2xl|3xl)|sg-glass-(shell|overlay)",
-    );
-    const offBudget = realBlurUsers.filter((f) => !OVERLAY_FILES.includes(f));
-    expect(offBudget, `content-tier files using real blur: ${offBudget.join(", ")}`).toEqual([]);
+describe("zero backdrop-filter (repo-wide static check)", () => {
+  it("globals.css declares no backdrop-filter", () => {
+    expect(css).not.toMatch(/backdrop-filter\s*:/);
   });
 
-  it("keeps the sg-shell tier exclusive to sidebar and topnav", () => {
-    const shellUsers = filesMatching("backdrop-blur-sg-shell|sg-glass-shell");
-    expect(shellUsers.sort()).toEqual([...SHELL_FILES].sort());
+  it("no source file uses backdrop blur/saturate classes", () => {
+    // Matches class usage (backdrop-blur-*, backdrop-saturate-*) but not
+    // prose comments that merely mention the banned property.
+    expect(filesMatching("backdrop-(blur|saturate)-")).toEqual([]);
   });
 
-  it("does not grow the legacy 0px backdrop-blur-glass tier", () => {
-    // The 0px legacy tier was fully removed in phase 3b — keep it at zero.
-    
-    
-    const legacy = filesMatching("backdrop-blur-glass[^-]");
-    expect(legacy).toEqual([]);
+  it("no source file uses liquid-glass optic classes", () => {
+    expect(filesMatching("lg-(gel|edge|refract|specular|sheen|stars|hue-drift|float)")).toEqual([]);
+  });
+
+  it("no source file imports lucide-react — icons come from the sprite", () => {
+    expect(filesMatching('from "lucide-react"')).toEqual([]);
+  });
+});
+
+describe("glow and gradient whitelists", () => {
+  it("gradient display text appears only in the login/onboard hero", () => {
+    const users = filesMatching("sg-grad-text");
+    const allowed = ["app/login/page.tsx", "app/onboard/page.tsx"];
+    const offList = users.filter((f) => !allowed.includes(f));
+    expect(offList, `sg-grad-text outside the hero whitelist: ${offList.join(", ")}`).toEqual([]);
+  });
+
+  it("bloom shadows stay inside the whitelist", () => {
+    // Glow is whitelist-only: eclipse orb, streaming thread, live dots,
+    // caret, solid tint buttons, progress bars, selected states. The c-*
+    // component classes carry bloom internally; direct tsx usage of the
+    // bloom utilities must stay on this list.
+    const BLOOM_FILES = [
+      "components/ui/button.tsx",
+      "components/ui/live-dot.tsx",
+      "components/ui/presence-orb.tsx",
+      "components/ui/stream-pill.tsx",
+    ];
+    const users = filesMatching("shadow-sg-bloom");
+    const offList = users.filter((f) => !BLOOM_FILES.includes(f));
+    expect(offList, `bloom outside the whitelist: ${offList.join(", ")}`).toEqual([]);
+  });
+
+  it("caps font weights at 500 — no extrabold/black/arbitrary heavy weights", () => {
+    expect(filesMatching("font-(extrabold|black)\\b|font-\\[[6-9]00\\]")).toEqual([]);
   });
 });

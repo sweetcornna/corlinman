@@ -5,7 +5,7 @@ import Link from "next/link";
 import { motion } from "framer-motion";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { Send, Square, Trash2, Wrench } from "lucide-react";
+import { Send, Square, Trash2, Wrench } from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import {

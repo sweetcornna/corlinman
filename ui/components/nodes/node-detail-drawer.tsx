@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw } from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import { DetailDrawer } from "@/components/ui/detail-drawer";

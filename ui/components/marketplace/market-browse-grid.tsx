@@ -16,7 +16,7 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { motion } from "framer-motion";
-import { RefreshCw, Search, WifiOff } from "lucide-react";
+import { RefreshCw, Search, WifiOff } from "@/components/icons";
 
 import { Button } from "@/components/ui/button";
 import { GlassPanel } from "@/components/ui/glass-panel";

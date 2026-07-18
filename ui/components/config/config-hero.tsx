@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { Search } from "lucide-react";
+import { Search } from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import { GlassPanel } from "@/components/ui/glass-panel";
@@ -59,8 +59,7 @@ export function ConfigHero({
     <GlassPanel
       variant="strong"
       as="section"
-      lively
-      className="relative overflow-hidden p-7"
+            className="relative overflow-hidden p-7"
     >
       {/* Ambient amber + ember glow — same radial-gradient language used
           on the Scheduler/Plugins hero. */}

@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { AlertTriangle, ShieldAlert, Sparkles } from "lucide-react";
+import { AlertTriangle, ShieldAlert, Sparkles } from "@/components/icons";
 
 import {
   Dialog,

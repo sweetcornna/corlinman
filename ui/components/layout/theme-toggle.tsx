@@ -3,7 +3,7 @@
 import * as React from "react";
 import { useTheme } from "next-themes";
 import { useTranslation } from "react-i18next";
-import { Moon, Sun } from "lucide-react";
+import { Moon, Sun } from "@/components/icons";
 import { cn } from "@/lib/utils";
 
 /** Small icon button that flips the next-themes class on <html>. */

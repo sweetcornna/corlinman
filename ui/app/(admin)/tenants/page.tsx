@@ -21,7 +21,7 @@
 import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { Plus, RefreshCw } from "lucide-react";
+import { Plus, RefreshCw } from "@/components/icons";
 
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";

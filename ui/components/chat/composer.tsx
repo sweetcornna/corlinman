@@ -11,7 +11,7 @@ import {
   Smile,
   Sparkles,
   Square,
-} from "lucide-react";
+} from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import type { ReasoningEffort } from "@/lib/api/chat";
@@ -484,11 +484,12 @@ export function Composer({
     >
       <div
         className={cn(
-          "sg-card lg-edge lg-refract relative rounded-sg-xl border border-sg-border shadow-sg-3",
-          "transition-[box-shadow,transform,border-color] duration-300 ease-out",
-          "focus-within:border-sg-accent/40 focus-within:shadow-sg-primary focus-within:scale-[1.006]",
-          isDraggingOver &&
-            "border-sg-accent/60 ring-2 ring-sg-accent/40 shadow-sg-primary",
+          // Eclipse composer: a sunken input well on the canvas — concave
+          // (well shadow), no lens/scale behavior, focus marks the border.
+          "relative rounded-[24px] border border-sg-border bg-sg-inset shadow-sg-well-soft",
+          "transition-[box-shadow,border-color] duration-300 ease-out",
+          "focus-within:border-sg-tint/40",
+          isDraggingOver && "border-sg-tint/60 ring-2 ring-sg-tint/40",
         )}
         onDragEnter={(e) => {
           e.preventDefault();
@@ -636,7 +637,7 @@ export function Composer({
                 onClick={() => setEmojiOpen((v) => !v)}
                 className={cn(
                   "rounded-md p-1.5 text-sg-ink-3 transition-colors hover:bg-sg-inset-hover hover:text-sg-ink",
-                  emojiOpen && "bg-sg-accent-soft text-sg-accent",
+                  emojiOpen && "bg-sg-tint-soft text-sg-ink",
                 )}
                 aria-label={t("chat.composerEmoji")}
                 aria-expanded={emojiOpen}
@@ -681,7 +682,7 @@ export function Composer({
                       className={cn(
                         "h-full min-w-[1.75rem] px-1.5 text-[10px] font-medium transition-colors",
                         selected
-                          ? "bg-sg-accent text-white"
+                          ? "bg-sg-tint text-sg-tint-ink"
                           : "text-sg-ink-3 hover:bg-sg-inset-hover hover:text-sg-ink",
                       )}
                       data-testid={`composer-reasoning-${option.value}`}
@@ -752,8 +753,8 @@ export function Composer({
                 className={cn(
                   "inline-flex h-8 w-8 items-center justify-center rounded-full transition-all",
                   canSend
-                    ? "bg-primary text-primary-foreground hover:shadow-sg-glow"
-                    : "cursor-not-allowed bg-sg-inset text-sg-ink-5",
+                    ? "bg-sg-tint text-sg-tint-ink shadow-sg-glow hover:bg-sg-tint/90"
+                    : "cursor-not-allowed bg-sg-inset-strong text-sg-ink-5",
                 )}
                 data-testid="composer-send"
                 aria-label={

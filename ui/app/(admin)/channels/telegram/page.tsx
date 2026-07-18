@@ -10,7 +10,7 @@ import {
   EyeOff,
   RefreshCw,
   Send,
-} from "lucide-react";
+} from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import { GlassPanel } from "@/components/ui/glass-panel";

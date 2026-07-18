@@ -33,7 +33,7 @@ import * as React from "react";
 import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { ChevronRight, ExternalLink, RefreshCcw, Server } from "lucide-react";
+import { ChevronRight, ExternalLink, RefreshCcw, Server } from "@/components/icons";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";

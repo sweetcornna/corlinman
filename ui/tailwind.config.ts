@@ -1,8 +1,10 @@
 import type { Config } from "tailwindcss";
 import animate from "tailwindcss-animate";
 
-// Linear-style redesign. Neutral base + indigo accent. Geist sans/mono fonts
-// are injected via `app/layout.tsx` as CSS variables consumed here.
+// Eclipse Minimal v2. Pure-black monochrome + tint pipeline. MiSans / M PLUS 1
+// / JetBrains Mono are injected via `app/fonts.ts` as CSS variables consumed
+// here. backdrop-filter is banned app-wide: the core plugins are disabled so
+// no backdrop-blur-* / backdrop-saturate-* class can even be generated.
 const config: Config = {
   darkMode: ["class"],
   content: [
@@ -10,6 +12,10 @@ const config: Config = {
     "./components/**/*.{ts,tsx}",
     "./lib/**/*.{ts,tsx}",
   ],
+  corePlugins: {
+    backdropBlur: false,
+    backdropSaturate: false,
+  },
   theme: {
     container: {
       center: true,
@@ -20,12 +26,15 @@ const config: Config = {
       colors: {
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",
-        ring: "hsl(var(--ring))",
+        // primary/ring follow the tint pipeline — a runtime-swappable full
+        // color, so they bypass the HSL-triplet convention entirely.
+        ring: "color-mix(in oklch, var(--sg-tint) calc(<alpha-value> * 100%), transparent)",
         background: "hsl(var(--background))",
         foreground: "hsl(var(--foreground))",
         primary: {
-          DEFAULT: "hsl(var(--primary))",
-          foreground: "hsl(var(--primary-foreground))",
+          DEFAULT:
+            "color-mix(in oklch, var(--sg-tint) calc(<alpha-value> * 100%), transparent)",
+          foreground: "var(--sg-tint-ink)",
         },
         secondary: {
           DEFAULT: "hsl(var(--secondary))",
@@ -43,8 +52,8 @@ const config: Config = {
           DEFAULT: "hsl(var(--accent))",
           foreground: "hsl(var(--accent-foreground))",
         },
-        "accent-2": "hsl(var(--accent-2))",
-        "accent-3": "hsl(var(--accent-3))",
+        "accent-2": "var(--sg-accent-2)",
+        "accent-3": "var(--sg-accent-3)",
         popover: {
           DEFAULT: "hsl(var(--popover))",
           foreground: "hsl(var(--popover-foreground))",
@@ -68,12 +77,17 @@ const config: Config = {
           error: "hsl(var(--state-error))",
         },
 
-        // Spatial Glass — canonical sg-* namespace.
+        // Eclipse — canonical sg-* namespace (names unchanged from Spatial
+        // Glass so existing call sites re-skin via token values).
         // Opaque tokens are wrapped in color-mix so Tailwind opacity
-        // modifiers compose (e.g. border-sg-accent/30, ring-sg-err/40);
+        // modifiers compose (e.g. border-sg-tint/30, ring-sg-err/40);
         // a bare class resolves to calc(1 * 100%) = the token itself.
         // Alpha-baked tokens (-soft/-glow/fills/borders) stay raw var()
         // and must NOT take /NN modifiers (they would silently no-op).
+        "sg-tint": "color-mix(in oklch, var(--sg-tint) calc(<alpha-value> * 100%), transparent)",
+        "sg-tint-ink": "var(--sg-tint-ink)",
+        "sg-tint-soft": "var(--sg-tint-soft)",
+        "sg-tint-glow": "var(--sg-tint-glow)",
         "sg-accent": "color-mix(in oklch, var(--sg-accent) calc(<alpha-value> * 100%), transparent)",
         "sg-accent-soft": "var(--sg-accent-soft)",
         "sg-accent-glow": "var(--sg-accent-glow)",
@@ -95,15 +109,18 @@ const config: Config = {
         "sg-row-alt": "var(--sg-row-alt)",
         "sg-border": "var(--sg-border)",
         "sg-border-strong": "var(--sg-border-strong)",
+        "sg-border-ghost": "var(--sg-border-ghost)",
         "sg-highlight": "var(--sg-highlight)",
         "sg-shell": "var(--sg-glass-1-bg)",
         "sg-card": "var(--sg-glass-2-bg)",
         "sg-card-strong": "var(--sg-glass-2-bg-strong)",
         "sg-card-weak": "var(--sg-glass-2-bg-weak)",
         "sg-overlay": "var(--sg-glass-3-bg)",
+        "sg-opaque": "var(--sg-glass-opaque)",
         "sg-inset": "var(--sg-inset-bg)",
         "sg-inset-hover": "var(--sg-inset-bg-hover)",
         "sg-inset-strong": "var(--sg-inset-bg-strong)",
+        "sg-space-0": "var(--sg-space-0)",
       },
       backgroundColor: {
         "state-hover": "hsl(var(--state-hover))",
@@ -119,38 +136,33 @@ const config: Config = {
         2: "var(--shadow-2)",
         3: "var(--shadow-3)",
         "glow-primary": "var(--glow-primary)",
-        // Spatial Glass elevation
+        // Eclipse elevation (dual-layer: contact + ambient, floating only)
         "sg-1": "var(--sg-elev-1)",
         "sg-2": "var(--sg-elev-2)",
         "sg-3": "var(--sg-elev-3)",
         "sg-4": "var(--sg-elev-4)",
         "sg-glow": "var(--sg-glow-primary)",
         "sg-primary": "var(--sg-shadow-primary)",
+        // Eclipse light grammar
+        "sg-edge": "var(--sg-edge-top)",
+        "sg-edge-strong": "var(--sg-edge-top-strong)",
+        "sg-well": "var(--sg-well)",
+        "sg-well-soft": "var(--sg-well-soft)",
+        "sg-lift": "var(--sg-lift)",
+        "sg-scrim": "var(--sg-scrim-down)",
+        "sg-bloom-1": "var(--sg-bloom-1)",
+        "sg-bloom-2": "var(--sg-bloom-2)",
+        "sg-bloom-3": "var(--sg-bloom-3)",
+        // Selected/"most active" treatment (single source shared with the
+        // .nav-active class via --sg-shadow-selected).
+        "sg-selected": "var(--sg-shadow-selected)",
       },
       backgroundImage: {
-        // Spatial Glass
         "sg-grad-text": "var(--sg-grad-text)",
-        "sg-grad-border": "var(--sg-grad-border)",
-        "sg-card-grad":
-          "linear-gradient(180deg, var(--sg-glass-2-grad-a), var(--sg-glass-2-grad-b))",
-        "sg-aurora":
-          "radial-gradient(900px 500px at 15% 10%, var(--sg-nebula-1), transparent 60%), " +
-          "radial-gradient(700px 500px at 85% 20%, var(--sg-nebula-2), transparent 60%), " +
-          "radial-gradient(600px 400px at 50% 95%, var(--sg-nebula-3), transparent 60%), " +
-          "linear-gradient(135deg, var(--sg-space-1), var(--sg-space-2) 60%, var(--sg-space-3))",
-      },
-      // Blur budget: glass-strong consumers are all overlays → real blur.
-      // sg-shell/sg-overlay are the canonical Spatial Glass tiers; the
-      // legacy 0px `glass` tier was removed with its last consumers.
-      backdropBlur: {
-        "glass-strong": "28px",
-        "sg-shell": "20px",
-        "sg-overlay": "28px",
-      },
-      backdropSaturate: {
-        "glass-strong": "1.5",
-        "sg-shell": "1.4",
-        "sg-overlay": "1.5",
+        // Matte sheen (replaces the faux-glass card gradient; consumers of
+        // bg-sg-card-grad re-skin without edits).
+        "sg-card-grad": "var(--sg-card-sheen)",
+        "sg-moonrise": "var(--sg-moonrise)",
       },
       transitionTimingFunction: {
         spring: "cubic-bezier(0.34, 1.56, 0.64, 1)",
@@ -160,29 +172,77 @@ const config: Config = {
         lg: "var(--radius)",
         md: "calc(var(--radius) - 2px)",
         sm: "calc(var(--radius) - 4px)",
-        // Spatial Glass radius scale
+        // Eclipse radius scale (values coincide with the st-* spec:
+        // card 20 = sg-lg, sheet 28 = sg-xl).
         "sg-sm": "10px",
         "sg-md": "14px",
         "sg-lg": "20px",
         "sg-xl": "28px",
+        "st-bubble": "var(--st-bubble-radius)",
+        "st-card": "var(--st-card-radius)",
+        "st-sheet": "var(--st-sheet-radius)",
+        "st-pill": "var(--st-pill-radius)",
+      },
+      spacing: {
+        "st-1": "var(--st-sp-1)",
+        "st-2": "var(--st-sp-2)",
+        "st-3": "var(--st-sp-3)",
+        "st-4": "var(--st-sp-4)",
+        "st-5": "var(--st-sp-5)",
+        "st-6": "var(--st-sp-6)",
+        "st-8": "var(--st-sp-8)",
+        "st-10": "var(--st-sp-10)",
+        "st-touch": "var(--st-touch-min)",
       },
       fontFamily: {
-        sans: ["var(--font-geist-sans)", "ui-sans-serif", "system-ui", "sans-serif"],
-        // Tidepool (Phase 0): display serif for hero / streak / italic emphasis.
-        // Defined in globals.css with local system fallbacks so Docker builds
-        // never need Google Fonts access.
+        sans: [
+          "var(--font-misans)",
+          "MiSans",
+          "HarmonyOS Sans SC",
+          "PingFang SC",
+          "Noto Sans CJK SC",
+          "Microsoft YaHei UI",
+          "system-ui",
+          "sans-serif",
+        ],
+        display: [
+          "var(--font-mplus)",
+          "M PLUS 1",
+          "var(--font-misans)",
+          "MiSans",
+          "HarmonyOS Sans SC",
+          "PingFang SC",
+          "Noto Sans CJK SC",
+          "system-ui",
+          "sans-serif",
+        ],
+        // Transitional alias: legacy font-serif opt-ins render in the
+        // display stack until the long-tail sweep renames them.
         serif: [
-          "var(--font-instrument-serif)",
-          "Instrument Serif",
-          "Georgia",
-          "serif",
+          "var(--font-mplus)",
+          "M PLUS 1",
+          "var(--font-misans)",
+          "MiSans",
+          "system-ui",
+          "sans-serif",
         ],
         mono: [
-          "var(--font-geist-mono)",
+          "var(--font-jetbrains-mono)",
+          "JetBrains Mono",
           "ui-monospace",
           "SFMono-Regular",
+          "Consolas",
+          "Noto Sans Mono CJK SC",
           "monospace",
         ],
+      },
+      // Weight discipline: 400/500 only — hierarchy comes from the ink
+      // scale, not weight. semibold/bold intentionally resolve to 500 so
+      // every legacy call site complies without edits (user content
+      // <strong> keeps element-level 700 via the MiSans 560-900 cut).
+      fontWeight: {
+        semibold: "500",
+        bold: "500",
       },
       keyframes: {
         "accordion-down": {
@@ -198,7 +258,7 @@ const config: Config = {
           to: { opacity: "1", transform: "translateY(0)" },
         },
         "pulse-glow": {
-          "0%, 100%": { boxShadow: "0 0 0 rgb(var(--accent) / 0)" },
+          "0%, 100%": { boxShadow: "0 0 0 transparent" },
           "50%": { boxShadow: "var(--glow-primary)" },
         },
         "count-up": {
@@ -206,7 +266,6 @@ const config: Config = {
           "60%": { opacity: "1", transform: "translateY(-2px)" },
           "100%": { opacity: "1", transform: "translateY(0)" },
         },
-        // Spatial Glass
         "sg-tick-up": {
           "0%": { opacity: "0", transform: "translateY(8px)" },
           "100%": { opacity: "1", transform: "translateY(0)" },
@@ -215,7 +274,6 @@ const config: Config = {
           "0%": { opacity: "0", transform: "translateY(-12px) scale(0.98)" },
           "100%": { opacity: "1", transform: "translateY(0) scale(1)" },
         },
-        // Spatial Glass — card entrance rise (staggered via delay).
         "sg-rise": {
           "0%": { opacity: "0", transform: "translateY(10px) scale(0.99)" },
           "100%": { opacity: "1", transform: "translateY(0) scale(1)" },
@@ -230,8 +288,7 @@ const config: Config = {
         "sg-tick-up": "sg-tick-up 800ms cubic-bezier(0.16, 1, 0.3, 1) both",
         "sg-palette-in":
           "sg-palette-in 260ms cubic-bezier(0.16, 1, 0.3, 1) both",
-        // Springy overshoot curve — entrances settle like liquid, not ease.
-        "sg-rise": "sg-rise 600ms cubic-bezier(0.34, 1.56, 0.64, 1) both",
+        "sg-rise": "sg-rise 600ms cubic-bezier(0.16, 1, 0.3, 1) both",
       },
     },
   },

@@ -11,10 +11,11 @@ import {
   ChevronsRight,
   KeyRound,
   LogOut,
-} from "lucide-react";
+} from "@/components/icons";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
+import { PresenceOrb } from "@/components/ui/presence-orb";
 import { logout } from "@/lib/auth";
 import { springs } from "@/lib/motion";
 import { useDevMode } from "@/lib/dev-mode";
@@ -147,21 +148,24 @@ export function Sidebar({ user }: SidebarProps) {
   return (
     <aside
       className={cn(
-        // Spatial Glass: floating glass rail (shell tier — real blur allowed).
-        // On desktop it's a sticky flex column in the admin layout row; on
-        // mobile (<md) it slides in from the left over a backdrop driven by
-        // <MobileDrawerProvider>.
+        // Eclipse: matte charcoal rail with a moon edge — a resting panel,
+        // no drop shadow, no blur. On desktop it's a sticky flex column in
+        // the admin layout row; on mobile (<md) it slides in from the left
+        // over a flat scrim driven by <MobileDrawerProvider> (elevation is
+        // added by the drawer state below).
         "flex flex-col overflow-hidden rounded-[24px]",
         "bg-sg-shell border border-sg-border",
-        "backdrop-blur-sg-shell backdrop-saturate-sg-shell",
-        "shadow-sg-3",
+        "shadow-sg-edge",
         // Liquid Glass optics — light-aware edge ring + chromatic inner
         // lensing so the rail reads as a bent-light material, not a tinted
         // panel. Blur-free, composes on top of the shell recipe above.
-        "lg-edge lg-refract",
+        "",
         // Desktop ≥md: sticky inline flex member.
         "md:relative md:sticky md:top-4 md:self-start md:max-h-[calc(100dvh-2rem)]",
         "md:shrink-0 md:translate-x-0",
+        // Mobile drawer is a floating layer while open — only then does the
+        // rail earn a drop shadow.
+        drawerOpen && "max-md:shadow-sg-4",
         // Spring the collapse/expand width change — springy overshoot curve
         // instead of a flat ease so the rail settles with a liquid feel.
         "md:transition-[width] md:duration-300 md:ease-[cubic-bezier(0.34,1.56,0.64,1)]",
@@ -276,15 +280,13 @@ export function Sidebar({ user }: SidebarProps) {
           </div>
         ) : (
           <div className="flex items-center gap-2">
-            <div
-              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold text-primary-foreground"
-              style={{
-                background:
-                  "linear-gradient(135deg, var(--sg-accent), var(--sg-accent-2))",
-                boxShadow: "0 0 10px -3px var(--sg-accent-glow)",
-              }}
-            >
-              {(user ?? "a").slice(0, 1).toUpperCase()}
+            <div className="relative flex h-7 w-7 shrink-0 items-center justify-center">
+              <PresenceOrb size="md" className="absolute inset-0 !h-7 !w-7" />
+              {/* The pearl's disc is always #000 — the initial must stay
+                  white in BOTH themes (theme ink would vanish on Paper). */}
+              <span className="relative text-[11px] font-medium text-white">
+                {(user ?? "a").slice(0, 1).toUpperCase()}
+              </span>
             </div>
             <div className="min-w-0 flex-1 leading-tight">
               <div
@@ -355,13 +357,13 @@ function SidebarItem({
       onKeyDown={onKeyDown}
       className={cn(
         "group relative flex min-h-9 items-center gap-2.5 rounded-sg-md px-2.5 py-1.5 text-[13px] transition-colors",
-        // Springy press physics on tap (lg-gel composes its own transform
+        // Springy press physics on tap ( composes its own transform
         // transition; transition-colors above keeps the hue change).
-        "lg-gel",
-        // Active: full accent-tinted glass pill with a hairline accent border.
-        // Inactive: text lift + sunken hover well.
+        "",
+        // Active: the Eclipse selected treatment (white 7% + moon edge +
+        // inset tint glow). Inactive: text lift + sunken hover well.
         active
-          ? "border border-sg-accent/30 bg-sg-accent-soft text-sg-ink"
+          ? "nav-active border text-sg-ink"
           : "border border-transparent text-sg-ink-2 hover:bg-sg-inset-hover hover:text-sg-ink",
         collapsed && "justify-center px-0",
         nested && !collapsed && "pl-8",
@@ -373,7 +375,7 @@ function SidebarItem({
         <motion.span
           layoutId="sidebar-indicator"
           aria-hidden
-          className="absolute left-[-6px] top-1/2 h-3.5 w-[3px] -translate-y-1/2 rounded-[2px] bg-sg-accent shadow-sg-glow"
+          className="absolute left-[-6px] top-1/2 h-3.5 w-[3px] -translate-y-1/2 rounded-[2px] bg-sg-tint shadow-[var(--sg-bloom-1)]"
           transition={springs.snappy}
         />
       ) : (
@@ -383,7 +385,7 @@ function SidebarItem({
         <span
           aria-hidden
           className={cn(
-            "pointer-events-none absolute left-[-6px] top-1/2 h-3 w-[2px] -translate-y-1/2 rounded-[2px] bg-sg-accent",
+            "pointer-events-none absolute left-[-6px] top-1/2 h-3 w-[2px] -translate-y-1/2 rounded-[2px] bg-sg-tint",
             "opacity-0 transition-opacity duration-150 group-hover:opacity-60",
           )}
         />
@@ -494,7 +496,7 @@ function SidebarGroup({
         className={cn(
           "relative flex min-h-9 w-full items-center gap-2.5 rounded-sg-md border border-transparent px-2.5 py-1.5 text-[13px] transition-colors",
           // Springy press physics on tap, matching SidebarItem.
-          "lg-gel",
+          "",
           // Active child lifts the label to medium weight; inactive groups get
           // a sunken hover well, matching SidebarItem.
           hasActiveChild

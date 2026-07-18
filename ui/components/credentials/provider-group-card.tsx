@@ -16,7 +16,7 @@
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight } from "@/components/icons";
 
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";

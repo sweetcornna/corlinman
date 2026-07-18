@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { Pause, Play, Settings2, Eye, PlayCircle } from "lucide-react";
+import { Pause, Play, Settings2, Eye, PlayCircle } from "@/components/icons";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";

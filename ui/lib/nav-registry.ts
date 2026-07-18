@@ -22,7 +22,7 @@
  */
 
 import type { Route } from "next";
-import type { LucideIcon } from "lucide-react";
+import type { LucideIcon } from "@/components/icons";
 import {
   Activity,
   AtSign,
@@ -57,7 +57,7 @@ import {
   Users,
   Wrench,
   Zap,
-} from "lucide-react";
+} from "@/components/icons";
 
 /* ------------------------------------------------------------------ */
 /*                              Types                                 */

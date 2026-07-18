@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { AlertTriangle, Check } from "lucide-react";
+import { AlertTriangle, Check } from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import { GlassPanel } from "@/components/ui/glass-panel";

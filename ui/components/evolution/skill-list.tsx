@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { Pin, PinOff, Search } from "lucide-react";
+import { Pin, PinOff, Search } from "@/components/icons";
 
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";

@@ -4,7 +4,7 @@ import * as React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useTranslation } from "react-i18next";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight } from "@/components/icons";
 
 import { segmentLabelKey } from "@/lib/nav-registry";
 
@@ -18,7 +18,7 @@ export function Breadcrumbs() {
 
   if (segments.length === 0) {
     return (
-      <span className="text-sm font-medium text-foreground">
+      <span className="whitespace-nowrap text-sm font-medium text-foreground">
         {t("breadcrumbs.dashboard")}
       </span>
     );

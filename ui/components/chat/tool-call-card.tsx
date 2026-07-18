@@ -8,10 +8,9 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
-  Loader2,
   Wrench,
   XCircle,
-} from "lucide-react";
+} from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import { springs } from "@/lib/motion";
@@ -35,7 +34,13 @@ export function ToolCallCard({ tool, defaultExpanded = false }: ToolCallCardProp
 
   const statusIcon =
     tool.status === "running" ? (
-      <Loader2 className="h-3.5 w-3.5 animate-spin text-sg-accent" />
+      /* Static tint dot — the streaming thread already owns the screen's
+         motion budget; the running state reads through color, not motion. */
+      <span
+        className="h-[7px] w-[7px] rounded-full bg-sg-tint"
+        aria-hidden="true"
+        data-testid="tool-running-dot"
+      />
     ) : tool.status === "ok" ? (
       <CheckCircle2 className="h-3.5 w-3.5 text-sg-ok" />
     ) : tool.status === "error" ? (

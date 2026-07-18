@@ -18,7 +18,7 @@ import {
   Search,
   Trash2,
   X,
-} from "lucide-react";
+} from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import { springs } from "@/lib/motion";
@@ -165,8 +165,8 @@ export function ChatSidebar({
           onClick={onNew}
           className={cn(
             "flex flex-1 items-center justify-center gap-1.5 rounded-sg-md",
-            "border border-sg-accent/40 bg-sg-accent px-2 py-1.5 text-[12px] text-white",
-            "shadow-sg-1 hover:bg-sg-accent/90",
+            "bg-sg-tint px-2 py-1.5 text-[12px] font-medium text-sg-tint-ink",
+            "shadow-sg-glow hover:bg-sg-tint/90",
           )}
           data-testid="chat-sidebar-new"
         >
@@ -356,7 +356,7 @@ function MobileSidebarTrigger({
       aria-label={label}
       data-testid="chat-sidebar-trigger"
       className={cn(
-        "lg-gel absolute left-3 top-3 z-20 inline-flex h-9 w-9 items-center justify-center md:hidden",
+        " absolute left-3 top-3 z-20 inline-flex h-9 w-9 items-center justify-center md:hidden",
         "rounded-sg-md border border-sg-border sg-card text-sg-ink-2",
         "shadow-sg-1 hover:bg-sg-inset focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
       )}
@@ -491,9 +491,9 @@ function SidebarRow({
   return (
     <motion.li
       className={cn(
-        "lg-gel group relative isolate flex items-center gap-1 rounded-sg-md border px-2 py-1.5 text-[12px]",
+        " group relative isolate flex items-center gap-1 rounded-sg-md border px-2 py-1.5 text-[12px]",
         active
-          ? "border-sg-accent/25 text-sg-ink"
+          ? "border-sg-border-strong text-sg-ink"
           : "border-transparent text-sg-ink-2 hover:bg-sg-inset-hover hover:text-sg-ink",
       )}
       data-testid="chat-sidebar-row"
@@ -507,11 +507,11 @@ function SidebarRow({
           layoutId={reducedMotion ? undefined : "chat-sidebar-active"}
           transition={springs.snappy}
           aria-hidden="true"
-          className="pointer-events-none absolute inset-0 -z-10 rounded-sg-md bg-sg-accent-soft"
+          className="nav-active pointer-events-none absolute inset-0 -z-10 rounded-sg-md"
         />
       ) : null}
       {conv.pinned ? (
-        <Pin className="h-3 w-3 shrink-0 text-sg-accent" aria-hidden="true" />
+        <Pin className="h-3 w-3 shrink-0 text-sg-ink-4" aria-hidden="true" />
       ) : null}
 
       {renaming ? (
@@ -528,7 +528,7 @@ function SidebarRow({
             if (e.key === "Enter") confirmOnce(renameValue);
             if (e.key === "Escape") onCancelRename();
           }}
-          className="flex-1 rounded-sg-sm border border-sg-accent/40 bg-sg-inset px-1 py-0.5 text-[12px] text-sg-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40"
+          className="flex-1 rounded-sg-sm border border-sg-border-strong bg-sg-inset px-1 py-0.5 text-[12px] text-sg-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-sg-tint/40"
           data-testid="chat-rename-input"
         />
       ) : (

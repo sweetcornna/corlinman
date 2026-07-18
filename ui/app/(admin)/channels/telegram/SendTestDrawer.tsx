@@ -3,7 +3,7 @@
 import * as React from "react";
 import { useMutation } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Send } from "lucide-react";
+import { Send } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";

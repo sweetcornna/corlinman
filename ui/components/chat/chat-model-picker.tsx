@@ -21,7 +21,7 @@
 import * as React from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { Loader2, Search, X } from "lucide-react";
+import { Loader2, Search, X } from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import {

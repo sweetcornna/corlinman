@@ -3,7 +3,7 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { motion } from "framer-motion";
-import { ImagePlus } from "lucide-react";
+import { ImagePlus } from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import { useMotionVariants } from "@/lib/motion";
@@ -240,7 +240,7 @@ export function EmojiPicker({ onPick, onPickSticker, onClose }: EmojiPickerProps
         onClick={() => pickCell(cell)}
         onMouseEnter={() => setActive(idx)}
         className={cn(
-          "lg-gel flex h-9 w-9 items-center justify-center rounded-md text-xl leading-none",
+          " flex h-9 w-9 items-center justify-center rounded-md text-xl leading-none",
           "hover:bg-sg-accent-soft focus:outline-none",
           isActive && "bg-sg-accent-soft ring-1 ring-sg-accent/40",
           cell.emoji === null && "text-sg-accent",

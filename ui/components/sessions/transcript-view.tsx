@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { Bot, MessageSquareDashed, User } from "lucide-react";
+import { Bot, MessageSquareDashed, User } from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import { formatDateTime } from "@/lib/format";

@@ -4,7 +4,7 @@ import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { motion, AnimatePresence } from "framer-motion";
-import { Check } from "lucide-react";
+import { Check } from "@/components/icons";
 
 import { GlassPanel } from "@/components/ui/glass-panel";
 import { useMotion } from "@/components/ui/motion-safe";

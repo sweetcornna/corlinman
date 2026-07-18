@@ -6,7 +6,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTheme } from "next-themes";
 import { useTranslation } from "react-i18next";
 import { motion } from "framer-motion";
-import { AlertTriangle, Check, FileCode2, RotateCcw, Search } from "lucide-react";
+import { AlertTriangle, Check, FileCode2, RotateCcw, Search } from "@/components/icons";
 import { toast } from "sonner";
 
 import { useMotion } from "@/components/ui/motion-safe";
@@ -520,7 +520,7 @@ export default function ConfigPage() {
                   minimap: { enabled: false },
                   wordWrap: "on",
                   scrollBeyondLastLine: false,
-                  fontFamily: "var(--font-geist-mono), ui-monospace, monospace",
+                  fontFamily: "var(--font-jetbrains-mono), ui-monospace, monospace",
                 }}
               />
             )}

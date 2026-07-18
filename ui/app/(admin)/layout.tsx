@@ -13,7 +13,6 @@ import {
   MobileDrawerProvider,
   useMobileDrawer,
 } from "@/components/layout/mobile-drawer-context";
-import { AuroraBackground } from "@/components/ui/aurora-background";
 import { DefaultPasswordBanner } from "@/components/admin/default-password-banner";
 import { AdminSessionProvider } from "@/components/admin/admin-session-context";
 import {
@@ -122,9 +121,8 @@ function AdminShell({
 
   return (
     <div className="relative flex min-h-dvh gap-2 p-2 md:gap-5 md:p-5">
-      {/* Spatial Glass aurora — fixed behind all admin content. Reads the
-          nebula/space tokens so it retints on theme flip. */}
-      <AuroraBackground />
+      {/* The pure-black canvas + moonrise halo is painted on <html> by
+          globals.css — no backdrop component needed. */}
       <RouteScrollRestore />
 
       {/* Mobile drawer backdrop — only visible on <md when the sidebar
@@ -137,8 +135,8 @@ function AdminShell({
         tabIndex={drawerOpen ? 0 : -1}
         aria-hidden={drawerOpen ? undefined : true}
         className={cn(
-          // Overlay tier — backdrop-blur is allowed here (drawer scrim).
-          "fixed inset-0 z-40 bg-black/60 backdrop-blur-md md:hidden",
+          // Flat scrim — no blur anywhere in Eclipse.
+          "fixed inset-0 z-40 bg-black/60 md:hidden",
           "transition-opacity duration-200",
           drawerOpen
             ? "opacity-100"

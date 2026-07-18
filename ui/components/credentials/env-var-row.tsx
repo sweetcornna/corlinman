@@ -39,7 +39,7 @@ import {
   Save,
   Trash2,
   X,
-} from "lucide-react";
+} from "@/components/icons";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -143,7 +143,7 @@ export function EnvVarRow({
   if (editing) {
     return (
       <div
-        className="flex min-w-0 flex-wrap items-center gap-2 rounded-md border border-sg-accent/40 bg-sg-inset px-3 py-2 shadow-sg-glow"
+        className="flex min-w-0 flex-wrap items-center gap-2 rounded-md border border-sg-border-strong bg-sg-inset px-3 py-2 shadow-sg-well-soft"
         data-testid={`${prefix}-row`}
       >
         <Label

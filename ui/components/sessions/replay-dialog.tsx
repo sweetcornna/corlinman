@@ -3,7 +3,7 @@
 import * as React from "react";
 import { useMutation } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { ChevronRight, Loader2 } from "lucide-react";
+import { ChevronRight, Loader2 } from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -90,7 +90,7 @@ export function ReplayDialog({ session, onClose }: ReplayDialogProps) {
       <DialogContent
         className={cn(
           "max-w-3xl gap-0 rounded-sg-xl border-sg-border-strong bg-sg-overlay p-0",
-          "backdrop-blur-glass-strong backdrop-saturate-glass-strong",
+          "",
           "shadow-sg-4",
         )}
         data-testid="replay-dialog"

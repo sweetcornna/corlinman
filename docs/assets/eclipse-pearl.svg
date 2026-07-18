@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" width="240" height="240" role="img" aria-label="corlinman — the eclipse pearl">
+  <style>
+    .bob { animation: bob 4.5s ease-in-out infinite; }
+    .corona { animation: turn 14s linear infinite; transform-box: fill-box; transform-origin: center; }
+    .eye { transform-box: fill-box; transform-origin: center; animation: blink 5.2s infinite; }
+    .eye-r { animation-delay: 0.06s; }
+    .mouth { transform-box: fill-box; transform-origin: center; animation: smile 4.5s ease-in-out infinite; }
+    @keyframes bob {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-6px); }
+    }
+    @keyframes turn {
+      to { transform: rotate(360deg); }
+    }
+    @keyframes blink {
+      0%, 91%, 100% { transform: scaleY(1); }
+      93.5%, 96.5% { transform: scaleY(0.08); }
+    }
+    @keyframes smile {
+      0%, 100% { transform: scaleX(1); }
+      50% { transform: scaleX(1.12); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .bob, .corona, .eye, .eye-r, .mouth { animation: none; }
+    }
+  </style>
+  <defs>
+    <radialGradient id="halo" cx="50%" cy="50%" r="50%">
+      <stop offset="52%" stop-color="#ffffff" stop-opacity="0.34"/>
+      <stop offset="66%" stop-color="#ffffff" stop-opacity="0.1"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="ring" x1="0%" y1="100%" x2="80%" y2="0%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="45%" stop-color="#ffffff" stop-opacity="0.34"/>
+      <stop offset="80%" stop-color="#ffffff" stop-opacity="0.06"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0.02"/>
+    </linearGradient>
+  </defs>
+
+  <!-- night tile -->
+  <rect width="240" height="240" rx="52" fill="#000000"/>
+
+  <g class="bob">
+    <!-- moonrise halo -->
+    <circle cx="120" cy="120" r="98" fill="url(#halo)"/>
+    <!-- corona (rotating shimmer) -->
+    <g class="corona">
+      <circle cx="120" cy="120" r="62" fill="none" stroke="url(#ring)" stroke-width="11"/>
+    </g>
+    <!-- the eclipsing disc -->
+    <circle cx="120" cy="120" r="57" fill="#000000"/>
+
+    <!-- cute face — tiny moon-white dots + a soft smile -->
+    <g fill="#ffffff">
+      <circle class="eye" cx="102" cy="114" r="3.6"/>
+      <circle class="eye eye-r" cx="138" cy="114" r="3.6"/>
+    </g>
+    <path class="mouth" d="M108 134 Q120 143 132 134" fill="none" stroke="#ffffff" stroke-width="4" stroke-linecap="round"/>
+  </g>
+</svg>

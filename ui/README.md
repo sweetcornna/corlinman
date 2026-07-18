@@ -69,30 +69,49 @@ Both are covered by the real axe browser CLI in CI. See `tests/a11y-audit.test.t
 
 ---
 
-## Tidepool design system
+## Eclipse Minimal v2 design system
 
-Since v0.4 the admin UI runs on **Tidepool** — a warm-orange glass aesthetic layered over the previous Linear-inspired token set. Both palettes coexist; new code reaches for the `tp-*` family, legacy code using `--primary` / `--accent` now resolves to matched amber values so shipped primitives (the shadcn `<Button>`, `<Dialog>`, etc.) render in-palette without modification.
+Since v1.31 the admin UI runs on **Eclipse Minimal v2** — the corlinman
+design language from the claude.ai/design project: a pure-black canvas with
+a moonrise halo, matte charcoal surfaces, a five-step moon-white ink scale,
+and a **tint pipeline** that colors only the "light" (eclipse pearl, live
+dots, streaming thread, caret, solid primary buttons, selected states) —
+never the skeleton. `backdrop-filter` is banned app-wide and font weights
+stop at 500; both are vitest-enforced (`app/globals-glass-vars.test.ts`,
+`tailwind.config.test.ts`).
 
 ### Theme attribute + boot sequence
 
-- `<html data-theme="light|dark">` drives colour + token resolution. The `.dark` class is kept in lockstep for backwards compatibility with Tailwind's existing `dark:` variant usage.
+- `<html data-theme="light|dark">` drives token resolution. The `.dark`
+  class is kept in lockstep for Tailwind's `dark:` variant. Dark ("deep
+  night") is the first-class theme; light is the monochrome "Paper"
+  inversion.
 - Boot order (matters for no-FOUC):
-  1. Inline script in `app/layout.tsx` reads `localStorage["corlinman-theme"]` (fallback: `?theme=` URL param → legacy `theme` key → `dark` default), sets both `data-theme` and the `.dark` class before React hydrates.
-  2. `<ThemeProvider>` from `next-themes` (in `components/providers.tsx`) is configured with `attribute={["class","data-theme"]}` + `storageKey="corlinman-theme"` so the post-hydration owner reads the same value the boot script wrote.
-  3. The Tidepool `<ThemeToggle>` (in `components/ui/theme-toggle.tsx`) writes through the same key.
-
-URL-first theme param (`?theme=light|dark`) is persisted to storage on load so the boot script and next-themes can't disagree on the next visit.
+  1. Inline script in `app/layout.tsx` reads `localStorage["corlinman-theme"]`
+     (fallback: `?theme=` URL param → legacy `theme` key → `dark` default),
+     sets `data-theme` + `.dark` before React hydrates, purges the retired
+     Spatial Glass theme keys, and applies the persisted tint
+     (`corlinman-tint`: preset via `data-tint` attribute, custom hue via an
+     injected style block — its generator MUST stay in sync with
+     `lib/tint.ts#buildTintCss`).
+  2. `<ThemeProvider>` from `next-themes` (in `components/providers.tsx`)
+     is configured with `attribute={["class","data-theme"]}` +
+     `storageKey="corlinman-theme"`.
+  3. `<ThemeToggle>` writes through the same key; the tint picker
+     (`components/ui/accent-picker.tsx`) writes `corlinman-tint` through
+     `lib/tint.ts`.
 
 ### Primitives
 
-Under `components/ui/` and `components/admin/`. Every retokened page consumes these; don't recreate variants inline.
+Under `components/ui/` and `components/admin/`. Every page consumes these;
+don't recreate variants inline.
 
 | Primitive | Purpose |
 |---|---|
-| `<GlassPanel variant="soft"\|"strong"\|"subtle"\|"primary">` | Core container surface. `subtle` has no `backdrop-filter` — use inside scroll containers where ≥ 6 blur layers would blow the per-viewport GPU budget. |
-| `<AuroraBackground>` | Fixed three-radial + diagonal-linear gradient layer. Mounted once at `app/(admin)/layout.tsx`; reads `--tp-aurora-*` + `--tp-bg-*`. |
+| `<GlassPanel variant="soft"\|"strong"\|"subtle"\|"primary">` | Core matte surface. All variants are opaque charcoal + moon edge; `primary` adds the selected treatment (inset tint glow via `shadow-sg-selected`). |
+| `<PresenceOrb size="sm"\|"md"\|"hero" active>` | The eclipse pearl — the design language's signature element. `active` spins the corona (reduced-motion freezes it via CSS). |
 | `<ThemeToggle>` | Sun/moon pill. |
-| `<StatChip>` | Label + value + optional sparkline + delta. `variant="primary"` adds amber ring/glow + `live` badge. |
+| `<StatChip>` | Label + value + optional sparkline + delta. `variant="primary"` gets the selected treatment + `live` badge. |
 | `<FilterChipGroup>` | Pill-style filter tabs — single-select or multi via a discriminated union. |
 | `<StreamPill>` | Live/paused/throttled indicator with breathing dot + optional rate suffix. |
 | `<LogRow variant="dense"\|"comfortable">` | Shared row primitive for log streams and activity feeds. |
@@ -102,33 +121,53 @@ Under `components/ui/` and `components/admin/`. Every retokened page consumes th
 | `<CommandPalette>` | Configurable ⌘K modal over cmdk. Takes `groups: PaletteGroup[]`; consumers inject actions from any page. |
 | `<UptimeStreak>` | Dashboard/health big-number card with 30-bar history. |
 
+Icons come from the self-drawn sprite (`public/icons-sprite.svg`, 24 grid /
+1.8 stroke / round caps) via `components/icons` — the barrel exports
+lucide-compatible PascalCase components; importing `lucide-react` is
+test-forbidden.
+
 ### Tokens
 
-All `--tp-*` CSS variables live in `app/globals.css` under the default `:root` block (day) and the `.dark` selector (night). Matching Tailwind tokens exposed in `tailwind.config.ts` as flat classes — `bg-tp-glass`, `text-tp-ink`, `border-tp-glass-edge`, `bg-tp-amber-soft`, `text-tp-amber`, `bg-tp-grad-text` (gradient utility), `shadow-tp-panel / -hero / -primary`, `backdrop-blur-glass / -glass-strong`, etc.
+All `--sg-*` variables live in `app/globals.css` (`:root` = Paper light,
+`.dark` = Eclipse dark), mapped into Tailwind by `tailwind.config.ts`:
+surfaces (`bg-sg-card`/`bg-sg-inset`/`bg-sg-opaque`), the ink scale
+(`text-sg-ink` … `text-sg-ink-5`), light grammar shadows (`shadow-sg-edge`,
+`shadow-sg-well`, `shadow-sg-1..4`, `shadow-sg-lift/scrim/selected`,
+`shadow-sg-bloom-1..3`), and the tint family (`bg-sg-tint`,
+`text-sg-tint-ink`, `ring-sg-tint`). `bg-sg-card-grad` is a single
+background-image stack that carries BOTH the matte fill and the sheen — do
+not pair it with a separate `bg-*` color class (tailwind-merge would drop
+one).
 
-The ambient `--tp-amber` (oklch 0.80/0.17/58 night, 0.56/0.19/50 day) is tuned for decorative/border/glow usage — it does **not** meet WCAG AA contrast for white text. For button backgrounds and any text-on-amber surface, the `--primary` token (hsl `20 82% 33%` day / `35 90% 65%` night with matching `--primary-foreground`) is calibrated to hit AA (4.5:1).
+Solid tint fills always pair with `text-sg-tint-ink` (auto-derived black or
+white) so contrast holds for any preset or custom hue. Status colors
+(`sg-ok/warn/err`) are muted and never tinted — semantics beat
+personalization.
 
 ### Motion
 
-- **Continuous** (breathing dots, pulse badges, draw-in underlines, just-now row highlights): CSS keyframes under `.tp-breathe / .tp-breathe-amber / .tp-badge-pulse / .tp-draw-in / .tp-just-now` in `globals.css`. All respect `prefers-reduced-motion: reduce` via the trailing `@media` block.
-- **Transient entrance** (stat tick-up, palette open): Framer variants `tickUp` / `paletteIn` in `lib/motion.ts`, paired with instant copies returned by `useMotionVariants()` when reduced-motion is on.
+- **Continuous** (pearl rotation, streaming thread, breathing dots): CSS
+  keyframes in `globals.css` (`eclipse-turn`, `thread-pulse`,
+  `sg-breathe*`), all frozen under `prefers-reduced-motion`. Budget: ≤ 3
+  lively elements per screen.
+- **Transient entrance**: Framer variants in `lib/motion.ts`, paired with
+  instant copies returned by `useMotionVariants()` when reduced-motion is
+  on.
 
-### Performance budget
+### Adding a new page
 
-Backdrop-blur is not free. Current per-viewport worst case (Dashboard) renders ~9 blur layers (sidebar + topnav + hero strong + 4 stat chips + 2 content panes). Target ≤ 5 on older Apple Silicon / Intel integrated GPUs. If profiling shows LCP regressions, shift non-hero surfaces to `<GlassPanel variant="subtle">` (no `backdrop-filter`, solid `rgba` background instead).
+1. Scaffold with `<GlassPanel variant="strong" as="section">` for the hero.
+2. Stat row: `<StatChip variant="primary" live>` for the most active
+   metric, `<StatChip>` defaults for the rest.
+3. List / activity surface: `<GlassPanel soft>` + `<LogRow>`.
+4. Detail pane: `<DetailDrawer>` + `<JsonView>`.
+5. Offline state: copy the `OfflineBlock` pattern from
+   `app/(admin)/plugins/page.tsx`.
+6. i18n: add keys in both `lib/locales/zh-CN.ts` and `lib/locales/en.ts`.
 
-### Adding a new retokened page
+### Design-language history
 
-1. Scaffold with `<GlassPanel variant="strong" as="section">` for the hero, prose summary with inline `<span className="bg-tp-glass-inner-strong border border-tp-glass-edge">` metric chips.
-2. Stat row: `<StatChip variant="primary" live>` for the most active metric, `<StatChip>` defaults for the rest.
-3. List / activity surface: `<GlassPanel soft>` + `<LogRow variant="dense|comfortable">` (or purpose-specific row).
-4. Detail pane: `<DetailDrawer title subsystem meta trace>`, content in `<DetailDrawer.Section label>` wrappers, payload via `<JsonView>`.
-5. Offline state: copy the `OfflineBlock` pattern from `app/(admin)/plugins/page.tsx` — it suppresses HTML-dump diagnostics so an upstream gateway 404 page doesn't leak into the shell.
-6. i18n: add keys under a `<page>.tp.*` sub-namespace in both `lib/locales/zh-CN.ts` and `lib/locales/en.ts`. Don't touch other `*.tp.*` sub-namespaces — they're owned by their respective pages.
-
-### Migration commit trail
-
-Commits on `feat/tidepool-phase-0` since v0.3.0, in order:
+Tidepool (v0.4) → Spatial Glass + Liquid Glass (v1.19, PR #84) → **Eclipse Minimal v2** (v1.31, PR #145). Original Tidepool commit trail, for archaeology:
 
 - `phase 0` — tokens + fonts + motion primitives
 - `phase 1 wave A/B/C/D` — 12 new primitive components (+51 tests)

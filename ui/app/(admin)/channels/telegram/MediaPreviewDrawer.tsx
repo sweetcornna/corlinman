@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { toast } from "sonner";
-import { Copy, FileText, Mic } from "lucide-react";
+import { Copy, FileText, Mic } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";

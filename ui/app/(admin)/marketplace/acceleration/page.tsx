@@ -4,7 +4,7 @@ import * as React from "react";
 import Link from "next/link";
 import { useTranslation } from "react-i18next";
 import { motion } from "framer-motion";
-import { ChevronLeft } from "lucide-react";
+import { ChevronLeft } from "@/components/icons";
 
 import { useMotionVariants } from "@/lib/motion";
 import { GlassPanel } from "@/components/ui/glass-panel";
@@ -30,8 +30,7 @@ export default function MarketplaceAccelerationPage() {
       <GlassPanel
         variant="strong"
         as="section"
-        lively
-        className="relative overflow-hidden p-7"
+                className="relative overflow-hidden p-7"
       >
         <div
           aria-hidden

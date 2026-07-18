@@ -27,7 +27,7 @@
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { Loader2, RefreshCcw } from "lucide-react";
+import { Loader2, RefreshCcw } from "@/components/icons";
 import { toast } from "sonner";
 
 import { Alert } from "@/components/ui/alert";

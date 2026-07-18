@@ -54,8 +54,7 @@ function DetailDrawerRoot({
       // Focal inspection surface (the selected-row detail pane) — carry the
       // full Liquid Glass optics + pointer-tracked specular light so it reads
       // as the showcase moment beside its plain list.
-      lively
-      className={cn(
+            className={cn(
         "flex flex-col overflow-hidden",
         className,
       )}

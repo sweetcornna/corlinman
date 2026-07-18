@@ -1,6 +1,6 @@
 "use client";
 
-import { Sprout, Hourglass } from "lucide-react";
+import { Sprout, Hourglass } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import type { Tab } from "./types";
@@ -24,7 +24,7 @@ export function EvolutionEmptyState({ tab }: { tab: Tab }) {
         )}
       >
         <Sprout className="h-9 w-9 text-sg-accent/80" aria-hidden />
-        <p className="font-serif text-[20px] font-normal leading-tight tracking-[-0.01em] text-sg-ink">
+        <p className="font-display text-[20px] font-normal leading-tight tracking-[-0.01em] text-sg-ink">
           {t("evolution.tp.emptyPending")}
         </p>
         <p className="max-w-[42ch] text-[12.5px] leading-[1.6] text-sg-ink-3">
@@ -42,7 +42,7 @@ export function EvolutionEmptyState({ tab }: { tab: Tab }) {
       )}
     >
       <Hourglass className="h-8 w-8 text-sg-ink-4" aria-hidden />
-      <p className="font-serif text-[18px] font-normal leading-tight tracking-[-0.01em] text-sg-ink">
+      <p className="font-display text-[18px] font-normal leading-tight tracking-[-0.01em] text-sg-ink">
         {t("evolution.tp.tabPlaceholderTitle")}
       </p>
       <p className="max-w-[42ch] text-[12.5px] leading-[1.6] text-sg-ink-3">

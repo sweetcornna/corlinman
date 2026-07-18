@@ -4,7 +4,7 @@
 "use client";
 
 import * as React from "react";
-import { Search } from "lucide-react";
+import { Search } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";

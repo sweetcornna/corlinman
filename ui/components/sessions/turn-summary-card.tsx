@@ -19,7 +19,7 @@
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { AlertTriangle, CircleCheck, Loader2, Octagon } from "lucide-react";
+import { AlertTriangle, CircleCheck, Loader2, Octagon } from "@/components/icons";
 
 import { useTimeline, type Part, type Turn } from "@/lib/sessions/store";
 import { formatDateTime, formatNumber, formatTime } from "@/lib/format";

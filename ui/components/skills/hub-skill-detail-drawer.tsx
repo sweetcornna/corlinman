@@ -15,7 +15,7 @@
 import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { Download, ExternalLink, Loader2, Star } from "lucide-react";
+import { Download, ExternalLink, Loader2, Star } from "@/components/icons";
 
 import { Drawer } from "@/components/ui/drawer";
 import { Button } from "@/components/ui/button";

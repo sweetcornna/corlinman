@@ -25,7 +25,7 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { motion } from "framer-motion";
-import { Pin, PinOff, Trash2 } from "lucide-react";
+import { Pin, PinOff, Trash2 } from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import { GlassPanel } from "@/components/ui/glass-panel";
@@ -248,15 +248,14 @@ function InstalledCard({
     <div
       className={cn(
         "group block focus-visible:outline-none",
-        !reduced && "lg-gel hover:-translate-y-0.5",
+        !reduced && " hover:-translate-y-0.5",
       )}
       data-testid={`installed-card-${row.name}`}
       data-origin={badge.kind}
     >
       <GlassPanel
         variant="soft"
-        lively
-        role={onOpen ? "button" : undefined}
+                role={onOpen ? "button" : undefined}
         tabIndex={onOpen ? 0 : undefined}
         aria-label={
           onOpen

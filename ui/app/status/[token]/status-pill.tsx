@@ -47,7 +47,7 @@ function configFor(state: StatusState): PillConfig {
 /* Faux-glass tinted container per tone. NO backdrop-filter (content tier). */
 const containerTone: Record<Tone, string> = {
   ok: "bg-sg-ok-soft text-sg-ok border-sg-ok/30 shadow-sg-1",
-  active: "bg-sg-accent-soft text-sg-accent border-sg-accent/30 shadow-sg-glow",
+  active: "bg-sg-tint-soft text-sg-ink border-sg-border-strong shadow-sg-edge",
   error: "bg-sg-err-soft text-sg-err border-sg-err/30 shadow-sg-1",
   muted: "bg-sg-inset text-sg-ink-3 border-sg-border",
 };

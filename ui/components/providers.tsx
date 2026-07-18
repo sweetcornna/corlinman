@@ -8,7 +8,6 @@ import { I18nextProvider } from "react-i18next";
 
 import { i18next, initI18n, resolvePreferredLang } from "@/lib/i18n";
 import { CommandPaletteProvider } from "./cmdk-palette";
-import { CursorLight } from "@/components/ui/cursor-light";
 
 // Init at module load. `initI18n()` is SSR-safe and defaults to zh-CN,
 // matching the `<html lang="zh-CN">` we emit. After mount the effect below
@@ -19,11 +18,10 @@ initI18n();
 // --- providers --------------------------------------------------------------
 
 /**
- * Sonner toaster styled as a Spatial Glass overlay. Split into its own
+ * Sonner toaster styled as an Eclipse floating layer: opaque matte
+ * charcoal, strong moon edge, elevation shadow. Split into its own
  * component so it can read the next-themes resolved theme via `useTheme()`
- * (only valid inside <ThemeProvider>) and keep the toast surface in the
- * overlay blur tier — the only content-adjacent place backdrop-blur is
- * allowed by the blur budget.
+ * (only valid inside <ThemeProvider>).
  */
 function GlassToaster() {
   const { resolvedTheme } = useTheme();
@@ -34,7 +32,7 @@ function GlassToaster() {
       toastOptions={{
         classNames: {
           toast:
-            "!bg-sg-overlay !border !border-sg-border-strong !shadow-sg-3 !backdrop-blur-sg-overlay !backdrop-saturate-sg-overlay !text-popover-foreground !font-sans rounded-sg-md",
+            "!bg-sg-opaque !border !border-sg-border-strong !shadow-sg-3 !text-popover-foreground !font-sans rounded-sg-md",
           title: "!text-sm !font-medium",
           description: "!text-xs !text-muted-foreground",
         },
@@ -86,8 +84,6 @@ export function Providers({ children }: ProvidersProps) {
           <CommandPaletteProvider>
             {children}
             <GlassToaster />
-            {/* Liquid Glass touch-point radiance — global pointer halo. */}
-            <CursorLight />
           </CommandPaletteProvider>
         </I18nextProvider>
       </QueryClientProvider>

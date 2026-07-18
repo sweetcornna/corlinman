@@ -6,7 +6,7 @@ import {
   CheckCircle2,
   Info,
   OctagonAlert,
-} from "lucide-react";
+} from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 
@@ -16,23 +16,25 @@ const VARIANTS: Record<
   AlertVariant,
   { box: string; icon: string; Icon: React.ComponentType<{ className?: string }> }
 > = {
+  // Eclipse: matte charcoal band + a 2px status rule on the left edge —
+  // the muted status color marks the semantic, the surface stays neutral.
   info: {
-    box: "border-sg-accent/30 bg-sg-accent-soft",
-    icon: "text-sg-accent",
+    box: "border-sg-border bg-sg-card border-l-2 border-l-sg-ink-4",
+    icon: "text-sg-ink-3",
     Icon: Info,
   },
   success: {
-    box: "border-sg-ok/30 bg-sg-ok-soft",
+    box: "border-sg-border bg-sg-card border-l-2 border-l-sg-ok",
     icon: "text-sg-ok",
     Icon: CheckCircle2,
   },
   warning: {
-    box: "border-sg-warn/30 bg-sg-warn-soft",
+    box: "border-sg-border bg-sg-card border-l-2 border-l-sg-warn",
     icon: "text-sg-warn",
     Icon: AlertTriangle,
   },
   danger: {
-    box: "border-sg-err/30 bg-sg-err-soft",
+    box: "border-sg-border bg-sg-card border-l-2 border-l-sg-err",
     icon: "text-sg-err",
     Icon: OctagonAlert,
   },

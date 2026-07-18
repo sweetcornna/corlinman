@@ -17,7 +17,7 @@
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { Power, PowerOff, Trash2 } from "lucide-react";
+import { Power, PowerOff, Trash2 } from "@/components/icons";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";

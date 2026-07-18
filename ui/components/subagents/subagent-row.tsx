@@ -25,7 +25,7 @@ import {
   OctagonX,
   Pause,
   XOctagon,
-} from "lucide-react";
+} from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";

@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, ChevronRight, GitFork, Loader2 } from "lucide-react";
+import { ChevronDown, ChevronRight, GitFork, Loader2 } from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import type { SubagentCardState } from "@/lib/chat/types";

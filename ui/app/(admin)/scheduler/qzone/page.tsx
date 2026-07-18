@@ -34,7 +34,7 @@ import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { ExternalLink, Play, Plus, RefreshCw, Sparkles } from "lucide-react";
+import { ExternalLink, Play, Plus, RefreshCw, Sparkles } from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";

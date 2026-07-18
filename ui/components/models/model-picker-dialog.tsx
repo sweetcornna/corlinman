@@ -27,7 +27,7 @@
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { Check, Search } from "lucide-react";
+import { Check, Search } from "@/components/icons";
 
 import { Button } from "@/components/ui/button";
 import {

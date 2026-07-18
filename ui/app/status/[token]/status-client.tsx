@@ -22,10 +22,9 @@
 import * as React from "react";
 import { useParams } from "next/navigation";
 import { useTranslation } from "react-i18next";
-import { Loader2, LinkIcon, AlertTriangle, WifiOff } from "lucide-react";
+import { Loader2, LinkIcon, AlertTriangle, WifiOff } from "@/components/icons";
 
 import { cn } from "@/lib/utils";
-import { useSpecular } from "@/lib/use-specular";
 import type { LiveEvent } from "@/lib/sessions/event-stream";
 import { TimelineProvider } from "@/lib/sessions/store";
 import { EventTimelineBody } from "@/components/sessions/event-timeline";
@@ -235,43 +234,12 @@ function useStatusEvents(token: string | null, seed: LiveEvent[]) {
 /* -------------------------------------------------------------- */
 
 /**
- * Full-bleed deep-space backdrop for the standalone status card. This page
- * lives OUTSIDE the admin shell, so it can't borrow the admin layout's
- * <AuroraBackground />; it paints its own layered nebula glow + noise here.
- * All layers are decorative (aria-hidden, pointer-events-none) and sit behind
- * the content; the base deep-space gradient itself is painted on <html> in
- * globals.css (theme-flipping, pre-hydration), so we only add depth on top.
+ * The standalone status card rides the global canvas: pure black +
+ * moonrise halo + vignette, painted on <html> by globals.css
+ * (theme-flipping, pre-hydration). No page-local backdrop layers.
  */
 function StatusBackdrop() {
-  return (
-    <div
-      aria-hidden="true"
-      className="fixed inset-0 -z-10 overflow-hidden pointer-events-none"
-    >
-      {/* Nebula glow blobs — soft accent-hued radials, slow drift + hue drift. */}
-      <div
-        className="absolute inset-0 sg-drift lg-hue-drift pointer-events-none"
-        style={{
-          backgroundImage:
-            "radial-gradient(900px 560px at 15% 8%, var(--sg-nebula-1), transparent 60%), " +
-            "radial-gradient(760px 540px at 86% 18%, var(--sg-nebula-2), transparent 60%), " +
-            "radial-gradient(680px 460px at 52% 96%, var(--sg-nebula-3), transparent 62%)",
-        }}
-      />
-      {/* Twinkling starfield (dark theme only — hidden in daylight via CSS). */}
-      <div className="absolute inset-0 lg-stars pointer-events-none" />
-      {/* Depth vignette — fade toward the edges so corners keep spatial depth. */}
-      <div
-        className="absolute inset-0 pointer-events-none"
-        style={{
-          background:
-            "radial-gradient(120% 90% at 50% 30%, transparent 0%, var(--sg-space-3) 78%, var(--sg-space-0) 100%)",
-        }}
-      />
-      {/* Fractal noise — breaks gradient banding at ~3%. */}
-      <div className="absolute inset-0 sg-noise opacity-[0.03] pointer-events-none" />
-    </div>
-  );
+  return null;
 }
 
 function CenteredCard({
@@ -440,29 +408,22 @@ function StatusReady({
   );
   const active = isActiveState(snapshot.status);
 
-  // Pointer-tracked specular light for the hero — the showcase moment.
-  const heroRef = useSpecular<HTMLElement>();
-
   return (
     <div className="relative min-h-dvh">
       <StatusBackdrop />
       <div className="mx-auto flex w-full max-w-xl flex-col gap-5 px-4 py-8 sm:px-6 sm:py-12">
-        {/* Hero card — the showcase surface. This is the one budgeted real
-            blur on a content page: a floating overlay-tier glass panel with
-            the full Liquid Glass optic stack (light-aware edge, chromatic
-            refraction rim, hover sheen sweep, pointer-tracked specular).
-            Persona avatar with accent ring glow, agent name in gradient
-            display text, live-ticking elapsed timer in font-mono. No admin
-            nav, no shell: a standalone, mobile-friendly public card. */}
+        {/* Hero card — the showcase surface: a floating matte panel
+            (opaque charcoal, strong moon edge, elev-4). Persona avatar,
+            live-ticking elapsed timer in font-mono. No admin nav, no
+            shell: a standalone, mobile-friendly public card. */}
         <header
-          ref={heroRef}
-          className="lg-edge lg-refract lg-sheen lg-specular sg-glass-overlay relative overflow-hidden rounded-sg-xl p-6 shadow-sg-4 animate-sg-rise sm:p-7"
+          className="sg-glass-overlay relative overflow-hidden rounded-sg-xl p-6 animate-sg-rise sm:p-7"
         >
           <div className="flex items-start justify-between gap-3">
             <div className="flex min-w-0 items-center gap-3.5">
               <PersonaAvatar personaId={snapshot.persona_id} />
               <div className="min-w-0">
-                <h1 className="sg-grad-text truncate text-xl font-semibold tracking-tight sm:text-2xl">
+                <h1 className="text-sg-ink truncate text-xl font-semibold tracking-tight sm:text-2xl">
                   {t("status.agentStatus")}
                 </h1>
                 <span className="mt-0.5 block truncate font-mono text-[11px] text-sg-ink-4">
@@ -543,7 +504,7 @@ function PersonaAvatar({ personaId }: { personaId: string | undefined }) {
   // a public capability URL on the gateway origin. Wrapped in an accent ring
   // glow so the bound persona reads as the card's focal point.
   return (
-    <span className="relative inline-flex size-12 shrink-0 items-center justify-center rounded-full bg-sg-accent-soft p-[2px] shadow-sg-glow ring-1 ring-sg-accent/40">
+    <span className="relative inline-flex size-12 shrink-0 items-center justify-center rounded-full bg-sg-tint-soft p-[2px] shadow-sg-edge ring-1 ring-sg-border-strong">
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         src={src}

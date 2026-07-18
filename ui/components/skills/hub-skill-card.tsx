@@ -13,7 +13,7 @@
  */
 
 import * as React from "react";
-import { Download, Star } from "lucide-react";
+import { Download, Star } from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import { GlassPanel } from "@/components/ui/glass-panel";
@@ -69,14 +69,13 @@ export function HubSkillCard({
       data-testid={`hub-skill-card-${summary.slug}`}
       className={cn(
         "group block focus-visible:outline-none",
-        !reduced && "lg-gel hover:-translate-y-0.5",
+        !reduced && " hover:-translate-y-0.5",
         className,
       )}
     >
       <GlassPanel
         variant="soft"
-        lively
-        role="button"
+                role="button"
         tabIndex={0}
         aria-label={`Open ${summary.name} hub skill details`}
         onClick={() => onSelect(summary)}

@@ -4,7 +4,7 @@ import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { motion } from "framer-motion";
-import { Search } from "lucide-react";
+import { Search } from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import { apiFetch, type PluginSummary } from "@/lib/api";

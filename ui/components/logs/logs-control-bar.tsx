@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Calendar, Download, Search, Settings2, Trash2 } from "lucide-react";
+import { Calendar, Download, Search, Settings2, Trash2 } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";

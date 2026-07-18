@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/logo.png" alt="corlinman mascot" width="140" />
+  <img src="docs/assets/eclipse-pearl.svg" alt="corlinman — the eclipse pearl" width="160" />
 </p>
 
 # corlinman
@@ -13,8 +13,6 @@
 memory, real tools, multiple chat channels, and an operations plane — all in
 one stack you run on your own hardware, audit end-to-end, and govern with
 human-in-the-loop approvals.
-
-![corlinman — product tour: multi-provider agent loop, sandboxed plugins, human-in-the-loop approvals, hybrid RAG memory, first-class channels, and the Tidepool admin console](docs/assets/tidepool-hero.gif)
 
 > Live demo: <https://corlinman.cornna.xyz> · 中文说明见文末 [中文速览](#中文速览) · full history in [`CHANGELOG.md`](CHANGELOG.md).
 

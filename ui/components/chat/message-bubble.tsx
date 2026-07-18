@@ -13,7 +13,7 @@ import {
   Menu,
   Pencil,
   RefreshCcw,
-} from "lucide-react";
+} from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import { formatTime as formatTimeIntl } from "@/lib/format";
@@ -24,6 +24,7 @@ import type {
   ChatMessage,
 } from "@/lib/chat/types";
 import { MarkdownMessage } from "@/components/chat/markdown-message";
+import { PresenceOrb } from "@/components/ui/presence-orb";
 import { AttachmentGallery } from "@/components/chat/attachment-gallery";
 import { ToolCallCard } from "@/components/chat/tool-call-card";
 import { ReasoningBlock } from "@/components/chat/reasoning-block";
@@ -206,17 +207,19 @@ export const MessageBubble = React.memo(function MessageBubble({
         isUser ? "flex-row-reverse" : "flex-row",
       )}
     >
-      <span
-        className={cn(
-          "h-3.5 w-3.5 shrink-0 rounded-full bg-gradient-to-br",
-          isUser
-            ? "from-sg-accent-3 to-sg-accent"
-            : isAssistant
-              ? "from-sg-accent to-sg-accent-2"
-              : "from-sg-ink-5 to-sg-ink-4",
-        )}
-        aria-hidden="true"
-      />
+      {isAssistant ? (
+        /* Assistant identity = a tiny eclipse pearl (static in the role
+           row; the pearl lives in the app bar while streaming). */
+        <PresenceOrb size="sm" className="!h-3.5 !w-3.5 shrink-0" />
+      ) : (
+        <span
+          className={cn(
+            "h-3.5 w-3.5 shrink-0 rounded-full",
+            isUser ? "bg-sg-ink-4" : "bg-sg-ink-5",
+          )}
+          aria-hidden="true"
+        />
+      )}
       <span className="font-medium text-sg-ink-4">{roleLabel}</span>
       <span aria-hidden="true">·</span>
       <time
@@ -495,8 +498,17 @@ export const MessageBubble = React.memo(function MessageBubble({
         {roleRow}
 
         {isAssistant ? (
-          /* Assistant: clean transparent prose block, no card chrome. */
-          <div className="w-full text-[13px] leading-relaxed text-sg-ink">
+          /* Assistant: Eclipse agent bubble — charcoal gradient, moon edge,
+             6px tail corner bottom-left, capped at min(600px, 86%). While
+             pending, the streaming thread (luminous left edge + light seep)
+             marks the live bubble; both come from the .c-bubble CSS. */
+          <div
+            className={cn(
+              "c-bubble agent text-[15px]",
+              message.pending && "streaming",
+              message.error && "error",
+            )}
+          >
             {shouldShowActionTrace && message.reasoning ? (
               <ReasoningBlock
                 text={message.reasoning}
@@ -526,7 +538,7 @@ export const MessageBubble = React.memo(function MessageBubble({
         ) : editing && isUser ? (
           /* User edit-in-place. */
           <div
-            className="flex w-full flex-col gap-1.5 rounded-sg-lg rounded-br-sg-sm border border-sg-accent/30 bg-sg-accent-soft px-4 py-2.5"
+            className="flex w-full flex-col gap-1.5 rounded-st-bubble rounded-br-[6px] border border-sg-border-strong bg-sg-inset px-4 py-2.5 shadow-sg-well-soft"
             data-testid="bubble-edit"
           >
             <textarea
@@ -544,7 +556,7 @@ export const MessageBubble = React.memo(function MessageBubble({
                 }
               }}
               rows={Math.min(8, Math.max(2, draft.split("\n").length))}
-              className="w-full resize-none rounded-sg-sm border border-sg-accent/40 bg-sg-inset px-2 py-1 text-[13px] text-sg-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40"
+              className="w-full resize-none rounded-sg-sm border border-sg-border bg-sg-inset-strong px-2 py-1 text-[13px] text-sg-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-sg-tint/40"
               data-testid="bubble-edit-input"
             />
             <div className="flex items-center justify-end gap-1.5 text-[11px]">
@@ -561,7 +573,7 @@ export const MessageBubble = React.memo(function MessageBubble({
                 type="button"
                 onClick={handleSaveEdit}
                 disabled={savingEdit}
-                className="rounded-sg-sm border border-sg-accent/40 bg-sg-accent px-2 py-0.5 text-white hover:bg-sg-accent/90 disabled:opacity-60"
+                className="rounded-sg-sm bg-sg-tint px-2 py-0.5 font-medium text-sg-tint-ink hover:bg-sg-tint/90 disabled:opacity-60"
                 data-testid="bubble-edit-save"
               >
                 {savingEdit ? t("chat.editSaving") : t("chat.editSaveRerun")}
@@ -569,11 +581,12 @@ export const MessageBubble = React.memo(function MessageBubble({
             </div>
           </div>
         ) : (
-          /* User: right-aligned compact bubble. */
+          /* User: right-aligned Eclipse bubble — raised charcoal, strong
+             moon edge, 6px tail corner bottom-right. */
           <div
             className={cn(
-              "flex max-w-full flex-col gap-1.5 rounded-sg-lg rounded-br-sg-sm border border-sg-accent/20 bg-sg-accent-soft px-4 py-2.5 text-[13px] leading-relaxed text-sg-ink",
-              message.error && "border-sg-err/50",
+              "c-bubble user flex max-w-full flex-col gap-1.5 text-[15px]",
+              message.error && "error",
             )}
           >
             {message.attachments && message.attachments.length > 0 ? (
@@ -584,7 +597,7 @@ export const MessageBubble = React.memo(function MessageBubble({
                 initial={reducedMotion ? false : { opacity: 0, x: -8 }}
                 animate={{ opacity: 1, x: 0 }}
                 transition={reducedMotion ? { duration: 0 } : springs.soft}
-                className="border-l-2 border-sg-accent pl-2 text-[12px] text-sg-ink-4"
+                className="border-l-2 border-sg-border-ghost pl-2 text-[12px] text-sg-ink-4"
               >
                 <span className="line-clamp-2 break-words">{reply.quote}</span>
               </motion.div>

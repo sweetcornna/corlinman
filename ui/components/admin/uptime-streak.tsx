@@ -75,7 +75,7 @@ export const UptimeStreak = React.forwardRef<HTMLDivElement, UptimeStreakProps>(
             <span className="ml-0.5 text-[15px] font-normal text-sg-ink-3">%</span>
           </span>
           {incidentsText ? (
-            <span className="ml-auto font-serif italic text-[14px] text-sg-ink-2">
+            <span className="ml-auto font-display italic text-[14px] text-sg-ink-2">
               <span className="not-italic font-medium text-sg-accent">{incidentsText}</span>
             </span>
           ) : null}

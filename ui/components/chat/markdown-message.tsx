@@ -8,7 +8,7 @@ import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import { useTranslation } from "react-i18next";
-import { Check, Copy, ExternalLink, X } from "lucide-react";
+import { Check, Copy, ExternalLink, X } from "@/components/icons";
 
 // KaTeX font/layout styles. Imported at the component level (the layout-level
 // globals.css is owned elsewhere) so math renders correctly wherever this
@@ -209,7 +209,7 @@ export function MarkdownMessage({
       {streaming ? (
         <span
           aria-hidden="true"
-          className="ml-0.5 inline-block h-[15px] w-[7px] animate-pulse rounded-[2px] bg-sg-accent align-middle"
+          className="ml-0.5 inline-block h-[15px] w-[7px] animate-pulse rounded-[2px] bg-sg-tint align-middle shadow-[var(--sg-bloom-1)]"
           data-testid="md-cursor"
         />
       ) : null}
@@ -260,7 +260,7 @@ function ImageLightbox({
       role="dialog"
       aria-modal="true"
       data-testid="md-image-lightbox"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6"
       onClick={onClose}
     >
       <button

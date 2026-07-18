@@ -4,7 +4,7 @@
 "use client";
 
 import * as React from "react";
-import { FilePlus2 } from "lucide-react";
+import { FilePlus2 } from "@/components/icons";
 import { cn } from "@/lib/utils";
 import type { ToolRendererProps } from "./generic";
 

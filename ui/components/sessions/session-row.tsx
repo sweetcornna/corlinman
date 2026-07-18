@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useTranslation } from "react-i18next";
-import { MessageSquareText, Play, Trash2 } from "lucide-react";
+import { MessageSquareText, Play, Trash2 } from "@/components/icons";
 
 import { Button } from "@/components/ui/button";
 import { TableCell, TableRow } from "@/components/ui/table";

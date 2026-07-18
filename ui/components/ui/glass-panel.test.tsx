@@ -12,7 +12,7 @@ describe("GlassPanel", () => {
     const el = screen.getByTestId("panel");
     expect(el).toHaveAttribute("data-glass-variant", "soft");
     expect(el).toHaveClass("bg-sg-card-grad");
-    expect(el).not.toHaveClass("backdrop-blur-glass");
+    expect(el).not.toHaveClass("backdrop-blur-md");
   });
 
   it("renders subtle variant without backdrop blur", () => {
@@ -24,7 +24,7 @@ describe("GlassPanel", () => {
     const el = screen.getByTestId("panel");
     expect(el).toHaveAttribute("data-glass-variant", "subtle");
     expect(el).toHaveClass("bg-sg-card-grad");
-    expect(el).not.toHaveClass("backdrop-blur-glass");
+    expect(el).not.toHaveClass("backdrop-blur-md");
   });
 
   it("renders the primary ring/glow when variant=primary", () => {
@@ -33,7 +33,8 @@ describe("GlassPanel", () => {
         x
       </GlassPanel>,
     );
-    expect(screen.getByTestId("panel")).toHaveClass("shadow-sg-primary");
+    // Eclipse "most active" = selected treatment (edge + inset tint glow).
+    expect(screen.getByTestId("panel")).toHaveClass("shadow-sg-selected");
   });
 
   it("can render as a different element", () => {

@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { Check, ShieldAlert, Shield, X } from "lucide-react";
+import { Check, ShieldAlert, Shield, X } from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import type {
@@ -33,9 +33,11 @@ export function ApprovalPrompt({ prompt, onDecide }: ApprovalPromptProps) {
     <div
       className={cn(
         "my-2 overflow-hidden rounded-sg-md border",
+        // Undecided = the heaviest inline layer: opaque matte + strong moon
+        // edge + elevation (the sheet treatment, rendered in-thread).
         decided
           ? "border-sg-border bg-sg-inset opacity-70"
-          : "border-sg-warn/30 bg-sg-warn-soft shadow-sg-1",
+          : "border-sg-border-strong bg-sg-opaque shadow-[var(--sg-edge-top-strong),var(--sg-elev-2)]",
       )}
       role={decided ? undefined : "alertdialog"}
       aria-label={t("chat.approvalAriaLabel", { tool: prompt.tool })}
@@ -70,7 +72,7 @@ export function ApprovalPrompt({ prompt, onDecide }: ApprovalPromptProps) {
             <button
               type="button"
               onClick={() => onDecide("denied", "once")}
-              className="inline-flex items-center gap-1 rounded-sg-sm border border-sg-border px-2 py-1 text-[12px] text-sg-ink-3 hover:border-sg-err/50 hover:bg-sg-err-soft hover:text-sg-err"
+              className="inline-flex items-center gap-1 rounded-full border border-sg-border-ghost bg-transparent px-2.5 py-1 text-[12px] text-sg-ink-3 hover:border-sg-err/50 hover:bg-sg-err-soft hover:text-sg-err"
               data-testid="approval-deny"
             >
               <X className="h-3.5 w-3.5" aria-hidden="true" />
@@ -79,7 +81,7 @@ export function ApprovalPrompt({ prompt, onDecide }: ApprovalPromptProps) {
             <button
               type="button"
               onClick={() => onDecide("approved", "once")}
-              className="inline-flex items-center gap-1 rounded-sg-sm border border-sg-accent/40 bg-sg-accent px-2 py-1 text-[12px] text-white hover:bg-sg-accent/90"
+              className="inline-flex items-center gap-1 rounded-full bg-sg-tint px-2.5 py-1 text-[12px] font-medium text-sg-tint-ink hover:bg-sg-tint/90"
               data-testid="approval-once"
             >
               <Check className="h-3.5 w-3.5" aria-hidden="true" />
@@ -88,7 +90,7 @@ export function ApprovalPrompt({ prompt, onDecide }: ApprovalPromptProps) {
             <button
               type="button"
               onClick={() => onDecide("approved", "session")}
-              className="inline-flex items-center gap-1 rounded-sg-sm border border-sg-border px-2 py-1 text-[12px] text-sg-ink hover:bg-sg-inset-hover"
+              className="inline-flex items-center gap-1 rounded-full border border-sg-border-ghost bg-transparent px-2.5 py-1 text-[12px] text-sg-ink hover:bg-sg-inset-hover"
               data-testid="approval-session"
             >
               <Shield className="h-3.5 w-3.5" aria-hidden="true" />

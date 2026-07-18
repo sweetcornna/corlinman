@@ -3,7 +3,7 @@
 import * as React from "react";
 import { motion } from "framer-motion";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, ChevronUp, Check, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Check, X } from "@/components/icons";
 
 import { GlassPanel } from "@/components/ui/glass-panel";
 import { useMotion } from "@/components/ui/motion-safe";
@@ -278,7 +278,7 @@ export function ProposalCard({
                 disabled={disabled}
                 className={cn(
                   "inline-flex items-center gap-1.5 rounded-full px-3.5 py-1 text-[12px] font-medium",
-                  "bg-sg-err text-white",
+                  "bg-sg-err text-white hover:bg-sg-err/90",
                   "transition-transform duration-150 hover:-translate-y-[1px]",
                   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-err/55",
                   "disabled:pointer-events-none disabled:opacity-50",

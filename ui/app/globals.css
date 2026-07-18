@@ -3,255 +3,337 @@
 @tailwind utilities;
 
 /* ════════════════════════════════════════════════════════════════════
- * Spatial Glass — visionOS-inspired design system. Dark-first.
+ * Eclipse Minimal v2 — 月之暗面 monochrome design system. Dark-first.
  *
- * Source of truth: the `--sg-*` token namespace defined below.
- * (The legacy Tidepool alias layer was burned down in Phase 3 —
- * do not reintroduce legacy token names.)
+ * Source of truth: the `--sg-*` token namespace below, transcribed from
+ * the claude.ai/design project "Corlinman Client" (Eclipse Minimal v2).
+ * The former Spatial Glass values were replaced in place — token NAMES
+ * are unchanged so sg-* consumers re-skin automatically.
  *
- * BLUR BUDGET (hard rule): `backdrop-filter` is allowed ONLY on
- *  - shell surfaces (sidebar, topnav)            → .sg-glass-shell / blur 20px
- *  - overlays (dialog, drawer, palette, toast)   → .sg-glass-overlay / blur 28px
- * Content cards/panels use gradient "faux glass" fills with NO
- * backdrop-filter so scrolling lists and SSE feeds never re-blur.
- * Never nest blurred surfaces.
+ * Hard rules (vitest-enforced):
+ *  - ZERO backdrop-filter anywhere. Surfaces are matte opaque charcoal.
+ *  - Glow is whitelist-only: eclipse orb, streaming thread, live dots,
+ *    caret, solid tint buttons, progress bars, selected states.
+ *  - The tint pipeline (--sg-tint*) colors "light" only; the skeleton
+ *    (charcoal, borders, body ink, ok/warn/err) is never tinted.
+ *  - Font weights 400/500 only; hierarchy comes from the ink scale.
  * ════════════════════════════════════════════════════════════════════ */
 @layer base {
   :root {
     /* ──────────────────────────────────────────────────────────────
-     * Spatial Glass — light ("daylight haze"). Token-level adaptation
-     * of the dark-first design: bright cool haze instead of deep
-     * space, white frost instead of smoked glass. Same hue family.
+     * Eclipse — "Paper" light (secondary theme). Monochrome inversion
+     * of the primary dark theme: near-white canvas, black-alpha ink,
+     * tint deepened for contrast on light ground.
      * ────────────────────────────────────────────────────────────── */
+    --sg-space-0: #fafafa;
+    --sg-space-1: #fafafa;
+    --sg-space-2: #f4f4f4;
+    --sg-space-3: #fafafa;
+    --sg-moonrise:
+      radial-gradient(640px 300px at 50% -100px, color-mix(in oklch, var(--sg-tint) 5%, transparent), transparent 70%),
+      radial-gradient(1200px 520px at 50% -240px, rgba(0, 0, 0, 0.025), transparent 75%);
+    --sg-vignette: radial-gradient(130% 110% at 50% 42%, transparent 62%, rgba(0, 0, 0, 0.08) 100%);
+    /* Nebula tokens are retired: kept as transparent aliases so any
+       straggler reference paints nothing. */
+    --sg-nebula-1: transparent;
+    --sg-nebula-2: transparent;
+    --sg-nebula-3: transparent;
 
-    /* Backdrop: layered sky gradient + nebula glow blobs. */
-    --sg-space-0: oklch(0.965 0.008 270);
-    --sg-space-1: oklch(0.975 0.006 250);
-    --sg-space-2: oklch(0.94 0.015 285);
-    --sg-space-3: oklch(0.91 0.02 265);
-    --sg-nebula-1: oklch(0.65 0.14 300 / 0.07);
-    --sg-nebula-2: oklch(0.75 0.12 220 / 0.05);
-    --sg-nebula-3: oklch(0.55 0.1 260 / 0.04);
-    /* Tiny inline-SVG fractal noise — breaks gradient banding at ~3%. */
-    --sg-noise-url: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E");
+    /* Matte surfaces (opaque — no alpha stacking, no blur). */
+    --sg-glass-1-bg: #f1f1f1;
+    --sg-glass-2-bg: #ececec;
+    --sg-glass-2-bg-strong: #e8e8e8;
+    --sg-glass-2-bg-weak: #f0f0f0;
+    --sg-glass-3-bg: #fcfcfc;
+    --sg-glass-opaque: #f2f2f2;
+    --sg-inset-bg: #eaeaea;
+    --sg-inset-bg-hover: #e2e2e2;
+    --sg-inset-bg-strong: #dedede;
 
-    /* Glass tiers. -1 shell (real blur), -2 card (faux glass, NO blur),
-       -3 overlay (real blur), inset (sunken wells). */
-    --sg-glass-1-bg: oklch(1 0 0 / 0.55);
-    --sg-glass-2-bg: oklch(1 0 0 / 0.6);
-    --sg-glass-2-bg-strong: oklch(1 0 0 / 0.72);
-    --sg-glass-2-bg-weak: oklch(1 0 0 / 0.45);
-    --sg-glass-2-grad-a: oklch(1 0 0 / 0.72);
-    --sg-glass-2-grad-b: oklch(0.98 0.005 270 / 0.5);
-    --sg-glass-3-bg: oklch(0.99 0.004 270 / 0.78);
-    --sg-glass-opaque: oklch(0.97 0.005 270 / 0.96);
-    --sg-inset-bg: oklch(0.93 0.012 275 / 0.6);
-    --sg-inset-bg-hover: oklch(0.91 0.015 275 / 0.7);
-    --sg-inset-bg-strong: oklch(0.9 0.015 275 / 0.75);
+    --sg-border: rgba(0, 0, 0, 0.1);
+    --sg-border-strong: rgba(0, 0, 0, 0.18);
+    --sg-border-ghost: rgba(0, 0, 0, 0.38);
+    --sg-highlight: rgba(255, 255, 255, 0.8);
 
-    --sg-border: oklch(0.3 0.03 280 / 0.12);
-    --sg-border-strong: oklch(0.3 0.03 280 / 0.2);
-    --sg-highlight: oklch(1 0 0 / 0.75);
+    /* Light grammar: moon edge (convex top light), wells (concave),
+       dual-layer drop shadows (floating layers only). */
+    --sg-edge-top: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+    --sg-edge-top-strong: inset 0 1px 0 #fff;
+    --sg-well: inset 0 1.5px 3px rgba(0, 0, 0, 0.12), inset 0 0 0 1px rgba(0, 0, 0, 0.04);
+    --sg-well-soft: inset 0 1px 2px rgba(0, 0, 0, 0.08);
+    --sg-elev-1: 0 1px 2px rgba(0, 0, 0, 0.06), 0 3px 10px -4px rgba(0, 0, 0, 0.08);
+    --sg-elev-2: 0 2px 6px rgba(0, 0, 0, 0.06), 0 10px 28px -12px rgba(0, 0, 0, 0.12);
+    --sg-elev-3: 0 4px 12px rgba(0, 0, 0, 0.08), 0 20px 48px -16px rgba(0, 0, 0, 0.16);
+    --sg-elev-4: 0 8px 24px rgba(0, 0, 0, 0.1), 0 40px 96px -24px rgba(0, 0, 0, 0.24);
+    --sg-lift: 0 -10px 24px -16px rgba(0, 0, 0, 0.12);
+    --sg-scrim-down: 0 10px 24px -18px rgba(0, 0, 0, 0.15);
+    /* Bloom tiers: 1 tight (caret/progress) / 2 standard (thread/live
+       dots) / 3 sweeping (eclipse orb). All derive from tint. */
+    --sg-bloom-1: 0 0 5px color-mix(in oklch, var(--sg-tint) 40%, transparent);
+    --sg-bloom-2: 0 0 5px color-mix(in oklch, var(--sg-tint) 32%, transparent), 0 0 18px -2px var(--sg-tint-glow);
+    --sg-bloom-3: 0 0 8px -1px color-mix(in oklch, var(--sg-tint) 40%, transparent), 0 0 28px -4px var(--sg-tint-glow), 0 0 72px -12px color-mix(in oklch, var(--sg-tint) 10%, transparent);
 
-    /* Ink scale — text hierarchy. */
-    --sg-ink: oklch(0.18 0.015 280);
-    --sg-ink-2: oklch(0.27 0.015 280);
-    --sg-ink-3: oklch(0.42 0.02 280);
-    --sg-ink-4: oklch(0.55 0.02 280);
-    --sg-ink-5: oklch(0.66 0.015 280);
+    /* Ink scale — black-alpha on Paper. */
+    --sg-ink: #0a0a0a;
+    --sg-ink-2: rgba(0, 0, 0, 0.9);
+    --sg-ink-3: rgba(0, 0, 0, 0.66);
+    --sg-ink-4: rgba(0, 0, 0, 0.52);
+    --sg-ink-5: rgba(0, 0, 0, 0.34);
 
-    /* Accents — cyan-blue primary, violet secondary, ice tertiary. */
-    --sg-accent: oklch(0.5 0.16 245);
-    --sg-accent-soft: oklch(0.5 0.16 245 / 0.1);
-    --sg-accent-glow: oklch(0.55 0.16 245 / 0.3);
-    --sg-accent-2: oklch(0.47 0.2 295);
-    --sg-accent-2-soft: oklch(0.47 0.2 295 / 0.1);
-    --sg-accent-3: oklch(0.55 0.1 230);
-    --sg-accent-3-soft: oklch(0.55 0.1 230 / 0.1);
-    --sg-row-alt: oklch(0.3 0.03 280 / 0.025);
+    /* Tint pipeline — customization colors "light" only. On Paper the
+       tint auto-deepens (presets override at L 0.55) for ≥4.5:1. */
+    --sg-tint: #0a0a0a;
+    --sg-tint-ink: #ffffff;
+    --sg-tint-glow: rgba(0, 0, 0, 0.2);
+    --sg-tint-soft: rgba(0, 0, 0, 0.06);
 
-    /* Status. */
-    --sg-ok: oklch(0.52 0.13 165);
-    --sg-ok-soft: oklch(0.52 0.13 165 / 0.12);
-    --sg-warn: oklch(0.58 0.13 75);
-    --sg-warn-soft: oklch(0.58 0.13 75 / 0.14);
-    --sg-err: oklch(0.55 0.21 25);
-    --sg-err-soft: oklch(0.55 0.21 25 / 0.12);
+    /* Compat aliases — legacy accent references all resolve to tint /
+       monochrome siblings. */
+    --sg-accent: var(--sg-tint);
+    --sg-accent-soft: var(--sg-tint-soft);
+    --sg-accent-glow: var(--sg-tint-glow);
+    --sg-accent-2: #1c1c1c;
+    --sg-accent-2-soft: rgba(0, 0, 0, 0.05);
+    --sg-accent-3: #4a4a4a;
+    --sg-accent-3-soft: rgba(0, 0, 0, 0.04);
+    --sg-row-alt: rgba(0, 0, 0, 0.025);
 
-    /* Elevation — ambient depth; light mode shadows stay soft/cool. */
-    --sg-elev-1: 0 1px 2px oklch(0.3 0.03 280 / 0.08), 0 2px 10px -2px oklch(0.3 0.03 280 / 0.08);
-    --sg-elev-2: inset 0 1px 0 var(--sg-highlight), 0 6px 24px -6px oklch(0.3 0.04 280 / 0.16);
-    --sg-elev-3: inset 0 1px 0 var(--sg-highlight), 0 16px 48px -12px oklch(0.3 0.04 280 / 0.22);
-    --sg-elev-4: inset 0 1px 0 var(--sg-highlight), 0 32px 96px -16px oklch(0.25 0.04 280 / 0.3);
-    --sg-glow-primary: 0 0 28px -6px var(--sg-accent-glow);
-    --sg-shadow-primary:
-      inset 0 1px 0 var(--sg-highlight),
-      0 0 0 1px color-mix(in oklch, var(--sg-accent) 30%, transparent),
-      0 0 28px -4px var(--sg-accent-glow),
-      0 8px 24px -8px oklch(0.3 0.04 280 / 0.18);
+    /* Status — muted, never tinted. Semantics beat personalization. */
+    --sg-ok: oklch(0.5 0.1 165);
+    --sg-ok-soft: oklch(0.5 0.1 165 / 0.1);
+    --sg-warn: oklch(0.55 0.11 80);
+    --sg-warn-soft: oklch(0.55 0.11 80 / 0.12);
+    --sg-err: oklch(0.5 0.17 25);
+    --sg-err-soft: oklch(0.5 0.17 25 / 0.1);
 
-    --sg-grad-text: linear-gradient(115deg, oklch(0.46 0.17 240), oklch(0.52 0.12 225) 45%, oklch(0.44 0.21 300));
-    --sg-grad-border: linear-gradient(
-      135deg,
-      color-mix(in oklch, var(--sg-accent) 55%, transparent),
-      color-mix(in oklch, var(--sg-accent-2) 45%, transparent)
-    );
+    --sg-glow-primary: 0 0 20px -4px var(--sg-tint-glow), 0 0 52px -12px color-mix(in oklch, var(--sg-tint) 18%, transparent);
+    --sg-shadow-primary: var(--sg-edge-top-strong), var(--sg-elev-2);
+    /* Selected/"most active" treatment — moon edge + inset tint glow.
+       Single source for .nav-active and shadow-sg-selected. */
+    --sg-shadow-selected: var(--sg-edge-top), inset 0 0 28px -18px var(--sg-tint-glow);
+    --sg-grad-text: linear-gradient(115deg, #000, #555 60%, #888);
+    /* Matte card fill + sheen in ONE background-image stack, so a bare
+       `bg-sg-card-grad` class carries its own base color (a separate
+       bg-color class would be dropped by tailwind-merge). */
+    --sg-card-sheen:
+      linear-gradient(135deg, rgba(255, 255, 255, 0.6), transparent 42%),
+      linear-gradient(var(--sg-glass-2-bg), var(--sg-glass-2-bg));
 
-    /* ── shadcn semantic vars (HSL triplets — Tailwind wraps in hsl()). */
-    --background: 250 20% 96%;
-    --foreground: 250 15% 10%;
-    --card: 0 0% 100% / 0.6;
-    --card-foreground: 250 15% 10%;
-    --popover: 0 0% 100% / 0.78;
-    --popover-foreground: 250 15% 10%;
-    --primary: 225 70% 45%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 0 0% 100% / 0.55;
-    --secondary-foreground: 250 15% 10%;
-    --muted: 0 0% 100% / 0.45;
-    --muted-foreground: 250 8% 38%;
-    --accent: 230 30% 50% / 0.08;
-    --accent-foreground: 250 15% 10%;
-    --destructive: 0 72% 48%;
+    /* ── st — touch & rhythm tier (theme-invariant, defined once). ── */
+    --st-touch-min: 44px;
+    --st-bubble-radius: 20px;
+    --st-bubble-tail: 6px;
+    --st-card-radius: 20px;
+    --st-sheet-radius: 28px;
+    --st-pill-radius: 999px;
+    --st-body-size: 16px;
+    --st-body-leading: 1.65; /* CJK-comfortable */
+    --st-caption-size: 12.5px;
+    --st-mono-size: 12.5px;
+    --st-gutter: 16px;
+    --st-sp-1: 4px;
+    --st-sp-2: 8px;
+    --st-sp-3: 12px;
+    --st-sp-4: 16px;
+    --st-sp-5: 20px;
+    --st-sp-6: 24px;
+    --st-sp-8: 32px;
+    --st-sp-10: 40px;
+
+    --st-font-display: var(--font-mplus), "M PLUS 1", var(--font-misans), "MiSans",
+      "HarmonyOS Sans SC", "PingFang SC", "Noto Sans CJK SC", system-ui, sans-serif;
+    --st-font-body: var(--font-misans), "MiSans", "HarmonyOS Sans SC", "PingFang SC",
+      "Noto Sans CJK SC", "Microsoft YaHei UI", system-ui, -apple-system, sans-serif;
+    --st-font-mono: var(--font-jetbrains-mono), "JetBrains Mono", ui-monospace,
+      "SFMono-Regular", Consolas, "Noto Sans Mono CJK SC", monospace;
+
+    /* ── shadcn semantic vars (HSL triplets) — monochrome Paper.
+       primary/ring intentionally have NO triplets: tailwind maps them
+       straight to var(--sg-tint) / var(--sg-tint-ink). */
+    --background: 0 0% 98%;
+    --foreground: 0 0% 4%;
+    --card: 0 0% 93%;
+    --card-foreground: 0 0% 4%;
+    --popover: 0 0% 99%;
+    --popover-foreground: 0 0% 4%;
+    --secondary: 0 0% 93%;
+    --secondary-foreground: 0 0% 4%;
+    --muted: 0 0% 93%;
+    --muted-foreground: 0 0% 38%;
+    --accent: 0 0% 0% / 0.05;
+    --accent-foreground: 0 0% 4%;
+    --destructive: 12 55% 42%;
     --destructive-foreground: 0 0% 98%;
-    --border: 250 15% 30% / 0.12;
-    --input: 0 0% 100% / 0.6;
-    --ring: 225 75% 55%;
+    --border: 0 0% 0% / 0.1;
+    --input: 0 0% 92%;
     --radius: 0.875rem;
-    --font-instrument-serif: Georgia, "Times New Roman", serif;
 
-    --panel: 0 0% 100% / 0.55;
-    --surface: 0 0% 100% / 0.45;
+    --panel: 0 0% 95%;
+    --surface: 0 0% 94%;
 
-    --ok: 163 55% 36%;
-    --warn: 35 85% 45%;
-    --err: 0 72% 48%;
+    --ok: 163 35% 34%;
+    --warn: 45 55% 36%;
+    --err: 12 55% 42%;
 
-    --accent-2: 285 60% 45%;
-    --accent-3: 215 60% 48%;
-
-    /* Legacy shadow scale → spatial elevation. */
+    /* Legacy shadow scale → eclipse elevation. */
     --shadow-1: var(--sg-elev-1);
     --shadow-2: var(--sg-elev-2);
     --shadow-3: var(--sg-elev-3);
     --glow-primary: var(--sg-glow-primary);
 
-    --state-hover: 230 30% 50% / 0.07;
-    --state-focus: 225 80% 88%;
-    --state-press: 240 15% 88%;
+    --state-hover: 0 0% 0% / 0.05;
+    --state-focus: 0 0% 84%;
+    --state-press: 0 0% 88%;
     --state-loading: 0 0% 100% / 0.4;
-    --state-skeleton: 250 20% 50% / 0.12;
+    --state-skeleton: 0 0% 50% / 0.12;
     --state-empty: 0 0% 100% / 0.4;
-    --state-error: 0 70% 94%;
-
+    --state-error: 8 45% 92%;
   }
 
   .dark {
     /* ──────────────────────────────────────────────────────────────
-     * Spatial Glass — dark ("deep space"). The primary, fully
-     * polished theme. Deep navy nebula backdrop (cyan-led, violet as
-     * a recessive companion); smoked
-     * glass surfaces; cyan/violet glow accents.
+     * Eclipse — dark. The one first-class theme. Pure black canvas +
+     * moonrise halo (the only ambient light, ≤4.5% white), matte
+     * charcoal surfaces, moon-white ink, moonlight tint.
      * ────────────────────────────────────────────────────────────── */
-    --sg-space-0: oklch(0.115 0.028 266);
-    --sg-space-1: oklch(0.15 0.034 262);
-    --sg-space-2: oklch(0.1 0.034 272);
-    --sg-space-3: oklch(0.075 0.024 256);
-    --sg-nebula-1: oklch(0.75 0.12 220 / 0.12);
-    --sg-nebula-2: oklch(0.65 0.13 300 / 0.08);
-    --sg-nebula-3: oklch(0.6 0.1 250 / 0.08);
+    --sg-space-0: #000000;
+    --sg-space-1: #000000;
+    --sg-space-2: #030303;
+    --sg-space-3: #000000;
+    /* Moonrise halo: two layers; the inner layer takes the tint, so
+       changing tint changes the whole night sky's breath. */
+    --sg-moonrise:
+      radial-gradient(640px 300px at 50% -100px, color-mix(in oklch, var(--sg-tint) 7%, transparent), transparent 70%),
+      radial-gradient(1200px 520px at 50% -240px, rgba(255, 255, 255, 0.03), transparent 75%);
+    /* Corner vignette pulls the eye back to center. */
+    --sg-vignette: radial-gradient(130% 110% at 50% 42%, transparent 58%, rgba(0, 0, 0, 0.42) 100%);
+    --sg-nebula-1: transparent;
+    --sg-nebula-2: transparent;
+    --sg-nebula-3: transparent;
 
-    --sg-glass-1-bg: oklch(0.21 0.032 270 / 0.55);
-    --sg-glass-2-bg: oklch(0.23 0.028 270 / 0.5);
-    --sg-glass-2-bg-strong: oklch(0.25 0.028 270 / 0.6);
-    --sg-glass-2-bg-weak: oklch(0.2 0.028 270 / 0.4);
-    --sg-glass-2-grad-a: oklch(0.25 0.028 270 / 0.55);
-    --sg-glass-2-grad-b: oklch(0.17 0.03 268 / 0.5);
-    --sg-glass-3-bg: oklch(0.19 0.036 270 / 0.7);
-    --sg-glass-opaque: oklch(0.17 0.03 270 / 0.95);
-    --sg-inset-bg: oklch(0.085 0.024 268 / 0.5);
-    --sg-inset-bg-hover: oklch(0.1 0.028 268 / 0.55);
-    --sg-inset-bg-strong: oklch(0.12 0.028 268 / 0.6);
+    /* Matte charcoal surfaces. */
+    --sg-glass-1-bg: #0b0b0b;
+    --sg-glass-2-bg: #131313;
+    --sg-glass-2-bg-strong: #171717;
+    --sg-glass-2-bg-weak: #0e0e0e;
+    --sg-glass-3-bg: #050505;
+    --sg-glass-opaque: #111111;
+    --sg-inset-bg: #151515;
+    --sg-inset-bg-hover: #1b1b1b;
+    --sg-inset-bg-strong: #1d1d1d;
 
-    --sg-border: oklch(0.95 0.02 280 / 0.08);
-    --sg-border-strong: oklch(0.95 0.02 280 / 0.14);
-    --sg-highlight: oklch(1 0 0 / 0.09);
+    --sg-border: rgba(255, 255, 255, 0.1);
+    --sg-border-strong: rgba(255, 255, 255, 0.16);
+    --sg-border-ghost: rgba(255, 255, 255, 0.42);
+    --sg-highlight: rgba(255, 255, 255, 0.06);
 
-    --sg-ink: oklch(0.97 0.005 280);
-    --sg-ink-2: oklch(0.88 0.01 280);
-    --sg-ink-3: oklch(0.74 0.015 280);
-    --sg-ink-4: oklch(0.58 0.02 280);
-    --sg-ink-5: oklch(0.45 0.02 280);
+    /* Light grammar. Moon edge: convex tops catch a line of light. */
+    --sg-edge-top: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    --sg-edge-top-strong: inset 0 1px 0 rgba(255, 255, 255, 0.11);
+    /* Wells: deep top inner shadow + far-lip light catching the moon. */
+    --sg-well: inset 0 2px 5px rgba(0, 0, 0, 0.65), inset 0 0 0 1px rgba(0, 0, 0, 0.3), inset 0 -1px 0 rgba(255, 255, 255, 0.035);
+    --sg-well-soft: inset 0 1.5px 3px rgba(0, 0, 0, 0.5), inset 0 -1px 0 rgba(255, 255, 255, 0.03);
+    /* Dual-layer shadows: near contact + far ambient. Floating only. */
+    --sg-elev-1: 0 1px 2px rgba(0, 0, 0, 0.5), 0 4px 14px -6px rgba(0, 0, 0, 0.5);
+    --sg-elev-2: 0 2px 6px rgba(0, 0, 0, 0.45), 0 14px 36px -14px rgba(0, 0, 0, 0.65);
+    --sg-elev-3: 0 5px 14px rgba(0, 0, 0, 0.5), 0 26px 64px -20px rgba(0, 0, 0, 0.75);
+    --sg-elev-4: 0 10px 28px rgba(0, 0, 0, 0.55), 0 56px 128px -32px rgba(0, 0, 0, 0.9);
+    /* Vertical separations: bottom bars cast up, top bars press down. */
+    --sg-lift: 0 -12px 32px -16px rgba(0, 0, 0, 0.7);
+    --sg-scrim-down: 0 12px 32px -20px rgba(0, 0, 0, 0.9);
+    --sg-bloom-1: 0 0 5px color-mix(in oklch, var(--sg-tint) 70%, transparent);
+    --sg-bloom-2: 0 0 5px color-mix(in oklch, var(--sg-tint) 60%, transparent), 0 0 20px -2px var(--sg-tint-glow);
+    --sg-bloom-3: 0 0 8px -1px color-mix(in oklch, var(--sg-tint) 70%, transparent), 0 0 30px -4px var(--sg-tint-glow), 0 0 80px -12px color-mix(in oklch, var(--sg-tint) 16%, transparent);
 
-    --sg-accent: oklch(0.78 0.13 230);
-    --sg-accent-soft: oklch(0.78 0.13 230 / 0.14);
-    --sg-accent-glow: oklch(0.78 0.13 230 / 0.45);
-    --sg-accent-2: oklch(0.7 0.17 300);
-    --sg-accent-2-soft: oklch(0.7 0.17 300 / 0.14);
-    --sg-accent-3: oklch(0.85 0.07 220);
-    --sg-accent-3-soft: oklch(0.85 0.07 220 / 0.14);
-    --sg-row-alt: oklch(0.85 0.05 250 / 0.025);
+    /* Moon-white ink, five levels. */
+    --sg-ink: #ffffff;
+    --sg-ink-2: rgba(255, 255, 255, 0.92);
+    --sg-ink-3: rgba(255, 255, 255, 0.7);
+    --sg-ink-4: rgba(255, 255, 255, 0.56);
+    --sg-ink-5: rgba(255, 255, 255, 0.36);
 
-    --sg-ok: oklch(0.78 0.15 165);
-    --sg-ok-soft: oklch(0.78 0.15 165 / 0.15);
-    --sg-warn: oklch(0.83 0.14 85);
-    --sg-warn-soft: oklch(0.83 0.14 85 / 0.15);
-    --sg-err: oklch(0.7 0.2 22);
-    --sg-err-soft: oklch(0.7 0.2 22 / 0.15);
+    /* Tint — default moonlight white. Presets/custom hue only ever
+       retune these four vars; the skeleton never references them. */
+    --sg-tint: #ffffff;
+    --sg-tint-ink: #000000;
+    --sg-tint-glow: rgba(255, 255, 255, 0.38);
+    --sg-tint-soft: rgba(255, 255, 255, 0.08);
 
-    --sg-elev-1: 0 1px 2px oklch(0 0 0 / 0.3), 0 2px 10px -2px oklch(0 0 0 / 0.28);
-    --sg-elev-2: inset 0 1px 0 var(--sg-highlight), 0 6px 24px -6px oklch(0 0 0 / 0.45);
-    --sg-elev-3: inset 0 1px 0 oklch(1 0 0 / 0.11), 0 16px 48px -12px oklch(0 0 0 / 0.55);
-    --sg-elev-4: inset 0 1px 0 oklch(1 0 0 / 0.12), 0 32px 96px -16px oklch(0 0 0 / 0.65);
-    --sg-glow-primary: 0 0 28px -6px var(--sg-accent-glow);
-    --sg-shadow-primary:
-      inset 0 1px 0 oklch(1 0 0 / 0.11),
-      0 0 0 1px color-mix(in oklch, var(--sg-accent) 30%, transparent),
-      0 0 32px -4px var(--sg-accent-glow),
-      0 10px 28px -10px oklch(0 0 0 / 0.5);
+    --sg-accent: var(--sg-tint);
+    --sg-accent-soft: var(--sg-tint-soft);
+    --sg-accent-glow: var(--sg-tint-glow);
+    --sg-accent-2: #ededed;
+    --sg-accent-2-soft: rgba(255, 255, 255, 0.06);
+    --sg-accent-3: #c9c9c9;
+    --sg-accent-3-soft: rgba(255, 255, 255, 0.05);
+    --sg-row-alt: rgba(255, 255, 255, 0.03);
 
-    --sg-grad-text: linear-gradient(115deg, oklch(0.86 0.11 220), oklch(0.92 0.05 210) 45%, oklch(0.76 0.17 300));
+    --sg-ok: oklch(0.76 0.09 165);
+    --sg-ok-soft: oklch(0.76 0.09 165 / 0.12);
+    --sg-warn: oklch(0.8 0.1 85);
+    --sg-warn-soft: oklch(0.8 0.1 85 / 0.12);
+    --sg-err: oklch(0.66 0.16 25);
+    --sg-err-soft: oklch(0.66 0.16 25 / 0.14);
 
-    /* ── shadcn semantic vars — dark. */
-    --background: 232 32% 8%;
-    --foreground: 250 20% 98%;
-    --card: 232 25% 16% / 0.45;
-    --card-foreground: 250 20% 98%;
-    --popover: 232 28% 13% / 0.75;
-    --popover-foreground: 250 20% 98%;
-    /* Primary = luminous cyan-blue; dark ink text for contrast on fills. */
-    --primary: 215 75% 70%;
-    --primary-foreground: 250 30% 10%;
-    --secondary: 234 25% 18% / 0.5;
-    --secondary-foreground: 250 20% 98%;
-    --muted: 234 20% 16% / 0.45;
-    --muted-foreground: 250 12% 72%;
-    --accent: 220 60% 70% / 0.1;
-    --accent-foreground: 250 20% 98%;
-    --destructive: 0 65% 55%;
+    --sg-glow-primary: 0 0 20px -4px var(--sg-tint-glow), 0 0 52px -12px color-mix(in oklch, var(--sg-tint) 18%, transparent);
+    --sg-shadow-primary: var(--sg-edge-top-strong), var(--sg-elev-2);
+    --sg-grad-text: linear-gradient(115deg, #ffffff, #b9b9b9 55%, #8a8a8a);
+    --sg-card-sheen:
+      linear-gradient(135deg, rgba(255, 255, 255, 0.022), transparent 42%),
+      linear-gradient(var(--sg-glass-2-bg), var(--sg-glass-2-bg));
+
+    /* ── shadcn semantic vars — monochrome dark. */
+    --background: 0 0% 0%;
+    --foreground: 0 0% 98%;
+    --card: 0 0% 7%;
+    --card-foreground: 0 0% 98%;
+    --popover: 0 0% 4%;
+    --popover-foreground: 0 0% 98%;
+    --secondary: 0 0% 9%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 0 0% 9%;
+    --muted-foreground: 0 0% 66%;
+    --accent: 0 0% 100% / 0.06;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 10 55% 55%;
     --destructive-foreground: 0 0% 98%;
-    --border: 250 40% 85% / 0.1;
-    --input: 232 25% 8% / 0.5;
-    --ring: 215 80% 70%;
+    --border: 0 0% 100% / 0.1;
+    --input: 0 0% 8%;
 
-    --panel: 255 25% 16% / 0.45;
-    --surface: 255 22% 14% / 0.38;
+    --panel: 0 0% 7%;
+    --surface: 0 0% 6%;
 
-    --ok: 163 60% 60%;
-    --warn: 45 90% 65%;
-    --err: 5 85% 68%;
+    --ok: 163 30% 60%;
+    --warn: 50 45% 58%;
+    --err: 12 55% 58%;
 
-    --accent-2: 285 70% 72%;
-    --accent-3: 210 60% 78%;
-
-    --state-hover: 220 50% 70% / 0.08;
-    --state-focus: 220 60% 26%;
-    --state-press: 234 25% 22%;
-    --state-loading: 250 20% 16% / 0.4;
-    --state-skeleton: 250 25% 60% / 0.14;
-    --state-empty: 250 25% 14% / 0.35;
-    --state-error: 0 50% 20%;
+    --state-hover: 0 0% 100% / 0.06;
+    --state-focus: 0 0% 18%;
+    --state-press: 0 0% 14%;
+    --state-loading: 0 0% 10% / 0.4;
+    --state-skeleton: 0 0% 60% / 0.14;
+    --state-empty: 0 0% 8% / 0.35;
+    --state-error: 8 45% 18%;
   }
+
+  /* ────────────────────────────────────────────────────────────────
+   * Tint presets — oklch with L/C locked (≈0.85/0.09 dark), hue only.
+   * All presets are light (L ≥ 0.75) → tint-ink stays black in dark.
+   * On Paper the same hue is deepened to L 0.55 → tint-ink white.
+   * Custom hues are injected by lib/tint.ts (#sg-tint-override) using
+   * the same two-block shape — keep the generators in sync.
+   * ──────────────────────────────────────────────────────────────── */
+  .dark[data-tint="dawn"] { --sg-tint: oklch(0.85 0.09 85); --sg-tint-ink: #000000; --sg-tint-glow: oklch(0.85 0.09 85 / 0.42); --sg-tint-soft: oklch(0.85 0.09 85 / 0.1); }
+  .dark[data-tint="ice"] { --sg-tint: oklch(0.85 0.07 230); --sg-tint-ink: #000000; --sg-tint-glow: oklch(0.85 0.07 230 / 0.42); --sg-tint-soft: oklch(0.85 0.07 230 / 0.1); }
+  .dark[data-tint="rose"] { --sg-tint: oklch(0.8 0.09 15); --sg-tint-ink: #000000; --sg-tint-glow: oklch(0.8 0.09 15 / 0.42); --sg-tint-soft: oklch(0.8 0.09 15 / 0.1); }
+  .dark[data-tint="moss"] { --sg-tint: oklch(0.84 0.09 150); --sg-tint-ink: #000000; --sg-tint-glow: oklch(0.84 0.09 150 / 0.42); --sg-tint-soft: oklch(0.84 0.09 150 / 0.1); }
+  .dark[data-tint="iris"] { --sg-tint: oklch(0.8 0.1 300); --sg-tint-ink: #000000; --sg-tint-glow: oklch(0.8 0.1 300 / 0.42); --sg-tint-soft: oklch(0.8 0.1 300 / 0.1); }
+
+  :root[data-tint="dawn"]:not(.dark) { --sg-tint: oklch(0.55 0.09 85); --sg-tint-ink: #ffffff; --sg-tint-glow: oklch(0.55 0.09 85 / 0.3); --sg-tint-soft: oklch(0.55 0.09 85 / 0.08); }
+  :root[data-tint="ice"]:not(.dark) { --sg-tint: oklch(0.55 0.07 230); --sg-tint-ink: #ffffff; --sg-tint-glow: oklch(0.55 0.07 230 / 0.3); --sg-tint-soft: oklch(0.55 0.07 230 / 0.08); }
+  :root[data-tint="rose"]:not(.dark) { --sg-tint: oklch(0.55 0.09 15); --sg-tint-ink: #ffffff; --sg-tint-glow: oklch(0.55 0.09 15 / 0.3); --sg-tint-soft: oklch(0.55 0.09 15 / 0.08); }
+  :root[data-tint="moss"]:not(.dark) { --sg-tint: oklch(0.55 0.09 150); --sg-tint-ink: #ffffff; --sg-tint-glow: oklch(0.55 0.09 150 / 0.3); --sg-tint-soft: oklch(0.55 0.09 150 / 0.08); }
+  :root[data-tint="iris"]:not(.dark) { --sg-tint: oklch(0.55 0.1 300); --sg-tint-ink: #ffffff; --sg-tint-glow: oklch(0.55 0.1 300 / 0.3); --sg-tint-soft: oklch(0.55 0.1 300 / 0.08); }
 
   * {
     @apply border-border;
@@ -260,278 +342,82 @@
   html,
   body {
     @apply bg-background text-foreground;
-    font-feature-settings: "rlig" 1, "calt" 1, "ss01" 1, "cv11" 1;
+    font-feature-settings: "rlig" 1, "calt" 1;
   }
 
-  /* Deep-space backdrop painted on `html` (deepest layer) so it shows
-     everywhere — admin shell, login, error pages — with zero JS. Pure
-     CSS gradient: paints pre-hydration (no FOUC) and replaces the old
-     ~3MB JPG textures. Nebula glow blobs + noise live in
-     <AuroraBackground /> on top; body stays transparent. The vars flip
-     with `.dark`, so a single rule covers both themes. */
+  /* Pure-black canvas + moonrise halo + vignette painted on `html`
+     (deepest layer) so it shows everywhere — admin shell, login, error
+     pages — with zero JS, pre-hydration, no FOUC. The vars flip with
+     `.dark`, so a single rule covers both themes. */
   html {
-    background-color: hsl(var(--background));
-    background-image: linear-gradient(
-      175deg,
-      var(--sg-space-1) 0%,
-      var(--sg-space-2) 55%,
-      var(--sg-space-3) 100%
-    );
+    background-color: var(--sg-space-0);
+    background-image: var(--sg-vignette), var(--sg-moonrise);
     background-attachment: fixed;
     background-repeat: no-repeat;
     min-height: 100%;
   }
   body {
     background-color: transparent;
+    font-variant-numeric: tabular-nums;
   }
 
-  /* A11y: focus rings stay visible on glass; soft outer glow added. */
+  /* A11y: focus stays visible on matte black — space-0 gap + tint
+     ring. No glow (glow is bloom-whitelisted only). */
   :focus-visible {
     outline: none;
     box-shadow:
-      0 0 0 2px hsl(var(--background)),
-      0 0 0 4px hsl(var(--ring)),
-      0 0 14px -2px var(--sg-accent-glow);
+      0 0 0 2px var(--sg-space-0),
+      0 0 0 4px var(--sg-tint);
     border-radius: calc(var(--radius) - 2px);
   }
 }
 
 @layer utilities {
   /* ────────────────────────────────────────────────────────────────
-   * Spatial Glass surface utilities.
-   * .sg-glass-shell   — sidebar/topnav. Real blur (20px). Budget tier 1.
-   * .sg-glass-overlay — dialogs/drawers/palettes/toasts. Blur 28px. Tier 3.
-   * .sg-card          — content cards. Gradient faux glass, NO blur. Tier 2.
+   * Eclipse surface utilities. Names kept from Spatial Glass so the
+   * hundreds of call sites re-skin without edits — but every surface
+   * is now matte opaque. NO backdrop-filter anywhere.
+   * .sg-glass-shell   — chrome rails (sidebar). Charcoal + moon edge.
+   * .sg-glass-overlay — dialogs/drawers/palettes/toasts. Floating:
+   *                     opaque + strong edge + elev-4.
+   * .sg-card          — content cards. Matte + sheen + moon edge.
    * .sg-inset         — sunken wells (inputs, code, JSON).
    * ──────────────────────────────────────────────────────────────── */
   .sg-glass-shell {
     background-color: var(--sg-glass-1-bg);
-    backdrop-filter: blur(20px) saturate(1.4);
-    -webkit-backdrop-filter: blur(20px) saturate(1.4);
     border: 1px solid var(--sg-border);
-    box-shadow: var(--sg-elev-2);
+    box-shadow: var(--sg-edge-top), var(--sg-elev-1);
   }
   .sg-glass-overlay {
-    background-color: var(--sg-glass-3-bg);
-    backdrop-filter: blur(28px) saturate(1.5);
-    -webkit-backdrop-filter: blur(28px) saturate(1.5);
+    background-color: var(--sg-glass-opaque);
     border: 1px solid var(--sg-border-strong);
-    box-shadow: var(--sg-elev-4);
-  }
-  @supports not (backdrop-filter: blur(1px)) {
-    .sg-glass-shell,
-    .sg-glass-overlay {
-      background-color: var(--sg-glass-opaque);
-    }
+    box-shadow: var(--sg-edge-top-strong), var(--sg-elev-4);
   }
   .sg-card {
     background-color: var(--sg-glass-2-bg);
-    background-image: linear-gradient(180deg, var(--sg-glass-2-grad-a), var(--sg-glass-2-grad-b));
+    background-image: var(--sg-card-sheen);
     border: 1px solid var(--sg-border);
-    box-shadow: var(--sg-elev-2);
+    box-shadow: var(--sg-edge-top), var(--sg-elev-1);
   }
   .sg-inset {
     background-color: var(--sg-inset-bg);
     border: 1px solid var(--sg-border);
-    box-shadow: inset 0 1px 3px oklch(0 0 0 / 0.18);
-  }
-  .sg-noise {
-    background-image: var(--sg-noise-url);
-    background-repeat: repeat;
+    box-shadow: var(--sg-well-soft);
   }
 
-  /* ────────────────────────────────────────────────────────────────
-   * Liquid Glass optics — the layer that makes glass read as a real
-   * material instead of a tinted rectangle. Composable on top of the
-   * sg-card/glass recipes (no backdrop-filter, stays in blur budget):
-   *
-   * .lg-edge     — light-aware gradient border: bright specular at the
-   *                lit corner (top-left), faint violet refraction at
-   *                the shadowed corner. Mask-composite ring, so it
-   *                follows any border-radius.
-   * .lg-refract  — inner lensing: light pools along the bottom edge +
-   *                a chromatic micro-fringe (cyan/violet hairlines on
-   *                opposite edges), the CSS stand-in for edge
-   *                refraction.
-   * .lg-sheen    — specular sweep that glides across the surface on
-   *                hover (gated to hover-capable pointers).
-   * .lg-specular — pointer-tracked highlight; reads --lg-x/--lg-y
-   *                written by the useSpecular() hook (raw follow, no
-   *                easing — light does not lag).
-   * .lg-gel      — non-linear press physics for non-framer elements:
-   *                springy overshoot curve on transform.
-   * ──────────────────────────────────────────────────────────────── */
-  /* :where() keeps these at zero specificity so Tailwind positioning
-     utilities (fixed/absolute/sticky) on the same element always win. */
-  :where(.lg-edge) {
-    position: relative;
+  /* Selected/active treatment: white 7% + moon edge + inset tint glow.
+     One of the whitelisted places tint may appear. */
+  .nav-active {
+    background: rgba(255, 255, 255, 0.07);
+    border-color: var(--sg-border-strong);
+    box-shadow: var(--sg-shadow-selected);
   }
-  .lg-edge::before {
-    content: "";
-    position: absolute;
-    inset: 0;
-    border-radius: inherit;
-    padding: 1px;
-    background: linear-gradient(
-      135deg,
-      oklch(1 0 0 / 0.32),
-      oklch(1 0 0 / 0.05) 32%,
-      transparent 55%,
-      color-mix(in oklch, var(--sg-accent-2) 22%, transparent) 100%
-    );
-    -webkit-mask:
-      linear-gradient(#000 0 0) content-box,
-      linear-gradient(#000 0 0);
-    -webkit-mask-composite: xor;
-    mask:
-      linear-gradient(#000 0 0) content-box,
-      linear-gradient(#000 0 0);
-    mask-composite: exclude;
-    pointer-events: none;
-  }
-  .lg-refract {
-    box-shadow:
-      inset 0 1px 0 oklch(1 0 0 / 0.12),
-      inset 1px 0 0 color-mix(in oklch, var(--sg-accent) 10%, transparent),
-      inset -1px 0 0 color-mix(in oklch, var(--sg-accent-2) 9%, transparent),
-      inset 0 -12px 28px -22px oklch(1 0 0 / 0.35);
-  }
-  :where(.lg-sheen) {
-    position: relative;
-  }
-  .lg-sheen {
-    overflow: hidden;
-  }
-  .lg-sheen::after {
-    content: "";
-    position: absolute;
-    inset: -40% auto;
-    left: -30%;
-    width: 38%;
-    height: 180%;
-    transform: translateX(-160%) rotate(18deg);
-    background: linear-gradient(
-      90deg,
-      transparent,
-      oklch(1 0 0 / 0.1) 45%,
-      oklch(1 0 0 / 0.16) 50%,
-      oklch(1 0 0 / 0.1) 55%,
-      transparent
-    );
-    opacity: 0;
-    pointer-events: none;
-  }
-  @media (hover: hover) {
-    .lg-sheen:hover::after {
-      opacity: 1;
-      transform: translateX(440%) rotate(18deg);
-      transition:
-        transform 0.9s cubic-bezier(0.22, 1, 0.36, 1),
-        opacity 0.15s ease-out;
-    }
-  }
-  :where(.lg-specular) {
-    position: relative;
-  }
-  .lg-specular::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    border-radius: inherit;
-    background: radial-gradient(
-      300px circle at var(--lg-x, 50%) var(--lg-y, -20%),
-      oklch(1 0 0 / 0.09),
-      transparent 65%
-    );
-    opacity: var(--lg-on, 0);
-    transition: opacity 0.35s ease-out;
-    pointer-events: none;
-  }
-  .lg-gel {
-    transition:
-      transform 0.45s cubic-bezier(0.34, 1.56, 0.64, 1),
-      box-shadow 0.45s cubic-bezier(0.34, 1.56, 0.64, 1);
-  }
-  .lg-gel:active {
-    transform: scale(0.96);
-    transition-duration: 0.08s;
+  :root:not(.dark) .nav-active {
+    background: rgba(0, 0, 0, 0.06);
   }
 
-  /* Backdrop life: slow hue drift on the nebula layer + a sparse
-     twinkling starfield (dark theme only — daylight haze has no stars). */
-  @keyframes lg-hue-drift {
-    0%,
-    100% {
-      filter: hue-rotate(0deg);
-    }
-    50% {
-      filter: hue-rotate(14deg);
-    }
-  }
-  .lg-hue-drift {
-    animation: lg-hue-drift 90s ease-in-out infinite;
-  }
-  /* Hero-object float: gentle vertical bob with a hint of sway. */
-  @keyframes lg-float {
-    0%,
-    100% {
-      transform: translateY(0) rotate(-1deg);
-    }
-    50% {
-      transform: translateY(-9px) rotate(1.2deg);
-    }
-  }
-  .lg-float {
-    animation: lg-float 6.5s ease-in-out infinite;
-  }
-
-  @keyframes lg-twinkle {
-    0%,
-    100% {
-      opacity: 0.35;
-    }
-    50% {
-      opacity: 0.85;
-    }
-  }
-  .lg-stars {
-    background-image:
-      radial-gradient(1px 1px at 12% 28%, oklch(1 0 0 / 0.6), transparent 100%),
-      radial-gradient(1px 1px at 34% 12%, oklch(1 0 0 / 0.4), transparent 100%),
-      radial-gradient(1.5px 1.5px at 56% 38%, oklch(0.9 0.05 230 / 0.5), transparent 100%),
-      radial-gradient(1px 1px at 73% 19%, oklch(1 0 0 / 0.45), transparent 100%),
-      radial-gradient(1px 1px at 88% 42%, oklch(0.9 0.06 300 / 0.4), transparent 100%),
-      radial-gradient(1.5px 1.5px at 22% 64%, oklch(1 0 0 / 0.3), transparent 100%),
-      radial-gradient(1px 1px at 64% 78%, oklch(1 0 0 / 0.35), transparent 100%),
-      radial-gradient(1px 1px at 92% 86%, oklch(0.9 0.05 230 / 0.35), transparent 100%);
-    background-repeat: no-repeat;
-    animation: lg-twinkle 7s ease-in-out infinite;
-  }
-  :root:not(.dark) .lg-stars {
-    display: none;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .lg-sheen:hover::after {
-      transition: none;
-      opacity: 0;
-    }
-    .lg-specular::after {
-      opacity: 0;
-    }
-    .lg-gel,
-    .lg-gel:active {
-      transition: none;
-      transform: none;
-    }
-    .lg-hue-drift,
-    .lg-stars,
-    .lg-float {
-      animation: none;
-    }
-  }
-
-  /* Gradient display text (hero numerals, brand). */
+  /* Gradient display text — moon-silver. Whitelist: exactly one hero
+     (login/onboard). Vitest-enforced. */
   .sg-grad-text {
     background-image: var(--sg-grad-text);
     -webkit-background-clip: text;
@@ -539,32 +425,152 @@
     color: transparent;
   }
 
-  /* Subtle shimmer used by skeletons. Respects reduced-motion. */
-  @keyframes shimmer {
-    0% {
-      background-position: -200% 0;
+  /* ────────────────────────────────────────────────────────────────
+   * Eclipse component layer — transcribed from the design project.
+   * Light grammar: convex tops get the moon edge, concave surfaces
+   * sink into wells, only floating layers cast shadows.
+   * ──────────────────────────────────────────────────────────────── */
+
+  /* ── signature: eclipse pearl (presence orb) ─────────────────── */
+  .presence-orb {
+    display: inline-block;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    position: relative;
+    flex: none;
+    background:
+      radial-gradient(circle at 50% 50%, #000 0 58%, transparent 59%),
+      conic-gradient(
+        from 210deg,
+        var(--sg-tint),
+        color-mix(in oklch, var(--sg-tint) 12%, transparent) 28%,
+        color-mix(in oklch, var(--sg-tint) 3%, transparent) 55%,
+        color-mix(in oklch, var(--sg-tint) 38%, transparent) 82%,
+        var(--sg-tint)
+      );
+    box-shadow: var(--sg-bloom-3);
+    animation: eclipse-turn 7s linear infinite;
+  }
+  .presence-orb.idle {
+    animation: none;
+    box-shadow: var(--sg-bloom-1);
+    opacity: 0.8;
+  }
+  .presence-orb.lg {
+    width: 34px;
+    height: 34px;
+  }
+  .presence-orb.hero {
+    width: 72px;
+    height: 72px;
+    box-shadow:
+      0 0 12px -2px color-mix(in oklch, var(--sg-tint) 70%, transparent),
+      0 0 44px -6px var(--sg-tint-glow),
+      0 0 120px -16px color-mix(in oklch, var(--sg-tint) 20%, transparent);
+  }
+  @keyframes eclipse-turn {
+    to {
+      transform: rotate(360deg);
     }
+  }
+
+  /* ── message bubbles (convex: moon edge, no big drop shadow) ─── */
+  .c-bubble {
+    position: relative;
+    max-width: min(600px, 86%);
+    font-size: var(--st-body-size);
+    line-height: var(--st-body-leading);
+    padding: 12px 16px;
+    word-break: break-word;
+  }
+  .c-bubble.user {
+    align-self: flex-end;
+    color: var(--sg-ink);
+    background: linear-gradient(180deg, #212121, var(--sg-inset-bg-strong));
+    border: 1px solid var(--sg-border-strong);
+    border-radius: var(--st-bubble-radius) var(--st-bubble-radius) var(--st-bubble-tail) var(--st-bubble-radius);
+    box-shadow: var(--sg-edge-top-strong), 0 3px 12px -5px rgba(0, 0, 0, 0.6);
+  }
+  :root:not(.dark) .c-bubble.user {
+    background: linear-gradient(180deg, #e4e4e4, var(--sg-inset-bg-strong));
+  }
+  .c-bubble.agent {
+    align-self: flex-start;
+    color: var(--sg-ink-2);
+    background: linear-gradient(180deg, var(--sg-glass-2-bg-strong), var(--sg-glass-2-bg-weak));
+    border: 1px solid var(--sg-border);
+    border-radius: var(--st-bubble-radius) var(--st-bubble-radius) var(--st-bubble-radius) var(--st-bubble-tail);
+    box-shadow: var(--sg-edge-top), 0 2px 10px -5px rgba(0, 0, 0, 0.5);
+  }
+  /* Streaming: the thread's light seeps into the bubble's left edge. */
+  .c-bubble.agent.streaming {
+    border-left: none;
+    padding-left: 18px;
+    background:
+      linear-gradient(90deg, color-mix(in oklch, var(--sg-tint) 8%, transparent), transparent 34%),
+      linear-gradient(180deg, var(--sg-glass-2-bg-strong), var(--sg-glass-2-bg-weak));
+  }
+  .c-bubble.agent.streaming::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 10px;
+    bottom: 10px;
+    width: 2px;
+    border-radius: 2px;
+    background: linear-gradient(180deg, var(--sg-tint), color-mix(in oklch, var(--sg-tint) 15%, transparent));
+    box-shadow: var(--sg-bloom-2);
+    animation: thread-pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes thread-pulse {
+    0%,
     100% {
-      background-position: 200% 0;
+      opacity: 0.5;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+  .c-bubble.error {
+    border-color: color-mix(in oklch, var(--sg-err) 45%, transparent);
+  }
+  /* Paper light: the bubbles' drop shadows are calibrated for charcoal —
+     soften them to the elev scale's light weights. */
+  :root:not(.dark) .c-bubble.user {
+    box-shadow: var(--sg-edge-top-strong), 0 2px 8px -4px rgba(0, 0, 0, 0.14);
+  }
+  :root:not(.dark) .c-bubble.agent {
+    box-shadow: var(--sg-edge-top), 0 1px 6px -3px rgba(0, 0, 0, 0.1);
+  }
+
+  /* ── chrome bars ─────────────────────────────────────────────── */
+  .c-appbar {
+    background: transparent;
+    border-bottom: 1px solid var(--sg-border);
+    box-shadow: var(--sg-scrim-down);
+  }
+  .c-composer {
+    background: var(--sg-space-0);
+    border-top: 1px solid var(--sg-border);
+    box-shadow: var(--sg-lift);
+  }
+
+  /* Skeleton pulse (matte — the moving shimmer highlight died with
+     the glass optics; loading is not on the glow whitelist). */
+  @keyframes sg-skeleton-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.45;
     }
   }
   .shimmer {
-    background-image: linear-gradient(
-      90deg,
-      var(--sg-inset-bg) 0%,
-      var(--sg-glass-2-bg-strong) 50%,
-      var(--sg-inset-bg) 100%
-    );
-    background-size: 200% 100%;
-    animation: shimmer 1.6s linear infinite;
+    background-color: var(--sg-inset-bg);
+    animation: sg-skeleton-pulse 1.6s ease-in-out infinite;
   }
-  @media (prefers-reduced-motion: reduce) {
-    .shimmer {
-      animation: none;
-    }
-  }
-
-
 
   /* Login error shake. Keyed via `key` remount in login/page.tsx. */
   @keyframes login-shake {
@@ -585,7 +591,7 @@
   /* ────────────────────────────────────────────────────────────────
    * CSS animation primitives. Continuous animations are CSS keyframes
    * rather than Framer Motion variants for performance. All respect
-   * prefers-reduced-motion. (tp-* names kept until the Phase 3 rename.)
+   * prefers-reduced-motion.
    * ──────────────────────────────────────────────────────────────── */
 
   @keyframes sg-breathe {
@@ -603,10 +609,10 @@
   @keyframes sg-breathe-accent {
     0%,
     100% {
-      box-shadow: 0 0 0 0 color-mix(in oklch, var(--sg-accent) 50%, transparent);
+      box-shadow: 0 0 0 0 color-mix(in oklch, var(--sg-tint) 50%, transparent);
     }
     50% {
-      box-shadow: 0 0 8px color-mix(in oklch, var(--sg-accent) 40%, transparent);
+      box-shadow: 0 0 8px color-mix(in oklch, var(--sg-tint) 40%, transparent);
     }
   }
   .sg-breathe-accent {
@@ -644,35 +650,23 @@
   @keyframes sg-badge-pulse {
     0%,
     100% {
-      box-shadow: 0 0 0 0 color-mix(in oklch, var(--sg-accent) 40%, transparent);
+      box-shadow: 0 0 0 0 color-mix(in oklch, var(--sg-tint) 40%, transparent);
     }
     50% {
-      box-shadow: 0 0 0 4px color-mix(in oklch, var(--sg-accent) 0%, transparent);
+      box-shadow: 0 0 0 4px color-mix(in oklch, var(--sg-tint) 0%, transparent);
     }
   }
   .sg-badge-pulse {
     animation: sg-badge-pulse 2.2s ease-in-out infinite;
   }
 
-  /* Slow nebula drift for the backdrop glow blobs. */
-  @keyframes sg-drift {
-    0%,
-    100% {
-      transform: translate3d(0, 0, 0) scale(1);
-    }
-    50% {
-      transform: translate3d(2%, -1.5%, 0) scale(1.04);
-    }
-  }
-  .sg-drift {
-    animation: sg-drift 60s ease-in-out infinite;
-  }
-
   @media (prefers-reduced-motion: reduce) {
+    .presence-orb,
+    .c-bubble.agent.streaming::before,
+    .shimmer,
     .sg-breathe,
     .sg-breathe-accent,
-    .sg-badge-pulse,
-    .sg-drift {
+    .sg-badge-pulse {
       animation: none;
     }
     .sg-draw-in {
@@ -686,7 +680,7 @@
   }
 
   /* Monaco ships its own opaque `vs-light` / `vs-dark` surfaces. Keep the
-     editor chrome aligned with the app's glass panels instead of letting a
+     editor chrome aligned with the app's matte panels instead of letting a
      full white rectangle sit inside the config page. */
   .monaco-editor,
   .monaco-editor .margin,
@@ -699,15 +693,16 @@
     min-height: 32px !important;
   }
 
-  /* JSON syntax highlighting tokens used by <JsonView>. */
+  /* JSON syntax highlighting tokens used by <JsonView>. Monochrome:
+     keys read as ink, values recede; status colors stay semantic. */
   .sg-json-k {
-    color: var(--sg-accent);
+    color: var(--sg-ink);
   }
   .sg-json-s {
     color: var(--sg-ok);
   }
   .sg-json-n {
-    color: var(--sg-accent-2);
+    color: var(--sg-accent-3);
   }
   .sg-json-b {
     color: var(--sg-warn);
@@ -733,18 +728,19 @@
   }
 
   /* Prism syntax tokens for chat code blocks (<CodeHighlighter> emits
-     classNames; colors stay token-driven and theme-aware). */
+     classNames). Monochrome hierarchy: keywords/functions in ink
+     grades, strings/numbers muted; only errors keep semantic color. */
   .chat-md .token.comment,
   .chat-md .token.prolog,
   .chat-md .token.doctype,
   .chat-md .token.cdata {
-    color: var(--sg-ink-4);
+    color: var(--sg-ink-5);
     font-style: italic;
   }
   .chat-md .token.keyword,
   .chat-md .token.atrule,
   .chat-md .token.important {
-    color: var(--sg-accent-2);
+    color: var(--sg-ink);
   }
   .chat-md .token.string,
   .chat-md .token.char,
@@ -758,7 +754,7 @@
   .chat-md .token.property,
   .chat-md .token.tag,
   .chat-md .token.attr-name {
-    color: var(--sg-accent);
+    color: var(--sg-ink-2);
   }
   .chat-md .token.number,
   .chat-md .token.boolean,
@@ -768,7 +764,7 @@
   }
   .chat-md .token.operator,
   .chat-md .token.punctuation {
-    color: var(--sg-ink-3);
+    color: var(--sg-ink-4);
   }
   .chat-md .token.deleted {
     color: var(--sg-err);
@@ -776,6 +772,6 @@
   .chat-md .token.variable,
   .chat-md .token.regex,
   .chat-md .token.builtin {
-    color: var(--sg-warn);
+    color: var(--sg-ink-3);
   }
 }

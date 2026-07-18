@@ -11,7 +11,7 @@
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { Download, Loader2, Star } from "lucide-react";
+import { Download, Loader2, Star } from "@/components/icons";
 import { toast } from "sonner";
 
 import { Drawer } from "@/components/ui/drawer";

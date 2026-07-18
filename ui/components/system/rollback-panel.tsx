@@ -20,7 +20,7 @@
 import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { History, Zap } from "lucide-react";
+import { History, Zap } from "@/components/icons";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";

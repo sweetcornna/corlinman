@@ -4,7 +4,7 @@
  * `app/(admin)/providers/page.tsx` (PR4 model-hub consolidation).
  */
 
-import { Plug } from "lucide-react";
+import { Plug } from "@/components/icons";
 
 export function EmptyProviders({ title, hint }: { title: string; hint: string }) {
   return (

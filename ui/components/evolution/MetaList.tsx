@@ -3,7 +3,7 @@
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { Sparkles } from "lucide-react";
+import { Sparkles } from "@/components/icons";
 
 import { GlassPanel } from "@/components/ui/glass-panel";
 import { cn } from "@/lib/utils";

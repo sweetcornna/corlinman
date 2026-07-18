@@ -36,7 +36,7 @@ import {
   Plus,
   Trash2,
   X,
-} from "lucide-react";
+} from "@/components/icons";
 import { AnimatePresence, motion } from "framer-motion";
 
 import { Badge } from "@/components/ui/badge";

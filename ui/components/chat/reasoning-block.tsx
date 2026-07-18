@@ -3,7 +3,7 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import { Brain, ChevronDown, ChevronRight } from "lucide-react";
+import { Brain, ChevronDown, ChevronRight } from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import { springs } from "@/lib/motion";
@@ -18,29 +18,28 @@ export function ReasoningBlock({ text, streaming }: ReasoningBlockProps) {
   const reducedMotion = useReducedMotion();
   const [expanded, setExpanded] = React.useState(false);
   return (
-    <div
-      className={cn(
-        "my-2 border-l-2 border-sg-accent-2/40 pl-3",
-        streaming && "shimmer rounded-sg-sm",
-      )}
-      data-testid="reasoning-block"
-    >
+    <div className="my-2" data-testid="reasoning-block">
+      {/* The quietest element on screen: a dashed chip; the streaming
+          affordance is the bubble's thread, not this chip. */}
       <button
         type="button"
-        className="flex w-full items-center gap-2 py-1 text-left text-[11px] italic text-sg-ink-3 hover:text-sg-ink-2"
+        className={cn(
+          "flex w-full items-center gap-2 rounded-st-pill border border-dashed border-sg-border-strong",
+          "px-3 py-1 text-left text-[11px] text-sg-ink-4 hover:text-sg-ink-2",
+        )}
         onClick={() => setExpanded((v) => !v)}
         aria-expanded={expanded}
       >
         {expanded ? (
-          <ChevronDown className="h-3 w-3 not-italic" aria-hidden="true" />
+          <ChevronDown className="h-3 w-3" aria-hidden="true" />
         ) : (
-          <ChevronRight className="h-3 w-3 not-italic" aria-hidden="true" />
+          <ChevronRight className="h-3 w-3" aria-hidden="true" />
         )}
-        <Brain className="h-3 w-3 not-italic" aria-hidden="true" />
+        <Brain className="h-3 w-3" aria-hidden="true" />
         <span>
           {streaming ? t("chat.reasoningStreaming") : t("chat.reasoningTitle")}
         </span>
-        <span className="ml-auto font-mono not-italic text-sg-ink-5">
+        <span className="ml-auto font-mono text-sg-ink-5">
           {t("chat.reasoningCharCount", { n: text.length })}
         </span>
       </button>
@@ -54,7 +53,7 @@ export function ReasoningBlock({ text, streaming }: ReasoningBlockProps) {
             transition={reducedMotion ? { duration: 0 } : springs.soft}
             className="overflow-hidden"
           >
-            <div className="py-1 font-mono text-[11px] leading-relaxed whitespace-pre-wrap italic text-sg-ink-3">
+            <div className="mt-1.5 border-l-2 border-sg-border-strong py-1 pl-3 text-[12.5px] leading-[1.7] whitespace-pre-wrap text-sg-ink-4">
               {text}
             </div>
           </motion.div>

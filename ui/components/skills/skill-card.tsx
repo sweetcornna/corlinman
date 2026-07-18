@@ -8,7 +8,7 @@ import {
   Search,
   Wrench,
   type LucideIcon,
-} from "lucide-react";
+} from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import { GlassPanel } from "@/components/ui/glass-panel";
@@ -132,7 +132,7 @@ export function SkillCard({
     <div
       className={cn(
         "group block focus-visible:outline-none",
-        !reduced && "lg-gel hover:-translate-y-0.5",
+        !reduced && " hover:-translate-y-0.5",
         className,
       )}
       data-testid={`skill-card-${skill.name}`}
@@ -140,8 +140,7 @@ export function SkillCard({
     >
       <GlassPanel
         variant="soft"
-        lively
-        role="button"
+                role="button"
         tabIndex={0}
         aria-label={`Open ${skill.name} skill details`}
         onClick={() => onOpen(skill)}

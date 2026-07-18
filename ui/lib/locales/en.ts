@@ -501,21 +501,19 @@ export const en = {
   },
 
   nav: {
-    themeStudio: {
-      label: "Theme studio",
-      themesTitle: "Designer themes",
+    tint: {
+      label: "Tint",
+      presetsTitle: "Color the light",
       customTitle: "Custom",
-      accentHue: "Accent hue",
-      canvasHue: "Canvas hue",
-      glassOpacity: "Glass opacity",
-      reset: "Reset to default",
-      themes: {
-        deepSpace: "Deep Space",
-        aurora: "Aurora",
-        dusk: "Dusk",
+      hue: "Hue",
+      reset: "Back to moonlight",
+      presets: {
+        moonlight: "Moonlight",
+        dawn: "Dawn",
+        ice: "Ice",
         rose: "Rose",
-        obsidian: "Obsidian",
-        gilded: "Gilded",
+        moss: "Moss",
+        iris: "Iris",
       },
     },
     sections: {

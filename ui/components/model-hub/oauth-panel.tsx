@@ -16,7 +16,7 @@ import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { Download, LogIn, RefreshCw, ShieldCheck, Unplug } from "lucide-react";
+import { Download, LogIn, RefreshCw, ShieldCheck, Unplug } from "@/components/icons";
 
 import { Button } from "@/components/ui/button";
 import {

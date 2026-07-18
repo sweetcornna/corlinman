@@ -9,7 +9,7 @@
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, ChevronRight, Sparkles } from "lucide-react";
+import { ChevronDown, ChevronRight, Sparkles } from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 
