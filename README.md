@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/eclipse-pearl.png" alt="corlinman — the eclipse pearl" width="160" />
+  <img src="docs/assets/eclipse-pearl.svg" alt="corlinman — the eclipse pearl" width="160" />
 </p>
 
 # corlinman
