@@ -50,3 +50,9 @@ dist/
 # Local deploy/test env files (compose reads .env, but its contents are
 # operator-specific secrets — keep them out of the repo).
 /.env
+
+# local session artifacts — never commit
+.playwright-mcp/
+/prod-*.md
+/prod-*.png
+/eclipse-*.png
