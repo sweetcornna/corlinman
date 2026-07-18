@@ -74,6 +74,21 @@ _JOB_NAME_RE = re.compile(r"^[a-z0-9_.\-]{1,128}$")
 #: across three hours.
 _JITTER_MINUTES_MAX: int = 180
 
+#: Reference-image slot label rule for the B5 ``image_ref_labels`` field.
+#: Mirrors the persona-asset label shape
+#: (``routes_admin_a/studio/_personas_lib.py::_LABEL_PATTERN`` —
+#: ``[a-z0-9_-]{1,64}``) so a scheduled job can only pin labels the asset
+#: uploader could actually have created. Kept as a local copy rather than
+#: importing across the admin_a → admin_b boundary (import-linter forbids
+#: that edge).
+_ASSET_LABEL_RE = re.compile(r"^[a-z0-9_-]{1,64}$")
+
+#: Upper bound on how many reference-image labels a ``qzone.daily_publish``
+#: job may pin — mirrors ``corlinman_agent.image.dispatch._MAX_REFS`` (the
+#: ``image_with_refs`` dispatcher truncates ``characters`` to this many refs
+#: anyway, so pinning more would be silently dropped at draw time).
+_MAX_IMAGE_REF_LABELS: int = 8
+
 
 def _jitter_secs_from_metadata(metadata: dict[str, Any]) -> int:
     """Derive a runner-level ``jitter_secs`` from a job's ``jitter_minutes``
@@ -107,6 +122,11 @@ class JobOut(BaseModel):
     persona_id: str | None = None
     prompt_template: str | None = None
     qq_account: str | None = None
+    # B5 — task-level reference-image labels + publish-time jitter promoted
+    # to top-level wire fields (read back from job metadata). Absent on
+    # config-derived rows (they default to None).
+    image_ref_labels: list[str] | None = None
+    jitter_minutes: int | None = None
     last_run_at_ms: int | None = None
     last_run_ok: bool | None = None
     last_qzone_url: str | None = None
@@ -139,6 +159,12 @@ class NewJobBody(BaseModel):
     persona_id: str | None = None
     prompt_template: str | None = None
     qq_account: str | None = None
+    # B5 — task-level reference-image labels + publish-time jitter. Optional
+    # (contract-safe) top-level promotions of the corresponding metadata
+    # knobs; when present they authoritatively overwrite the metadata value
+    # (see :func:`_compose_metadata`).
+    image_ref_labels: list[str] | None = None
+    jitter_minutes: int | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -158,6 +184,10 @@ class EditJobBody(BaseModel):
     persona_id: str | None = None
     prompt_template: str | None = None
     qq_account: str | None = None
+    # B5 — same top-level promotions as :class:`NewJobBody`; a PATCH that
+    # omits them leaves the existing metadata value untouched.
+    image_ref_labels: list[str] | None = None
+    jitter_minutes: int | None = None
     metadata: dict[str, Any] | None = None
 
 
@@ -484,12 +514,46 @@ def _runtime_job_to_out(rj: _RuntimeJob) -> JobOut:
         persona_id=rj.persona_id,
         prompt_template=rj.prompt_template,
         qq_account=rj.qq_account,
+        # B5 — echo the promoted fields back from metadata (the authoritative
+        # store). ``None`` when absent / malformed so the wire stays clean.
+        image_ref_labels=_read_image_ref_labels(rj.metadata),
+        jitter_minutes=_read_jitter_minutes(rj.metadata),
         last_run_at_ms=rj.last_run_at_ms,
         last_run_ok=rj.last_run_ok,
         last_qzone_url=rj.last_qzone_url,
         last_error=rj.last_error,
         source="runtime",
     )
+
+
+def _read_image_ref_labels(metadata: dict[str, Any]) -> list[str] | None:
+    """Read ``image_ref_labels`` back out of a job's metadata for the wire.
+
+    Only a non-empty list of non-empty string labels echoes back; an absent
+    key, wrong type, or all-blank list reads as ``None`` so :class:`JobOut`'s
+    field stays clean. Total + defensive — never raises."""
+    raw = metadata.get("image_ref_labels")
+    if not isinstance(raw, list):
+        return None
+    labels = [x.strip() for x in raw if isinstance(x, str) and x.strip()]
+    return labels or None
+
+
+def _read_jitter_minutes(metadata: dict[str, Any]) -> int | None:
+    """Read ``jitter_minutes`` back out of a job's metadata for the wire.
+
+    Mirrors :func:`_jitter_secs_from_metadata`'s tolerance: a ``bool``
+    (an ``int`` subclass we must not read as 0/1) or a non-numeric value
+    reads as ``None``; a ``float`` is floored to whole minutes so the
+    ``int``-typed wire field stays honest. Never raises."""
+    raw = metadata.get("jitter_minutes")
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, float):
+        return int(raw)
+    return None
 
 
 def _action_kind_for_runtime(action_type: str) -> str:
@@ -535,11 +599,41 @@ def _validate_cron(expr: str) -> tuple[bool, str | None]:
 
 
 def _validate_qzone_daily(body: NewJobBody) -> tuple[bool, str | None]:
-    """Type-specific gate for ``qzone.daily_publish`` jobs."""
+    """Type-specific gate for ``qzone.daily_publish`` jobs.
+
+    Beyond the required ``persona_id`` / ``prompt_template``, the B5
+    top-level knobs are range-checked when present (a ``None`` top-level
+    field is "not being set" and skips its check — the metadata carry-over
+    already validated at create time still holds):
+
+    * ``image_ref_labels`` — each entry must match the persona-asset label
+      shape (:data:`_ASSET_LABEL_RE`) and the list may hold at most
+      :data:`_MAX_IMAGE_REF_LABELS` labels.
+    * ``jitter_minutes`` — bounded to ``0``..:data:`_JITTER_MINUTES_MAX`.
+    """
     if not body.persona_id or not body.persona_id.strip():
         return False, "persona_id is required for qzone.daily_publish"
     if not body.prompt_template or not body.prompt_template.strip():
         return False, "prompt_template is required for qzone.daily_publish"
+    labels = body.image_ref_labels
+    if labels is not None:
+        if len(labels) > _MAX_IMAGE_REF_LABELS:
+            return False, (
+                "image_ref_labels may carry at most "
+                f"{_MAX_IMAGE_REF_LABELS} labels (got {len(labels)})"
+            )
+        for label in labels:
+            if not isinstance(label, str) or not _ASSET_LABEL_RE.match(label):
+                return False, (
+                    f"image_ref_labels entry {label!r} must match "
+                    "[a-z0-9_-], 1-64 chars"
+                )
+    jitter = body.jitter_minutes
+    if jitter is not None and (jitter < 0 or jitter > _JITTER_MINUTES_MAX):
+        return False, (
+            f"jitter_minutes must be between 0 and {_JITTER_MINUTES_MAX} "
+            f"(got {jitter})"
+        )
     return True, None
 
 
@@ -640,6 +734,8 @@ def _set_enabled_route(name: str, *, enabled: bool) -> Any:
                     action_type=rj.action_type,
                     persona_id=rj.persona_id,
                     prompt_template=rj.prompt_template,
+                    image_ref_labels=_read_image_ref_labels(rj.metadata),
+                    jitter_minutes=_read_jitter_minutes(rj.metadata),
                 )
             )
             if not ok:
@@ -659,7 +755,15 @@ def _set_enabled_route(name: str, *, enabled: bool) -> Any:
 
 def _compose_metadata(body: NewJobBody) -> dict[str, Any]:
     """Roll the per-action_type fields into the metadata dict the
-    builtin's :func:`_resolve_metadata` reads."""
+    builtin's :func:`_resolve_metadata` reads.
+
+    ``persona_id`` / ``prompt_template`` / ``qq_account`` use ``setdefault``
+    (a hand-authored metadata value wins). The B5 promotions
+    (``image_ref_labels`` / ``jitter_minutes``) instead assign explicitly:
+    the top-level field is authoritative and overwrites any stale value the
+    metadata dict carried. A ``None`` top-level field is left untouched so
+    an existing metadata value survives (this is what makes a PATCH that
+    omits the field non-destructive)."""
     composed: dict[str, Any] = dict(body.metadata or {})
     if body.persona_id is not None:
         composed.setdefault("persona_id", body.persona_id)
@@ -667,6 +771,10 @@ def _compose_metadata(body: NewJobBody) -> dict[str, Any]:
         composed.setdefault("prompt_template", body.prompt_template)
     if body.qq_account is not None:
         composed.setdefault("qq_account", body.qq_account)
+    if body.image_ref_labels is not None:
+        composed["image_ref_labels"] = list(body.image_ref_labels)
+    if body.jitter_minutes is not None:
+        composed["jitter_minutes"] = body.jitter_minutes
     return composed
 
 
@@ -733,6 +841,8 @@ def _load_template_body(path: Path) -> NewJobBody:
         persona_id=obj.get("persona_id"),
         prompt_template=obj.get("prompt_template"),
         qq_account=obj.get("qq_account"),
+        image_ref_labels=obj.get("image_ref_labels"),
+        jitter_minutes=obj.get("jitter_minutes"),
         metadata=obj.get("metadata", {}) or {},
     )
 

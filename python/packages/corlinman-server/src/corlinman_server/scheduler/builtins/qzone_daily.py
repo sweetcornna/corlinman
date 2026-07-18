@@ -221,12 +221,14 @@ async def _qzone_daily_publish_action(context: BuiltinContext) -> dict[str, Any]
             recent_posts_block = _resolve_recent_posts_block(
                 data_dir, persona_id, _resolve_recent_posts_n(metadata)
             )
+        image_ref_labels = _resolve_image_ref_labels(metadata)
         system_prompt = _compose_system_prompt(
             persona.system_prompt,
             life_block=life_block,
             seed_block=seed_block,
             recent_posts_block=recent_posts_block,
             diversity=diversity,
+            image_ref_labels=image_ref_labels,
         )
         model = _resolve_default_model(context)
         session_key = _build_session_key(persona_id)
@@ -636,18 +638,22 @@ def _compose_system_prompt(
     seed_block: str | None = None,
     recent_posts_block: str | None = None,
     diversity: bool = True,
+    image_ref_labels: list[str] | None = None,
 ) -> str:
     """Glue the persona body + (optional) runtime life block + (B4 diversity)
     inspiration-seed + recent-posts blocks + the scheduler tail together.
 
     Reading order: persona body → life block → 今日灵感种子 (4a) → 最近已发过的
-    说说 (4b) → the tail. The agent sees "who I am" → "what I've been living"
-    → "today's fresh angle" → "what NOT to repeat" → "what to do this turn".
+    说说 (4b) → the tail → (B5) the reference-image block. The agent sees
+    "who I am" → "what I've been living" → "today's fresh angle" → "what NOT
+    to repeat" → "what to do this turn" → "which reference labels to draw
+    with".
 
     ``diversity=False`` rolls back to the pre-B4 shape: the seed + recent-posts
     blocks are dropped and the plain :data:`QZONE_DAILY_SYSTEM_TAIL` is used
     instead of :data:`QZONE_DAILY_DIVERSITY_TAIL` (the caller also skips the
-    post-log write in that mode).
+    post-log write in that mode). The B5 reference-image block rides after
+    whichever tail is used — it's orthogonal to the diversity toggle.
     """
     base = (persona_prompt or "").rstrip()
     parts = [base]
@@ -662,11 +668,49 @@ def _compose_system_prompt(
     else:
         tail = QZONE_DAILY_SYSTEM_TAIL
     parts.append(tail)
+    ref_block = _compose_image_ref_block(image_ref_labels)
+    if ref_block:
+        parts.append(ref_block)
     return "".join(
         # Two blank lines between major blocks; the tail already starts
         # with its own ``\n\n---`` so no extra separator is needed there.
         (f"\n\n{p}" if i and not p.startswith("\n") else p)
         for i, p in enumerate(parts)
+    )
+
+
+def _resolve_image_ref_labels(metadata: dict[str, Any]) -> list[str]:
+    """Read the job's ``image_ref_labels`` metadata as a clean list of
+    non-empty string labels.
+
+    Best-effort + total (a scheduler builtin must never raise): a missing key
+    or a wrong-shaped value yields ``[]`` so the caller simply omits the
+    reference-image block. Non-string / blank entries are dropped."""
+    raw = metadata.get("image_ref_labels")
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for item in raw:
+        if isinstance(item, str) and item.strip():
+            out.append(item.strip())
+    return out
+
+
+def _compose_image_ref_block(labels: list[str] | None) -> str | None:
+    """Render the B5 reference-image instruction block, or ``None``.
+
+    When the job pinned one or more ``image_ref_labels``, the daily post's
+    ``image_with_refs`` call MUST draw with exactly those labels — the block
+    tells the model which labels are available and steers the framing toward
+    a candid life-slice rather than a posed group shot. ``None`` (no labels)
+    omits the block entirely."""
+    if not labels:
+        return None
+    joined = "、".join(labels)
+    return (
+        "[scheduler·qzone.daily_publish 配图参考图]\n"
+        "如需配图：image_with_refs 的 characters 必须用这些参考图标签："
+        f"{joined}；画面要像随手拍的生活切片而非摆拍合影。"
     )
 
 

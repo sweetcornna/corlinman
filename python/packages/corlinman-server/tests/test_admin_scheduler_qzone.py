@@ -478,3 +478,211 @@ def test_jitter_minutes_illegal_values_ignored() -> None:
     assert _jitter_secs_from_metadata({"jitter_minutes": "30"}) == 0
     assert _jitter_secs_from_metadata({"jitter_minutes": None}) == 0
     assert _jitter_secs_from_metadata({"jitter_minutes": True}) == 0
+
+
+# ---------------------------------------------------------------------------
+# B5: task-level image_ref_labels + jitter_minutes top-level contract
+# ---------------------------------------------------------------------------
+
+
+def _runtime_metadata(admin_state: AdminState, name: str) -> dict[str, Any]:
+    """Read a runtime job's persisted metadata off the overlay."""
+    table = admin_state.extras.get("scheduler_runtime_jobs") or {}
+    rj = table[name]
+    return dict(rj.metadata)
+
+
+def test_create_job_with_image_ref_labels_and_jitter_round_trips(
+    client: TestClient, admin_state: AdminState
+) -> None:
+    """POST carrying the promoted fields → JobOut echoes them back and the
+    metadata lands in the runtime overlay (metadata is the store of record)."""
+    body = {
+        "name": "grantley.daily_qzone",
+        "cron": "0 9 * * *",
+        "action_type": QZONE_DAILY_BUILTIN_NAME,
+        "persona_id": "grantley",
+        "prompt_template": "say something",
+        "image_ref_labels": ["grantley_home", "grantley_casual"],
+        "jitter_minutes": 45,
+    }
+    res = client.post("/admin/scheduler/jobs", json=body)
+    assert res.status_code == 200, res.text
+    row = res.json()
+    assert row["image_ref_labels"] == ["grantley_home", "grantley_casual"]
+    assert row["jitter_minutes"] == 45
+    # Metadata is the authoritative store — both landed there.
+    meta = _runtime_metadata(admin_state, "grantley.daily_qzone")
+    assert meta["image_ref_labels"] == ["grantley_home", "grantley_casual"]
+    assert meta["jitter_minutes"] == 45
+    # And they survive the list endpoint round-trip.
+    listed = client.get("/admin/scheduler/jobs").json()
+    hit = next(j for j in listed if j["name"] == "grantley.daily_qzone")
+    assert hit["image_ref_labels"] == ["grantley_home", "grantley_casual"]
+    assert hit["jitter_minutes"] == 45
+
+
+def test_create_job_without_promoted_fields_echoes_null(
+    client: TestClient,
+) -> None:
+    """A job that pins neither field echoes ``null`` for both (contract-safe
+    optional defaults)."""
+    body = {
+        "name": "grantley.daily_qzone",
+        "cron": "0 9 * * *",
+        "action_type": QZONE_DAILY_BUILTIN_NAME,
+        "persona_id": "grantley",
+        "prompt_template": "say something",
+    }
+    res = client.post("/admin/scheduler/jobs", json=body)
+    assert res.status_code == 200, res.text
+    row = res.json()
+    assert row["image_ref_labels"] is None
+    assert row["jitter_minutes"] is None
+
+
+def test_patch_image_ref_labels_updates_and_keeps_untouched_fields(
+    client: TestClient, admin_state: AdminState
+) -> None:
+    """PATCH changing only ``image_ref_labels`` updates the echo, leaves
+    ``jitter_minutes`` (and persona_id/prompt_template) untouched."""
+    create = client.post(
+        "/admin/scheduler/jobs",
+        json={
+            "name": "grantley.daily_qzone",
+            "cron": "0 9 * * *",
+            "action_type": QZONE_DAILY_BUILTIN_NAME,
+            "persona_id": "grantley",
+            "prompt_template": "hello",
+            "image_ref_labels": ["a_one", "b_two"],
+            "jitter_minutes": 30,
+        },
+    )
+    assert create.status_code == 200, create.text
+
+    patched = client.patch(
+        "/admin/scheduler/jobs/grantley.daily_qzone",
+        json={"image_ref_labels": ["c_three"]},
+    )
+    assert patched.status_code == 200, patched.text
+    row = patched.json()
+    # Changed field reflects the new labels; the untouched jitter carries over.
+    assert row["image_ref_labels"] == ["c_three"]
+    assert row["jitter_minutes"] == 30
+    assert row["persona_id"] == "grantley"
+    assert row["prompt_template"] == "hello"
+    # Metadata store agrees.
+    meta = _runtime_metadata(admin_state, "grantley.daily_qzone")
+    assert meta["image_ref_labels"] == ["c_three"]
+    assert meta["jitter_minutes"] == 30
+
+
+def test_patch_jitter_only_preserves_labels(
+    client: TestClient, admin_state: AdminState
+) -> None:
+    """PATCH changing only ``jitter_minutes`` keeps the existing labels."""
+    client.post(
+        "/admin/scheduler/jobs",
+        json={
+            "name": "grantley.daily_qzone",
+            "cron": "0 9 * * *",
+            "action_type": QZONE_DAILY_BUILTIN_NAME,
+            "persona_id": "grantley",
+            "prompt_template": "hello",
+            "image_ref_labels": ["a_one"],
+            "jitter_minutes": 10,
+        },
+    )
+    patched = client.patch(
+        "/admin/scheduler/jobs/grantley.daily_qzone",
+        json={"jitter_minutes": 90},
+    )
+    assert patched.status_code == 200, patched.text
+    row = patched.json()
+    assert row["jitter_minutes"] == 90
+    assert row["image_ref_labels"] == ["a_one"]
+
+
+def test_create_rejects_too_many_labels(client: TestClient) -> None:
+    """9 labels (over the 8-ref cap) → 422 invalid_qzone_daily_args."""
+    body = {
+        "name": "grantley.daily_qzone",
+        "cron": "0 9 * * *",
+        "action_type": QZONE_DAILY_BUILTIN_NAME,
+        "persona_id": "grantley",
+        "prompt_template": "x",
+        "image_ref_labels": [f"label_{i}" for i in range(9)],
+    }
+    res = client.post("/admin/scheduler/jobs", json=body)
+    assert res.status_code == 422
+    assert res.json()["error"] == "invalid_qzone_daily_args"
+
+
+def test_create_rejects_malformed_label(client: TestClient) -> None:
+    """A label that breaks the ``[a-z0-9_-]`` shape → 422."""
+    body = {
+        "name": "grantley.daily_qzone",
+        "cron": "0 9 * * *",
+        "action_type": QZONE_DAILY_BUILTIN_NAME,
+        "persona_id": "grantley",
+        "prompt_template": "x",
+        "image_ref_labels": ["Bad Label!"],
+    }
+    res = client.post("/admin/scheduler/jobs", json=body)
+    assert res.status_code == 422
+    assert res.json()["error"] == "invalid_qzone_daily_args"
+
+
+def test_create_rejects_jitter_over_max(client: TestClient) -> None:
+    """jitter_minutes over 180 → 422."""
+    body = {
+        "name": "grantley.daily_qzone",
+        "cron": "0 9 * * *",
+        "action_type": QZONE_DAILY_BUILTIN_NAME,
+        "persona_id": "grantley",
+        "prompt_template": "x",
+        "jitter_minutes": 999,
+    }
+    res = client.post("/admin/scheduler/jobs", json=body)
+    assert res.status_code == 422
+    assert res.json()["error"] == "invalid_qzone_daily_args"
+
+
+def test_create_rejects_negative_jitter(client: TestClient) -> None:
+    """A negative jitter_minutes → 422."""
+    body = {
+        "name": "grantley.daily_qzone",
+        "cron": "0 9 * * *",
+        "action_type": QZONE_DAILY_BUILTIN_NAME,
+        "persona_id": "grantley",
+        "prompt_template": "x",
+        "jitter_minutes": -1,
+    }
+    res = client.post("/admin/scheduler/jobs", json=body)
+    assert res.status_code == 422
+    assert res.json()["error"] == "invalid_qzone_daily_args"
+
+
+def test_patch_rejects_bad_labels(client: TestClient) -> None:
+    """PATCH validation runs too — a bad label on edit → 422, no mutation."""
+    client.post(
+        "/admin/scheduler/jobs",
+        json={
+            "name": "grantley.daily_qzone",
+            "cron": "0 9 * * *",
+            "action_type": QZONE_DAILY_BUILTIN_NAME,
+            "persona_id": "grantley",
+            "prompt_template": "x",
+            "image_ref_labels": ["good_one"],
+        },
+    )
+    res = client.patch(
+        "/admin/scheduler/jobs/grantley.daily_qzone",
+        json={"image_ref_labels": ["STILL BAD"]},
+    )
+    assert res.status_code == 422
+    assert res.json()["error"] == "invalid_qzone_daily_args"
+    # The pre-edit label is unchanged (the rejected PATCH didn't mutate).
+    row = client.get("/admin/scheduler/jobs").json()
+    hit = next(j for j in row if j["name"] == "grantley.daily_qzone")
+    assert hit["image_ref_labels"] == ["good_one"]

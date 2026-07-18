@@ -48,9 +48,11 @@ from corlinman_server.scheduler.builtins import (
 from corlinman_server.scheduler.builtins.qzone_daily import (
     QZONE_DAILY_BUILTIN_NAME,
     QZONE_DAILY_DIVERSITY_TAIL,
+    _compose_system_prompt,
     _post_log_path,
     _read_post_log,
     _record_post_log,
+    _resolve_image_ref_labels,
     _resolve_recent_posts_block,
     _valid_persona_slug,
 )
@@ -981,3 +983,118 @@ def test_diversity_tail_full_text_requirements() -> None:
     # collide (uses 提醒, not 提示).
     assert "生活节奏提醒" in tail
     assert "生活节奏提示" not in tail
+
+
+# ---------------------------------------------------------------------------
+# B5: task-level image_ref_labels → reference-image system-prompt block
+# ---------------------------------------------------------------------------
+
+
+def test_image_ref_block_rides_after_both_tails() -> None:
+    """A job that pinned ``image_ref_labels`` gets a reference-image block
+    appended after the tail — for BOTH the diversity and the plain tail, so
+    the feature is orthogonal to the diversity toggle. The block names the
+    exact labels and steers toward a candid life-slice framing."""
+    labels = ["grantley_home", "grantley_casual"]
+    for diversity in (True, False):
+        prompt = _compose_system_prompt(
+            "You are a tiger.",
+            diversity=diversity,
+            image_ref_labels=labels,
+        )
+        assert "image_with_refs 的 characters 必须用这些参考图标签" in prompt
+        assert "grantley_home" in prompt and "grantley_casual" in prompt
+        assert "随手拍的生活切片而非摆拍合影" in prompt
+        # The block sits AFTER whichever tail (tail marker precedes it).
+        tail_idx = prompt.index("scheduler·qzone.daily_publish 指令")
+        block_idx = prompt.index("配图参考图")
+        assert tail_idx < block_idx
+
+
+def test_no_image_ref_block_when_labels_absent_or_empty() -> None:
+    """No labels (``None`` or an empty list) → no reference-image block.
+
+    Asserts on the block-specific marker, NOT the bare ``image_with_refs``
+    token — the plain tail already mentions ``image_with_refs`` as a配图 hint,
+    so only the pinned-labels line must be absent."""
+    for labels in (None, []):
+        prompt = _compose_system_prompt("x", image_ref_labels=labels)
+        assert "必须用这些参考图标签" not in prompt
+        assert "配图参考图" not in prompt
+
+
+def test_resolve_image_ref_labels_is_total_and_defensive() -> None:
+    """The metadata reader cleans the list + tolerates junk (never raises)."""
+    assert _resolve_image_ref_labels({"image_ref_labels": ["a", "b"]}) == ["a", "b"]
+    # Blank / non-string entries are dropped; surrounding whitespace trimmed.
+    assert _resolve_image_ref_labels(
+        {"image_ref_labels": [" a ", "", 3, None, "b"]}
+    ) == ["a", "b"]
+    # Absent / wrong-shaped → empty list (block omitted).
+    assert _resolve_image_ref_labels({}) == []
+    assert _resolve_image_ref_labels({"image_ref_labels": "not-a-list"}) == []
+    assert _resolve_image_ref_labels({"image_ref_labels": None}) == []
+
+
+async def test_builtin_prompt_carries_image_ref_labels_from_metadata() -> None:
+    """End-to-end: a job whose metadata pins ``image_ref_labels`` composes a
+    system prompt carrying the reference-image block with those exact labels."""
+    store = _FakePersonaStore(
+        {"grantley": _FakePersona(id="grantley", system_prompt="You are a tiger.")}
+    )
+    chat = _ScriptedChatService(
+        events=[
+            _qzone_tool_call(),
+            _qzone_tool_result(payload={"ok": True, "tid": "t", "qzone_url": "u"}),
+            DoneEvent(finish_reason="stop"),
+        ],
+    )
+    ctx = BuiltinContext(
+        app_state=_make_app_state(
+            chat=chat,
+            persona_store=store,
+            metadata={
+                "persona_id": "grantley",
+                "prompt_template": "写今天的说说。",
+                "diversity": False,
+                "image_ref_labels": ["grantley_home", "grantley_casual"],
+            },
+        ),
+        name="grantley.daily_qzone",
+    )
+    out = await _qzone_daily_publish_action(ctx)
+    assert out["ok"] is True, out
+    prompt = chat.requests[0].messages[0].content
+    assert "image_with_refs 的 characters 必须用这些参考图标签" in prompt
+    assert "grantley_home" in prompt and "grantley_casual" in prompt
+
+
+async def test_builtin_prompt_omits_ref_block_without_labels() -> None:
+    """No ``image_ref_labels`` metadata → the daily post composes with no
+    reference-image block (best-effort omission)."""
+    store = _FakePersonaStore(
+        {"grantley": _FakePersona(id="grantley", system_prompt="You are a tiger.")}
+    )
+    chat = _ScriptedChatService(
+        events=[
+            _qzone_tool_call(),
+            _qzone_tool_result(payload={"ok": True, "tid": "t", "qzone_url": "u"}),
+            DoneEvent(finish_reason="stop"),
+        ],
+    )
+    ctx = BuiltinContext(
+        app_state=_make_app_state(
+            chat=chat,
+            persona_store=store,
+            metadata={
+                "persona_id": "grantley",
+                "prompt_template": "写今天的说说。",
+                "diversity": False,
+            },
+        ),
+        name="grantley.daily_qzone",
+    )
+    out = await _qzone_daily_publish_action(ctx)
+    assert out["ok"] is True
+    prompt = chat.requests[0].messages[0].content
+    assert "必须用这些参考图标签" not in prompt
