@@ -50,6 +50,13 @@ describe("parseAskUserArgs", () => {
     expect(parsed?.options).toHaveLength(7);
   });
 
+  it('treats a stringly-typed multiple ("false") as single-select', () => {
+    const parsed = parseAskUserArgs(
+      JSON.stringify({ question: "q", options: ["a"], multiple: "false" }),
+    );
+    expect(parsed?.multiple).toBe(false);
+  });
+
   it("caps an overlong option label at 120 chars", () => {
     const parsed = parseAskUserArgs(
       JSON.stringify({ question: "q", options: ["x".repeat(300)] }),

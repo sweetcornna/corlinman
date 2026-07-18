@@ -46,7 +46,11 @@ export function QuestionCard({
     (labels: string[]) => {
       if (!onAnswer || labels.length === 0) return;
       setSent(true);
-      onAnswer(labels.join("、"));
+      // CJK labels join with 、; latin-only picks read better with ", ".
+      const joiner = labels.some((l) => /[\u3000-\u9FFF\uF900-\uFAFF]/.test(l))
+        ? "、"
+        : ", ";
+      onAnswer(labels.join(joiner));
     },
     [onAnswer],
   );

@@ -58,7 +58,9 @@ export function parseAskUserArgs(argsJson: string): AskUserQuestion | null {
     }
   }
 
-  return { question, options, multiple: Boolean(rec.multiple) };
+  // Strict === true: a model emitting the string "false" must not flip
+  // the card into multi-select mode.
+  return { question, options, multiple: rec.multiple === true };
 }
 
 /** The parsed questions carried by a message's tool calls, in call order. */

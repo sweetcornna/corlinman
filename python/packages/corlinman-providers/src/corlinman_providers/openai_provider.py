@@ -234,11 +234,9 @@ def _apply_reasoning_effort(kwargs: dict[str, Any], model: str) -> None:
             extra_body.update(update)
 
     thinking_type = "disabled" if tier == "none" else "enabled"
-    if "deepseek" in id_:
-        _body({"thinking": {"type": thinking_type}})
-        if tier in ("high", "max"):
-            kwargs["reasoning_effort"] = tier
-    elif "glm" in id_:
+    if "deepseek" in id_ or "glm" in id_:
+        # Same wire shape: thinking.type toggle + two-step effort
+        # (DeepSeek V4 and GLM-5; GLM-4.x tiers never reach high/max).
         _body({"thinking": {"type": thinking_type}})
         if tier in ("high", "max"):
             kwargs["reasoning_effort"] = tier

@@ -31,7 +31,11 @@ import { ReasoningBlock } from "@/components/chat/reasoning-block";
 import { SubagentCard } from "@/components/chat/subagent-card";
 import { ApprovalPrompt } from "@/components/chat/approval-prompt";
 import { QuestionCard } from "@/components/chat/question-card";
-import { ASK_USER_TOOL_NAME, askUserQuestions } from "@/lib/chat/ask-user";
+import {
+  ASK_USER_TOOL_NAME,
+  askUserQuestions,
+  parseAskUserArgs,
+} from "@/lib/chat/ask-user";
 
 interface MessageBubbleProps {
   message: ChatMessage;
@@ -58,10 +62,16 @@ interface MessageBubbleProps {
   onQuestionAnswer?: (text: string) => void;
 }
 
-/** Tool calls that belong in the action trace — `ask_user` renders as a
- *  QuestionCard below the bubble instead of a generic tool row. */
+/** Tool calls that belong in the action trace — a *parsed* `ask_user`
+ *  renders as a QuestionCard below the bubble instead of a generic tool
+ *  row. While its args are still streaming (unparsable) it stays in the
+ *  trace so the in-flight call remains visible. */
 function traceCallsOf(message: ChatMessage) {
-  return message.toolCalls?.filter((tc) => tc.toolName !== ASK_USER_TOOL_NAME);
+  return message.toolCalls?.filter(
+    (tc) =>
+      tc.toolName !== ASK_USER_TOOL_NAME ||
+      parseAskUserArgs(tc.argsJson) === null,
+  );
 }
 
 function formatTime(ms: number): string {
@@ -137,11 +147,14 @@ export const MessageBubble = React.memo(function MessageBubble({
 
   const traceToolCalls = React.useMemo(
     () => traceCallsOf(message),
-    [message],
+    // Keyed on the array (not the message): the pending bubble gets a new
+    // message object per delta while toolCalls often keeps its identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [message.toolCalls],
   );
   const questions = React.useMemo(
     () => askUserQuestions(message.toolCalls),
-    [message],
+    [message.toolCalls],
   );
 
   // Bulk collapse switches on automatically when the assistant fires

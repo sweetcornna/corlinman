@@ -43,6 +43,26 @@ describe("QuestionCard", () => {
     expect(onAnswer).toHaveBeenCalledWith("代码质量、安全");
   });
 
+  it("multiple: latin-only labels join with a comma", () => {
+    const onAnswer = vi.fn();
+    render(
+      <QuestionCard
+        question={{
+          question: "Which?",
+          options: ["Red", "Blue"],
+          multiple: true,
+        }}
+        interactive
+        onAnswer={onAnswer}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Red" }));
+    fireEvent.click(screen.getByRole("button", { name: /Blue/ }));
+    fireEvent.click(screen.getByTestId("question-submit"));
+    expect(onAnswer).toHaveBeenCalledWith("Red, Blue");
+  });
+
+
   it("non-interactive history renders inert options", () => {
     const onAnswer = vi.fn();
     render(

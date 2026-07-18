@@ -38,7 +38,12 @@ from corlinman_providers.reasoning_tiers import (
         ("claude-sonnet-4-6", ("low", "medium", "high", "max"), "high"),
         ("claude-opus-4-5", (), None),
         ("claude-haiku-4-5", (), None),
-        ("claude-opus-6", ("low", "medium", "high", "xhigh", "max"), "high"),
+        # pre-4.6 4.x ids (budget_tokens era) and unrecognised claude both
+        # degrade to "no picker" — never a guessed effort ladder.
+        ("claude-opus-4-1", (), None),
+        ("claude-sonnet-4", (), None),
+        ("claude-opus-4-20250514", (), None),
+        ("claude-opus-6", (), None),
         # Gemini
         ("gemini-3-pro-preview", ("low", "high"), "high"),
         ("gemini-3-flash-preview", ("minimal", "low", "medium", "high"), "high"),

@@ -676,11 +676,17 @@ def test_codex_params_schema_declares_reasoning_effort() -> None:
 
     assert "reasoning_effort" in schema["properties"]
     assert "prompt_cache_key" in schema["properties"]
+    # Canonical superset: the loop's schema gate must admit out-of-ladder
+    # tiers (max...) so the provider-side clamp can snap them (max -> xhigh).
     assert set(schema["properties"]["reasoning_effort"]["enum"]) == {
+        "none",
+        "minimal",
         "low",
+        "on",
         "medium",
         "high",
         "xhigh",
+        "max",
     }
 
 

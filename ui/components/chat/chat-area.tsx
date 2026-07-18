@@ -199,12 +199,9 @@ export function ChatArea({
     reasoningTiers,
   );
   // What the composer highlights: the tier that will actually be sent
-  // (per-model clamp), falling back to the stored preference.
-  const normalizedReasoningEffort =
-    effectiveReasoningEffort ??
-    (!allowsCodexReasoning && reasoningEffort === "xhigh"
-      ? "high"
-      : reasoningEffort);
+  // (per-model clamp) — the composer re-clamps the raw preference onto
+  // its visible options for the not-sent (legacy) case.
+  const normalizedReasoningEffort = effectiveReasoningEffort ?? reasoningEffort;
   const chat = useChatStream({
     sessionKey,
     model,

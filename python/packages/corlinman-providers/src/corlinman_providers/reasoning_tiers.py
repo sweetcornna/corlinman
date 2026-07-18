@@ -87,11 +87,11 @@ _FAMILY_RULES: tuple[tuple[re.Pattern[str], tuple[str, ...], str | None], ...] =
         (r"claude-opus-4-[78]", _FIVE_TIER_CLAUDE, "high"),
         (r"claude-sonnet-5", _FIVE_TIER_CLAUDE, "high"),
         (r"claude-(?:opus|sonnet)-4-6", ("low", "medium", "high", "max"), "high"),
-        # budget_tokens era (4.5 and below, all haiku): no effort knob.
-        (r"claude-(?:opus|sonnet)-4-5", (), None),
-        (r"claude-(?:haiku|3)", (), None),
-        # Forward-compat: unrecognised newer claude gets the full ladder.
-        (r"claude-", _FIVE_TIER_CLAUDE, "high"),
+        # budget_tokens era and everything unrecognised: no effort knob.
+        # (claude-opus-4 / -4-1 / claude-sonnet-4 / haiku / 3.x all live
+        # here — sending output_config.effort or adaptive thinking to them
+        # would 400, so unknown claude degrades to "no picker", not a guess.)
+        (r"claude-", (), None),
         # ── Google Gemini ─────────────────────────────────────────────
         (r"gemini-3-pro", ("low", "high"), "high"),
         (r"gemini-3-flash", _GEMINI_LEVELS, "high"),
@@ -116,7 +116,7 @@ _FAMILY_RULES: tuple[tuple[re.Pattern[str], tuple[str, ...], str | None], ...] =
         # ── Qwen (enable_thinking bool + thinking_budget) ─────────────
         (r"qwq|qwen3-[\w.-]*thinking", ("low", "medium", "high"), "high"),
         (
-            r"qwen3[.\d-]|qwen3-max|qwen-plus|qwen-flash|qwen-turbo",
+            r"qwen3[.\d-]|qwen-plus|qwen-flash|qwen-turbo|qwen-max",
             ("none", "low", "medium", "high"),
             "medium",
         ),

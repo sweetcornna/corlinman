@@ -62,7 +62,6 @@ type ModelAliasMetadata = {
   /** Effort ladder for the resolved model — `null` = unknown family
    *  (fall back to client heuristics), `[]` = no effort knob. */
   reasoningTiers: string[] | null;
-  reasoningDefault: string | null;
 };
 
 function modelAliasMetadataFromAliases(
@@ -95,10 +94,6 @@ function modelAliasMetadataFromAliases(
       reasoningTiers: Array.isArray(rawTiers)
         ? rawTiers.filter((t): t is string => typeof t === "string")
         : null,
-      reasoningDefault:
-        typeof match?.reasoning_default === "string"
-          ? match.reasoning_default
-          : null,
     };
   }
   if (aliases && typeof aliases === "object") {
@@ -107,14 +102,12 @@ function modelAliasMetadataFromAliases(
       provider: null,
       target: typeof target === "string" && target.trim() ? target : null,
       reasoningTiers: null,
-      reasoningDefault: null,
     };
   }
   return {
     provider: null,
     target: null,
     reasoningTiers: null,
-    reasoningDefault: null,
   };
 }
 

@@ -97,7 +97,7 @@ describe("MessageBubble × ask_user", () => {
     expect(option).toBeDisabled();
   });
 
-  it("renders no card while the args are still streaming", () => {
+  it("keeps a still-streaming ask_user visible in the trace, without a card", () => {
     renderBubble(
       makeMsg({
         pending: true,
@@ -112,5 +112,7 @@ describe("MessageBubble × ask_user", () => {
       }),
     );
     expect(screen.queryByTestId("question-card")).toBeNull();
+    // unparsable args → the call still shows as an in-flight tool row
+    expect(screen.getByText("ask_user")).toBeInTheDocument();
   });
 });

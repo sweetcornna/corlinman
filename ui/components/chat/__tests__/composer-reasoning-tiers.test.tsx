@@ -9,6 +9,7 @@ function renderComposer(props: Partial<React.ComponentProps<typeof Composer>>) {
       isStreaming={false}
       modelLabel="m"
       onSend={vi.fn()}
+      onStop={vi.fn()}
       onReasoningEffortChange={vi.fn()}
       {...props}
     />,
