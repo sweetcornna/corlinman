@@ -52,21 +52,25 @@ export interface GlassPanelProps extends DivProps {
 // the class merger collapses two `bg-*` utilities — so the gradient stands in
 // as the single background, which is intentional.
 const variantClasses: Record<GlassPanelVariant, string> = {
+  // Eclipse light grammar: resting surfaces carry only the moon edge —
+  // drop shadows are reserved for floating layers (dialogs/drawers).
   subtle: cn(
-    "bg-sg-card-grad border-sg-border",
-    "shadow-sg-1",
+    "bg-sg-shell bg-sg-card-grad border-sg-border",
+    "shadow-sg-edge",
   ),
   soft: cn(
-    "bg-sg-card-grad border-sg-border",
-    "shadow-sg-2",
+    "bg-sg-card bg-sg-card-grad border-sg-border",
+    "shadow-sg-edge",
   ),
   strong: cn(
     "bg-sg-card-strong border-sg-border",
-    "shadow-sg-3",
+    "shadow-sg-edge-strong",
   ),
+  // "Most active" surface — the selected treatment: moon edge + a faint
+  // inset tint glow (whitelisted).
   primary: cn(
-    "bg-sg-card-grad border-sg-border",
-    "shadow-sg-primary",
+    "bg-sg-card bg-sg-card-grad border-sg-border-strong",
+    "shadow-[var(--sg-edge-top),inset_0_0_28px_-18px_var(--sg-tint-glow)]",
   ),
 };
 

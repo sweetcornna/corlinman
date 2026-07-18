@@ -36,8 +36,8 @@ export function Switch({
         "transition-colors duration-150",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/50 focus-visible:ring-offset-1 focus-visible:ring-offset-transparent",
         checked
-          ? "border-sg-accent/50 bg-primary"
-          : "border-sg-border bg-sg-inset",
+          ? "border-transparent bg-sg-tint"
+          : "border-sg-border bg-sg-inset shadow-sg-well-soft",
         disabled && "cursor-not-allowed opacity-60",
         className,
       )}
@@ -46,9 +46,9 @@ export function Switch({
       <span
         aria-hidden
         className={cn(
-          "pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow-sg-1",
+          "pointer-events-none inline-block h-5 w-5 rounded-full shadow-sg-1",
           "transition-transform duration-150",
-          checked ? "translate-x-7" : "translate-x-0",
+          checked ? "translate-x-7 bg-sg-tint-ink" : "translate-x-0 bg-sg-ink",
         )}
       />
     </button>

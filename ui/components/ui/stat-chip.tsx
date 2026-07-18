@@ -121,7 +121,7 @@ export const StatChip = React.forwardRef<HTMLDivElement, StatChipProps>(
             <span
               className={cn(
                 "rounded-full px-1.5 py-[1px] text-[9px] font-medium lowercase tracking-[0.04em]",
-                "bg-sg-accent-soft text-sg-accent sg-breathe-accent",
+                "nav-active text-sg-ink",
               )}
             >
               live

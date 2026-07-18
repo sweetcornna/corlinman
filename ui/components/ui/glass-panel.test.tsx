@@ -33,7 +33,8 @@ describe("GlassPanel", () => {
         x
       </GlassPanel>,
     );
-    expect(screen.getByTestId("panel")).toHaveClass("shadow-sg-primary");
+    // Eclipse "most active" = selected treatment: moon edge + inset tint glow.
+    expect(screen.getByTestId("panel").className).toContain("--sg-tint-glow");
   });
 
   it("can render as a different element", () => {

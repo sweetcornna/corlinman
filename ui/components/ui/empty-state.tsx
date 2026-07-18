@@ -33,7 +33,7 @@ export const EmptyState = React.forwardRef<HTMLDivElement, EmptyStateProps>(
         variants={liquidRise}
         role="status"
         className={cn(
-          "mx-auto flex w-full max-w-md flex-col items-center justify-center gap-3 rounded-sg-lg border border-sg-border bg-sg-card-grad px-6 py-10 text-center shadow-sg-2",
+          "mx-auto flex w-full max-w-md flex-col items-center justify-center gap-3 rounded-sg-lg border border-sg-border bg-sg-card bg-sg-card-grad px-6 py-10 text-center shadow-sg-edge",
           className,
         )}
         {...rest}
@@ -41,7 +41,7 @@ export const EmptyState = React.forwardRef<HTMLDivElement, EmptyStateProps>(
         {icon ? (
           <div
             aria-hidden="true"
-            className="sg-drift flex h-14 w-14 items-center justify-center rounded-full bg-sg-inset text-sg-ink-4 shadow-sg-glow [&_svg]:h-7 [&_svg]:w-7"
+            className="flex h-14 w-14 items-center justify-center rounded-full bg-sg-inset text-sg-ink-4 shadow-sg-well-soft [&_svg]:h-7 [&_svg]:w-7"
           >
             {icon}
           </div>

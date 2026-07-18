@@ -35,7 +35,7 @@ const DialogContent = React.forwardRef<
       ref={ref}
       className={cn(
         "fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 p-6",
-        "rounded-sg-xl border border-sg-border-strong bg-sg-overlay shadow-sg-4",
+        "sg-glass-overlay rounded-sg-xl",
         "",
         // Liquid Glass optics — light-aware edge ring + chromatic inner
         // lensing on the overlay surface (blur-free, composes with the blur

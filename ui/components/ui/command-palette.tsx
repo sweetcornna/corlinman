@@ -112,10 +112,8 @@ export function CommandPalette({
         aria-label="Command palette"
         shouldFilter
         className={cn(
-          "w-[640px] max-w-[calc(100vw-3rem)] overflow-hidden rounded-sg-xl border",
-          "bg-sg-overlay border-sg-border-strong",
-          "",
-          "shadow-sg-4 ring-1 ring-sg-accent/20",
+          "w-[640px] max-w-[calc(100vw-3rem)] overflow-hidden rounded-sg-xl",
+          "sg-glass-overlay",
           // Liquid Glass optics — light-aware edge ring + chromatic inner
           // lensing on the palette card (blur-free, composes with the blur
           // recipe above).

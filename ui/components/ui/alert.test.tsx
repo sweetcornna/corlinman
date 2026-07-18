@@ -24,8 +24,8 @@ describe("Alert", () => {
   it("uses token-based variant classes (no hardcoded palette colors)", () => {
     render(<Alert variant="warning">w</Alert>);
     const el = screen.getByRole("alert");
-    expect(el.className).toContain("bg-sg-warn-soft");
-    expect(el.className).toContain("border-sg-warn/30");
+    expect(el.className).toContain("bg-sg-card");
+    expect(el.className).toContain("border-l-sg-warn");
     expect(el.className).not.toMatch(/amber|red-\d|yellow-\d/);
   });
 

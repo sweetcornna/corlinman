@@ -136,7 +136,7 @@ export function Drawer({
                 style={widthResolved.style}
                 className={cn(
                   "fixed inset-y-0 z-50 flex h-full w-full flex-col",
-                  "bg-sg-overlay shadow-sg-4 focus:outline-none",
+                  "sg-glass-overlay focus:outline-none",
                   // Liquid Glass optics — light-aware edge ring + chromatic
                   // inner lensing so the sliding panel reads as bent light.
                   // Blur-free, composes with the blur recipe above.

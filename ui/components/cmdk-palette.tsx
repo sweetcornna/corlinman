@@ -443,7 +443,7 @@ function TestChatDrawer({ onClose }: { onClose: () => void }) {
       />
       <div
         className={cn(
-          "relative z-10 flex w-full max-w-2xl flex-col gap-3 rounded-sg-xl border border-sg-border-strong bg-sg-overlay p-4 shadow-sg-4",
+          "sg-glass-overlay relative z-10 flex w-full max-w-2xl flex-col gap-3 rounded-sg-xl p-4",
           // Liquid Glass optics + springy overshoot entrance, matching the
           // dialog/palette overlay surfaces.
           "",
