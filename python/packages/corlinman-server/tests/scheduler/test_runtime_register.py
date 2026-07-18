@@ -40,6 +40,98 @@ def test_runtime_job_spec_rejects_actionless_slug() -> None:
     assert runtime_job_spec("x", "0 9 * * *", "noplugin") is None
 
 
+# ---------------------------------------------------------------------------
+# B4 (4d): publish-time jitter — JobSpec.jitter_secs + tick-loop sampling
+# ---------------------------------------------------------------------------
+
+
+def test_runtime_job_spec_carries_jitter_secs() -> None:
+    """``jitter_secs`` rides onto the spec; default is 0 and negatives floor
+    to 0 (no jitter)."""
+    spec = runtime_job_spec("rtj", "0 9 * * *", "qzone.daily_publish", jitter_secs=90)
+    assert spec is not None and spec.jitter_secs == 90
+    # Default off.
+    spec_def = runtime_job_spec("rtj", "0 9 * * *", "qzone.daily_publish")
+    assert spec_def is not None and spec_def.jitter_secs == 0
+    # Negative floored to 0.
+    spec_neg = runtime_job_spec(
+        "rtj", "0 9 * * *", "qzone.daily_publish", jitter_secs=-5
+    )
+    assert spec_neg is not None and spec_neg.jitter_secs == 0
+
+
+async def test_run_job_loop_samples_jitter_within_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The tick loop tacks on ``random.uniform(0, jitter_secs)`` after the
+    computed wait. Patch ``random.uniform`` to capture its bounds (and prove
+    the sample is drawn from ``[0, jitter_secs]``), then short-circuit the
+    sleep so the loop exits after one wait-calc without firing."""
+    from corlinman_server.scheduler import runner as runner_mod
+
+    spec = runtime_job_spec("rtj", "* * * * *", "test.noop", jitter_secs=120)
+    assert spec is not None and spec.jitter_secs == 120
+
+    seen: list[tuple[float, float]] = []
+
+    def _fake_uniform(a: float, b: float) -> float:
+        seen.append((a, b))
+        return (a + b) / 2.0  # deterministic mid-point, within [a, b]
+
+    monkeypatch.setattr(runner_mod.random, "uniform", _fake_uniform)
+
+    async def _fake_sleep_until(
+        deadline: float,
+        cancel: asyncio.Event,
+        extra_cancel: asyncio.Event | None = None,
+    ) -> bool:
+        return True  # report cancelled so the loop exits after the wait-calc
+
+    monkeypatch.setattr(runner_mod, "_sleep_until", _fake_sleep_until)
+
+    bus = HookBus(16)
+    cancel = asyncio.Event()
+    await runner_mod._run_job_loop(spec, bus, cancel, None, catch_up=False)
+
+    # uniform() called exactly once with the [0, jitter_secs] bounds.
+    assert seen == [(0.0, 120.0)]
+    lo, hi = seen[0]
+    assert 0.0 <= (lo + hi) / 2.0 <= 120.0
+
+
+async def test_run_job_loop_no_jitter_call_when_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A job with ``jitter_secs == 0`` (config jobs / default) never touches
+    ``random.uniform`` — the timing stays byte-identical to pre-B4."""
+    from corlinman_server.scheduler import runner as runner_mod
+
+    spec = runtime_job_spec("rtj", "* * * * *", "test.noop")
+    assert spec is not None and spec.jitter_secs == 0
+
+    called = False
+
+    def _fake_uniform(a: float, b: float) -> float:  # pragma: no cover
+        nonlocal called
+        called = True
+        return 0.0
+
+    monkeypatch.setattr(runner_mod.random, "uniform", _fake_uniform)
+
+    async def _fake_sleep_until(
+        deadline: float,
+        cancel: asyncio.Event,
+        extra_cancel: asyncio.Event | None = None,
+    ) -> bool:
+        return True
+
+    monkeypatch.setattr(runner_mod, "_sleep_until", _fake_sleep_until)
+
+    bus = HookBus(16)
+    await runner_mod._run_job_loop(spec, bus, asyncio.Event(), None, catch_up=False)
+    assert called is False
+
+
 async def test_register_into_empty_handle_adds_task() -> None:
     bus = HookBus(16)
     handle = spawn(SchedulerConfig(jobs=()), bus)

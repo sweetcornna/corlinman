@@ -89,6 +89,7 @@ _logger = logging.getLogger("corlinman_server.scheduler.builtins.qzone_daily")
 
 __all__ = [
     "QZONE_DAILY_BUILTIN_NAME",
+    "QZONE_DAILY_DIVERSITY_TAIL",
     "QZONE_DAILY_SYSTEM_TAIL",
     "_qzone_daily_publish_action",
 ]
@@ -117,6 +118,35 @@ QZONE_DAILY_SYSTEM_TAIL: str = (
     "如果需要配图，先调用 `image_with_refs` 或 `qzone_publish` 自带的 "
     "`generate` 字段。\n"
     "禁止向用户提问；直接输出。"
+)
+
+
+#: B4 anti-formulaic tail — used in place of :data:`QZONE_DAILY_SYSTEM_TAIL`
+#: when the ``diversity`` engine is on (the default). Superset of the plain
+#: tail (still demands the turn end with ``qzone_publish``) plus the three
+#: diversity requirements: (1) topic/scene/opening must differ from every
+#: entry in the "最近已发过的说说" block, (2) the "今日灵感种子" block is
+#: optional but at least ONE fresh angle is mandatory, (3) a ⚠ life-rhythm
+#: nudge takes priority and should be acted on via the persona_life tools so
+#: the persona's life actually advances. Deliberately avoids the literal
+#: "生活节奏提示" so it doesn't collide with the life-block marker (uses
+#: "生活节奏提醒").
+QZONE_DAILY_DIVERSITY_TAIL: str = (
+    "\n\n---\n"
+    "[scheduler·qzone.daily_publish 指令]\n"
+    "你正在以这个角色的口吻为 QQ 空间撰写今天的「说说」。\n"
+    "本轮对话必须以一次 `qzone_publish` 工具调用结束（不要只回复文本）。\n"
+    "如果需要配图，先调用 `image_with_refs` 或 `qzone_publish` 自带的 "
+    "`generate` 字段。\n"
+    "禁止向用户提问；直接输出。\n"
+    "\n"
+    "【今天必须不一样，别每天都是那点东西】\n"
+    "- 主题、场景、开头句式都必须和上面『最近已发过的说说』里的任何一条不同；"
+    "别重复同样的心情、套路和口头禅。\n"
+    "- 上面的『今日灵感种子』可用可不用，但今天至少要换一个新的切入点。\n"
+    "- 如果上面出现了以 ⚠ 开头的生活节奏提醒，优先按它来写这条说说，"
+    "并顺手调用 `persona_life_set_state` / `persona_life_event_seed` "
+    "推进自己的生活状态，让接下来的日子真的动起来。"
 )
 
 
@@ -176,8 +206,27 @@ async def _qzone_daily_publish_action(context: BuiltinContext) -> dict[str, Any]
         # persona has actually been "living". Read-only + best-effort — a
         # missing life block just composes the bare persona prompt.
         life_block = await _resolve_life_block(context, persona_id)
+        # gap-fill B4: the diversity engine. ``diversity`` (metadata, default
+        # on) gates the inspiration seed (4a) + anti-repeat recent-posts block
+        # (4b) + the anti-formulaic tail (4c); ``diversity=False`` rolls the
+        # whole thing back to the pre-B4 behavior (no extra blocks, plain
+        # tail, no post-log write). Every component is best-effort — a miss
+        # simply omits that block.
+        diversity = _resolve_diversity(metadata)
+        data_dir = _resolve_data_dir(context.app_state)
+        seed_block: str | None = None
+        recent_posts_block: str | None = None
+        if diversity:
+            seed_block = await _resolve_seed_block(persona_id, data_dir)
+            recent_posts_block = _resolve_recent_posts_block(
+                data_dir, persona_id, _resolve_recent_posts_n(metadata)
+            )
         system_prompt = _compose_system_prompt(
-            persona.system_prompt, life_block=life_block
+            persona.system_prompt,
+            life_block=life_block,
+            seed_block=seed_block,
+            recent_posts_block=recent_posts_block,
+            diversity=diversity,
         )
         model = _resolve_default_model(context)
         session_key = _build_session_key(persona_id)
@@ -194,12 +243,24 @@ async def _qzone_daily_publish_action(context: BuiltinContext) -> dict[str, Any]
                     "error": "internal_chat_request_unavailable"}
 
         cancel = asyncio.Event()
-        return await _drive_chat_turn(
+        result = await _drive_chat_turn(
             chat_service=chat_service,
             request=request,
             cancel=cancel,
             base=base,
         )
+        # 4b: record a successful publish into the anti-repeat post-log so the
+        # next firing can steer away from it. Diversity-gated + best-effort:
+        # ``diversity=False`` keeps no post-log, and a write failure is
+        # swallowed (the post already landed — the log is only steering fuel).
+        if diversity and isinstance(result, dict) and result.get("ok"):
+            _record_post_log(
+                data_dir=data_dir,
+                persona_id=persona_id,
+                job=context.name,
+                result=result,
+            )
+        return result
     finally:
         # Close any handles we opened ourselves (fallback path) — never
         # touch live handles parked on the AppState bundle.
@@ -569,20 +630,38 @@ def _resolve_data_dir(app_state: Any | None) -> Path | None:
 
 
 def _compose_system_prompt(
-    persona_prompt: str, *, life_block: str | None = None
+    persona_prompt: str,
+    *,
+    life_block: str | None = None,
+    seed_block: str | None = None,
+    recent_posts_block: str | None = None,
+    diversity: bool = True,
 ) -> str:
-    """Glue the persona body + (optional) runtime life block + the
-    scheduler tail together.
+    """Glue the persona body + (optional) runtime life block + (B4 diversity)
+    inspiration-seed + recent-posts blocks + the scheduler tail together.
 
-    The life block is inserted *between* the persona body and the
-    scheduler instruction tail so the agent sees "who I am" → "what I've
-    been living" → "what to do this turn" in reading order.
+    Reading order: persona body → life block → 今日灵感种子 (4a) → 最近已发过的
+    说说 (4b) → the tail. The agent sees "who I am" → "what I've been living"
+    → "today's fresh angle" → "what NOT to repeat" → "what to do this turn".
+
+    ``diversity=False`` rolls back to the pre-B4 shape: the seed + recent-posts
+    blocks are dropped and the plain :data:`QZONE_DAILY_SYSTEM_TAIL` is used
+    instead of :data:`QZONE_DAILY_DIVERSITY_TAIL` (the caller also skips the
+    post-log write in that mode).
     """
     base = (persona_prompt or "").rstrip()
     parts = [base]
     if life_block:
         parts.append(life_block.rstrip())
-    parts.append(QZONE_DAILY_SYSTEM_TAIL)
+    if diversity:
+        if seed_block:
+            parts.append(seed_block.rstrip())
+        if recent_posts_block:
+            parts.append(recent_posts_block.rstrip())
+        tail = QZONE_DAILY_DIVERSITY_TAIL
+    else:
+        tail = QZONE_DAILY_SYSTEM_TAIL
+    parts.append(tail)
     return "".join(
         # Two blank lines between major blocks; the tail already starts
         # with its own ``\n\n---`` so no extra separator is needed there.
@@ -736,6 +815,225 @@ def _life_signals(life: dict[str, Any], now: datetime) -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         return {}
     return result if isinstance(result, dict) else {}
+
+
+# ---------------------------------------------------------------------------
+# B4 diversity engine — inspiration seed (4a) + anti-repeat post-log (4b)
+# ---------------------------------------------------------------------------
+
+
+#: Anti-repeat post-log sidecar layout. One JSON file per persona under
+#: ``<DATA_DIR>/qzone_post_log/<persona_id>.json`` holding the last
+#: :data:`_POST_LOG_MAX` published bodies so a firing can steer away from
+#: repeating itself. Deliberately a tiny owned sidecar rather than the
+#: scheduler history ring (in-memory, string-only), the persona diary (the
+#: model may never write it), or the live QZone feed (network + auth
+#: dependency): the sidecar is the only source that always carries the actual
+#: published text with zero extra deps.
+_POST_LOG_DIR: str = "qzone_post_log"
+_POST_LOG_MAX: int = 30
+_POST_LOG_TEXT_CAP: int = 500
+_POST_LOG_VERSION: int = 1
+
+#: Default + clamp range for the ``recent_posts_n`` metadata knob (how many
+#: recent bodies to surface in the anti-repeat block).
+_RECENT_POSTS_N_DEFAULT: int = 7
+_RECENT_POSTS_N_MIN: int = 1
+_RECENT_POSTS_N_MAX: int = 14
+
+#: Per-line excerpt cap in the recent-posts prompt block. The stored body is
+#: already capped at 500 chars; the prompt only needs the opening 主题/句式 to
+#: let the model compare against, so we trim harder here.
+_RECENT_POST_EXCERPT_CHARS: int = 120
+
+
+def _resolve_diversity(metadata: dict[str, Any]) -> bool:
+    """Read the ``diversity`` metadata knob (default True).
+
+    ``False`` rolls the whole B4 engine back to pre-B4 behavior (no seed
+    block, no recent-posts block, the plain publish tail, and no post-log
+    write). Any non-bool value falls back to the default so a duck-typed
+    metadata dict never accidentally trips the feature off."""
+    raw = metadata.get("diversity", True)
+    return raw if isinstance(raw, bool) else True
+
+
+def _resolve_recent_posts_n(metadata: dict[str, Any]) -> int:
+    """Read + clamp the ``recent_posts_n`` metadata knob (1-14, default 7)."""
+    raw = metadata.get("recent_posts_n")
+    if raw is None or isinstance(raw, bool):
+        # ``bool`` is an int subclass — a stray ``true`` must not mean 1.
+        return _RECENT_POSTS_N_DEFAULT
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return _RECENT_POSTS_N_DEFAULT
+    return max(_RECENT_POSTS_N_MIN, min(n, _RECENT_POSTS_N_MAX))
+
+
+def _valid_persona_slug(persona_id: str) -> bool:
+    """True iff ``persona_id`` is a safe filename slug (blocks path traversal).
+
+    Mirrors the agent-side ``persona_life._valid_persona_slug`` rule so the
+    post-log path lookup agrees with the seed-library lookup: stripping ``_``
+    / ``-`` must leave a non-empty ascii-alphanumeric run, so ``..``, ``/``
+    and ``\\`` are all rejected before the id is spliced into a path."""
+    if not persona_id:
+        return False
+    stripped = persona_id.replace("_", "").replace("-", "")
+    return bool(stripped) and stripped.isascii() and stripped.isalnum()
+
+
+def _post_log_path(data_dir: Path | None, persona_id: str) -> Path | None:
+    """Resolve ``<DATA_DIR>/qzone_post_log/<persona_id>.json`` or ``None``.
+
+    Returns ``None`` when no data dir is wired or ``persona_id`` fails the
+    slug guard — either way the whole post-log feature is skipped for the
+    firing (read-side + write-side both funnel through here)."""
+    if data_dir is None or not _valid_persona_slug(persona_id):
+        return None
+    return Path(data_dir) / _POST_LOG_DIR / f"{persona_id}.json"
+
+
+def _read_post_log(path: Path) -> list[dict[str, Any]]:
+    """Read the ``posts`` list from a post-log sidecar.
+
+    Best-effort + total: a missing / unreadable / malformed file yields
+    ``[]`` so a corrupt sidecar never blocks the firing."""
+    try:
+        if not path.is_file():
+            return []
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return []
+    if not isinstance(raw, dict):
+        return []
+    posts = raw.get("posts")
+    if not isinstance(posts, list):
+        return []
+    return [p for p in posts if isinstance(p, dict)]
+
+
+def _record_post_log(
+    *,
+    data_dir: Path | None,
+    persona_id: str,
+    job: str | None,
+    result: dict[str, Any],
+) -> None:
+    """Append one published-post record to the sidecar (atomic, last-30).
+
+    Fully best-effort: a bad slug / missing data dir / unwritable path all
+    skip silently. The record's ``text`` comes from the audit dict (#150
+    forwards the published body) and is capped at :data:`_POST_LOG_TEXT_CAP`.
+    Uses the repo's atomic ``write tmp + replace`` dance so a crash mid-write
+    can't truncate the sidecar."""
+    path = _post_log_path(data_dir, persona_id)
+    if path is None:
+        return
+    posts = _read_post_log(path)
+    text = result.get("text")
+    entry: dict[str, Any] = {
+        "ts": datetime.now(UTC).astimezone().isoformat(timespec="seconds"),
+        "job": job or "",
+        "tid": result.get("tid"),
+        "qzone_url": result.get("qzone_url"),
+        "text": (text if isinstance(text, str) else "")[:_POST_LOG_TEXT_CAP],
+    }
+    posts.append(entry)
+    posts = posts[-_POST_LOG_MAX:]
+    payload = json.dumps(
+        {"version": _POST_LOG_VERSION, "posts": posts},
+        ensure_ascii=False,
+        indent=2,
+    )
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".new")
+        tmp.write_text(payload, encoding="utf-8")
+        tmp.replace(path)
+    except OSError:
+        return
+
+
+def _resolve_recent_posts_block(
+    data_dir: Path | None, persona_id: str, n: int
+) -> str | None:
+    """Build the ``## 最近已发过的说说`` anti-repeat block from the sidecar.
+
+    Lists the body excerpts of the last ``n`` posts so the model can steer
+    away from repeating a topic / scene / opening句式. ``None`` when the
+    sidecar is empty / unavailable (the prompt then omits the block)."""
+    path = _post_log_path(data_dir, persona_id)
+    if path is None:
+        return None
+    posts = _read_post_log(path)
+    if not posts:
+        return None
+    lines: list[str] = []
+    for post in posts[-n:]:
+        text = post.get("text")
+        if isinstance(text, str) and text.strip():
+            snippet = " ".join(text.strip().split())
+            lines.append(f"- {snippet[:_RECENT_POST_EXCERPT_CHARS]}")
+    if not lines:
+        return None
+    return "## 最近已发过的说说（禁止重复主题/场景/句式）\n" + "\n".join(lines)
+
+
+async def _resolve_seed_block(
+    persona_id: str, data_dir: Path | None
+) -> str | None:
+    """Draw one ``persona_life_event_seed(kind=freeform)`` and render it as a
+    ``## 今日灵感种子`` block. Best-effort — a missing agent package / empty
+    draw simply omits the block."""
+    seed = await _draw_event_seed(persona_id, data_dir)
+    if not seed:
+        return None
+    lines = [f"- {key}：{val}" for key, val in seed.items()]
+    return "## 今日灵感种子（至少换一个新切入点）\n" + "\n".join(lines)
+
+
+async def _draw_event_seed(
+    persona_id: str, data_dir: Path | None
+) -> dict[str, str]:
+    """Call the agent-side ``persona_life_event_seed`` dispatcher (freeform)
+    and return the drawn ``{category: cue}`` map.
+
+    Lazy + guarded server→agent import (mirrors :func:`_life_signals` and the
+    ``persona_life_advance`` builtin): the layering contract allows the
+    server→agent direction, but a degraded boot that excluded corlinman-agent
+    must never crash the scheduler. Returns ``{}`` on any miss so the caller
+    omits the seed block. No persona-state IO — the draw is a pure sample over
+    the seed library, so it's cheap."""
+    try:
+        from corlinman_agent.persona.life import (  # noqa: PLC0415
+            dispatch_persona_life_event_seed,
+        )
+    except Exception:  # noqa: BLE001 — best-effort; scheduler never raises
+        return {}
+    try:
+        raw = await dispatch_persona_life_event_seed(
+            args_json=json.dumps({"kind": "freeform"}),
+            persona_id=persona_id,
+            data_dir=data_dir,
+        )
+    except Exception:  # noqa: BLE001
+        return {}
+    try:
+        obj = json.loads(raw)
+    except (ValueError, json.JSONDecodeError):
+        return {}
+    if not isinstance(obj, dict) or obj.get("ok") is not True:
+        return {}
+    seed = obj.get("seed")
+    if not isinstance(seed, dict):
+        return {}
+    out: dict[str, str] = {}
+    for key, val in seed.items():
+        if isinstance(key, str) and isinstance(val, str) and val.strip():
+            out[key] = val.strip()
+    return out
 
 
 def _build_session_key(persona_id: str) -> str:

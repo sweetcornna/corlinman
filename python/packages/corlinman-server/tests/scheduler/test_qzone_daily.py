@@ -24,8 +24,10 @@ production code uses.
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -45,6 +47,12 @@ from corlinman_server.scheduler.builtins import (
 )
 from corlinman_server.scheduler.builtins.qzone_daily import (
     QZONE_DAILY_BUILTIN_NAME,
+    QZONE_DAILY_DIVERSITY_TAIL,
+    _post_log_path,
+    _read_post_log,
+    _record_post_log,
+    _resolve_recent_posts_block,
+    _valid_persona_slug,
 )
 
 # ---------------------------------------------------------------------------
@@ -738,3 +746,238 @@ async def test_life_block_absent_when_no_state_store() -> None:
     system_prompt = chat.requests[0].messages[0].content
     assert "生活节奏提示" not in system_prompt
     assert "我最近的生活" not in system_prompt
+
+
+# ---------------------------------------------------------------------------
+# B4: anti-repeat post-log sidecar (4b) — write / cap / slug-guard / read
+# ---------------------------------------------------------------------------
+
+
+def test_post_log_write_then_read_roundtrip(tmp_path: Path) -> None:
+    """A successful publish appends one record; the sidecar is the documented
+    ``{version, posts:[{ts, job, tid, qzone_url, text}]}`` shape and reads
+    back through the module reader."""
+    _record_post_log(
+        data_dir=tmp_path,
+        persona_id="grantley",
+        job="grantley.daily_qzone",
+        result={"text": "今天去了海边", "tid": "t1", "qzone_url": "u1"},
+    )
+    path = tmp_path / "qzone_post_log" / "grantley.json"
+    assert path.is_file()
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    assert raw["version"] == 1
+    assert len(raw["posts"]) == 1
+    entry = raw["posts"][0]
+    assert entry["text"] == "今天去了海边"
+    assert entry["tid"] == "t1"
+    assert entry["qzone_url"] == "u1"
+    assert entry["job"] == "grantley.daily_qzone"
+    assert isinstance(entry["ts"], str) and entry["ts"]
+    # The module reader (used by the recent-posts block) recovers it.
+    posts = _read_post_log(path)
+    assert len(posts) == 1 and posts[0]["text"] == "今天去了海边"
+
+
+def test_post_log_caps_at_30(tmp_path: Path) -> None:
+    """Only the most-recent 30 posts survive; older ones roll off."""
+    for i in range(35):
+        _record_post_log(
+            data_dir=tmp_path, persona_id="grantley", job="j",
+            result={"text": f"post-{i}"},
+        )
+    posts = _read_post_log(tmp_path / "qzone_post_log" / "grantley.json")
+    assert len(posts) == 30
+    assert posts[-1]["text"] == "post-34"  # newest kept
+    assert posts[0]["text"] == "post-5"    # posts 0-4 dropped
+
+
+def test_post_log_text_capped_at_500(tmp_path: Path) -> None:
+    """The stored body is truncated to 500 chars."""
+    _record_post_log(
+        data_dir=tmp_path, persona_id="grantley", job="j",
+        result={"text": "x" * 900},
+    )
+    posts = _read_post_log(tmp_path / "qzone_post_log" / "grantley.json")
+    assert len(posts[0]["text"]) == 500
+
+
+def test_post_log_bad_slug_skips_entirely(tmp_path: Path) -> None:
+    """A traversal-y persona_id fails the slug guard → no path, no file, no
+    crash (the whole feature is skipped for that persona)."""
+    assert not _valid_persona_slug("../evil")
+    assert _post_log_path(tmp_path, "../evil") is None
+    _record_post_log(
+        data_dir=tmp_path, persona_id="../evil", job="j",
+        result={"text": "nope"},
+    )
+    log_dir = tmp_path / "qzone_post_log"
+    assert not log_dir.exists() or list(log_dir.iterdir()) == []
+
+
+def test_post_log_no_data_dir_is_noop() -> None:
+    """No data dir wired → the write is a silent no-op (never raises)."""
+    assert _post_log_path(None, "grantley") is None
+    _record_post_log(
+        data_dir=None, persona_id="grantley", job="j", result={"text": "x"}
+    )  # must not raise
+
+
+def test_post_log_atomic_write_leaves_no_tmp(tmp_path: Path) -> None:
+    """The atomic ``tmp + replace`` dance leaves only the final file."""
+    _record_post_log(
+        data_dir=tmp_path, persona_id="grantley", job="j", result={"text": "a"}
+    )
+    log_dir = tmp_path / "qzone_post_log"
+    names = sorted(p.name for p in log_dir.iterdir())
+    assert names == ["grantley.json"]  # no leftover .json.new
+
+
+# ---------------------------------------------------------------------------
+# B4: recent-posts prompt block (4b)
+# ---------------------------------------------------------------------------
+
+
+def test_recent_posts_block_lists_excerpts(tmp_path: Path) -> None:
+    for txt in ["第一条说说", "第二条说说", "第三条说说"]:
+        _record_post_log(
+            data_dir=tmp_path, persona_id="grantley", job="j",
+            result={"text": txt},
+        )
+    block = _resolve_recent_posts_block(tmp_path, "grantley", 7)
+    assert block is not None
+    assert "最近已发过的说说" in block
+    assert "禁止重复主题/场景/句式" in block
+    assert "第一条说说" in block and "第三条说说" in block
+
+
+def test_recent_posts_block_honors_n(tmp_path: Path) -> None:
+    for i in range(10):
+        _record_post_log(
+            data_dir=tmp_path, persona_id="grantley", job="j",
+            result={"text": f"说说{i}"},
+        )
+    block = _resolve_recent_posts_block(tmp_path, "grantley", 3)
+    assert block is not None
+    assert "说说9" in block and "说说8" in block and "说说7" in block
+    assert "说说6" not in block  # older than the last 3 → omitted
+
+
+def test_recent_posts_block_none_when_empty(tmp_path: Path) -> None:
+    assert _resolve_recent_posts_block(tmp_path, "grantley", 7) is None
+    assert _resolve_recent_posts_block(None, "grantley", 7) is None
+
+
+# ---------------------------------------------------------------------------
+# B4: end-to-end assembly — seed (4a) + recent (4b) + diversity tail (4c)
+# ---------------------------------------------------------------------------
+
+
+async def test_diversity_on_composes_seed_recent_and_tail(tmp_path: Path) -> None:
+    """diversity on (the default): the composed system prompt carries the
+    inspiration-seed block, the recent-posts block, and the anti-formulaic
+    tail — in that assembly order — and a post-log entry is appended."""
+    # Seed a prior post so the recent-posts block is non-empty.
+    _record_post_log(
+        data_dir=tmp_path, persona_id="grantley", job="j",
+        result={"text": "昨天在食堂吃饭很无聊"},
+    )
+    store = _FakePersonaStore(
+        {"grantley": _FakePersona(id="grantley", system_prompt="You are a knight.")}
+    )
+    chat = _ScriptedChatService(
+        events=[
+            _qzone_tool_call(),
+            _qzone_tool_result(
+                payload={"ok": True, "tid": "t", "qzone_url": "u", "text": "今天新说说"}
+            ),
+            DoneEvent(finish_reason="stop"),
+        ],
+    )
+    app_state = _make_app_state(
+        chat=chat, persona_store=store,
+        metadata={"persona_id": "grantley", "prompt_template": "写今天的说说。"},
+    )
+    app_state.data_dir = tmp_path
+    ctx = BuiltinContext(app_state=app_state, name="grantley.daily_qzone")
+    out = await _qzone_daily_publish_action(ctx)
+    assert out["ok"] is True, out
+
+    prompt = chat.requests[0].messages[0].content
+    # Seed block (4a) + recent-posts block (4b) both present.
+    assert "今日灵感种子" in prompt
+    assert "最近已发过的说说" in prompt
+    assert "昨天在食堂吃饭很无聊" in prompt
+    # Anti-repeat requirement lines from the tail (4c).
+    assert "主题、场景、开头句式都必须" in prompt
+    assert "至少要换一个新" in prompt
+    assert "persona_life_set_state" in prompt
+    # Assembly order: persona body → seed → recent → tail.
+    body_idx = prompt.index("You are a knight.")
+    seed_idx = prompt.index("今日灵感种子")
+    recent_idx = prompt.index("最近已发过的说说")
+    tail_idx = prompt.index("scheduler·qzone.daily_publish")
+    assert body_idx < seed_idx < recent_idx < tail_idx
+
+    # 4b: this run's publish appended a second post-log entry.
+    posts = _read_post_log(tmp_path / "qzone_post_log" / "grantley.json")
+    assert len(posts) == 2
+    assert posts[-1]["text"] == "今天新说说"
+
+
+async def test_diversity_off_rolls_back_everything(tmp_path: Path) -> None:
+    """diversity=False rolls back to pre-B4 behavior: no seed / recent blocks,
+    the plain publish tail, and NO post-log write."""
+    _record_post_log(
+        data_dir=tmp_path, persona_id="grantley", job="j",
+        result={"text": "旧说说"},
+    )
+    store = _FakePersonaStore(
+        {"grantley": _FakePersona(id="grantley", system_prompt="You are a knight.")}
+    )
+    chat = _ScriptedChatService(
+        events=[
+            _qzone_tool_call(),
+            _qzone_tool_result(
+                payload={"ok": True, "tid": "t", "qzone_url": "u", "text": "新说说"}
+            ),
+            DoneEvent(finish_reason="stop"),
+        ],
+    )
+    app_state = _make_app_state(
+        chat=chat, persona_store=store,
+        metadata={
+            "persona_id": "grantley",
+            "prompt_template": "x",
+            "diversity": False,
+        },
+    )
+    app_state.data_dir = tmp_path
+    ctx = BuiltinContext(app_state=app_state, name="grantley.daily_qzone")
+    out = await _qzone_daily_publish_action(ctx)
+    assert out["ok"] is True
+
+    prompt = chat.requests[0].messages[0].content
+    assert "今日灵感种子" not in prompt
+    assert "最近已发过的说说" not in prompt
+    assert "主题、场景、开头句式都必须" not in prompt
+    # The plain publish tail still ends the turn with qzone_publish.
+    assert "qzone_publish" in prompt
+    # No post-log write — still just the pre-seeded entry.
+    posts = _read_post_log(tmp_path / "qzone_post_log" / "grantley.json")
+    assert len(posts) == 1 and posts[0]["text"] == "旧说说"
+
+
+def test_diversity_tail_full_text_requirements() -> None:
+    """The exported diversity tail carries all three B4 requirements + still
+    demands the turn end with a qzone_publish call."""
+    tail = QZONE_DAILY_DIVERSITY_TAIL
+    assert "qzone_publish" in tail
+    assert "主题、场景、开头句式都必须和上面『最近已发过的说说』里的任何一条不同" in tail
+    assert "至少要换一个新的切入点" in tail
+    assert "persona_life_set_state" in tail
+    assert "persona_life_event_seed" in tail
+    # Deliberately avoids the life-block marker literal so the two don't
+    # collide (uses 提醒, not 提示).
+    assert "生活节奏提醒" in tail
+    assert "生活节奏提示" not in tail

@@ -68,6 +68,30 @@ _TEMPLATE_ID_RE = re.compile(r"^[a-z0-9_-]{1,64}$")
 #: Same rule for job names.
 _JOB_NAME_RE = re.compile(r"^[a-z0-9_.\-]{1,128}$")
 
+#: Upper bound on the ``jitter_minutes`` metadata knob (B4 publish-time
+#: jitter). Out-of-range / non-numeric values are ignored (→ no jitter)
+#: rather than clamped so an operator typo doesn't silently smear firings
+#: across three hours.
+_JITTER_MINUTES_MAX: int = 180
+
+
+def _jitter_secs_from_metadata(metadata: dict[str, Any]) -> int:
+    """Derive a runner-level ``jitter_secs`` from a job's ``jitter_minutes``
+    metadata (0-180 minutes).
+
+    Illegal values — negative, over :data:`_JITTER_MINUTES_MAX`, or
+    non-numeric (incl. ``bool``, an ``int`` subclass we must not read as
+    "1 minute") — are ignored and yield ``0`` (no jitter). This is the ONE
+    place the metadata knob is read + converted; it is deliberately NOT
+    surfaced as a top-level ``NewJobBody`` / ``EditJobBody`` / ``JobOut``
+    field (that promotion is a later PR)."""
+    raw = metadata.get("jitter_minutes")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return 0
+    if raw < 0 or raw > _JITTER_MINUTES_MAX:
+        return 0
+    return int(raw) * 60
+
 
 class JobOut(BaseModel):
     name: str
@@ -352,7 +376,13 @@ def _register_runtime_loop(state: AdminState, rj: _RuntimeJob) -> None:
         from corlinman_server.scheduler import runtime_job_spec
     except Exception:  # pragma: no cover — defensive
         return
-    spec = runtime_job_spec(rj.name, rj.cron, rj.action_type, timezone=rj.timezone)
+    spec = runtime_job_spec(
+        rj.name,
+        rj.cron,
+        rj.action_type,
+        timezone=rj.timezone,
+        jitter_secs=_jitter_secs_from_metadata(rj.metadata),
+    )
     if spec is None:
         return
     try:
