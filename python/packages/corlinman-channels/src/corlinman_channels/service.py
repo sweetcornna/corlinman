@@ -42,6 +42,7 @@ import functools
 import logging
 import mimetypes
 import os
+import random
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
@@ -154,7 +155,12 @@ from corlinman_channels.commands import (
     run_command_handler,
     slash_access_policy_from_env,
 )
-from corlinman_channels.common import AlbumDebouncer, InboundEvent, TransportError
+from corlinman_channels.common import (
+    AlbumDebouncer,
+    ChannelBinding,
+    InboundEvent,
+    TransportError,
+)
 from corlinman_channels.common import format_attribution_prefix as _attribution
 from corlinman_channels.common import (
     normalize_outbound_for_channel as _normalize_for_channel,
@@ -444,10 +450,21 @@ async def run_qq_channel(
     if sender_limiter is not None:
         gc_tasks.append(sender_limiter.start_gc(cancel))
 
+    wl_raw = _attr(cfg, "group_whitelist", None)
+    group_whitelist = (
+        frozenset(str(g) for g in wl_raw) if wl_raw is not None else None
+    )
     router = ChannelRouter(
         group_keywords=_coerce_keywords(_attr(cfg, "group_keywords", {})),
         self_ids=self_ids,
         group_replies_enabled=bool(_attr(cfg, "group_replies_enabled", True)),
+        group_whitelist=group_whitelist,
+        group_reply_policy=str(
+            _attr(cfg, "group_reply_policy", "mention_or_keyword")
+        ),
+        group_reply_cooldown_secs=float(
+            _attr(cfg, "group_reply_cooldown_secs", 20) or 0
+        ),
     ).with_rate_limits(group_limiter, sender_limiter)
     if params.rate_limit_hook is not None:
         router = router.with_rate_limit_hook(params.rate_limit_hook)
@@ -473,14 +490,25 @@ async def run_qq_channel(
                 _qq_health_watcher(adapter, cancel),
                 name="qq-health-watcher",
             )
+            # Human-paced proactive speech (off unless configured on).
+            proactive_cfg = _qq_proactive_config(cfg, group_whitelist)
+            proactive_task: asyncio.Task[None] | None = None
+            if proactive_cfg is not None and params.chat_service is not None:
+                proactive_task = asyncio.create_task(
+                    _qq_proactive_loop(adapter, params, proactive_cfg, cancel),
+                    name="qq-proactive-loop",
+                )
             try:
                 await _qq_dispatch_loop(adapter, router, params, cancel)
             finally:
-                health_task.cancel()
-                try:
-                    await health_task
-                except (asyncio.CancelledError, Exception):
-                    pass
+                for _t in (health_task, proactive_task):
+                    if _t is None:
+                        continue
+                    _t.cancel()
+                    try:
+                        await _t
+                    except (asyncio.CancelledError, Exception):
+                        pass
     finally:
         for t in gc_tasks:
             t.cancel()
@@ -508,6 +536,213 @@ QQ_HEALTH: dict[str, Any] = {
     "account_checked_at_ms": None,
     "account_last_error": None,    # str — most recent probe failure reason
 }
+
+
+# ---------------------------------------------------------------------------
+# Proactive group speech — human-paced, budgeted, opt-in.
+# ---------------------------------------------------------------------------
+
+
+_QQ_PROACTIVE_DEFAULT_PROMPT = (
+    "现在你想在群里主动说点什么。结合你当前的状态、正在做的事或最近想到的话题，"
+    "用你自己的口吻发一条简短自然的群聊消息（一两句话即可）。"
+    "不要刻意打招呼，不要自我介绍，也不要每次都用相似的开头。"
+)
+
+
+@dataclass(frozen=True)
+class _QqProactiveConfig:
+    """Resolved ``[channels.qq]`` proactive_* settings (flat keys)."""
+
+    groups: tuple[str, ...]
+    min_gap_minutes: float
+    max_gap_minutes: float
+    daily_max: int
+    active_start_hour: int
+    active_end_hour: int
+    prompt: str
+
+
+def _qq_proactive_config(
+    cfg: Any, group_whitelist: frozenset[str] | None
+) -> _QqProactiveConfig | None:
+    """Read the flat ``proactive_*`` keys; ``None`` when the feature is off.
+
+    ``proactive_groups`` empty falls back to ``group_whitelist`` — the
+    natural reading of "speak in my whitelisted groups". Enabled with no
+    resolvable target logs a warning and stays off (never spam-guess)."""
+    if not bool(_attr(cfg, "proactive_enabled", False)):
+        return None
+    groups = tuple(str(g) for g in (_attr(cfg, "proactive_groups", None) or []))
+    if not groups and group_whitelist:
+        groups = tuple(sorted(group_whitelist))
+    if not groups:
+        _log.warning(
+            "qq proactive_enabled but no target groups"
+            " (set proactive_groups or group_whitelist) — staying silent"
+        )
+        return None
+    min_gap = float(_attr(cfg, "proactive_min_gap_minutes", 45) or 45)
+    max_gap = float(_attr(cfg, "proactive_max_gap_minutes", 0) or 0)
+    if max_gap < min_gap:
+        # Human pacing: default spread is a wide window, not a fixed beat.
+        max_gap = min_gap * 4
+    return _QqProactiveConfig(
+        groups=groups,
+        min_gap_minutes=min_gap,
+        max_gap_minutes=max_gap,
+        daily_max=max(1, int(_attr(cfg, "proactive_daily_max", 4) or 4)),
+        active_start_hour=int(_attr(cfg, "proactive_active_start_hour", 9)),
+        active_end_hour=int(_attr(cfg, "proactive_active_end_hour", 23)),
+        prompt=str(_attr(cfg, "proactive_prompt", "") or "").strip()
+        or _QQ_PROACTIVE_DEFAULT_PROMPT,
+    )
+
+
+def _qq_proactive_in_active_hours(hour: int, start: int, end: int) -> bool:
+    """True when ``hour`` falls in the [start, end) local window.
+
+    ``start == end`` degenerates to always-on; ``start > end`` wraps
+    overnight (e.g. 22 → 2)."""
+    if start == end:
+        return True
+    if start < end:
+        return start <= hour < end
+    return hour >= start or hour < end
+
+
+def _qq_proactive_next_delay_secs(
+    cfg: _QqProactiveConfig, rng: random.Random | None = None
+) -> float:
+    """Uniform draw over the configured gap window — irregular by design."""
+    r = rng or random
+    return r.uniform(cfg.min_gap_minutes * 60.0, cfg.max_gap_minutes * 60.0)
+
+
+async def _qq_proactive_sleep(cancel: asyncio.Event, secs: float) -> bool:
+    """Cancel-aware sleep. Returns ``True`` when cancelled mid-sleep."""
+    try:
+        await asyncio.wait_for(cancel.wait(), timeout=max(secs, 1.0))
+    except TimeoutError:
+        return False
+    return True
+
+
+async def _qq_proactive_generate(
+    params: QqChannelParams,
+    group: str,
+    prompt: str,
+    cancel: asyncio.Event,
+) -> str:
+    """Run one persona chat turn for a proactive message; returns text.
+
+    Uses the same duck-typed ``InternalChatRequest`` shape as
+    :func:`_build_internal_request` (keep the fields in sync!) with a
+    dedicated per-group ``proactive`` session so the persona keeps its
+    own thread of what it already said, separate from user chats."""
+    from types import SimpleNamespace
+
+    from corlinman_channels import binding_prefs as _binding_prefs
+
+    self_id = QQ_HEALTH.get("account_qq") or 0
+    binding = ChannelBinding.qq_group(self_id, group, "proactive")
+    request = SimpleNamespace(
+        model=_binding_prefs.effective_model(binding, params.model),
+        messages=[SimpleNamespace(role="user", content=prompt)],
+        session_key=_binding_prefs.effective_session_key(
+            binding, binding.session_key()
+        ),
+        stream=True,
+        max_tokens=None,
+        temperature=None,
+        attachments=[],
+        binding=binding,
+        persona_id=None,
+    )
+    await _qq_inject_persona_if_enabled(request, params)
+    parts: list[str] = []
+    assert params.chat_service is not None  # gated by caller
+    stream = params.chat_service.run(request, cancel)
+    async for chat_ev in stream:
+        kind = _event_kind(chat_ev)
+        if kind == "token_delta":
+            parts.append(getattr(chat_ev, "text", "") or "")
+        elif kind == "done":
+            break
+        elif kind == "error":
+            msg = getattr(chat_ev, "error", "") or getattr(chat_ev, "message", "")
+            raise RuntimeError(msg or "chat error")
+    return "".join(parts).strip()
+
+
+async def _qq_proactive_loop(
+    adapter: OneBotAdapter,
+    params: QqChannelParams,
+    cfg: _QqProactiveConfig,
+    cancel: asyncio.Event,
+) -> None:
+    """Speak in configured groups at a human pace, forever.
+
+    Each cycle: sleep a RANDOM gap (min..max minutes), then — only if
+    inside the active-hours window, the bot account is online, and the
+    picked group still has daily budget — run one persona turn and post
+    it. Failures log and skip; the loop never crashes the channel."""
+    _log.info(
+        "qq proactive loop started groups=%s gap=%.0f-%.0fmin"
+        " daily_max=%d hours=%02d-%02d",
+        list(cfg.groups),
+        cfg.min_gap_minutes,
+        cfg.max_gap_minutes,
+        cfg.daily_max,
+        cfg.active_start_hour,
+        cfg.active_end_hour,
+    )
+    sent_today: dict[str, int] = {}
+    day = time.strftime("%Y-%m-%d")
+    while not cancel.is_set():
+        if await _qq_proactive_sleep(cancel, _qq_proactive_next_delay_secs(cfg)):
+            break
+        today = time.strftime("%Y-%m-%d")
+        if today != day:
+            sent_today.clear()
+            day = today
+        now_hour = int(time.strftime("%H"))
+        if not _qq_proactive_in_active_hours(
+            now_hour, cfg.active_start_hour, cfg.active_end_hour
+        ):
+            continue
+        if QQ_HEALTH.get("online") is not True or (
+            QQ_HEALTH.get("account_online") is False
+        ):
+            continue
+        eligible = [g for g in cfg.groups if sent_today.get(g, 0) < cfg.daily_max]
+        if not eligible:
+            continue
+        group = random.choice(eligible)
+        try:
+            text = await _qq_proactive_generate(params, group, cfg.prompt, cancel)
+        except Exception as exc:  # noqa: BLE001 — skip this beat, keep living
+            _log.warning("qq proactive generate failed group=%s: %s", group, exc)
+            continue
+        if not text:
+            continue
+        try:
+            await adapter.send_action(
+                SendGroupMsg(
+                    group_id=int(group), message=[TextSegment(text=text)]
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("qq proactive send failed group=%s: %s", group, exc)
+            continue
+        sent_today[group] = sent_today.get(group, 0) + 1
+        _log.info(
+            "qq proactive sent group=%s chars=%d today=%d/%d",
+            group,
+            len(text),
+            sent_today[group],
+            cfg.daily_max,
+        )
 
 
 async def _qq_health_watcher(

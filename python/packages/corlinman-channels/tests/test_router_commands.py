@@ -66,7 +66,7 @@ def _help_prelude() -> str:
 
 class TestCommandSubstitution:
     def test_persona_command_substitutes_content(self) -> None:
-        router = ChannelRouter(group_keywords={}, self_ids=[100])
+        router = ChannelRouter(group_keywords={}, self_ids=[100], group_reply_policy="all")
         ev = _group_event("/persona", [TextSegment(text="/persona")])
 
         req = router.dispatch(ev)
@@ -79,7 +79,7 @@ class TestCommandSubstitution:
         assert req.mentioned is False
 
     def test_chinese_alias_substitutes(self) -> None:
-        router = ChannelRouter(group_keywords={}, self_ids=[100])
+        router = ChannelRouter(group_keywords={}, self_ids=[100], group_reply_policy="all")
         ev = _group_event("/角色", [TextSegment(text="/角色")])
 
         req = router.dispatch(ev)
@@ -92,7 +92,7 @@ class TestCommandSubstitution:
         # (web playground fallback). The router prefers the handler, so
         # ``content`` is left as the literal text and the caller is
         # expected to invoke run_command_handler.
-        router = ChannelRouter(group_keywords={}, self_ids=[100])
+        router = ChannelRouter(group_keywords={}, self_ids=[100], group_reply_policy="all")
         ev = _group_event("/help", [TextSegment(text="/help")])
 
         req = router.dispatch(ev)
@@ -106,7 +106,7 @@ class TestCommandSubstitution:
         assert req.command_spec.wizard_prelude == _help_prelude()
 
     def test_persona_with_args_substitutes(self) -> None:
-        router = ChannelRouter(group_keywords={}, self_ids=[100])
+        router = ChannelRouter(group_keywords={}, self_ids=[100], group_reply_policy="all")
         ev = _group_event(
             "/persona edit grantley",
             [TextSegment(text="/persona edit grantley")],
@@ -128,7 +128,7 @@ class TestCommandSubstitution:
 
 class TestNonCommandUntouched:
     def test_plain_prose_content_unchanged(self) -> None:
-        router = ChannelRouter(group_keywords={}, self_ids=[100])
+        router = ChannelRouter(group_keywords={}, self_ids=[100], group_reply_policy="all")
         ev = _group_event(
             "请帮我看看这条消息",
             [TextSegment(text="请帮我看看这条消息")],
@@ -143,7 +143,7 @@ class TestNonCommandUntouched:
         # "/persona" appearing inside prose must not be rewritten — the
         # matcher's substring-rejection contract is what makes the agent
         # safe to discuss commands without invoking them.
-        router = ChannelRouter(group_keywords={}, self_ids=[100])
+        router = ChannelRouter(group_keywords={}, self_ids=[100], group_reply_policy="all")
         ev = _group_event(
             "please run /persona for me",
             [TextSegment(text="please run /persona for me")],
@@ -162,7 +162,7 @@ class TestNonCommandUntouched:
 
 class TestEnableCommandsOptOut:
     def test_disabling_preserves_legacy_content(self) -> None:
-        router = ChannelRouter(group_keywords={}, self_ids=[100])
+        router = ChannelRouter(group_keywords={}, self_ids=[100], group_reply_policy="all")
         ev = _group_event("/persona", [TextSegment(text="/persona")])
 
         req = router.dispatch(ev, enable_commands=False)
@@ -181,7 +181,7 @@ class TestEnableCommandsOptOut:
 
 class TestHandlerCommandsExposed:
     def test_whoami_surfaces_spec(self) -> None:
-        router = ChannelRouter(group_keywords={}, self_ids=[100])
+        router = ChannelRouter(group_keywords={}, self_ids=[100], group_reply_policy="all")
         ev = _group_event("/whoami", [TextSegment(text="/whoami")])
         req = router.dispatch(ev)
         assert req is not None
@@ -197,7 +197,7 @@ class TestHandlerCommandsExposed:
         # /persona is prelude-only — content is still rewritten, and the
         # command_spec field on the request reflects the matched spec
         # (so observability layers can see WHICH command fired).
-        router = ChannelRouter(group_keywords={}, self_ids=[100])
+        router = ChannelRouter(group_keywords={}, self_ids=[100], group_reply_policy="all")
         ev = _group_event("/persona", [TextSegment(text="/persona")])
         req = router.dispatch(ev)
         assert req is not None
@@ -208,7 +208,7 @@ class TestHandlerCommandsExposed:
         assert req.command_spec.handler is None
 
     def test_handler_command_with_args_carries_args_text(self) -> None:
-        router = ChannelRouter(group_keywords={}, self_ids=[100])
+        router = ChannelRouter(group_keywords={}, self_ids=[100], group_reply_policy="all")
         ev = _group_event(
             "/whoami extra info",
             [TextSegment(text="/whoami extra info")],
