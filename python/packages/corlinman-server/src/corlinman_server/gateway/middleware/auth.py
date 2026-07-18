@@ -292,6 +292,13 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
         # Re-resolve so boot can rebind the state after install.
         state = _resolve_state(request) or self._state
 
+        # CORS preflights carry no credentials by spec — pass them through
+        # so the CORS middleware can answer (a 401 here strands every
+        # cross-origin browser client). The actual request still
+        # authenticates below.
+        if request.method == "OPTIONS":
+            return await call_next(request)
+
         if not _path_is_protected(request.url.path, state.protected_prefixes):
             return await call_next(request)
 

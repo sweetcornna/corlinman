@@ -93,3 +93,24 @@ def test_chat_request_drops_unknown_reasoning_effort() -> None:
     assert resp.status_code == 200, resp.text
     assert service.seen is not None
     assert service.seen.provider_params == {}
+
+
+def test_canonical_tier_superset_is_whitelisted() -> None:
+    """none/on/max joined the canonical vocabulary — the gateway must
+    forward them (the provider layer clamps per model)."""
+    for effort in ("none", "on", "max", "xhigh"):
+        service = _RecordingService()
+        app = FastAPI()
+        app.include_router(router(ChatState(service=service)))
+        resp = TestClient(app).post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-5.6",
+                "messages": [{"role": "user", "content": "hi"}],
+                "reasoning_effort": effort,
+                "stream": False,
+            },
+        )
+        assert resp.status_code == 200
+        assert service.seen is not None
+        assert service.seen.provider_params == {"reasoning_effort": effort}

@@ -50,8 +50,20 @@ export interface ChatCompletionToolCall {
   function: { name: string; arguments: string };
 }
 
-export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
-export type ChatReasoningEffort = "minimal" | ReasoningEffort;
+/** Canonical reasoning-tier vocabulary (superset across model families —
+ *  mirrored from corlinman_providers.reasoning_tiers). The provider layer
+ *  clamps a tier onto each model's real ladder; `on` exists for pure
+ *  thinking-toggle families (GLM-4.x, Kimi k2.x). */
+export type ReasoningEffort =
+  | "none"
+  | "minimal"
+  | "low"
+  | "on"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max";
+export type ChatReasoningEffort = ReasoningEffort;
 
 export interface ChatCompletionRequest {
   model: string;

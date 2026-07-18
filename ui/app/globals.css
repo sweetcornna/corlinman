@@ -515,8 +515,11 @@
     content: "";
     position: absolute;
     left: 0;
-    top: 10px;
-    bottom: 10px;
+    /* Stay inside the rounded frame: start below the 20px top-left arc,
+       stop above the 6px tail arc — a bar at the corner rows would float
+       outside the bubble outline. */
+    top: var(--st-bubble-radius);
+    bottom: calc(var(--st-bubble-tail) + 4px);
     width: 2px;
     border-radius: 2px;
     background: linear-gradient(180deg, var(--sg-tint), color-mix(in oklch, var(--sg-tint) 15%, transparent));

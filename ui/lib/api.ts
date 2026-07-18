@@ -518,9 +518,22 @@ export interface ProviderRow {
   api_key_kind: "env" | "literal" | null;
   base_url: string | null;
 }
+export interface ModelAliasRow {
+  name: string;
+  model: string;
+  provider: string;
+  params: Record<string, unknown>;
+  effective_params_schema: Record<string, unknown>;
+  /** Effort ladder for the resolved model (see reasoning_tiers registry):
+   *  `null` = unknown family, `[]` = no effort knob. */
+  reasoning_tiers: string[] | null;
+  reasoning_default: string | null;
+}
 export interface ModelsResponse {
   default: string;
-  aliases: Record<string, string>;
+  // The backend sends AliasRow[]; the record shape survives for older
+  // deployments' cached responses.
+  aliases: ModelAliasRow[] | Record<string, string>;
   providers: ProviderRow[];
 }
 export function fetchModels(): Promise<ModelsResponse> {

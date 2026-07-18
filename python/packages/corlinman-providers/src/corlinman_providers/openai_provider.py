@@ -34,6 +34,7 @@ from corlinman_providers._auth_refresh import (
     with_401_recovery,
 )
 from corlinman_providers.base import ProviderChunk
+from corlinman_providers.reasoning_tiers import clamp_reasoning_tier
 from corlinman_providers.failover import (
     AuthError,
     AuthPermanentError,
@@ -186,6 +187,73 @@ _SUMMARY_BODY_CAP = 4000
 def _is_reasoning_model(model: str) -> bool:
     """Return whether ``model`` belongs to the o1/o3/o4/gpt-5 reasoning family."""
     return model.startswith(_REASONING_MODEL_PREFIXES)
+
+
+# Canonical tier → Qwen ``thinking_budget`` tokens. Conservative absolutes
+# that sit inside every hybrid-thinking model's CoT cap (DashScope defaults
+# the budget to the model maximum when omitted).
+_QWEN_THINKING_BUDGETS: dict[str, int] = {"low": 4096, "medium": 12288, "high": 24576}
+
+
+def _apply_reasoning_effort(kwargs: dict[str, Any], model: str) -> None:
+    """Translate a canonical reasoning tier onto this model's wire shape.
+
+    The gateway forwards the UI's canonical tier (none/minimal/low/on/
+    medium/high/xhigh/max) as ``reasoning_effort`` inside ``extra``; by the
+    time we run it has been merged into ``kwargs``. Clamp it onto the
+    model's real ladder (:mod:`corlinman_providers.reasoning_tiers`), then
+    re-spell it per family:
+
+    * OpenAI / Grok / relays — ``reasoning_effort`` stays top-level.
+    * DeepSeek V4 — ``thinking.type`` toggle (+ ``reasoning_effort`` for
+      ``high``/``max``).
+    * GLM — ``thinking.type`` toggle; GLM-5 adds ``reasoning_effort``.
+    * Qwen hybrid — ``enable_thinking`` + ``thinking_budget``.
+    * Kimi k2.x — ``thinking.type`` toggle.
+
+    Non-standard keys ride in ``extra_body`` (the OpenAI SDK rejects
+    unknown top-level kwargs). Known no-knob families (grok-4, R1…) drop
+    the parameter entirely; unknown ids pass through untouched.
+    """
+    requested = kwargs.get("reasoning_effort")
+    if not isinstance(requested, str) or not requested.strip():
+        return
+    kwargs.pop("reasoning_effort", None)
+    tier = clamp_reasoning_tier(model, requested)
+    if tier is None:
+        logger.debug(
+            "openai.reasoning_effort_dropped", model=model, requested=requested
+        )
+        return
+
+    id_ = model.strip().lower()
+
+    def _body(update: dict[str, Any]) -> None:
+        extra_body = kwargs.setdefault("extra_body", {})
+        if isinstance(extra_body, dict):
+            extra_body.update(update)
+
+    thinking_type = "disabled" if tier == "none" else "enabled"
+    if "deepseek" in id_ or "glm" in id_:
+        # Same wire shape: thinking.type toggle + two-step effort
+        # (DeepSeek V4 and GLM-5; GLM-4.x tiers never reach high/max).
+        _body({"thinking": {"type": thinking_type}})
+        if tier in ("high", "max"):
+            kwargs["reasoning_effort"] = tier
+    elif "qwen" in id_ or "qwq" in id_:
+        if tier == "none":
+            _body({"enable_thinking": False})
+        else:
+            _body(
+                {
+                    "enable_thinking": True,
+                    "thinking_budget": _QWEN_THINKING_BUDGETS.get(tier, 12288),
+                }
+            )
+    elif "kimi" in id_ or "moonshot" in id_:
+        _body({"thinking": {"type": thinking_type}})
+    else:
+        kwargs["reasoning_effort"] = tier
 
 
 def _requires_strict_alternation(model: str) -> bool:
@@ -390,6 +458,9 @@ class OpenAIProvider:
                         params=dropped,
                     )
             kwargs.update(extra_params)
+        # Canonical reasoning tier → per-family wire shape (after the extra
+        # merge so alias params and the per-request value are both covered).
+        _apply_reasoning_effort(kwargs, model)
 
         # index → per-call streaming state. We emit `tool_call_start` at most
         # once per index (with the *real* id) and always close with
@@ -974,8 +1045,11 @@ _OPENAI_PARAMS_SCHEMA: dict[str, Any] = {
         },
         "reasoning_effort": {
             "type": "string",
-            "enum": ["minimal", "low", "medium", "high"],
-            "description": "o1/o3-family reasoning effort hint.",
+            # Canonical tier superset — clamped + re-spelled per model
+            # family in chat_stream (see reasoning_tiers.py), so the loop's
+            # schema gate must admit every canonical value.
+            "enum": ["none", "minimal", "low", "on", "medium", "high", "xhigh", "max"],
+            "description": "Canonical reasoning-effort tier (clamped per model).",
         },
     },
 }

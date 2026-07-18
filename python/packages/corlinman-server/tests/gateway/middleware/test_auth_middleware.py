@@ -174,3 +174,33 @@ def test_admin_path_filter_only_gates_admin_prefix(path: str, expected_status: i
     client = TestClient(_admin_app({"admin_db": db}))
     resp = client.get(path)
     assert resp.status_code == expected_status
+
+
+def test_api_key_options_preflight_passes_through() -> None:
+    """CORS preflights carry no credentials by spec — the auth middleware
+    must not 401 them (the CORS middleware answers; the real request still
+    authenticates). A 401 here strands every cross-origin browser client."""
+    app = _api_app(_FakeAdminDb())
+
+    from fastapi.middleware.cors import CORSMiddleware
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://localhost:3000"],
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["authorization", "content-type"],
+    )
+    client = TestClient(app)
+    resp = client.options(
+        "/v1/ping",
+        headers={
+            "Origin": "http://localhost:3000",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+    assert resp.status_code == 200
+    assert (
+        resp.headers.get("access-control-allow-origin") == "http://localhost:3000"
+    )

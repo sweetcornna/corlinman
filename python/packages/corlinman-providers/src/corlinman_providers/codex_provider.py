@@ -30,6 +30,7 @@ from corlinman_providers._codex_oauth import (
 )
 from corlinman_providers._retry import default_retryable_codex, with_retry
 from corlinman_providers.base import ProviderChunk
+from corlinman_providers.reasoning_tiers import clamp_reasoning_tier
 from corlinman_providers.specs import ProviderKind, ProviderSpec
 
 logger = structlog.get_logger(__name__)
@@ -118,8 +119,12 @@ _CODEX_PARAMS_SCHEMA: dict[str, Any] = {
     "properties": {
         "reasoning_effort": {
             "type": "string",
-            "enum": sorted(_CODEX_REASONING_EFFORTS),
-            "description": "Codex Responses-API reasoning effort hint.",
+            # Canonical superset — the loop's schema gate filters on this
+            # enum BEFORE the provider runs, so out-of-ladder tiers (max…)
+            # must pass through here to reach the clamp in
+            # _reasoning_effort_from_extra (max → xhigh, not medium).
+            "enum": ["none", "minimal", "low", "on", "medium", "high", "xhigh", "max"],
+            "description": "Canonical reasoning-effort tier (clamped to the Codex ladder).",
         },
         "prompt_cache_key": {
             "type": "string",
@@ -137,6 +142,12 @@ def _reasoning_effort_from_extra(extra: dict[str, Any] | None) -> str:
         value = raw.strip().lower()
         if value in _CODEX_REASONING_EFFORTS:
             return value
+        # Canonical tiers outside the Codex ladder snap to the nearest
+        # supported step (e.g. ``max`` → ``xhigh``) instead of silently
+        # resetting to medium.
+        clamped = clamp_reasoning_tier("codex", value)
+        if clamped in _CODEX_REASONING_EFFORTS:
+            return clamped
     return "medium"
 
 

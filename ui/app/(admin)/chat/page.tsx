@@ -23,6 +23,7 @@ import {
   patchChatSession,
   type ReasoningEffort,
 } from "@/lib/api/chat";
+import { isReasoningTier } from "@/lib/chat/reasoning-effort";
 import {
   CorlinmanApiError,
   fetchModels,
@@ -43,7 +44,7 @@ const FALLBACK_MODEL = "gpt-4o"; // used only when /admin/models returns no glob
 const DEFAULT_REASONING_EFFORT: ReasoningEffort = "medium";
 
 function isReasoningEffort(value: string | null): value is ReasoningEffort {
-  return value === "low" || value === "medium" || value === "high" || value === "xhigh";
+  return value !== null && isReasoningTier(value);
 }
 
 function genSessionKey(): string {
@@ -58,6 +59,9 @@ function chatHref(sessionKey: string): string {
 type ModelAliasMetadata = {
   provider: string | null;
   target: string | null;
+  /** Effort ladder for the resolved model — `null` = unknown family
+   *  (fall back to client heuristics), `[]` = no effort knob. */
+  reasoningTiers: string[] | null;
 };
 
 function modelAliasMetadataFromAliases(
@@ -69,7 +73,15 @@ function modelAliasMetadataFromAliases(
     const match = aliases.find((row) => {
       const alias = row as { name?: unknown };
       return typeof alias.name === "string" && alias.name === model;
-    }) as { provider?: unknown; model?: unknown } | undefined;
+    }) as
+      | {
+          provider?: unknown;
+          model?: unknown;
+          reasoning_tiers?: unknown;
+          reasoning_default?: unknown;
+        }
+      | undefined;
+    const rawTiers = match?.reasoning_tiers;
     return {
       provider:
         typeof match?.provider === "string" && match.provider.trim()
@@ -79,6 +91,9 @@ function modelAliasMetadataFromAliases(
         typeof match?.model === "string" && match.model.trim()
           ? match.model
           : null,
+      reasoningTiers: Array.isArray(rawTiers)
+        ? rawTiers.filter((t): t is string => typeof t === "string")
+        : null,
     };
   }
   if (aliases && typeof aliases === "object") {
@@ -86,9 +101,14 @@ function modelAliasMetadataFromAliases(
     return {
       provider: null,
       target: typeof target === "string" && target.trim() ? target : null,
+      reasoningTiers: null,
     };
   }
-  return { provider: null, target: null };
+  return {
+    provider: null,
+    target: null,
+    reasoningTiers: null,
+  };
 }
 
 function pickBranchedHistory(sessionKey: string): ChatMessage[] | null {
@@ -468,6 +488,7 @@ export default function ChatPage() {
           onReasoningEffortChange={persistReasoningEffort}
           modelProvider={activeModelMetadata.provider}
           modelTarget={activeModelMetadata.target}
+          reasoningTiers={activeModelMetadata.reasoningTiers}
           showActionTrace={showActionTrace}
           onOpenModelPicker={() => setPickerOpen("llm")}
           hasEarlier={effectiveHasEarlier}

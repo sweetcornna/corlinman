@@ -20,6 +20,7 @@ import binascii
 import json
 import mimetypes
 import os
+import re
 from collections.abc import AsyncIterator, Sequence
 from typing import Any, ClassVar
 
@@ -30,6 +31,7 @@ from corlinman_providers._auth_refresh import (
     with_401_recovery,
 )
 from corlinman_providers.base import ProviderChunk
+from corlinman_providers.reasoning_tiers import clamp_reasoning_tier
 from corlinman_providers.failover import AuthError, CorlinmanError
 from corlinman_providers.specs import ProviderKind, ProviderSpec
 
@@ -138,6 +140,20 @@ class GoogleProvider:
             config["tools"] = _normalise_tools(tools)
         if extra:
             config.update(extra)
+        # Canonical reasoning tier → Gemini wire shape: 3.x+ models take a
+        # string ``thinking_level``; the 2.5 generation takes a numeric
+        # ``thinking_budget`` (0 disables where the model allows it). Known
+        # no-knob models drop the tier (clamp returns None).
+        _requested_effort = config.pop("reasoning_effort", None)
+        if isinstance(_requested_effort, str) and _requested_effort.strip():
+            _tier = clamp_reasoning_tier(model, _requested_effort)
+            if _tier:
+                if re.search(r"gemini-2\.", model.strip().lower()):
+                    _budget = _GEMINI_25_THINKING_BUDGETS.get(_tier)
+                    if _budget is not None:
+                        config["thinking_config"] = {"thinking_budget": _budget}
+                else:
+                    config["thinking_config"] = {"thinking_level": _tier}
 
         async def _open() -> Any:
             """Build the Gemini client + open the streaming generator.
@@ -439,6 +455,16 @@ def _normalise_tools(tools: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
 # Hand-authored JSON Schema (draft 2020-12). ``safety_settings`` is
 # free-form: the google-genai SDK validates its internal shape and we don't
 # want to duplicate that here — declare as an object with no constraints.
+# Canonical tier → Gemini 2.5 ``thinking_budget`` tokens. Values sit inside
+# every 2.5 variant's cap (Flash/Flash-Lite 24576, Pro 32768); 0 disables
+# thinking (Flash family only — Pro's tier list never includes ``none``).
+_GEMINI_25_THINKING_BUDGETS: dict[str, int] = {
+    "none": 0,
+    "low": 4096,
+    "medium": 12288,
+    "high": 24576,
+}
+
 _GOOGLE_PARAMS_SCHEMA: dict[str, Any] = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
@@ -475,6 +501,13 @@ _GOOGLE_PARAMS_SCHEMA: dict[str, Any] = {
             "type": "object",
             "additionalProperties": True,
             "description": "Forwarded verbatim to google-genai (shape validated by SDK).",
+        },
+        "reasoning_effort": {
+            "type": "string",
+            # Canonical tier superset — translated to thinking_level
+            # (Gemini 3+) or thinking_budget (2.5) in chat_stream.
+            "enum": ["none", "minimal", "low", "on", "medium", "high", "xhigh", "max"],
+            "description": "Canonical reasoning-effort tier (clamped per model).",
         },
     },
 }
