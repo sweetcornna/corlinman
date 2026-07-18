@@ -9,6 +9,7 @@ genuine read-merge-upsert path — including the ``mood`` mirror, the
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,7 @@ from corlinman_agent.persona.life import (
     _MAX_SEED_ITEMS_PER_CATEGORY,
     _UNBOUND_PERSONA_KEY,
     _trim,
+    compute_life_signals,
     dispatch_persona_life_diary_add,
     dispatch_persona_life_event_seed,
     dispatch_persona_life_get,
@@ -479,3 +481,150 @@ async def test_get_seeds_reports_override_and_effective(tmp_path: Path) -> None:
     )
     assert after["has_override"] is True
     assert after["seeds"]["companion"] == ["新同伴"]  # override wins for that category
+
+
+# ---------------------------------------------------------------------------
+# compute_life_signals — pure life-rhythm decision table (B2)
+# ---------------------------------------------------------------------------
+
+
+_NOW = datetime(2026, 7, 18, 12, 0, 0, tzinfo=UTC)
+
+
+def _iso(days_ago: float) -> str:
+    """A tz-aware ISO timestamp ``days_ago`` days before ``_NOW`` — same
+    shape :func:`corlinman_agent.persona.life._now_iso` stamps."""
+    return (_NOW - timedelta(days=days_ago)).isoformat(timespec="seconds")
+
+
+def _life(*, state: str, since_days_ago: float, history: list | None = None) -> dict:
+    """Build a minimal life doc matching the real ``state_json["life"]``."""
+    return {
+        "current": {"state": state, "location": "", "since": _iso(since_days_ago)},
+        "history": history or [],
+    }
+
+
+def _outing_return(days_ago: float, *, from_state: str = "on_mission") -> dict:
+    """A history transition that LEFT an outing state ``days_ago`` days back."""
+    return {
+        "ts": _iso(days_ago),
+        "from": {"state": from_state},
+        "to": {"state": "at_academy"},
+        "reason": "",
+    }
+
+
+def test_signals_fresh_state_no_nudge() -> None:
+    """A recently-set, never-been-out persona reports both counters but
+    trips no threshold — no ``life_nudge``."""
+    sig = compute_life_signals(_life(state="at_academy", since_days_ago=1), _NOW)
+    assert sig["days_in_current_state"] == 1
+    assert sig["days_since_last_outing"] == 1  # anchored to `since`
+    assert "life_nudge" not in sig
+
+
+def test_signals_go_out_high_when_overdue() -> None:
+    """≥13 days since the last outing → HIGH ``go_out``."""
+    sig = compute_life_signals(
+        _life(state="at_academy", since_days_ago=2, history=[_outing_return(15)]),
+        _NOW,
+    )
+    assert sig["days_since_last_outing"] == 15
+    assert sig["days_in_current_state"] == 2
+    nudge = sig["life_nudge"]
+    assert nudge["kind"] == "go_out"
+    assert nudge["level"] == "high"
+    # suggested_action steers the model at the life tools.
+    assert "persona_life_set_state" in nudge["suggested_action"]
+    assert "persona_life_event_seed" in nudge["suggested_action"]
+
+
+def test_signals_change_scene_medium_when_same_state_stale() -> None:
+    """≥6 days in the same (non-outing) state, still <13 since an outing →
+    MEDIUM ``change_scene``."""
+    sig = compute_life_signals(_life(state="at_academy", since_days_ago=7), _NOW)
+    assert sig["days_in_current_state"] == 7
+    assert sig["days_since_last_outing"] == 7  # anchored, below the go_out gate
+    nudge = sig["life_nudge"]
+    assert nudge["kind"] == "change_scene"
+    assert nudge["level"] == "medium"
+
+
+def test_signals_wrap_outing_medium_when_out_too_long() -> None:
+    """≥8 days in an outing state → MEDIUM ``wrap_outing``; being out means
+    days_since_last_outing is 0 so ``go_out`` never fires."""
+    sig = compute_life_signals(_life(state="on_mission", since_days_ago=9), _NOW)
+    assert sig["days_in_current_state"] == 9
+    assert sig["days_since_last_outing"] == 0
+    nudge = sig["life_nudge"]
+    assert nudge["kind"] == "wrap_outing"
+    assert nudge["level"] == "medium"
+
+
+def test_signals_high_covers_medium() -> None:
+    """Both go_out (overdue) and change_scene (stale) qualify → HIGH wins."""
+    sig = compute_life_signals(
+        _life(
+            state="at_academy",
+            since_days_ago=10,  # would be change_scene on its own
+            history=[_outing_return(20, from_state="traveling")],  # overdue
+        ),
+        _NOW,
+    )
+    assert sig["life_nudge"]["kind"] == "go_out"  # HIGH covers the MEDIUM
+
+
+def test_signals_medium_wrap_outing_beats_change_scene() -> None:
+    """A ≥8-day outing qualifies for BOTH MEDIUM buckets — wrap_outing (the
+    more specific "in the field too long") wins over change_scene."""
+    sig = compute_life_signals(_life(state="traveling", since_days_ago=10), _NOW)
+    assert sig["life_nudge"]["kind"] == "wrap_outing"
+
+
+def test_signals_bad_timestamp_omits_signal_never_raises() -> None:
+    """A corrupt ``since`` + no history → both counters omitted, no nudge,
+    and never an exception."""
+    life = {"current": {"state": "at_academy", "since": "not-a-date"}, "history": []}
+    sig = compute_life_signals(life, _NOW)
+    assert "days_in_current_state" not in sig
+    assert "days_since_last_outing" not in sig
+    assert "life_nudge" not in sig
+
+
+def test_signals_non_dict_life_is_empty() -> None:
+    """A non-dict / missing / empty life doc degrades to an empty signal
+    dict — every signal is timestamp-backed, so nothing to report."""
+    assert compute_life_signals(None, _NOW) == {}
+    assert compute_life_signals("nope", _NOW) == {}
+    assert compute_life_signals({}, _NOW) == {}
+    assert compute_life_signals({"current": {}, "history": []}, _NOW) == {}
+
+
+async def test_dispatch_get_includes_signals(store) -> None:
+    """``persona_life_get`` folds the computed signals into its success
+    envelope so the model sees them without a second tool call."""
+    # Put the persona out on a long mission → wrap_outing MEDIUM.
+    await dispatch_persona_life_set_state(
+        args_json=_args(state="on_mission", location="北境", activity="护送"),
+        persona_id="grantley",
+        state_store=store,
+    )
+    # Backdate `since` so the outing reads as 9 days long.
+    row = await store.get("grantley", tenant_id=DEFAULT_TENANT_ID)
+    assert row is not None
+    row.state_json["life"]["current"]["since"] = (
+        datetime.now(UTC).astimezone() - timedelta(days=9)
+    ).isoformat(timespec="seconds")
+    await store.upsert(row, tenant_id=DEFAULT_TENANT_ID)
+
+    out = json.loads(
+        await dispatch_persona_life_get(
+            args_json=_args(), persona_id="grantley", state_store=store
+        )
+    )
+    assert out["ok"] is True
+    signals = out["signals"]
+    assert signals["days_in_current_state"] == 9
+    assert signals["days_since_last_outing"] == 0
+    assert signals["life_nudge"]["kind"] == "wrap_outing"

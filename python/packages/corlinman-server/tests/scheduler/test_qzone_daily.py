@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -633,3 +634,107 @@ async def test_internal_chat_request_carries_persona_id() -> None:
         "InternalChatRequest.persona_id must be forwarded from job metadata "
         "(R4 regression: was None before B2 fix)"
     )
+
+
+# ---------------------------------------------------------------------------
+# B2: life-rhythm signals folded into the daily-post system prompt
+# ---------------------------------------------------------------------------
+
+
+class _FakeStateStore:
+    """Async stub for the runtime persona-state store (``agent_state.sqlite``).
+
+    ``_resolve_life_block`` strategy 2 calls ``get(persona_id)`` and reads
+    ``row.state_json``; a one-method stub returning a fixed row is enough."""
+
+    def __init__(self, state_json: dict[str, Any]) -> None:
+        self._row = SimpleNamespace(state_json=state_json)
+
+    async def get(self, persona_id: str) -> Any:
+        return self._row
+
+
+async def test_system_prompt_carries_life_rhythm_nudge() -> None:
+    """When the persona's runtime life doc shows it hasn't been out in a
+    long while, the composed system prompt carries the "节奏" lines plus the
+    priority "生活节奏提示" nudge (B2 — hermes life-signals port)."""
+    now = datetime.now(UTC).astimezone()
+    # at_academy since 2 days ago; last returned from a mission 20 days ago
+    # → days_since_last_outing = 20 ≥ 13 → HIGH go_out nudge.
+    life_doc = {
+        "life": {
+            "current": {
+                "state": "at_academy",
+                "location": "据点",
+                "activity": "训练",
+                "since": (now - timedelta(days=2)).isoformat(timespec="seconds"),
+            },
+            "history": [
+                {
+                    "ts": (now - timedelta(days=20)).isoformat(timespec="seconds"),
+                    "from": {"state": "on_mission"},
+                    "to": {"state": "at_academy"},
+                    "reason": "回据点",
+                }
+            ],
+        },
+        "diary": [],
+    }
+    store = _FakePersonaStore(
+        {"grantley": _FakePersona(id="grantley", system_prompt="You are a knight.")}
+    )
+    chat = _ScriptedChatService(
+        events=[
+            _qzone_tool_call(),
+            _qzone_tool_result(payload={"ok": True, "tid": "t", "qzone_url": "u"}),
+            DoneEvent(finish_reason="stop"),
+        ],
+    )
+    app_state = _make_app_state(
+        chat=chat,
+        persona_store=store,
+        metadata={"persona_id": "grantley", "prompt_template": "写今天的说说。"},
+    )
+    # Strategy 2 of _resolve_life_block reads this runtime state store; no
+    # persona_resolver is set so strategy 1 is skipped.
+    app_state.corlinman_persona_state_store = _FakeStateStore(life_doc)
+    ctx = BuiltinContext(app_state=app_state, name="grantley.daily_qzone")
+
+    out = await _qzone_daily_publish_action(ctx)
+    assert out["ok"] is True, out
+
+    system_prompt = chat.requests[0].messages[0].content
+    # The two rhythm lines + the priority nudge line all landed.
+    assert "当前状态已持续：2 天" in system_prompt
+    assert "距上次外出：20 天" in system_prompt
+    assert "生活节奏提示（优先响应）" in system_prompt
+    # And the base persona body is still there.
+    assert "You are a knight." in system_prompt
+
+
+async def test_life_block_absent_when_no_state_store() -> None:
+    """No runtime state store + no resolver → the daily post composes from
+    the bare persona body, with no '生活节奏' block (best-effort omission)."""
+    store = _FakePersonaStore(
+        {"grantley": _FakePersona(id="grantley", system_prompt="You are a knight.")}
+    )
+    chat = _ScriptedChatService(
+        events=[
+            _qzone_tool_call(),
+            _qzone_tool_result(payload={"ok": True, "tid": "t", "qzone_url": "u"}),
+            DoneEvent(finish_reason="stop"),
+        ],
+    )
+    ctx = BuiltinContext(
+        app_state=_make_app_state(
+            chat=chat,
+            persona_store=store,
+            metadata={"persona_id": "grantley", "prompt_template": "x"},
+        ),
+        name="grantley.daily_qzone",
+    )
+    out = await _qzone_daily_publish_action(ctx)
+    assert out["ok"] is True
+    system_prompt = chat.requests[0].messages[0].content
+    assert "生活节奏提示" not in system_prompt
+    assert "我最近的生活" not in system_prompt

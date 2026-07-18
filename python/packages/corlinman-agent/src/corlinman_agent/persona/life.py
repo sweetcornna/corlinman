@@ -80,6 +80,7 @@ __all__ = [
     "PERSONA_LIFE_SET_SEEDS_TOOL",
     "PERSONA_LIFE_SET_STATE_TOOL",
     "PERSONA_LIFE_TOOLS",
+    "compute_life_signals",
     "dispatch_persona_life_diary_add",
     "dispatch_persona_life_event_seed",
     "dispatch_persona_life_get",
@@ -153,6 +154,19 @@ _ALLOWED_STATES: frozenset[str] = frozenset(
     }
 )
 
+#: Life-rhythm signal thresholds (ported from hermes ``_compute_life_signals``
+#: at grantly_life_tool.py:237-333, with the 学院/格兰 hardcoding stripped for
+#: a persona-generic surface). A persona that hasn't been "out" (on_mission /
+#: traveling) in ``_OUTING_OVERDUE_DAYS`` gets a HIGH ``go_out`` nudge; one that
+#: has sat in the SAME state for ``_SAME_STATE_STALE_DAYS`` gets a MEDIUM
+#: ``change_scene`` nudge; one that has been OUT for ``_OUTING_TOO_LONG_DAYS``
+#: gets the (more specific) MEDIUM ``wrap_outing`` nudge.
+_OUTING_STATES: frozenset[str] = frozenset({"on_mission", "traveling"})
+_OUTING_OVERDUE_DAYS: int = 13
+_SAME_STATE_STALE_DAYS: int = 6
+_OUTING_TOO_LONG_DAYS: int = 8
+
+
 #: Built-in seed pack directory shipped inside the package.
 _BUNDLED_SEEDS_PACKAGE: str = "corlinman_agent.persona.life_seeds"
 
@@ -220,6 +234,11 @@ def _err(code: str, message: str) -> str:
 def _now_iso() -> str:
     """Local-time-aware ISO timestamp so the model can parse/format it."""
     return datetime.now(UTC).astimezone().isoformat(timespec="seconds")
+
+
+def _now_dt() -> datetime:
+    """Local-time-aware "now" — the anchor for :func:`compute_life_signals`."""
+    return datetime.now(UTC).astimezone()
 
 
 def _persona_key(persona_id: str | None) -> str:
@@ -451,6 +470,217 @@ def _resolve_seed_library(
 
 
 # ---------------------------------------------------------------------------
+# Life-rhythm signals (pure — no IO, never raises)
+# ---------------------------------------------------------------------------
+
+
+def _parse_ts(value: Any) -> datetime | None:
+    """Parse an ISO-8601 timestamp string into a datetime, or ``None``.
+
+    Tolerates non-strings / blanks / malformed values by returning ``None``
+    so a corrupt ``since`` / history ``ts`` degrades to "signal omitted"
+    rather than raising (this whole surface is best-effort)."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return datetime.fromisoformat(value.strip())
+    except (ValueError, TypeError):
+        return None
+
+
+def _delta_days(now: datetime, then: datetime) -> float | None:
+    """Fractional days from ``then`` to ``now``; ``None`` on any error.
+
+    Normalises a naive/aware mismatch by dropping tzinfo from both so the
+    subtraction can't raise (stored timestamps are tz-aware, but a
+    hand-authored / migrated doc might not be)."""
+    try:
+        if (now.tzinfo is None) != (then.tzinfo is None):
+            now = now.replace(tzinfo=None)
+            then = then.replace(tzinfo=None)
+        delta = now - then
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return delta.total_seconds() / 86400.0
+
+
+def _entry_involves_outing(entry: dict[str, Any]) -> bool:
+    """True iff a history transition entered OR left an outing state.
+
+    A transition's ``ts`` is the moment it happened; the most-recent such
+    ts marks the last time the persona was "out" (leaving an outing is
+    always later than entering it, so the max ts == came-back time)."""
+    for side in ("from", "to"):
+        node = entry.get(side)
+        if isinstance(node, dict):
+            st = node.get("state")
+            if isinstance(st, str) and st.strip() in _OUTING_STATES:
+                return True
+    return False
+
+
+def _days_since_last_outing(
+    *,
+    state: str,
+    history: list[Any],
+    since_dt: datetime | None,
+    now: datetime,
+) -> int | None:
+    """Days since the persona was last "out", or ``None`` when undecidable.
+
+    * currently in an outing state → ``0`` (they are out right now);
+    * else the smallest gap to any outing transition recorded in history;
+    * else (no outing on record) an anchor = the OLDEST known timestamp —
+      i.e. how long we have tracked this persona while it never went out,
+      so a persona that simply never uses outing states still trips the
+      ``go_out`` nudge once tracked long enough. Reads a little loose
+      ("N days since an outing that never happened") but drives the right
+      nudge and never a wrong one;
+    * else (no usable timestamps at all) → ``None`` (signal omitted)."""
+    if state in _OUTING_STATES:
+        return 0
+    gaps: list[float] = []
+    for entry in history:
+        if not isinstance(entry, dict) or not _entry_involves_outing(entry):
+            continue
+        ts = _parse_ts(entry.get("ts"))
+        if ts is None:
+            continue
+        d = _delta_days(now, ts)
+        if d is not None:
+            gaps.append(max(0.0, d))
+    if gaps:
+        return int(min(gaps))
+    anchors: list[float] = []
+    if since_dt is not None:
+        d = _delta_days(now, since_dt)
+        if d is not None:
+            anchors.append(d)
+    for entry in history:
+        if isinstance(entry, dict):
+            ts = _parse_ts(entry.get("ts"))
+            if ts is not None:
+                d = _delta_days(now, ts)
+                if d is not None:
+                    anchors.append(d)
+    if anchors:
+        return max(0, int(max(anchors)))
+    return None
+
+
+def _pick_nudge(
+    *,
+    state: str,
+    days_in_current_state: int | None,
+    days_since_last_outing: int | None,
+) -> dict[str, str] | None:
+    """Choose at most one life-rhythm nudge.
+
+    Priority: a HIGH ``go_out`` covers everything; among the MEDIUM pair
+    ``wrap_outing`` (been out too long — concrete) beats ``change_scene``
+    (generic staleness). ``suggested_action`` points the model at the
+    ``persona_life_event_seed`` / ``persona_life_set_state`` tools so it
+    actually advances its life instead of just noting the nudge."""
+    if (
+        days_since_last_outing is not None
+        and days_since_last_outing >= _OUTING_OVERDUE_DAYS
+    ):
+        return {
+            "level": "high",
+            "kind": "go_out",
+            "message": (
+                f"你已经 {days_since_last_outing} 天没有外出了，"
+                "生活有点停滞——该出门走走、给自己找点新鲜事了。"
+            ),
+            "suggested_action": (
+                "先调用 persona_life_event_seed（kind=mission 或 travel）抽一个灵感，"
+                "再用 persona_life_set_state 把状态切到 on_mission / traveling，"
+                "让生活真正动起来。"
+            ),
+        }
+    if (
+        state in _OUTING_STATES
+        and days_in_current_state is not None
+        and days_in_current_state >= _OUTING_TOO_LONG_DAYS
+    ):
+        return {
+            "level": "medium",
+            "kind": "wrap_outing",
+            "message": (
+                f"你已经在外奔波 {days_in_current_state} 天了，"
+                "是时候把这趟行程收个尾、回到日常了。"
+            ),
+            "suggested_action": (
+                "用 persona_life_set_state 把状态切回 at_academy / resting 收尾；"
+                "也可以先用 persona_life_diary_add 记下这趟的收获。"
+            ),
+        }
+    if (
+        days_in_current_state is not None
+        and days_in_current_state >= _SAME_STATE_STALE_DAYS
+    ):
+        return {
+            "level": "medium",
+            "kind": "change_scene",
+            "message": (
+                f"你已经保持同一种状态 {days_in_current_state} 天了，"
+                "节奏有点单调——换个场景会更有生活感。"
+            ),
+            "suggested_action": (
+                "用 persona_life_set_state 换一种状态或地点（例如去 training / resting，"
+                "或换个 location）；需要灵感可以先调用 persona_life_event_seed。"
+            ),
+        }
+    return None
+
+
+def compute_life_signals(life: Any, now: datetime) -> dict[str, Any]:
+    """Derive life-rhythm signals from a life document. PURE + total.
+
+    Returns a dict that MAY contain:
+
+    * ``days_in_current_state`` — whole days since ``current["since"]``;
+    * ``days_since_last_outing`` — see :func:`_days_since_last_outing`;
+    * ``life_nudge`` — ``{level, kind, message, suggested_action}`` when a
+      threshold trips (see :func:`_pick_nudge`).
+
+    Any field whose backing timestamp is missing / malformed is simply
+    omitted; a non-dict / empty ``life`` yields ``{}``. Never raises and
+    never does IO — the caller supplies ``now`` (see :func:`_now_dt`)."""
+    signals: dict[str, Any] = {}
+    if not isinstance(life, dict):
+        return signals
+    raw_current = life.get("current")
+    current: dict[str, Any] = raw_current if isinstance(raw_current, dict) else {}
+    raw_history = life.get("history")
+    history: list[Any] = raw_history if isinstance(raw_history, list) else []
+    state = str(current.get("state") or "").strip()
+
+    since_dt = _parse_ts(current.get("since"))
+    days_in_current_state: int | None = None
+    if since_dt is not None:
+        d = _delta_days(now, since_dt)
+        if d is not None:
+            days_in_current_state = max(0, int(d))
+            signals["days_in_current_state"] = days_in_current_state
+
+    days_since_last_outing = _days_since_last_outing(
+        state=state, history=history, since_dt=since_dt, now=now
+    )
+    if days_since_last_outing is not None:
+        signals["days_since_last_outing"] = days_since_last_outing
+
+    nudge = _pick_nudge(
+        state=state,
+        days_in_current_state=days_in_current_state,
+        days_since_last_outing=days_since_last_outing,
+    )
+    if nudge is not None:
+        signals["life_nudge"] = nudge
+    return signals
+
+
+# ---------------------------------------------------------------------------
 # Dispatchers
 # ---------------------------------------------------------------------------
 
@@ -476,6 +706,14 @@ async def dispatch_persona_life_get(
     diary_tail = diary[-tail:] if tail else []
     history_raw = life.get("history")
     history: list[Any] = history_raw if isinstance(history_raw, list) else []
+    # Life-rhythm signals (days_in_current_state / days_since_last_outing +
+    # an optional nudge). Pure by contract, but defensively guarded so a
+    # never-should-happen raise can't take the dispatcher down.
+    try:
+        signals = compute_life_signals(life, _now_dt())
+    except Exception:  # noqa: BLE001 — dispatcher must never raise
+        logger.exception("persona_life_get.signals_failed")
+        signals = {}
     return json.dumps(
         {
             "ok": True,
@@ -484,6 +722,7 @@ async def dispatch_persona_life_get(
             "diary_tail": diary_tail,
             "history_tail": history[-3:],
             "diary_total": len(diary),
+            "signals": signals,
             "now": _now_iso(),
         },
         ensure_ascii=False,
