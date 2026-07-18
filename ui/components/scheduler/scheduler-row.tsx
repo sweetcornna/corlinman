@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { MoreVertical, Pause, Pencil, Play } from "lucide-react";
+import { MoreVertical, Pause, Pencil, Play } from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import { CountdownRing } from "@/components/ui/countdown-ring";

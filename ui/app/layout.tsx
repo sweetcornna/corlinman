@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { jetbrainsMono, misans, mplus1 } from "./fonts";
 import { Providers } from "@/components/providers";
+import { ICON_SPRITE } from "@/components/icons/sprite";
 
 export const metadata: Metadata = {
   title: "corlinman admin",
@@ -75,6 +76,9 @@ export default function RootLayout({
           halo + vignette are painted on <html> by globals.css (pre-hydration,
           zero JS) and must show through everywhere. */}
       <body className="min-h-dvh font-sans text-foreground antialiased">
+        {/* Eclipse icon sprite — one hidden <svg> of <symbol>s; every icon
+            renders as <use href="#i-…"> against it (static-export safe). */}
+        <div aria-hidden dangerouslySetInnerHTML={{ __html: ICON_SPRITE }} />
         <Providers>{children}</Providers>
       </body>
     </html>

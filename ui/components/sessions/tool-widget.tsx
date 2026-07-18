@@ -14,7 +14,7 @@
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, ChevronRight, Circle, CircleCheck, CircleDot, CircleX } from "lucide-react";
+import { ChevronDown, ChevronRight, Circle, CircleCheck, CircleDot, CircleX } from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import type { ToolPart, ToolPartState } from "@/lib/sessions/store";

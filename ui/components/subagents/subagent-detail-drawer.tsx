@@ -22,7 +22,7 @@ import * as React from "react";
 import Link from "next/link";
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
-import { Loader2 } from "lucide-react";
+import { Loader2 } from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import { Alert } from "@/components/ui/alert";

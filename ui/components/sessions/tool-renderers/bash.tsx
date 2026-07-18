@@ -4,7 +4,7 @@
 "use client";
 
 import * as React from "react";
-import { Terminal } from "lucide-react";
+import { Terminal } from "@/components/icons";
 import { cn } from "@/lib/utils";
 import type { ToolRendererProps } from "./generic";
 

@@ -5,7 +5,7 @@ import Link from "next/link";
 import { motion } from "framer-motion";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { ArrowUpRight, Search } from "lucide-react";
+import { ArrowUpRight, Search } from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import {

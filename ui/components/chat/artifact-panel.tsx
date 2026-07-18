@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { Copy, Download, FileCode, GitFork, X } from "lucide-react";
+import { Copy, Download, FileCode, GitFork, X } from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import type { Artifact } from "@/lib/chat/artifacts";

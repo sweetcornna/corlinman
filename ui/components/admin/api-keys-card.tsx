@@ -20,7 +20,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { Check, Copy, KeySquare, Trash2 } from "lucide-react";
+import { Check, Copy, KeySquare, Trash2 } from "@/components/icons";
 
 import {
   type ApiKeyRow,

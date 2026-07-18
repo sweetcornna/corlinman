@@ -9,7 +9,7 @@ import {
   FileVideo,
   Paperclip,
   X,
-} from "lucide-react";
+} from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import type { ChatAttachment } from "@/lib/chat/types";

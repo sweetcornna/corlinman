@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowDown } from "lucide-react";
+import { ArrowDown } from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import type {

@@ -24,7 +24,7 @@ import * as React from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useTranslation } from "react-i18next";
-import { Zap } from "lucide-react";
+import { Zap } from "@/components/icons";
 
 import { Button } from "@/components/ui/button";
 import {

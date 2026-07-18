@@ -1,6 +1,6 @@
 "use client";
 
-import { Menu } from "lucide-react";
+import { Menu } from "@/components/icons";
 
 import { Breadcrumbs } from "./breadcrumbs";
 import { HealthDot } from "./health-dot";

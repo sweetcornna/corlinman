@@ -3,7 +3,7 @@
 import * as React from "react";
 import { motion } from "framer-motion";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, ChevronUp, Check, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Check, X } from "@/components/icons";
 
 import { GlassPanel } from "@/components/ui/glass-panel";
 import { useMotion } from "@/components/ui/motion-safe";

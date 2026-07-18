@@ -24,7 +24,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { Eye, EyeOff, KeyRound, UserCog } from "lucide-react";
+import { Eye, EyeOff, KeyRound, UserCog } from "@/components/icons";
 
 import {
   changePassword,

@@ -3,7 +3,7 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { motion } from "framer-motion";
-import { ImagePlus } from "lucide-react";
+import { ImagePlus } from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import { useMotionVariants } from "@/lib/motion";

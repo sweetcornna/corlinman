@@ -13,7 +13,7 @@ import {
   ExternalLink,
   BookOpen,
   ShieldCheck,
-} from "lucide-react";
+} from "@/components/icons";
 
 import { useMotionVariants } from "@/lib/motion";
 import { GlassPanel } from "@/components/ui/glass-panel";

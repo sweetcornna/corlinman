@@ -7,7 +7,7 @@ import { useSearchParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTheme } from "next-themes";
 import { useTranslation } from "react-i18next";
-import { ArrowLeft, Circle } from "lucide-react";
+import { ArrowLeft, Circle } from "@/components/icons";
 
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";

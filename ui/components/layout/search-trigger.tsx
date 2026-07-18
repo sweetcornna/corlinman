@@ -1,6 +1,6 @@
 "use client";
 
-import { Search } from "lucide-react";
+import { Search } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import { useCommandPalette } from "@/components/cmdk-palette";
 

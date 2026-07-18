@@ -1,6 +1,6 @@
 "use client";
 
-import { Sprout, Hourglass } from "lucide-react";
+import { Sprout, Hourglass } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import type { Tab } from "./types";

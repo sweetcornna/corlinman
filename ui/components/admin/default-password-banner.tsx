@@ -15,7 +15,7 @@
 
 import Link from "next/link";
 import { useTranslation } from "react-i18next";
-import { ShieldAlert } from "lucide-react";
+import { ShieldAlert } from "@/components/icons";
 
 import { useMustChangePassword } from "./must-change-password-context";
 

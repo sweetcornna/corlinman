@@ -4,7 +4,7 @@ import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { motion } from "framer-motion";
-import { Search } from "lucide-react";
+import { Search } from "@/components/icons";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";

@@ -1,7 +1,7 @@
 "use client";
 
 import { useTranslation } from "react-i18next";
-import { Maximize2 } from "lucide-react";
+import { Maximize2 } from "@/components/icons";
 import {
   Dialog,
   DialogContent,

@@ -6,7 +6,7 @@ import {
   CheckCircle2,
   Info,
   OctagonAlert,
-} from "lucide-react";
+} from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 

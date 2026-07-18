@@ -13,7 +13,7 @@ import {
   Menu,
   Pencil,
   RefreshCcw,
-} from "lucide-react";
+} from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import { formatTime as formatTimeIntl } from "@/lib/format";

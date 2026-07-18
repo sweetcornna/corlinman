@@ -13,7 +13,7 @@ import {
   Radio,
   Send,
   type LucideIcon,
-} from "lucide-react";
+} from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import { LiveDot } from "@/components/ui/live-dot";

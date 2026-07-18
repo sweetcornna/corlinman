@@ -3,7 +3,7 @@
 import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { PowerOff, Users } from "lucide-react";
+import { PowerOff, Users } from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import { Alert } from "@/components/ui/alert";

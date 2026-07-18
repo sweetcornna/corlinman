@@ -8,7 +8,7 @@ import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import { useTranslation } from "react-i18next";
-import { Check, Copy, ExternalLink, X } from "lucide-react";
+import { Check, Copy, ExternalLink, X } from "@/components/icons";
 
 // KaTeX font/layout styles. Imported at the component level (the layout-level
 // globals.css is owned elsewhere) so math renders correctly wherever this

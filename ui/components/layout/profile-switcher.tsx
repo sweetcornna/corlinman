@@ -27,7 +27,7 @@
 import * as React from "react";
 import { useRouter } from "next/navigation";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, Check, Users, Settings } from "lucide-react";
+import { ChevronDown, Check, Users, Settings } from "@/components/icons";
 
 import { useActiveProfile } from "@/lib/context/active-profile";
 import { cn } from "@/lib/utils";

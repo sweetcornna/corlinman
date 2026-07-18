@@ -25,7 +25,7 @@
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { Coins, Clock, Repeat, Wrench, History, Info } from "lucide-react";
+import { Coins, Clock, Repeat, Wrench, History, Info } from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import { GATEWAY_BASE_URL } from "@/lib/api";

@@ -26,7 +26,7 @@ import * as React from "react";
 import Link from "next/link";
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, CheckCircle2, Loader2 } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Loader2 } from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import {

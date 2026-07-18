@@ -148,6 +148,10 @@ describe("zero backdrop-filter (repo-wide static check)", () => {
   it("no source file uses liquid-glass optic classes", () => {
     expect(filesMatching("lg-(gel|edge|refract|specular|sheen|stars|hue-drift|float)")).toEqual([]);
   });
+
+  it("no source file imports lucide-react — icons come from the sprite", () => {
+    expect(filesMatching('from "lucide-react"')).toEqual([]);
+  });
 });
 
 describe("glow and gradient whitelists", () => {

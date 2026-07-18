@@ -22,7 +22,7 @@
 import * as React from "react";
 import { useParams } from "next/navigation";
 import { useTranslation } from "react-i18next";
-import { Loader2, LinkIcon, AlertTriangle, WifiOff } from "lucide-react";
+import { Loader2, LinkIcon, AlertTriangle, WifiOff } from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import type { LiveEvent } from "@/lib/sessions/event-stream";

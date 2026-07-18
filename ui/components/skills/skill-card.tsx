@@ -8,7 +8,7 @@ import {
   Search,
   Wrench,
   type LucideIcon,
-} from "lucide-react";
+} from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import { GlassPanel } from "@/components/ui/glass-panel";

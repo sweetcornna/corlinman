@@ -13,7 +13,7 @@
  */
 
 import * as React from "react";
-import { Download, Star } from "lucide-react";
+import { Download, Star } from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import { GlassPanel } from "@/components/ui/glass-panel";

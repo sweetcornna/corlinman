@@ -3,7 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { useTranslation } from "react-i18next";
-import { Search, Zap, GitPullRequest } from "lucide-react";
+import { Search, Zap, GitPullRequest } from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import { GlassPanel } from "@/components/ui/glass-panel";

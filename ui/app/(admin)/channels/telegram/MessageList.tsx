@@ -9,7 +9,7 @@ import {
   MessageCircle,
   Mic,
   Reply,
-} from "lucide-react";
+} from "@/components/icons";
 import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";

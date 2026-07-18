@@ -38,7 +38,7 @@ import {
   Moon,
   RefreshCw,
   Sun,
-} from "lucide-react";
+} from "@/components/icons";
 
 import { logout } from "@/lib/auth";
 import { GATEWAY_BASE_URL } from "@/lib/api";

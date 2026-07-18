@@ -24,7 +24,7 @@ import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { Check, ChevronDown, ChevronUp, Pencil, Plus, Trash2, X } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, Pencil, Plus, Trash2, X } from "@/components/icons";
 
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";

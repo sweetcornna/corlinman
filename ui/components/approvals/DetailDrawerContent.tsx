@@ -1,7 +1,7 @@
 "use client";
 
 import { useTranslation } from "react-i18next";
-import { Inbox } from "lucide-react";
+import { Inbox } from "@/components/icons";
 import { DetailDrawer } from "@/components/ui/detail-drawer";
 import { GlassPanel } from "@/components/ui/glass-panel";
 import { JsonView } from "@/components/ui/json-view";

@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { RefreshCcw } from "lucide-react";
+import { RefreshCcw } from "@/components/icons";
 
 import { GlassPanel } from "@/components/ui/glass-panel";
 import { cn } from "@/lib/utils";

@@ -16,7 +16,7 @@ import {
   Sparkles,
   Trash2,
   X,
-} from "lucide-react";
+} from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import { formatDateTime } from "@/lib/format";

@@ -25,7 +25,7 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { motion } from "framer-motion";
-import { Pin, PinOff, Trash2 } from "lucide-react";
+import { Pin, PinOff, Trash2 } from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import { GlassPanel } from "@/components/ui/glass-panel";

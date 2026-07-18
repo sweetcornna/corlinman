@@ -28,7 +28,7 @@ import * as React from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { Building2 } from "lucide-react";
+import { Building2 } from "@/components/icons";
 
 import { fetchTenants, buildTenantHref } from "@/lib/api/tenants";
 import type { TenantsListState } from "@/lib/api/tenants";

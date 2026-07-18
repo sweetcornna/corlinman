@@ -14,7 +14,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { useTranslation } from "react-i18next";
-import { ArrowUpRight, Check, Rocket, X } from "lucide-react";
+import { ArrowUpRight, Check, Rocket, X } from "@/components/icons";
 
 import { Button } from "@/components/ui/button";
 import {

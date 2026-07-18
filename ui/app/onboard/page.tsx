@@ -34,7 +34,7 @@ import {
   Plug,
   Sparkles,
   User,
-} from "lucide-react";
+} from "@/components/icons";
 
 import { getSession } from "@/lib/auth";
 import {

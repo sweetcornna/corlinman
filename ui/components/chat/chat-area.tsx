@@ -3,7 +3,7 @@
 import * as React from "react";
 import { useRouter } from "next/navigation";
 import { useTranslation } from "react-i18next";
-import { Download } from "lucide-react";
+import { Download } from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import { ArtifactPanel } from "@/components/chat/artifact-panel";

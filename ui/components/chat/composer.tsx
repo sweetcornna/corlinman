@@ -11,7 +11,7 @@ import {
   Smile,
   Sparkles,
   Square,
-} from "lucide-react";
+} from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import type { ReasoningEffort } from "@/lib/api/chat";

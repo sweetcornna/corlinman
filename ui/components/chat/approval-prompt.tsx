@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { Check, ShieldAlert, Shield, X } from "lucide-react";
+import { Check, ShieldAlert, Shield, X } from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import type {

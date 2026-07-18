@@ -1,6 +1,6 @@
 "use client";
 
-import { Inbox, History } from "lucide-react";
+import { Inbox, History } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import type { Tab } from "./types";

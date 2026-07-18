@@ -23,7 +23,7 @@ import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { Plug, Search } from "lucide-react";
+import { Plug, Search } from "@/components/icons";
 
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";

@@ -3,7 +3,7 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { motion, useReducedMotion } from "framer-motion";
-import { Sparkles } from "lucide-react";
+import { Sparkles } from "@/components/icons";
 
 import { useMotionVariants } from "@/lib/motion";
 import { Mascot } from "@/components/ui/mascot";

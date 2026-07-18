@@ -34,7 +34,7 @@ import {
   ExternalLink,
   Loader2,
   RefreshCcw,
-} from "lucide-react";
+} from "@/components/icons";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
