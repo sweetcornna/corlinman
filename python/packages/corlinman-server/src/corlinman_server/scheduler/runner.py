@@ -37,6 +37,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import random
 import time
 import uuid
 from collections.abc import Mapping, Sequence
@@ -201,12 +202,21 @@ def _resolve_job_tz(name: str, timezone: str | None) -> ZoneInfo | None:
 class JobSpec:
     """A scheduler job after validation. Holds the parsed cron
     :class:`Schedule` so the tick loop never re-parses the expression.
-    ``tz`` localizes cron evaluation; ``None`` means UTC."""
+    ``tz`` localizes cron evaluation; ``None`` means UTC.
+
+    ``jitter_secs`` (B4, default 0 = off) is an upper bound on a random
+    per-firing delay added *after* the computed wait — the tick loop tacks
+    on ``random.uniform(0, jitter_secs)`` so a fleet of daily-post jobs
+    doesn't all fire on the same wall-clock second (reads more human). It is
+    a runner-level knob only: config jobs never set it, and it's applied by
+    the loop rather than a builtin-level sleep so a manual ``trigger()`` HTTP
+    request never blocks on it."""
 
     name: str
     cron: Schedule
     action: ActionSpec
     tz: ZoneInfo | None = None
+    jitter_secs: int = 0
 
     @classmethod
     def from_config(cls, job: SchedulerJob) -> JobSpec | None:
@@ -1188,6 +1198,13 @@ async def _run_job_loop(
             )
             return
         wait_secs = max(0.0, (nxt - now_wall).total_seconds())
+        # B4 publish-time jitter: tack on a random [0, jitter_secs] delay so
+        # a fleet of daily jobs doesn't fire on the exact same wall-clock
+        # second. Runner-level (not a builtin sleep) so a manual trigger()
+        # never blocks on it. ``jitter_secs == 0`` (config jobs, default)
+        # leaves the timing byte-identical to the pre-B4 behavior.
+        if spec.jitter_secs > 0:
+            wait_secs += random.uniform(0.0, float(spec.jitter_secs))
         deadline_mono = time.monotonic() + wait_secs
         _logger.debug(
             "scheduler: next firing computed",
@@ -1266,6 +1283,7 @@ def runtime_job_spec(
     cron: str,
     action_type: str,
     timezone: str | None = None,
+    jitter_secs: int = 0,
 ) -> JobSpec | None:
     """Build a :class:`JobSpec` for a runtime (admin-created) job.
 
@@ -1277,6 +1295,10 @@ def runtime_job_spec(
     metadata (persona_id / prompt_template / qq_account) is *not* carried
     on the spec; the builtin reads it off ``app_state.
     scheduler_job_metadata[name]`` (the admin route mirrors it there).
+
+    ``jitter_secs`` (B4, default 0) is threaded onto the spec so the tick
+    loop can add a random per-firing delay; the admin route derives it from
+    the job's ``jitter_minutes`` metadata. Negative values are floored to 0.
 
     Returns ``None`` when the cron fails to parse or the ``action_type``
     has no ``"<plugin>.<tool>"`` shape so the caller skips the job
@@ -1300,6 +1322,7 @@ def runtime_job_spec(
         cron=schedule,
         action=ActionSpec(kind="run_tool", plugin=plugin, tool=tool),
         tz=_resolve_job_tz(name, timezone),
+        jitter_secs=max(0, jitter_secs),
     )
 
 

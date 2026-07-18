@@ -31,6 +31,9 @@ from typing import Any
 
 import pytest
 from corlinman_server.gateway.routes_admin_b.infra import scheduler as scheduler_routes
+from corlinman_server.gateway.routes_admin_b.infra._scheduler_lib import (
+    _jitter_secs_from_metadata,
+)
 from corlinman_server.gateway.routes_admin_b.state import (
     AdminState,
     set_admin_state,
@@ -448,3 +451,30 @@ async def test_trigger_records_failure_in_history(
     finally:
         if original is not None:
             register_builtin(QZONE_DAILY_BUILTIN_NAME, original)
+
+
+# ---------------------------------------------------------------------------
+# B4 (4d): jitter_minutes → jitter_secs conversion (metadata-only, one place)
+# ---------------------------------------------------------------------------
+
+
+def test_jitter_minutes_valid_converts_to_secs() -> None:
+    assert _jitter_secs_from_metadata({"jitter_minutes": 15}) == 900
+    assert _jitter_secs_from_metadata({"jitter_minutes": 0}) == 0
+    assert _jitter_secs_from_metadata({"jitter_minutes": 180}) == 180 * 60
+    # Floats are floored to whole minutes.
+    assert _jitter_secs_from_metadata({"jitter_minutes": 15.9}) == 15 * 60
+
+
+def test_jitter_minutes_absent_is_zero() -> None:
+    assert _jitter_secs_from_metadata({}) == 0
+
+
+def test_jitter_minutes_illegal_values_ignored() -> None:
+    # Negative, over-180, non-numeric, and bool are all ignored (→ 0).
+    assert _jitter_secs_from_metadata({"jitter_minutes": -5}) == 0
+    assert _jitter_secs_from_metadata({"jitter_minutes": 181}) == 0
+    assert _jitter_secs_from_metadata({"jitter_minutes": 1000}) == 0
+    assert _jitter_secs_from_metadata({"jitter_minutes": "30"}) == 0
+    assert _jitter_secs_from_metadata({"jitter_minutes": None}) == 0
+    assert _jitter_secs_from_metadata({"jitter_minutes": True}) == 0
