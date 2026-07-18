@@ -66,6 +66,90 @@ IMAGE_WITH_REFS_TOOL: str = "image_with_refs"
 _MAX_REFS: int = 8
 
 
+#: Env switch (ported from hermes) — set ``CORLINMAN_IMAGE_REFS_INTRO=off``
+#: to send the bare user prompt straight through with no composition
+#: direction wrapper. Any other value (or unset) keeps the intro on.
+_INTRO_ENV: str = "CORLINMAN_IMAGE_REFS_INTRO"
+
+
+#: COMPOSITION DIRECTION prepended to every reference-conditioned prompt
+#: (ported from hermes ``image_with_refs``). This is model-facing image
+#: instruction text — never shown to the user. Its whole job is to steer
+#: multi-character reference generations away from the default "everyone
+#: lined up, facing the lens, smiling" group-photo failure mode and
+#: toward a candid, lived-in slice-of-life snapshot.
+#:
+#: Deliberately persona-generic: the character-realism and art-style
+#: sentences describe HOW to render, never WHICH style — the concrete
+#: art direction always arrives upstream from the persona/prompt and the
+#: reference images themselves, so no specific style is ever hardcoded
+#: here.
+_COMPOSITION_INTRO: str = (
+    "COMPOSITION DIRECTION (read before rendering):\n"
+    "Render this as a candid, slice-of-life snapshot — the kind of "
+    "unplanned moment someone catches on a phone — NOT a posed group "
+    "photo or a lined-up cast portrait. Nobody has stopped to arrange "
+    "themselves for the camera.\n"
+    "- Give EACH character a DIFFERENT action and let them face "
+    "different directions; do not have everyone look at the camera or "
+    "strike the same pose.\n"
+    "- Use off-axis, off-center framing: place subjects away from the "
+    "dead center and angle them to the lens, as if the shot were caught "
+    "in passing rather than composed head-on.\n"
+    "- Freeze everyone mid-action — reaching, turning, leaning, "
+    "laughing, walking, glancing away — never a static row of figures "
+    "standing still.\n"
+    "- Fill the environment with lived-in clutter (scattered objects, "
+    "everyday mess, incidental background props) so the scene reads as a "
+    "real inhabited place, not a clean studio backdrop.\n"
+    "- If an action is meant to be sneaky or casual — a quiet swipe, an "
+    "offhand grab, a sidelong glance — stage it so that intent visibly "
+    "reads as sneaky or casual, not blatant or posed.\n"
+    "- Keep every character on-model and physically realistic in "
+    "anatomy, proportion, and how they occupy the space.\n"
+    "- Hold the art style, medium, and rendering already established by "
+    "the reference images and the scene description below; do not shift "
+    "or reinterpret the visual style."
+)
+
+
+def _intro_enabled() -> bool:
+    """Whether the composition-direction wrapper is active this call.
+
+    On by default; disabled only when ``CORLINMAN_IMAGE_REFS_INTRO`` is
+    set to ``off`` (case-insensitive), matching hermes' opt-out knob.
+    """
+    return os.environ.get(_INTRO_ENV, "on").strip().lower() != "off"
+
+
+def _compose_refs_prompt(prompt: str, chars_used: list[str]) -> str:
+    """Wrap the user ``prompt`` with the composition direction + a
+    reference-image legend.
+
+    Layout, top to bottom:
+
+    1. :data:`_COMPOSITION_INTRO` — the candid-snapshot steering.
+    2. A reference-order legend numbering each in-order label, e.g.
+       ``Reference image 1 = front, Reference image 2 = side`` so the
+       model can tie each conditioning image to the right character.
+    3. The original ``prompt`` under a ``Scene:`` header, kept verbatim
+       and last so the specifics remain the final word.
+
+    ``chars_used`` is the in-sequence list of labels whose reference
+    assets were actually sent (aligned 1:1 with the ``ref_paths`` order
+    passed to :func:`generate_with_refs`).
+    """
+    legend = ", ".join(
+        f"Reference image {i} = {label}"
+        for i, label in enumerate(chars_used, start=1)
+    )
+    return (
+        f"{_COMPOSITION_INTRO}\n\n"
+        f"Reference images, in order: {legend}.\n\n"
+        f"Scene:\n{prompt}"
+    )
+
+
 def image_with_refs_tool_schema() -> dict[str, Any]:
     """OpenAI-shaped tool descriptor for ``image_with_refs``."""
     return {
@@ -310,11 +394,18 @@ async def dispatch_image_with_refs(
             + ", ".join(sorted(by_label.keys())),
         )
 
+    # Wrap the bare prompt with the composition direction + reference
+    # legend (unless the operator opted out via CORLINMAN_IMAGE_REFS_INTRO).
+    intro_enabled = _intro_enabled()
+    gen_prompt = (
+        _compose_refs_prompt(prompt, chars_used) if intro_enabled else prompt
+    )
+
     # Generate the image.
     try:
         png_bytes = await generate_with_refs(
             provider,
-            prompt,
+            gen_prompt,
             ref_paths,
             aspect_ratio=aspect,  # type: ignore[arg-type]
             model_override=model_override,
@@ -350,6 +441,7 @@ async def dispatch_image_with_refs(
             "chars_missing": chars_missing,
             "persona_id": persona_id,
             "aspect_ratio": aspect,
+            "composition_intro": intro_enabled,
             "size_bytes": len(png_bytes),
             "generated_at_ms": int(time.time() * 1000),
         },

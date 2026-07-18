@@ -183,6 +183,8 @@ async def test_happy_path_writes_workspace_png(
     assert out["chars_used"] == ["front", "side"]
     assert out["chars_missing"] == []
     assert out["persona_id"] == "kawaii"
+    # Composition direction is on by default.
+    assert out["composition_intro"] is True
     out_path = Path(out["path"])
     assert out_path.is_file()
     # Lands inside workspace/generated under the data dir.
@@ -242,6 +244,147 @@ async def test_bound_persona_used_when_no_explicit_id(
     )
     assert out["ok"] is True
     assert out["persona_id"] == "kawaii"
+
+
+# ---------------------------------------------------------------------------
+# Composition direction (COMPOSITION DIRECTION intro)
+# ---------------------------------------------------------------------------
+
+
+def _capture_generate_prompt(monkeypatch, sink: dict[str, str]) -> None:
+    """Replace ``dispatch.generate_with_refs`` with a stub that records
+    the prompt it was handed and returns the canned PNG. Lets the intro
+    tests inspect the exact text that reaches the generation layer."""
+
+    async def _fake_generate(
+        provider, prompt, ref_paths, *args, **kwargs
+    ) -> bytes:
+        sink["prompt"] = prompt
+        return _GENERATED_PNG
+
+    monkeypatch.setattr(
+        "corlinman_agent.image.dispatch.generate_with_refs", _fake_generate
+    )
+
+
+async def test_composition_intro_wraps_prompt(
+    persona_store, asset_store, fake_provider, tmp_path, monkeypatch
+) -> None:
+    """By default the dispatcher wraps the bare prompt with the
+    COMPOSITION DIRECTION intro + an in-order reference legend, keeping
+    the original prompt verbatim at the tail."""
+    from corlinman_agent.image.dispatch import _COMPOSITION_INTRO
+
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("CORLINMAN_IMAGE_REFS_INTRO", raising=False)
+    await _seed_persona_with_refs(
+        persona_store, asset_store, labels=("front", "side")
+    )
+    captured: dict[str, str] = {}
+    _capture_generate_prompt(monkeypatch, captured)
+
+    original_prompt = "cat sipping tea on a rainy porch, watercolour"
+    out = json.loads(
+        await dispatch_image_with_refs(
+            args_json=json.dumps(
+                {
+                    "prompt": original_prompt,
+                    "characters": ["front", "side"],
+                    "persona_id": "kawaii",
+                }
+            ).encode(),
+            provider=fake_provider,
+            persona_store=persona_store,
+            asset_store=asset_store,
+        )
+    )
+    assert out["ok"] is True
+    assert out["composition_intro"] is True
+
+    sent = captured["prompt"]
+    # Intro leads, original prompt is the final word.
+    assert sent.startswith(_COMPOSITION_INTRO)
+    assert sent.endswith(original_prompt)
+    # Reference legend lists the used labels in sequence order.
+    assert "Reference image 1 = front" in sent
+    assert "Reference image 2 = side" in sent
+    assert sent.index("Reference image 1 = front") < sent.index(
+        "Reference image 2 = side"
+    )
+    # Candid-snapshot intent is present, verbatim guarantees on core beats.
+    assert "candid" in sent.lower()
+    assert "NOT a posed group" in sent
+
+
+async def test_composition_intro_legend_matches_chars_used(
+    persona_store, asset_store, fake_provider, tmp_path, monkeypatch
+) -> None:
+    """The legend numbers only the labels that actually resolved to a
+    reference asset — a missing label is dropped from both the legend
+    and ``chars_used``, and numbering stays contiguous."""
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("CORLINMAN_IMAGE_REFS_INTRO", raising=False)
+    await _seed_persona_with_refs(
+        persona_store, asset_store, labels=("front", "side")
+    )
+    captured: dict[str, str] = {}
+    _capture_generate_prompt(monkeypatch, captured)
+
+    out = json.loads(
+        await dispatch_image_with_refs(
+            args_json=json.dumps(
+                {
+                    "prompt": "hi",
+                    "characters": ["front", "ghost", "side"],
+                    "persona_id": "kawaii",
+                }
+            ).encode(),
+            provider=fake_provider,
+            persona_store=persona_store,
+            asset_store=asset_store,
+        )
+    )
+    assert out["ok"] is True
+    assert out["chars_used"] == ["front", "side"]
+    sent = captured["prompt"]
+    assert "Reference image 1 = front" in sent
+    assert "Reference image 2 = side" in sent
+    # 'ghost' never resolved, so it is absent from the legend entirely.
+    assert "ghost" not in sent
+    assert "Reference image 3" not in sent
+
+
+async def test_composition_intro_off_passes_bare_prompt(
+    persona_store, asset_store, fake_provider, tmp_path, monkeypatch
+) -> None:
+    """CORLINMAN_IMAGE_REFS_INTRO=off sends the bare prompt straight
+    through and reports composition_intro=false."""
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("CORLINMAN_IMAGE_REFS_INTRO", "off")
+    await _seed_persona_with_refs(
+        persona_store, asset_store, labels=("front", "side")
+    )
+    captured: dict[str, str] = {}
+    _capture_generate_prompt(monkeypatch, captured)
+
+    out = json.loads(
+        await dispatch_image_with_refs(
+            args_json=json.dumps(
+                {
+                    "prompt": "cat sipping tea",
+                    "characters": ["front", "side"],
+                    "persona_id": "kawaii",
+                }
+            ).encode(),
+            provider=fake_provider,
+            persona_store=persona_store,
+            asset_store=asset_store,
+        )
+    )
+    assert out["ok"] is True
+    assert out["composition_intro"] is False
+    # Bare prompt — no intro, no legend.
+    assert captured["prompt"] == "cat sipping tea"
 
 
 # ---------------------------------------------------------------------------
