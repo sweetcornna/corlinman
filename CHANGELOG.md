@@ -4,6 +4,84 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.30.0] — 2026-07-18 — human-paced QQ groups + truthful admin UI
+
+> QQ group behaviour goes from "replies to everything, always" to
+> whitelist-gated, human-paced speech with an opt-in proactive voice —
+> and the admin UI stops lying: statuses now reflect reality (timezones,
+> connection badges, dates in your language), the whole surface is
+> properly bilingual, and forms shed derivable/dead fields.
+
+### Added
+- **QQ group whitelist** (`[channels.qq].group_whitelist`) — hard gate:
+  only listed groups are ever answered; @mentions and slash commands do
+  NOT bypass it. Empty list mutes every group; key absent = no whitelist.
+- **QQ proactive speech** (default off) — `proactive_enabled` plus
+  humanized pacing: random gaps (`proactive_min/max_gap_minutes`,
+  45–180 default), active-hours window (9–23, overnight supported),
+  per-group daily budget (`proactive_daily_max`, 4), persona voice via
+  the normal chat pipeline in a dedicated per-group session; skips
+  automatically while the QQ account is offline.
+- **QQ emergency mute** — `group_replies_enabled = false` drops every
+  group message before any gate; private chat unaffected.
+- **Scheduler job timezones** — cron evaluation honours each job's IANA
+  `timezone`; the QZone form sends the browser zone so the "next fire"
+  preview matches the real firing instant (previously `0 9 * * *`
+  fired 09:00 UTC = 17:00 Beijing).
+- `ui/lib/format.ts` — all admin timestamps/numbers now follow the
+  SELECTED UI language, not the OS locale (~25 call sites converted).
+- `FieldHint` primitive — single-line field help with the long-form
+  contract behind a hover tooltip; the copy-diet standard for forms.
+
+### Changed
+- **QQ group replies are quiet by default** — new
+  `group_reply_policy = "mention_or_keyword"`: groups without an
+  explicit keyword list answer only @mentions and slash commands
+  (legacy reply-to-everything is `"all"`); non-mention replies respect
+  a per-group cooldown (`group_reply_cooldown_secs`, 20s default).
+- **Image generation**: default timeout 120s → 300s
+  (`CORLINMAN_IMAGE_TIMEOUT_SECS`); auth/config rejections
+  (401/403/404) and connection failures now fail fast as
+  *unrecoverable* — the error tells the model to stop retrying and to
+  tell the user the feature is unavailable, and a 10-minute
+  per-endpoint breaker short-circuits follow-up calls. Timeouts and
+  5xx/429 stay retryable.
+- **Admin UI language**: zh-CN stays the default unless the operator
+  explicitly toggles — `navigator.language` sniffing removed (a zh
+  operator on an en-US browser was silently flipped to English).
+- Admin copy diet (wave 3): page ledes cut to one plain sentence — no
+  more raw `/admin/*` paths, regex patterns, config keys, or backend
+  module names in user-facing help across the worst-offender pages.
+- Forms shed derivable/expert fields (wave 4): QZone job name is
+  auto-derived (`<persona>.daily_qzone`) and cron became presets +
+  advanced; provider dialog shows base_url only for OpenAI-compatible
+  kinds and prefills the key env-var; channel endpoint URLs, evolution
+  tunables, and tenant display-name collapsed behind "advanced";
+  persona id auto-slugs from the display name.
+
+### Fixed
+- **NapCat "QQ Is Logined" wedge** — after a session drop NapCat
+  refused to mint a login QR while reporting offline; QR refresh now
+  detects the stale state via CheckLoginStatus and drives the restart
+  fallback (was a bare 502). Genuinely-logged-in returns a clear 409.
+- QQ channel connection badge was hardcoded "unknown" — now derived
+  from the live health watcher; removed the stats tile that fabricated
+  a "throttled" count from the connection enum.
+- QQ recent-message + log-stream timestamps rendered UTC wall-clock
+  (hours off local); channel enable-switch invalidated dead query keys
+  leaving status panels stale.
+- 121 missing locale keys per language (evolution settings, skills
+  drawer, agent picker rendered raw keys; identity page fell back to
+  English); Chinese fragments purged from the English bundle and
+  English leaks from the Chinese one; Telegram page's ~50 hardcoded
+  English strings wired to existing translations.
+- RAG tag filter removed — the UI collected tags but the backend never
+  received them; persona editor's permanently-disabled test box
+  removed.
+- `deploy/install.sh` wrote colored log output into the NapCat systemd
+  unit's `ExecStart` (unit failed to load as bad-setting) — logs now go
+  to stderr.
+
 ## [1.29.0] — 2026-07-17 — unified memory kernel
 
 > A nine-wave overhaul of the agent's memory. The old path dumped every
