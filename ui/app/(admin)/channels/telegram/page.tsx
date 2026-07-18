@@ -311,7 +311,7 @@ function TelegramHero({
         <div className="mt-1 flex flex-wrap items-center gap-2.5">
           <ChannelEnableSwitch
             channel="telegram"
-            invalidateOnSuccess={[["telegram-status"], ["telegram-messages"]]}
+            invalidateOnSuccess={[["admin", "channels", "telegram"]]}
           />
           <button
             type="button"

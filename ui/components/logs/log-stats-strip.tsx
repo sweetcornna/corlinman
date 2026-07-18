@@ -4,6 +4,7 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
+import { formatNumber } from "@/lib/format";
 
 /**
  * Single-line summary strip below the control bar.
@@ -51,7 +52,7 @@ export function LogStatsStrip(props: LogStatsStripProps) {
     >
       <span>
         <b className="font-medium tabular-nums text-sg-ink">
-          {total.toLocaleString()}
+          {formatNumber(total)}
         </b>{" "}
         {t("logs.tp.statEvents")}
       </span>
@@ -98,7 +99,7 @@ function Chip({
       )}
     >
       <span aria-hidden className={cn("h-[5px] w-[5px] rounded-full", dotClass[tone])} />
-      <span className="tabular-nums">{count.toLocaleString()}</span>
+      <span className="tabular-nums">{formatNumber(count)}</span>
       <span>{label}</span>
     </span>
   );

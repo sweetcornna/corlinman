@@ -6,6 +6,7 @@ import { Copy, FileText, Mic } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
+import { formatDateTime } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { Drawer } from "@/components/ui/drawer";
 import type { TelegramMessage } from "@/lib/api/telegram";
@@ -206,7 +207,7 @@ function resolveMediaUrl(baseUrl: string, path: string): string {
 function formatTime(ms: number): string {
   if (!Number.isFinite(ms) || ms <= 0) return "—";
   const d = new Date(ms);
-  return d.toLocaleString();
+  return formatDateTime(d);
 }
 
 export default MediaPreviewDrawer;

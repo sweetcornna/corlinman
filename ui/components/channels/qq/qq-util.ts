@@ -1,5 +1,6 @@
 import type { QqStatus } from "@/lib/api";
 import type { StreamState } from "@/components/ui/stream-pill";
+import { formatTimeShort } from "@/lib/format";
 
 /**
  * Derived state bag for the QQ admin page. The REST surface only exposes
@@ -74,17 +75,10 @@ export function normaliseRecent(
   return { ts, chatId, sender, preview, raw };
 }
 
-/** Compact HH:MM:SS slice from an ISO-ish string; `—` otherwise. */
+/** Compact HH:MM:SS in the viewer's local timezone; `—` otherwise. */
 export function formatTsShort(ts: string | undefined): string {
   if (!ts) return "—";
-  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(ts)) return ts.slice(11, 19);
-  // numeric epoch (seconds or ms)
-  const n = Number(ts);
-  if (Number.isFinite(n)) {
-    const d = new Date(n < 1e12 ? n * 1_000 : n);
-    return d.toISOString().slice(11, 19);
-  }
-  return ts.slice(0, 8);
+  return formatTimeShort(ts);
 }
 
 /** "12s ago", "4m ago", "1h ago" — very coarse. */

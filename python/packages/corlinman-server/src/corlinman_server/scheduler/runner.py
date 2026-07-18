@@ -45,6 +45,7 @@ from datetime import UTC
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from corlinman_hooks import HookBus, HookEvent
 
@@ -132,11 +133,11 @@ class JobAction:
 class SchedulerJob:
     """One ``[[scheduler.jobs]]`` table entry.
 
-    Mirrors the Rust ``SchedulerJob`` struct. ``timezone`` is accepted
-    for parity with the TOML schema; the Python port treats it as
-    advisory (croniter's tz handling differs from the Rust ``cron``
-    crate's, so we keep everything in UTC and surface tz support in a
-    follow-up wave if a user actually files a bug).
+    Mirrors the Rust ``SchedulerJob`` struct. ``timezone`` is an IANA
+    zone name (e.g. ``Asia/Shanghai``); when set, the cron expression is
+    evaluated against that zone's wall clock instead of UTC. Unset (or
+    unknown) zones fall back to UTC, preserving the historical behavior
+    for existing jobs.
     """
 
     name: str
@@ -181,14 +182,31 @@ class ActionSpec:
     tool_args: object = None
 
 
+def _resolve_job_tz(name: str, timezone: str | None) -> ZoneInfo | None:
+    """Resolve a job's IANA timezone string; warn + fall back to UTC
+    (``None``) on an unknown zone rather than dropping the job."""
+    if not timezone:
+        return None
+    try:
+        return ZoneInfo(timezone)
+    except (KeyError, ZoneInfoNotFoundError, ValueError):
+        _logger.warning(
+            "scheduler: unknown job timezone; falling back to UTC",
+            extra={"job": name, "timezone": timezone},
+        )
+        return None
+
+
 @dataclass(frozen=True)
 class JobSpec:
     """A scheduler job after validation. Holds the parsed cron
-    :class:`Schedule` so the tick loop never re-parses the expression."""
+    :class:`Schedule` so the tick loop never re-parses the expression.
+    ``tz`` localizes cron evaluation; ``None`` means UTC."""
 
     name: str
     cron: Schedule
     action: ActionSpec
+    tz: ZoneInfo | None = None
 
     @classmethod
     def from_config(cls, job: SchedulerJob) -> JobSpec | None:
@@ -219,7 +237,12 @@ class JobSpec:
             tool=job.action.tool,
             tool_args=job.action.tool_args,
         )
-        return cls(name=job.name, cron=schedule, action=action)
+        return cls(
+            name=job.name,
+            cron=schedule,
+            action=action,
+            tz=_resolve_job_tz(job.name, job.timezone),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1070,8 +1093,10 @@ async def _maybe_catch_up(
     # Walk back from now to find the most-recent scheduled firing at-or-
     # before now. ``next_after`` only yields strictly-future firings, so
     # we step back a window and take the latest firing that is <= now.
+    # Cron evaluation happens in the job's timezone (astimezone keeps the
+    # absolute instant, so the ordering comparisons below stay correct).
     lookback = now_wall - timedelta(seconds=max(grace, 60) + 86400)
-    cursor = lookback
+    cursor = lookback if spec.tz is None else lookback.astimezone(spec.tz)
     last_due: datetime | None = None
     # Bounded walk: at most ~1500 steps even for a per-minute cron over a
     # 24h+grace lookback — cheap and can't spin (next_after is strictly
@@ -1152,7 +1177,10 @@ async def _run_job_loop(
             _logger.info("scheduler: cancelled; exiting", extra={"job": spec.name})
             return
         now_wall = datetime.now(tz=UTC)
-        nxt = next_after(spec.cron, now_wall)
+        nxt = next_after(
+            spec.cron,
+            now_wall if spec.tz is None else now_wall.astimezone(spec.tz),
+        )
         if nxt is None:
             _logger.warning(
                 "scheduler: cron has no upcoming firing; exiting job loop",
@@ -1233,7 +1261,12 @@ def spawn(
     )
 
 
-def runtime_job_spec(name: str, cron: str, action_type: str) -> JobSpec | None:
+def runtime_job_spec(
+    name: str,
+    cron: str,
+    action_type: str,
+    timezone: str | None = None,
+) -> JobSpec | None:
     """Build a :class:`JobSpec` for a runtime (admin-created) job.
 
     Runtime jobs carry an ``action_type`` slug (e.g.
@@ -1266,6 +1299,7 @@ def runtime_job_spec(name: str, cron: str, action_type: str) -> JobSpec | None:
         name=name,
         cron=schedule,
         action=ActionSpec(kind="run_tool", plugin=plugin, tool=tool),
+        tz=_resolve_job_tz(name, timezone),
     )
 
 

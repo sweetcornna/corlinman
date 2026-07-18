@@ -3,6 +3,7 @@
 import * as React from "react";
 import { useSpring, useTransform, useMotionValueEvent } from "framer-motion";
 import { cn } from "@/lib/utils";
+import { uiLocale } from "@/lib/format";
 
 type NumberFormat = "number" | "currency" | "percent";
 
@@ -61,7 +62,7 @@ export const AnimatedNumber = React.forwardRef<
     value,
     format = "number",
     formatOptions,
-    locale,
+    locale = uiLocale(),
     duration,
     className,
     ...rest

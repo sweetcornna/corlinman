@@ -124,10 +124,23 @@ def router() -> APIRouter:
             )
 
         ws_url = qq.get("ws_url") or os.environ.get("QQ_WS_URL")
+        # Runtime mirrors the Telegram semantics: "connected" only when the
+        # channel is gated on AND the health watcher saw NapCat online.
+        # An empty health snapshot (watcher not started / package absent)
+        # stays "unknown" rather than claiming disconnected.
+        enabled = bool(qq.get("enabled", False))
+        online = health.get("online")
+        if online is None:
+            runtime = "unknown"
+        elif enabled and online is True:
+            runtime = "connected"
+        else:
+            runtime = "disconnected"
         return StatusOut(
             configured=True,
-            enabled=bool(qq.get("enabled", False)),
+            enabled=enabled,
             ws_url=ws_url,
+            runtime=runtime,
             self_ids=list(qq.get("self_ids", [])),
             group_keywords=dict(qq.get("group_keywords", {})),
             config_keys=_non_secret_config_keys("qq", qq),

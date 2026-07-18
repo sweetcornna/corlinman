@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { formatDateTime } from "@/lib/format";
 import { CorlinmanApiError } from "@/lib/api";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -635,7 +636,7 @@ function PersonaRow({
 }) {
   const { t } = useTranslation();
   const updated = React.useMemo(
-    () => new Date(persona.updated_at_ms).toLocaleString(),
+    () => formatDateTime(new Date(persona.updated_at_ms)),
     [persona.updated_at_ms],
   );
   return (
@@ -2019,7 +2020,7 @@ function PersonaLifePanel({ personaId }: { personaId: string }) {
   const updatedLine =
     state && state.updated_at_ms > 0
       ? t("persona.lifeUpdatedAt", {
-          when: new Date(state.updated_at_ms).toLocaleString(),
+          when: formatDateTime(new Date(state.updated_at_ms)),
         })
       : t("persona.lifeUpdatedNever");
 
@@ -2178,7 +2179,7 @@ function PersonaDiaryViewer({ personaId }: { personaId: string }) {
             >
               <p className="font-mono text-[10px] text-sg-ink-3">
                 {entry.ts > 0
-                  ? new Date(entry.ts).toLocaleString()
+                  ? formatDateTime(new Date(entry.ts))
                   : "—"}
               </p>
               <p className="whitespace-pre-wrap text-xs text-sg-ink-2">

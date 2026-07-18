@@ -352,7 +352,7 @@ def _register_runtime_loop(state: AdminState, rj: _RuntimeJob) -> None:
         from corlinman_server.scheduler import runtime_job_spec
     except Exception:  # pragma: no cover — defensive
         return
-    spec = runtime_job_spec(rj.name, rj.cron, rj.action_type)
+    spec = runtime_job_spec(rj.name, rj.cron, rj.action_type, timezone=rj.timezone)
     if spec is None:
         return
     try:

@@ -32,6 +32,7 @@ import {
   type RollbackVersionsResponse,
   type UpgradeStartResponse,
 } from "@/lib/api";
+import { formatDate } from "@/lib/format";
 
 export interface RollbackPanelProps {
   /** Fires with the 202 response — the host routes to `?upgrade=<id>`. */
@@ -109,7 +110,7 @@ export function RollbackPanel({ onRollbackStarted }: RollbackPanelProps) {
               ) : null}
               {v.published_at ? (
                 <span className="text-[11px] text-sg-ink-3">
-                  {new Date(v.published_at).toLocaleDateString()}
+                  {formatDate(new Date(v.published_at))}
                 </span>
               ) : null}
             </div>

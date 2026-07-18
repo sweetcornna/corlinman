@@ -48,6 +48,7 @@ import {
   updateProfile,
   type Profile,
 } from "@/lib/api";
+import { formatDateTime } from "@/lib/format";
 import { useActiveProfile } from "@/lib/context/active-profile";
 import { CreateProfileModal } from "@/components/profiles/create-profile-modal";
 import { cn } from "@/lib/utils";
@@ -56,7 +57,7 @@ const PROTECTED_SLUG = "default";
 
 function formatTime(iso: string): string {
   try {
-    return new Date(iso).toLocaleString();
+    return formatDateTime(new Date(iso));
   } catch {
     return iso;
   }

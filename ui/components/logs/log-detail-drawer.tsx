@@ -4,6 +4,7 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
+import { formatTimeShort } from "@/lib/format";
 import { DetailDrawer } from "@/components/ui/detail-drawer";
 import { JsonView } from "@/components/ui/json-view";
 import { LogRow, type LogSeverity } from "@/components/ui/log-row";
@@ -162,17 +163,23 @@ export function severityFromLevel(level: DetailLogEvent["level"]): LogSeverity {
   return "info";
 }
 
-/** `HH:mm:ss.SSS` from an ISO string — falls back to the raw input. */
+/** `HH:mm:ss.SSS` in the viewer's local timezone (backend ISO is UTC —
+ * slicing the raw string displayed UTC wall-clock, hours off local). */
 export function formatTsFull(iso: string): string {
   if (!iso) return "--:--:--.---";
-  const out = iso.slice(11, 23);
-  return out || iso;
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return iso;
+  const d = new Date(t);
+  const pad = (n: number, w = 2) => String(n).padStart(w, "0");
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
 }
 
 /** `HH:mm:ss` — the shorter form used inside related rows + main stream. */
 export function formatTsShort(iso: string): string {
   if (!iso) return "--:--:--";
-  return iso.slice(11, 19) || iso;
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return iso;
+  return formatTimeShort(t);
 }
 
 /** Live-ish "2m ago" readout that re-renders every 30s. */

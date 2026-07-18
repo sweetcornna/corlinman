@@ -6,6 +6,7 @@ import { Pause, Play, Settings2, Eye, PlayCircle } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { formatDateTime } from "@/lib/format";
 import type { ProfileCuratorState } from "@/lib/api";
 
 /**
@@ -239,7 +240,7 @@ export function formatRelative(iso: string): string {
   const t = Date.parse(iso);
   if (Number.isNaN(t)) return "?";
   const diffMs = Date.now() - t;
-  if (diffMs < 0) return new Date(t).toLocaleString();
+  if (diffMs < 0) return formatDateTime(new Date(t));
   const sec = Math.floor(diffMs / 1000);
   if (sec < 60) return `${sec}s ago`;
   const min = Math.floor(sec / 60);

@@ -19,6 +19,7 @@ import {
   type PluginSummary,
   type RagStats,
 } from "@/lib/api";
+import { formatNumber as formatNumberIntl } from "@/lib/format";
 import { openEventStream } from "@/lib/sse";
 import { useMotionVariants } from "@/lib/motion";
 import { GlassPanel } from "@/components/ui/glass-panel";
@@ -670,5 +671,5 @@ function fabricateSpark(name: string, ok: boolean): SparkBar[] {
 
 function formatNumber(n: number): string {
   if (n < 1000) return String(n);
-  return n.toLocaleString();
+  return formatNumberIntl(n);
 }

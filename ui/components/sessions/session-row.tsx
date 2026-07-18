@@ -7,6 +7,7 @@ import { MessageSquareText, Play, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { TableCell, TableRow } from "@/components/ui/table";
 import type { SessionSummary } from "@/lib/api/sessions";
+import { formatDateTime } from "@/lib/format";
 import { SessionCostCells } from "@/components/sessions/session-cost-cells";
 
 /**
@@ -30,7 +31,7 @@ interface SessionRowProps {
 function formatTime(ms: number): string {
   const d = new Date(ms);
   if (Number.isNaN(d.getTime())) return String(ms);
-  return d.toLocaleString();
+  return formatDateTime(d);
 }
 
 export function SessionRow({ session, onReplay, onDelete }: SessionRowProps) {

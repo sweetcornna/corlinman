@@ -118,7 +118,7 @@ export function QqHero({
 
           <ChannelEnableSwitch
             channel="qq"
-            invalidateOnSuccess={[["qq-status"], ["qq-recent"]]}
+            invalidateOnSuccess={[["admin", "channels", "qq"]]}
           />
 
           <button

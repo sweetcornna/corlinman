@@ -34,6 +34,7 @@ import {
   type AuditEntry,
   type AuditTailResponse,
 } from "@/lib/api";
+import { formatDateTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 const PAGE_SIZE = 25;
@@ -50,7 +51,7 @@ function relativeTime(iso: string, now: number): { rel: string; abs: string } {
   else if (s < 3600) rel = `${Math.floor(s / 60)}m ago`;
   else if (s < 86400) rel = `${Math.floor(s / 3600)}h ago`;
   else rel = `${Math.floor(s / 86400)}d ago`;
-  return { rel, abs: new Date(t).toLocaleString() };
+  return { rel, abs: formatDateTime(new Date(t)) };
 }
 
 /** Map an event-type string to a short label + color. */

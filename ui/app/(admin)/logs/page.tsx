@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
 import { cn } from "@/lib/utils";
+import { formatDateTime, formatNumber } from "@/lib/format";
 import { openEventStream } from "@/lib/sse";
 import { useMotion } from "@/components/ui/motion-safe";
 import { GlassPanel } from "@/components/ui/glass-panel";
@@ -355,7 +356,7 @@ export default function LogsPage() {
     overscan: ROW_OVERSCAN,
   });
 
-  const rangeReadout = `${visible.length.toLocaleString()}/${events.length.toLocaleString()}`;
+  const rangeReadout = `${formatNumber(visible.length)}/${formatNumber(events.length)}`;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
@@ -621,7 +622,7 @@ function dividerLabel(iso: string): string {
     d.getMonth() === today.getMonth() &&
     d.getDate() === today.getDate();
   if (isToday) return `Today · ${hh}:${mm}`;
-  const month = d.toLocaleString(undefined, { month: "short" });
+  const month = formatDateTime(d, { month: "short" });
   return `${month} ${d.getDate()} · ${hh}:${mm}`;
 }
 
