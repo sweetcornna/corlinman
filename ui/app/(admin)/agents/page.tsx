@@ -32,6 +32,7 @@ import {
   type AgentSummary,
   type ModelsResponseV2,
 } from "@/lib/api";
+import { formatDateTime } from "@/lib/format";
 
 /** Lists `Agent/*.md` files. Click a row → Monaco editor at `/agents/detail?name=`.
  *
@@ -48,7 +49,7 @@ function formatBytes(n: number): string {
 
 function formatTime(iso: string): string {
   try {
-    return new Date(iso).toLocaleString();
+    return formatDateTime(new Date(iso));
   } catch {
     return iso;
   }

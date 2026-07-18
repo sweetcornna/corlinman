@@ -35,13 +35,14 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { formatDateTime } from "@/lib/format";
 import { fetchTenants } from "@/lib/api/tenants";
 import type { TenantsListState, TenantRow } from "@/lib/api/tenants";
 import { CreateTenantDialog } from "@/components/tenants/create-tenant-dialog";
 
 function formatTime(iso: string): string {
   try {
-    return new Date(iso).toLocaleString();
+    return formatDateTime(new Date(iso));
   } catch {
     return iso;
   }

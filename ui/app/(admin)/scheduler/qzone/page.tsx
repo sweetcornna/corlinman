@@ -68,6 +68,7 @@ import {
   type SchedulerJobRow,
 } from "@/lib/api/scheduler";
 import { fetchPersonas, type Persona } from "@/lib/api/personas";
+import { formatDateTime } from "@/lib/format";
 
 const JOBS_QUERY_KEY = ["admin", "scheduler", "qzone-jobs"] as const;
 const PERSONAS_QUERY_KEY = ["admin", "personas"] as const;
@@ -103,6 +104,18 @@ const DEFAULT_FORM: FormState = {
   enabled: true,
 };
 
+/** IANA zone the operator's browser lives in. Sent with every job so the
+ * backend evaluates the cron on this wall clock — which is exactly what
+ * the client-side "next fire" preview shows. Without it the scheduler
+ * fires in server/UTC time and the preview lies by the TZ offset. */
+function browserTimeZone(): string | null {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export default function QzoneSchedulerPage() {
   const { t } = useTranslation();
   const qc = useQueryClient();
@@ -134,6 +147,7 @@ export default function QzoneSchedulerPage() {
         name: form.name.trim(),
         cron: form.cron.trim(),
         action_type: QZONE_DAILY_ACTION_TYPE,
+        timezone: browserTimeZone(),
         persona_id: form.personaId,
         prompt_template: form.promptTemplate,
         enabled: form.enabled,
@@ -169,6 +183,7 @@ export default function QzoneSchedulerPage() {
         name: `${persona.id}.daily_qzone`,
         cron: DEFAULT_CRON,
         action_type: QZONE_DAILY_ACTION_TYPE,
+        timezone: browserTimeZone(),
         persona_id: persona.id,
         prompt_template: DEFAULT_DAILY_PROMPT,
         enabled: true,
@@ -443,7 +458,7 @@ export default function QzoneSchedulerPage() {
               {nextFirePreview !== null
                 ? t("schedulerQzone.cronNext", {
                     defaultValue: "Next fire: {{when}}",
-                    when: formatNextFire(nextFirePreview),
+                    when: `${formatNextFire(nextFirePreview)} (${browserTimeZone() ?? "UTC"})`,
                   })
                 : t("schedulerQzone.cronInvalid", {
                     defaultValue: "Use 5-field cron (min hour dom mon dow).",
@@ -595,7 +610,7 @@ function QzoneJobRow({ job, onTrigger, triggering }: QzoneJobRowProps) {
                 </Badge>
               )}
               <span className="text-muted-foreground">
-                {lastRunDate.toLocaleString()}
+                {formatDateTime(lastRunDate)}
               </span>
             </div>
             {job.last_run_ok && job.last_qzone_url ? (

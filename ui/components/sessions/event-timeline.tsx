@@ -17,6 +17,7 @@ import { useTranslation } from "react-i18next";
 import { AlertTriangle, Loader2 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { formatTime } from "@/lib/format";
 import { openLiveEventStream, type LiveEvent } from "@/lib/sessions/event-stream";
 import {
   TimelineProvider,
@@ -117,7 +118,7 @@ function TurnCard({ turn }: { turn: Turn }) {
             #{turn.turn_id.slice(0, 8)}
           </span>
           <span className="opacity-50">·</span>
-          <span>{new Date(turn.startedAt).toLocaleTimeString()}</span>
+          <span>{formatTime(new Date(turn.startedAt))}</span>
           {turn.status === "streaming" && (
             <span className="ml-auto inline-flex items-center gap-1 rounded-sg-sm border border-sg-accent/30 bg-sg-accent-soft px-1.5 py-0.5 font-medium text-sg-accent">
               <Loader2 className="size-3 animate-spin" aria-hidden />

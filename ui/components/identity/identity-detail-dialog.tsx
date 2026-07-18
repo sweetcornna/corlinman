@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+import { formatDateTime } from "@/lib/format";
 import {
   fetchIdentityDetail,
   issueIdentityPhrase,
@@ -154,7 +155,7 @@ function AliasList({
             </p>
             <p className="text-[11px] text-sg-ink-3">
               {a.binding_kind} ·{" "}
-              {new Date(a.created_at).toLocaleString()}
+              {formatDateTime(new Date(a.created_at))}
             </p>
           </div>
           <IssuePhraseButton

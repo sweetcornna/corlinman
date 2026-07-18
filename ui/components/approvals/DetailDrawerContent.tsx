@@ -6,6 +6,7 @@ import { DetailDrawer } from "@/components/ui/detail-drawer";
 import { GlassPanel } from "@/components/ui/glass-panel";
 import { JsonView } from "@/components/ui/json-view";
 import { cn } from "@/lib/utils";
+import { formatDateTime } from "@/lib/format";
 import type { Approval } from "./types";
 
 /**
@@ -136,7 +137,7 @@ function StatusPill({
 
 function formatTime(iso: string): string {
   try {
-    return new Date(iso).toLocaleString();
+    return formatDateTime(new Date(iso));
   } catch {
     return iso;
   }

@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { Bot, MessageSquareDashed, User } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { formatDateTime } from "@/lib/format";
 import type { TranscriptMessage } from "@/lib/api/sessions";
 
 /**
@@ -30,7 +31,7 @@ interface TranscriptViewProps {
 function formatTs(ts: string): string {
   const d = new Date(ts);
   if (Number.isNaN(d.getTime())) return ts;
-  return d.toLocaleString();
+  return formatDateTime(d);
 }
 
 export function TranscriptView({ transcript }: TranscriptViewProps) {

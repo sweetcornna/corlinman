@@ -18,6 +18,7 @@
  */
 
 import { apiFetch } from "@/lib/api";
+import { uiLocale } from "@/lib/format";
 
 /* ------------------------------------------------------------------ */
 /*                            Types                                   */
@@ -230,11 +231,12 @@ export function nextFireTime(cron: string, from: Date = new Date()): Date | null
   return null;
 }
 
-/** Format a `Date` as a human-readable "next run in X" string. */
+/** Format a `Date` as a human-readable "next run in X" string.
+ * Follows the active UI language unless an explicit locale is given. */
 export function formatNextFire(date: Date | null, locale?: string): string {
   if (date === null) return "—";
   try {
-    return date.toLocaleString(locale, {
+    return date.toLocaleString(locale ?? uiLocale(), {
       weekday: "short",
       month: "short",
       day: "numeric",

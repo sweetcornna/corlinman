@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { JsonView } from "@/components/ui/json-view";
 import { cn } from "@/lib/utils";
+import { formatDateTime } from "@/lib/format";
 import type { Approval } from "./types";
 
 /**
@@ -25,7 +26,7 @@ import type { Approval } from "./types";
  */
 function formatTime(iso: string): string {
   try {
-    return new Date(iso).toLocaleString();
+    return formatDateTime(new Date(iso));
   } catch {
     return iso;
   }

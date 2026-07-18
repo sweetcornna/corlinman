@@ -22,6 +22,7 @@ import { useTranslation } from "react-i18next";
 import { AlertTriangle, CircleCheck, Loader2, Octagon } from "lucide-react";
 
 import { useTimeline, type Part, type Turn } from "@/lib/sessions/store";
+import { formatDateTime, formatNumber, formatTime } from "@/lib/format";
 import { formatCost, formatDuration } from "./cost-footer";
 
 const USER_INPUT_PREVIEW_LIMIT = 200;
@@ -102,9 +103,9 @@ export function TurnSummaryCard({
         <Field label={t("sessions.turn.started")}>
           <time
             dateTime={new Date(turn.startedAt).toISOString()}
-            title={new Date(turn.startedAt).toLocaleString()}
+            title={formatDateTime(new Date(turn.startedAt))}
           >
-            {new Date(turn.startedAt).toLocaleTimeString()}
+            {formatTime(new Date(turn.startedAt))}
           </time>
         </Field>
         <Field label={t("sessions.turn.elapsed")}>
@@ -115,11 +116,11 @@ export function TurnSummaryCard({
             <span
               title={
                 inputTokens !== undefined && outputTokens !== undefined
-                  ? `in ${inputTokens.toLocaleString()} · out ${outputTokens.toLocaleString()}`
+                  ? `in ${formatNumber(inputTokens)} · out ${formatNumber(outputTokens)}`
                   : undefined
               }
             >
-              {totalTokens.toLocaleString()}
+              {formatNumber(totalTokens)}
             </span>
           ) : (
             "—"

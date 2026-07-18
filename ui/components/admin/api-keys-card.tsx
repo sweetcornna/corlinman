@@ -29,6 +29,7 @@ import {
   revokeApiKey,
 } from "@/lib/api/api-keys";
 import { CorlinmanApiError } from "@/lib/api";
+import { formatDateTime } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -52,7 +53,7 @@ import {
 function fmtMs(ms: number | null): string {
   if (!ms) return "—";
   try {
-    return new Date(ms).toLocaleString();
+    return formatDateTime(new Date(ms));
   } catch {
     return "—";
   }

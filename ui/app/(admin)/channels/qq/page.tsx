@@ -222,7 +222,6 @@ export default function QqChannelPage() {
               inbound={recentMessages.length}
               chats={chatCount}
               keywords={keywordCount}
-              throttled={connection === "connected" ? 0 : 1}
               live={connection === "connected"}
             />
 

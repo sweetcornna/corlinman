@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { formatTime as formatTimeIntl } from "@/lib/format";
 import { springs, useMotionVariants } from "@/lib/motion";
 import type {
   ApprovalDecision,
@@ -56,7 +57,7 @@ function formatTime(ms: number): string {
   const d = new Date(ms);
   return Number.isNaN(d.getTime())
     ? ""
-    : d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+    : formatTimeIntl(d, { hour: "2-digit", minute: "2-digit" });
 }
 
 /**

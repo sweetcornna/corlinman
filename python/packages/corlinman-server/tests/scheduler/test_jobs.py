@@ -22,8 +22,9 @@ def _job(cron: str, action: JobAction) -> SchedulerJob:
     """Test helper — build a :class:`SchedulerJob` with a fixed name.
 
     Mirrors the Rust ``cfg`` helper at the top of ``jobs.rs``'s test
-    module. ``timezone`` stays unset (the Python port treats it as
-    advisory; the runtime evaluates everything in UTC)."""
+    module. ``timezone`` stays unset here (cron then evaluates in UTC);
+    tz-aware evaluation is covered by the dedicated timezone tests
+    below."""
     return SchedulerJob(name="t", cron=cron, action=action)
 
 
@@ -100,3 +101,37 @@ def test_subprocess_action_defaults_match_rust() -> None:
     assert a.working_dir is None
     assert a.args == ()
     assert dict(a.env) == {}
+
+
+def test_job_timezone_localizes_cron_evaluation() -> None:
+    """A job with an IANA timezone evaluates its cron on that wall clock.
+
+    ``0 9 * * *`` in Asia/Shanghai (UTC+8, no DST) must fire at 01:00
+    UTC — not 09:00 UTC. Regression for the W6 qzone jobs firing 8h late
+    for Chinese operators."""
+    from datetime import UTC, datetime
+
+    from corlinman_server.scheduler.cron import next_after
+    from corlinman_server.scheduler.runner import runtime_job_spec
+
+    spec = runtime_job_spec(
+        "t.daily", "0 9 * * *", "qzone.daily_publish", timezone="Asia/Shanghai"
+    )
+    assert spec is not None
+    assert spec.tz is not None
+
+    now = datetime(2026, 7, 18, 0, 0, 0, tzinfo=UTC)
+    nxt = next_after(spec.cron, now.astimezone(spec.tz))
+    assert nxt is not None
+    assert nxt.astimezone(UTC) == datetime(2026, 7, 18, 1, 0, 0, tzinfo=UTC)
+
+
+def test_job_unknown_timezone_falls_back_to_utc() -> None:
+    """An unknown zone name degrades to UTC instead of dropping the job."""
+    from corlinman_server.scheduler.runner import runtime_job_spec
+
+    spec = runtime_job_spec(
+        "t.daily", "0 9 * * *", "qzone.daily_publish", timezone="Not/AZone"
+    )
+    assert spec is not None
+    assert spec.tz is None
