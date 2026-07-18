@@ -28,7 +28,14 @@ export function resolveInitialLang(): SupportedLang {
   return DEFAULT_LANG;
 }
 
-/** Resolve the operator's preferred language after hydration is complete. */
+/** Resolve the operator's preferred language after hydration is complete.
+ *
+ * Only an EXPLICIT choice (the stored toggle value) moves the UI off the
+ * authoritative default. We deliberately do NOT fall back to
+ * `navigator.language`: a zh operator on an en-US browser/OS (the common
+ * dev-machine setup) would be silently flipped to English on first
+ * visit, which reads as "mixed-language UI" — the toggle is one click
+ * away for genuine English users. */
 export function resolvePreferredLang(): SupportedLang {
   if (typeof window === "undefined") return DEFAULT_LANG;
   try {
@@ -37,10 +44,7 @@ export function resolvePreferredLang(): SupportedLang {
   } catch {
     /* fall through */
   }
-  const nav = (
-    typeof navigator !== "undefined" ? navigator.language : ""
-  ).toLowerCase();
-  return nav.startsWith("zh") ? "zh-CN" : "en";
+  return DEFAULT_LANG;
 }
 
 let initialized = false;

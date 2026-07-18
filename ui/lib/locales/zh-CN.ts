@@ -49,11 +49,13 @@ export const zhCN = {
     loadFailed: "加载失败",
     saveSuccess: "保存成功",
     saveFailed: "保存失败",
+    saved: "已保存",
+    copied: "已复制",
     invalidJson: "无效的 JSON",
   },
 
   auth: {
-    signIn: "Sign in",
+    signIn: "登录",
     subtitle: "登录以进入 corlinman 管理后台。",
     username: "用户名",
     password: "密码",
@@ -61,7 +63,7 @@ export const zhCN = {
     submitting: "登录中...",
     invalidCredentials: "用户名或密码错误",
     adminNotConfigured: "管理员凭据未配置 (config.toml [admin])",
-    sessionHint: "Session backed by argon2 · HttpOnly cookie.",
+    sessionHint: "会话安全存储，服务端加密校验。",
     forgotPassword: "忘记密码？",
     forgotPasswordBody:
       "暂无站内重置流程。请 SSH 登录网关主机，编辑 ~/.corlinman/config.toml 的 [admin].password_hash 字段，替换为新的 argon2 哈希，然后重启容器。生成新哈希：`python -c \"from argon2 import PasswordHasher; print(PasswordHasher().hash('新密码'))\"`。",
@@ -84,9 +86,9 @@ export const zhCN = {
     resetTokenExpired: "令牌已过期，请重新生成。",
     resetNoToken: "暂无有效令牌，请先点击「生成重置令牌」。",
     resetFailed: "重置失败，请查看服务日志后重试。",
-    heroTitle: "Run agents, route tools, keep the edge boring.",
+    heroTitle: "运行智能体，编排工具，让边缘保持无聊。",
     heroBody:
-      "Rust gateway, Python AI layer, static admin UI. All in one control plane.",
+      "网关、AI 层与管理界面，一个控制平面全部搞定。",
     logoutSuccess: "已退出登录",
     logoutLabel: "退出登录",
     buildLabel: "M6 管理台",
@@ -150,6 +152,68 @@ export const zhCN = {
       "正在使用默认 admin/root —— 稍后可在 账户与安全 中修改。",
   },
 
+  onboard: {
+    step: {
+      api: {
+        title: "配置 API",
+      },
+      username: {
+        title: "修改默认账号",
+        subtitle: "默认账号是 admin，请改成你自己的用户名。",
+        unchanged: "新用户名不能与当前用户名相同",
+      },
+      password: {
+        title: "修改默认密码",
+        subtitle: "默认密码是 root。请设置一个安全的新密码。",
+      },
+      persona: {
+        title: "助手个性化",
+        subtitle: "选择如何初始化助手人格。",
+      },
+      image: {
+        title: "图片生成 API",
+        subtitle: "选择如何处理图片生成请求。",
+      },
+    },
+    persona: {
+      choice: {
+        default: "使用默认助手 grantley",
+        defaultBody: "使用内置助手 grantley，无需任何额外配置。",
+        custom: "创建自定义人格",
+        customBody: "通过 /persona 引导式问答创建专属人格（稍后跳转）。",
+        skip: "暂时跳过",
+        skipBody: "稍后再在管理面板中配置人格。",
+      },
+    },
+    image: {
+      notSupported: "当前 API 不支持图片生成",
+      notSupportedHint:
+        "你当前的 API 端点未发现图片模型。你可以单独配置一个图片 Provider，或者跳过这一步。",
+      choice: {
+        reuse: "复用当前 API",
+        reuseBody: "尝试用刚刚配置的 LLM Provider 来生成图片。",
+        separate: "单独配置",
+        separateBody: "为图片生成另起一个 Provider（例如 OpenAI gpt-image-1）。",
+        skip: "跳过",
+        skipBody: "稍后再配置图片生成。",
+      },
+      separate: {
+        subtitle: "为图片生成单独注册一个 OpenAI-compatible Provider。",
+        required: "名称、Base URL、API Key 都不能为空。",
+        nameLabel: "名称",
+        baseUrlLabel: "Base URL",
+        apiKeyLabel: "API Key",
+        modelLabel: "图片模型 ID",
+      },
+    },
+    done: {
+      subtitle: "首次配置已完成。进入管理面板继续探索功能。",
+      title: "你已完成所有步骤",
+      body: "之后可在 账户与安全 / 凭证 / 人格 / 系统 中进一步定制。",
+      cta: "进入管理面板",
+    },
+  },
+
   notFound: {
     description: "这个页面没有出现在路由表里。让我们带你返回。",
     backToDashboard: "返回控制台",
@@ -194,6 +258,7 @@ export const zhCN = {
       usernameChanged: "用户名已改为 {{name}}",
       passwordChanged: "密码已更新",
       passwordMismatch: "两次输入不一致",
+      invalidUsername: "用户名不可为空",
       reveal: "显示密码",
       hide: "隐藏密码",
       revealUsernamePassword: "显示用于修改用户名的密码",
@@ -566,7 +631,7 @@ export const zhCN = {
     summaryOrigin: "来源",
     summaryTools: "工具",
     summaryManifest: "Manifest",
-    testInvoke: "Test Invoke",
+    testInvoke: "测试调用",
     noTools: "该插件未声明任何工具 —— 无可调用",
     argumentsJson: "参数 (JSON)",
     editRawJson: "编辑原始 JSON",
@@ -871,6 +936,10 @@ export const zhCN = {
         offlineTitle: "QQ 通道离线",
         offlineHint: "`/admin/channels/qq/status` 恢复后将自动刷新。",
       },
+      accountOfflineTitle: "QQ 账号已下线",
+      accountOfflineBody:
+        "NapCat 运行正常，但 QQ 账号被踢下线了。重新扫码登录后机器人才能收发消息。",
+      accountOfflineAction: "打开扫码登录",
     },
     telegram: {
       tp: {
@@ -1450,7 +1519,7 @@ export const zhCN = {
     expand: "展开",
     collapse: "收起",
     emptyValue: "(空)",
-    paramsTitle: "Per-alias params",
+    paramsTitle: "别名参数",
     paramsHint:
       "传给 provider 的请求级参数。Schema 来自所属 provider 的 params_schema。",
     paramsNone: "该 provider 未声明 params_schema。",
@@ -1459,6 +1528,7 @@ export const zhCN = {
     paramsSaveFailed: "保存参数失败: {{msg}}",
     paramsBackendPending: "后端功能未就绪。请将网关升级到 0.2.x。",
     backendPending: "后端功能未就绪。请将网关升级到 0.2.x。",
+    pickerAddedHint: "已添加新行，填写别名名称后点击保存。",
     picker: {
       title: "选择模型",
       searchPlaceholder: "搜索 provider 或模型…",
@@ -1818,7 +1888,7 @@ export const zhCN = {
     issueTitle: "{{n}} 条问题",
     issueTitleSingular: "1 条问题",
     closeIssues: "关闭问题面板",
-    validationIssuesRegion: "validation issues",
+    validationIssuesRegion: "校验问题",
     validateResult: "Dry-run 结果",
     saveResult: "保存结果",
     statusOk: "ok",
@@ -1826,11 +1896,12 @@ export const zhCN = {
     noIssues: "无问题",
     issueCount: "{{n}} 条问题",
     restartRequired: "需要重启: {{list}}",
-    newVersion: "new version: {{v}}",
+    newVersion: "新版本：{{v}}",
     loadFailed: "加载失败",
     validateFailed: "校验失败",
     toastSavedTitle: "配置已保存",
     toastSavedDescription: "支持热更新的配置已立即生效。",
+    sectionModified: "已修改",
     // Tidepool（Phase 5e）新增：玻璃化配置页文案。
     tp: {
       heroTitle: "配置",
@@ -2351,6 +2422,26 @@ export const zhCN = {
       editSaveFailedToast: "技能保存失败",
       editBundledNotice: "内置技能也可编辑；你的修改会写入当前 profile 的副本。",
     },
+    drawer: {
+      descriptionLabel: "描述",
+      descriptionPlaceholder: "这个技能是做什么的…",
+      whenToUseLabel: "使用时机",
+      whenToUseHint: "模型会根据这段提示判断是否拉取该技能。",
+      whenToUsePlaceholder: "什么情况下模型应使用该技能…",
+      allowedToolsLabel: "允许工具",
+      allowedToolsHint: "每行填写一个工具名。",
+      allowedToolsPlaceholder: "每行一个工具，例如 web_search",
+      disableInvocationLabel: "禁用模型自动调用",
+      disableInvocationHint:
+        "开启后，模型不会自动选择该技能，仅在被显式引用时可用。",
+      bodyLabel: "正文（markdown）",
+      bodyHint: "技能被使用时，这段 markdown 会原样注入对话。",
+      bodyPlaceholder: "用 markdown 编写技能说明…",
+      unsaved: "有未保存的修改",
+      noChanges: "暂无修改",
+      saving: "保存中…",
+      save: "保存",
+    },
   },
 
   marketplace: {
@@ -2590,6 +2681,18 @@ export const zhCN = {
       builtIn: "内置",
       user: "用户",
       project: "项目",
+      triggerAuto: "自动路由",
+      triggerPicked: "{{name}}",
+      autoLabel: "自动路由",
+      autoHint: "根据消息内容自动选择 Agent。",
+      loading: "正在加载 Agent…",
+      empty: "暂无可用 Agent。",
+      noMatch: "没有匹配的 Agent。",
+      source: {
+        "built-in": "内置",
+        user: "用户",
+        project: "项目",
+      },
     },
     skills: {
       hint: {
@@ -2801,6 +2904,35 @@ export const zhCN = {
       body:
         "本次执行会把每一项变化写入磁盘：超过 stale 阈值的活跃技能会被标记为 stale，超过归档阈值的 stale 技能会被归档。SKILL.md 文件会被重写。",
       action: "执行",
+    },
+    settings: {
+      title: "进化设置",
+      subtitle: "元提案审批人、每周提案预算与自动回滚阈值。",
+      loading: "加载中…",
+      configUnset: "进化功能未在配置中启用，暂时无法保存这些设置。",
+      metaApprovers: "元提案审批人",
+      metaApproversHint: "允许审批引擎级提案的用户。",
+      metaApproversEmpty:
+        "尚未添加审批人——在添加之前，所有引擎级提案都会被拒绝。",
+      removeApprover: "移除 {{id}}",
+      approverPlaceholder: "用户 ID…",
+      addApprover: "添加",
+      budget: "提案预算",
+      budgetEnabled: "启用预算",
+      weeklyTotal: "每周总量",
+      weeklyTotalHint: "每周允许的提案上限。",
+      perKind: "分类上限",
+      autoRollback: "自动回滚",
+      autoRollbackEnabled: "启用自动回滚",
+      graceWindowHours: "观察窗口（小时）",
+      graceWindowHint: "变更生效后的观察时长，指标恶化时自动回滚。",
+      errRateDelta: "错误率增幅（%）",
+      p95Delta: "p95 延迟增幅（%）",
+      signalWindowSecs: "信号窗口（秒）",
+      minBaselineSignals: "最少基线信号数",
+      saveFailed: "保存失败：{{msg}}",
+      saving: "保存中…",
+      save: "保存",
     },
   },
 
@@ -3079,14 +3211,14 @@ export const zhCN = {
     deleteAriaLabel: "删除会话 {{key}}",
     deleteConfirmTitle: "确认删除此会话?",
     deleteConfirmBody:
-      "确认删除此会话?会话历史会从 journal 永久移除。\nThis will permanently remove the session history from the journal.",
+      "会话历史将被永久移除，无法恢复。",
     deleteConfirmAction: "永久删除",
     deleteSucceeded: "已删除会话 {{key}}",
     deleteFailed: "删除失败：{{msg}}",
     clearAll: "清空全部",
     clearAllConfirmTitle: "清空所有会话?",
     clearAllConfirmBody:
-      "清空所有会话?将永久删除 {{n}} 条会话记录。\nThis will permanently remove all {{n}} session records.",
+      "将永久删除 {{n}} 条会话记录，无法恢复。",
     clearAllConfirmAction: "全部清空",
     clearAllSucceeded: "已清空 {{n}} 条会话",
     clearAllFailed: "清空失败：{{msg}}",
@@ -3228,6 +3360,49 @@ export const zhCN = {
       sandbox: "沙箱模式",
     },
   },
+
+  identity: {
+    title: "身份",
+    subtitle:
+      "跨 QQ、Telegram 等通道的统一用户 ID。可签发验证短语，或手动合并身份。",
+    disabled: {
+      title: "身份服务未启用",
+      body: "当前部署尚未启用跨通道身份存储。",
+    },
+    empty: "暂无用户——用户会在任一通道首次聊天时自动创建。",
+    col: {
+      user: "用户",
+      display_name: "显示名称",
+      aliases: "别名",
+    },
+    detail: {
+      title: "身份",
+      subtitle:
+        "绑定到该用户的别名。从一个别名签发验证短语，让本人在另一通道发送后即可合并身份。",
+      aliases: "别名",
+      not_found: "未找到该用户——可能刚被合并到其他用户。",
+      no_aliases: "该用户尚未绑定任何别名。",
+      merge: {
+        title: "手动合并",
+      },
+    },
+    phrase: {
+      issued: "验证短语已签发",
+      disabled: "身份服务未启用，无法签发验证短语。",
+      issuing: "签发中…",
+      issue: "签发短语",
+    },
+    merge: {
+      ok: "身份已合并",
+      not_found: "未找到来源用户 ID，无可合并内容。",
+      disabled: "身份服务未启用，无法合并。",
+      from_label: "来源 user_id",
+      decided_by_label: "操作人",
+      merging: "合并中…",
+      submit: "合并到该用户",
+    },
+  },
+
   persona: {
     title: "Persona — 拟人化聊天",
     subtitle:
@@ -3276,7 +3451,7 @@ export const zhCN = {
     loadFailed: "无法加载 personas",
     deleteConfirmTitle: "删除此 persona？",
     deleteConfirmBody:
-      "将永久移除该 persona。\nThis will permanently remove the persona.",
+      "人格将被永久移除，无法恢复。",
     deleteConfirmAction: "永久删除",
     deleteSucceeded: "已删除 persona {{name}}",
     deleteFailed: "删除失败：{{msg}}",
@@ -3291,9 +3466,10 @@ export const zhCN = {
     fieldId: "Slug",
     fieldIdHint: "稳定标识，仅限小写 a–z / 0–9 / 连字符。创建后不可修改。",
     fieldDisplayName: "显示名",
+    fieldDisplayNamePlaceholder: "格兰特利·贝尔",
     fieldShortSummary: "简短描述",
     fieldShortSummaryHint: "一两行 — 显示在列表行中。",
-    fieldSystemPrompt: "System prompt（markdown）",
+    fieldSystemPrompt: "系统提示词（Markdown）",
     fieldSystemPromptHint:
       "Markdown 正文。可以引用用户消息、最近记忆、通道上下文。",
     modelsTitle: "模型路由",

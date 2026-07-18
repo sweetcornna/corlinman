@@ -130,11 +130,13 @@ describe("TelegramChannelPage", () => {
       await screen.findByRole("heading", { name: /telegram channel/i }),
     ).toBeInTheDocument();
 
+    // Test locale is forced to zh-CN (vitest.setup.ts); the stat-chip labels
+    // are i18n'd (`channels.telegram.tp.stat*`), so assert the zh strings.
     await waitFor(() => {
-      expect(screen.getByText(/messages today/i)).toBeInTheDocument();
+      expect(screen.getByText("今日消息")).toBeInTheDocument();
     });
-    expect(screen.getByText(/active chats/i)).toBeInTheDocument();
-    expect(screen.getByText(/avg latency/i)).toBeInTheDocument();
+    expect(screen.getByText("活跃会话")).toBeInTheDocument();
+    expect(screen.getByText("平均延迟")).toBeInTheDocument();
 
     expect(await screen.findByTestId("tg-message-m-1")).toBeInTheDocument();
     // Sender now appears in both the list row AND the hero prose ("last

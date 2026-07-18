@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import {
@@ -49,9 +50,10 @@ import { SendTestDrawer } from "./SendTestDrawer";
  *   - `/admin/channels/telegram/messages` (3s poll, 20-cap)
  *   - The 404-fallback path stays inside `fetchTelegramStatus/Messages`.
  *
- * A handful of strings are intentionally hardcoded in English (page `<h1>`,
- * stat-chip labels, photo-preview dialog title) — those are asserted by
- * `page.test.tsx` against English regex regardless of locale.
+ * User-visible strings resolve through i18n (`channels.telegram.tp.*` plus
+ * a few `common.*` keys). The page `<h1>` stays hardcoded English (no bundle
+ * key exists for it yet) and is asserted by `page.test.tsx` against an
+ * English regex regardless of locale.
  */
 
 type UpdateFilter = "all" | "text" | "photo" | "voice" | "doc";
@@ -232,26 +234,37 @@ function TelegramHero({
   onRefresh: () => void;
   fetching: boolean;
 }) {
+  const { t } = useTranslation();
   const host = status?.config.webhook_url
     ? hostOf(status.config.webhook_url)
     : "—";
   const activeChats = status?.stats.active_chats ?? 0;
 
   const latestLine = latest
-    ? (() => {
-        const kind = latest.media
+    ? t("channels.telegram.tp.proseLastUpdate", {
+        when: formatRelative(latest.timestamp_ms),
+        kind: latest.media
           ? latest.media.kind === "photo"
-            ? "photo"
+            ? t("channels.telegram.tp.filterPhoto")
             : latest.media.kind === "voice"
-              ? "voice clip"
-              : "document"
-          : "message";
-        const who = latest.from_username ?? "unknown sender";
-        const chat = latest.chat_title ? ` in group ${latest.chat_title}` : "";
-        const when = formatRelative(latest.timestamp_ms);
-        return `Last update ${when} — ${kind} from ${who}${chat}.`;
-      })()
-    : "No inbound updates yet.";
+              ? t("channels.telegram.tp.filterVoice")
+              : t("channels.telegram.tp.filterDoc")
+          : t("channels.telegram.tp.sendTestMessage"),
+        who: latest.from_username ?? "unknown sender",
+        chatSuffix: latest.chat_title
+          ? t("channels.telegram.tp.proseInGroup", { chat: latest.chat_title })
+          : "",
+      })
+    : t("channels.telegram.tp.proseLastUpdateNone");
+
+  // `proseLead` renders the interpolated host in a mono span; resolve the
+  // template with a sentinel and split around it so the markup survives
+  // whichever side of the host each locale puts its prose on.
+  const HOST_SENTINEL = "\u0000";
+  const [leadBefore = "", leadAfter = ""] = t(
+    "channels.telegram.tp.proseLead",
+    { host: HOST_SENTINEL },
+  ).split(HOST_SENTINEL);
 
   return (
     <GlassPanel
@@ -280,7 +293,7 @@ function TelegramHero({
         <div className="flex flex-wrap items-center gap-2.5">
           <StreamPill
             state={offline ? "paused" : streamState}
-            rate={offline ? "offline" : host}
+            rate={offline ? t("channels.telegram.tp.leadPillOffline") : host}
             data-testid="tg-stream-pill"
           />
           <span className="font-mono text-[11px] text-sg-ink-3">
@@ -296,12 +309,14 @@ function TelegramHero({
 
         <p className="max-w-[72ch] text-[14.5px] leading-[1.6] text-sg-ink-2">
           {offline ? (
-            "Webhook is offline — the gateway is not answering. Panels below reflect cached data."
+            `${t("channels.telegram.tp.proseLeadOffline")} ${t("channels.telegram.tp.endpointOfflineBanner")}`
           ) : (
             <>
-              Webhook live at <span className="font-mono text-sg-ink">{host}</span>.
+              {leadBefore}
+              <span className="font-mono text-sg-ink">{host}</span>
+              {leadAfter}
               {" "}
-              {activeChats} {activeChats === 1 ? "conversation" : "conversations"} open.
+              {t("channels.telegram.tp.proseChats", { n: activeChats })}
               {" "}
               {latestLine}
             </>
@@ -325,13 +340,13 @@ function TelegramHero({
             )}
           >
             <Send className="h-3.5 w-3.5" aria-hidden />
-            Send test message
+            {t("channels.telegram.tp.sendTestCta")}
           </button>
           <button
             type="button"
             onClick={onRefresh}
             disabled={fetching}
-            aria-label="Refresh Telegram channel state"
+            aria-label={t("channels.telegram.tp.refreshAria")}
             className={cn(
               "inline-flex items-center gap-2 rounded-lg border border-sg-border bg-sg-inset px-3 py-2",
               "text-[13px] font-medium text-sg-ink-2",
@@ -344,7 +359,7 @@ function TelegramHero({
               className={cn("h-3.5 w-3.5", fetching && "animate-spin")}
               aria-hidden
             />
-            Refresh
+            {t("common.refresh")}
           </button>
         </div>
       </div>
@@ -363,52 +378,58 @@ function StatsRow({
   status: TelegramStatusResponse | undefined;
   live: boolean;
 }) {
+  const { t } = useTranslation();
   const stats = status?.stats;
   const dash = "—";
+  const offlineFoot = t("channels.telegram.tp.statOfflineFoot");
 
   return (
     <section className="grid grid-cols-1 gap-3.5 md:grid-cols-2 xl:grid-cols-4">
       <StatChip
         variant="primary"
         live={live}
-        label="Messages today"
+        label={t("channels.telegram.tp.statUpdatesToday")}
         value={live && stats ? stats.messages_today : dash}
-        foot={live ? "inbound webhook events" : "endpoint offline"}
+        foot={live ? t("channels.telegram.tp.statFootToday") : offlineFoot}
         sparkPath={UPDATES_SPARK}
         sparkTone="amber"
       />
       <StatChip
-        label="Messages · week"
+        label={t("channels.telegram.tp.statUpdatesWeek")}
         value={live && stats ? stats.messages_week : dash}
-        foot={live ? "trailing 7-day rollup" : "endpoint offline"}
+        foot={live ? t("channels.telegram.tp.statFootWeek") : offlineFoot}
         sparkPath={WEEK_SPARK}
         sparkTone="ember"
       />
       <StatChip
-        label="Avg latency"
+        label={t("channels.telegram.tp.statLatency")}
         value={
           live && stats ? (
             <span className="flex items-baseline gap-1">
               <span className="tabular-nums">{stats.latency_p50_ms}</span>
-              <span className="font-mono text-[10px] text-sg-ink-4">p50ms</span>
+              <span className="font-mono text-[10px] text-sg-ink-4">
+                {t("channels.telegram.tp.statLatencyP50")}
+              </span>
               <span className="mx-1 text-sg-ink-4">·</span>
               <span className="tabular-nums text-[20px] text-sg-ink-3">
                 {stats.latency_p95_ms}
               </span>
-              <span className="font-mono text-[10px] text-sg-ink-4">p95ms</span>
+              <span className="font-mono text-[10px] text-sg-ink-4">
+                {t("channels.telegram.tp.statLatencyP95")}
+              </span>
             </span>
           ) : (
             dash
           )
         }
-        foot={live ? "handler dispatch" : "endpoint offline"}
+        foot={live ? t("channels.telegram.tp.statFootLatency") : offlineFoot}
         sparkPath={LATENCY_SPARK}
         sparkTone="ember"
       />
       <StatChip
-        label="Active chats"
+        label={t("channels.telegram.tp.statActiveChats")}
         value={live && stats ? stats.active_chats : dash}
-        foot={live ? "seen in the last 24h" : "endpoint offline"}
+        foot={live ? t("channels.telegram.tp.statFootChats") : offlineFoot}
         sparkPath={CHATS_SPARK}
         sparkTone="peach"
       />
@@ -427,6 +448,7 @@ function ErrorBanner({
   error: string;
   reduced: boolean;
 }) {
+  const { t } = useTranslation();
   return (
     <div
       role="alert"
@@ -440,7 +462,7 @@ function ErrorBanner({
       <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
       <div className="min-w-0 flex-1">
         <div className="font-mono text-[10.5px] uppercase tracking-[0.1em]">
-          Last dispatch error
+          {t("channels.telegram.tp.lastErrorBanner")}
         </div>
         <p className="mt-0.5 whitespace-pre-wrap break-words font-mono text-[11px]">
           {error}
@@ -459,6 +481,7 @@ function WebhookPanel({
 }: {
   status: TelegramStatusResponse | undefined;
 }) {
+  const { t } = useTranslation();
   const [revealed, setRevealed] = React.useState(false);
   // Don't render the token/URL testids until the config has landed — the
   // page test uses `findByTestId("tg-bot-token")` and asserts on the masked
@@ -469,11 +492,11 @@ function WebhookPanel({
         variant="soft"
         as="section"
         className="flex flex-col gap-3 p-5"
-        aria-label="Telegram bot webhook configuration"
+        aria-label={t("channels.telegram.tp.configTitle")}
       >
         <header>
           <h2 className="text-[14px] font-medium text-sg-ink">Webhook</h2>
-          <p className="text-[12px] text-sg-ink-3">loading…</p>
+          <p className="text-[12px] text-sg-ink-3">{t("common.loading")}</p>
         </header>
         <div className="space-y-2">
           <div className="h-8 animate-pulse rounded-md border border-sg-border bg-sg-inset" />
@@ -490,7 +513,7 @@ function WebhookPanel({
       variant="soft"
       as="section"
       className="flex flex-col gap-3 p-5"
-      aria-label="Telegram bot webhook configuration"
+      aria-label={t("channels.telegram.tp.configTitle")}
     >
       <header className="flex items-center justify-between">
         <div>
@@ -500,12 +523,12 @@ function WebhookPanel({
           </p>
         </div>
         <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-sg-ink-4">
-          read-only
+          {t("channels.telegram.tp.configReadOnly")}
         </span>
       </header>
 
       <div className="space-y-3">
-        <ConfigField label="Bot token">
+        <ConfigField label={t("channels.telegram.tp.configBotToken")}>
           <div className="flex items-center gap-2">
             <code
               data-testid="tg-bot-token"
@@ -521,7 +544,11 @@ function WebhookPanel({
               type="button"
               onClick={() => setRevealed((v) => !v)}
               aria-pressed={revealed}
-              aria-label={revealed ? "Hide bot token" : "Reveal bot token"}
+              aria-label={
+                revealed
+                  ? t("channels.telegram.tp.hideToken")
+                  : t("channels.telegram.tp.revealToken")
+              }
               data-testid="tg-reveal-token"
               className={cn(
                 "inline-flex h-7 w-7 items-center justify-center rounded-md border border-sg-border",
@@ -539,7 +566,7 @@ function WebhookPanel({
           </div>
         </ConfigField>
 
-        <ConfigField label="Webhook URL">
+        <ConfigField label={t("channels.telegram.tp.configWebhookUrl")}>
           <code
             className={cn(
               "block truncate rounded-md border border-sg-border",
@@ -551,7 +578,7 @@ function WebhookPanel({
           </code>
         </ConfigField>
 
-        <ConfigField label="Secret token">
+        <ConfigField label={t("channels.telegram.tp.configSecretToken")}>
           <code
             className={cn(
               "block truncate rounded-md border border-sg-border",
@@ -572,6 +599,7 @@ function FiltersPanel({
 }: {
   status: TelegramStatusResponse | undefined;
 }) {
+  const { t } = useTranslation();
   const messagesWeek = status?.stats.messages_week ?? 0;
   const dropPending = status?.config.drop_pending_updates ?? false;
 
@@ -593,10 +621,13 @@ function FiltersPanel({
       </header>
 
       <div className="grid grid-cols-2 gap-3 text-[12.5px]">
-        <FilterStatCell label="Week volume" value={messagesWeek} />
         <FilterStatCell
-          label="Drop pending on reconnect"
-          value={dropPending ? "on" : "off"}
+          label={t("channels.telegram.tp.statUpdatesWeek")}
+          value={messagesWeek}
+        />
+        <FilterStatCell
+          label={t("channels.telegram.tp.configDropPending")}
+          value={dropPending ? t("common.enabled") : t("common.disabled")}
         />
       </div>
 
@@ -679,20 +710,46 @@ function UpdatesFeed({
   messages: TelegramMessage[];
   onPhotoClick: (msg: TelegramMessage) => void;
 }) {
+  const { t } = useTranslation();
   const options: FilterChipOption[] = [
-    { value: "all", label: "All", count: counts.all },
-    { value: "text", label: "Text", count: counts.text },
-    { value: "photo", label: "Photo", count: counts.photo, tone: "ok" },
-    { value: "voice", label: "Voice", count: counts.voice, tone: "warn" },
-    { value: "doc", label: "Document", count: counts.doc, tone: "info" },
+    {
+      value: "all",
+      label: t("channels.telegram.tp.filterAll"),
+      count: counts.all,
+    },
+    {
+      value: "text",
+      label: t("channels.telegram.tp.filterText"),
+      count: counts.text,
+    },
+    {
+      value: "photo",
+      label: t("channels.telegram.tp.filterPhoto"),
+      count: counts.photo,
+      tone: "ok",
+    },
+    {
+      value: "voice",
+      label: t("channels.telegram.tp.filterVoice"),
+      count: counts.voice,
+      tone: "warn",
+    },
+    {
+      value: "doc",
+      label: t("channels.telegram.tp.filterDoc"),
+      count: counts.doc,
+      tone: "info",
+    },
   ];
 
   return (
     <GlassPanel variant="soft" as="section" className="flex flex-col">
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-sg-border px-5 py-3">
-        <h2 className="text-[14px] font-medium text-sg-ink">Recent updates</h2>
+        <h2 className="text-[14px] font-medium text-sg-ink">
+          {t("channels.telegram.tp.filtersTitle")}
+        </h2>
         <FilterChipGroup
-          label="update type filter"
+          label={t("channels.telegram.tp.filterLabel")}
           options={options}
           value={filter}
           onChange={(next) => setFilter(next as UpdateFilter)}
@@ -704,7 +761,7 @@ function UpdatesFeed({
           <FeedSkeleton />
         ) : isError ? (
           <p className="px-5 py-10 text-center font-mono text-[11.5px] text-sg-err">
-            Messages load failed: {errorMessage ?? "unknown error"}
+            {t("common.loadFailed")}: {errorMessage ?? t("common.unknown")}
           </p>
         ) : (
           <MessageList messages={messages} onPhotoClick={onPhotoClick} />
@@ -738,6 +795,7 @@ function DebugPanel({
   payload: Record<string, unknown> | null;
   error: string | null;
 }) {
+  const { t } = useTranslation();
   return (
     <GlassPanel variant="soft" as="section" className="overflow-hidden">
       <details className="group">
@@ -748,7 +806,7 @@ function DebugPanel({
             "outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
           )}
         >
-          <span>Debug</span>
+          <span>{t("channels.telegram.tp.debugTitle")}</span>
           <span className="font-mono text-[10.5px] uppercase tracking-[0.1em] text-sg-ink-4 group-open:hidden">
             click to expand
           </span>
@@ -756,7 +814,7 @@ function DebugPanel({
         <div className="space-y-3 border-t border-sg-border p-5">
           <div>
             <div className="mb-2 font-mono text-[10.5px] uppercase tracking-[0.1em] text-sg-ink-4">
-              Last webhook payload
+              {t("channels.telegram.tp.debugPayload")}
             </div>
             {payload ? (
               <JsonView
@@ -769,13 +827,13 @@ function DebugPanel({
                 data-testid="tg-debug-payload"
                 className="rounded-lg border border-sg-border bg-sg-inset p-3 font-mono text-[11px] text-sg-ink-4"
               >
-                (none)
+                {t("channels.telegram.tp.debugPayloadEmpty")}
               </p>
             )}
           </div>
           <div>
             <div className="mb-2 font-mono text-[10.5px] uppercase tracking-[0.1em] text-sg-ink-4">
-              Last dispatch error
+              {t("channels.telegram.tp.debugError")}
             </div>
             {error ? (
               <pre
@@ -785,7 +843,9 @@ function DebugPanel({
                 {error}
               </pre>
             ) : (
-              <p className="text-[12px] text-sg-ink-3">No recent errors.</p>
+              <p className="text-[12px] text-sg-ink-3">
+                {t("channels.telegram.tp.debugErrorEmpty")}
+              </p>
             )}
           </div>
         </div>

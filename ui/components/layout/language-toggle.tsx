@@ -6,8 +6,8 @@ import { cn } from "@/lib/utils";
 
 /**
  * Small pill in the topnav that flips between `zh-CN` and `en`. The choice
- * persists via the i18next LanguageDetector `caches: ["localStorage"]` hook
- * (see lib/i18n.ts).
+ * persists via the `languageChanged` handler in lib/i18n.ts writing
+ * localStorage — the ONLY thing that moves the UI off the zh-CN default.
  */
 export function LanguageToggle({ className }: { className?: string }) {
   const { i18n, t } = useTranslation();
