@@ -33,6 +33,65 @@ class _NoopRefreshThenRestartClient(nc._NapcatClient):
         raise AssertionError(f"unexpected NapCat path {path}")
 
 
+class _StaleLoginedClient(nc._NapcatClient):
+    """NapCat wedged after a session drop: QR APIs answer ``QQ Is Logined``
+    while CheckLoginStatus reports offline/not-logged-in. Cleared by restart."""
+
+    def __init__(self, *, is_login: bool) -> None:
+        super().__init__("http://napcat.test", "token")
+        self.posts: list[str] = []
+        self.restarted = False
+        self.is_login = is_login
+
+    async def _login(self) -> str | None:
+        return "credential"
+
+    async def aclose(self) -> None:
+        return None
+
+    async def post(self, path: str, body: dict[str, object]) -> dict[str, object]:
+        del body
+        self.posts.append(path)
+        if path == "/api/QQLogin/CheckLoginStatus":
+            return {"isLogin": self.is_login, "isOffline": not self.is_login}
+        if path == "/api/QQLogin/RestartNapCat":
+            self.restarted = True
+            return {"message": "Restart initiated"}
+        if path in ("/api/QQLogin/GetQQLoginQrcode", "/api/QQLogin/RefreshQRcode"):
+            if not self.restarted:
+                raise nc.NapcatError("napcat_app_error", "QQ Is Logined")
+            if path == "/api/QQLogin/GetQQLoginQrcode":
+                return {"qrcode": "https://qq.example/qr-after-restart"}
+            return {}
+        raise AssertionError(f"unexpected NapCat path {path}")
+
+
+@pytest.mark.asyncio
+async def test_request_qrcode_restarts_napcat_when_stuck_reporting_logged_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(nc, "NAPCAT_QRCODE_RETRY_INTERVAL_S", 0.0, raising=False)
+    monkeypatch.setattr(nc, "NAPCAT_QRCODE_RESTART_WAIT_S", 0.0, raising=False)
+    client = _StaleLoginedClient(is_login=False)
+
+    out = await client.request_qrcode()
+
+    assert out.qrcode_url == "https://qq.example/qr-after-restart"
+    assert "/api/QQLogin/RestartNapCat" in client.posts
+
+
+@pytest.mark.asyncio
+async def test_request_qrcode_rejects_when_genuinely_logged_in() -> None:
+    client = _StaleLoginedClient(is_login=True)
+
+    with pytest.raises(nc.NapcatError) as excinfo:
+        await client.request_qrcode()
+
+    assert excinfo.value.code == "napcat_already_logged_in"
+    assert excinfo.value.upstream_status == 409
+    assert "/api/QQLogin/RestartNapCat" not in client.posts
+
+
 @pytest.mark.asyncio
 async def test_request_qrcode_restarts_napcat_when_refresh_returns_same_qr(
     monkeypatch: pytest.MonkeyPatch,

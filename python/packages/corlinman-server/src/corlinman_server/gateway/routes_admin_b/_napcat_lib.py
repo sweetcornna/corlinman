@@ -405,14 +405,48 @@ class _NapcatClient:
             if exc.code not in {"napcat_unreachable", "napcat_upstream_error"}:
                 raise NapcatError(
                     "napcat_qrcode_refresh_noop",
-                    (
-                        "NapCat accepted QR refresh but kept returning the "
-                        f"same login QR code; restart fallback failed: {exc}"
-                    ),
+                    f"NapCat restart fallback for QR refresh failed: {exc}",
                     status=exc.upstream_status,
                 ) from exc
         finally:
             self._credential = None
+
+    async def _recover_qrcode_without_previous(self, original: NapcatError) -> str:
+        """Recover when NapCat refuses to hand out any login QR at all.
+
+        NapCat can wedge itself after a session drop: the login manager keeps
+        answering ``GetQQLoginQrcode`` / ``RefreshQRcode`` with
+        ``{"code":-1,"message":"QQ Is Logined"}`` while ``CheckLoginStatus``
+        simultaneously reports ``isLogin: false, isOffline: true``. Only a
+        NapCat restart clears that state. Distinguish it from a *genuine*
+        logged-in session (where minting a login QR is meaningless) via
+        ``CheckLoginStatus`` before restarting.
+        """
+        try:
+            status = await self.check_status()
+        except NapcatError:
+            raise original from None
+        if status.status == "confirmed":
+            raise NapcatError(
+                "napcat_already_logged_in",
+                "QQ is already logged in; there is no login QR code to refresh",
+                status=409,
+            ) from original
+        await self._restart_napcat_for_qrcode_refresh()
+        qr = await self._wait_for_qrcode_change(
+            None,
+            attempts=NAPCAT_QRCODE_RESTART_RETRY_COUNT,
+            interval_s=NAPCAT_QRCODE_RESTART_WAIT_S,
+        )
+        if qr is None:
+            raise NapcatError(
+                "napcat_qrcode_refresh_noop",
+                (
+                    "NapCat reported a login state that blocks QR refresh "
+                    f"({original}); restart fallback did not produce a login QR"
+                ),
+            )
+        return qr
 
     async def request_qrcode(self) -> QrcodeOut:
         previous_qr: str | None = None
@@ -423,24 +457,31 @@ class _NapcatClient:
             # refresh call below is the path that asks it to mint one.
             previous_qr = None
 
+        qr: str | None = None
         try:
             await self.post(QQ_QRCODE_REFRESH_PATH, {})
         except NapcatError as exc:
             if previous_qr is None:
-                raise exc
+                qr = await self._recover_qrcode_without_previous(exc)
 
-        qr = await self._wait_for_qrcode_change(
-            previous_qr,
-            attempts=NAPCAT_QRCODE_RETRY_COUNT,
-            interval_s=NAPCAT_QRCODE_RETRY_INTERVAL_S,
-        )
-        if qr is None and previous_qr is not None:
-            await self._restart_napcat_for_qrcode_refresh()
-            qr = await self._wait_for_qrcode_change(
-                previous_qr,
-                attempts=NAPCAT_QRCODE_RESTART_RETRY_COUNT,
-                interval_s=NAPCAT_QRCODE_RESTART_WAIT_S,
-            )
+        if qr is None:
+            try:
+                qr = await self._wait_for_qrcode_change(
+                    previous_qr,
+                    attempts=NAPCAT_QRCODE_RETRY_COUNT,
+                    interval_s=NAPCAT_QRCODE_RETRY_INTERVAL_S,
+                )
+            except NapcatError as exc:
+                # Only raises when previous_qr is None and every fetch failed
+                # (refresh itself succeeded) — same wedge, same recovery.
+                qr = await self._recover_qrcode_without_previous(exc)
+            if qr is None and previous_qr is not None:
+                await self._restart_napcat_for_qrcode_refresh()
+                qr = await self._wait_for_qrcode_change(
+                    previous_qr,
+                    attempts=NAPCAT_QRCODE_RESTART_RETRY_COUNT,
+                    interval_s=NAPCAT_QRCODE_RESTART_WAIT_S,
+                )
         if qr is None:
             raise NapcatError(
                 "napcat_qrcode_refresh_noop",
