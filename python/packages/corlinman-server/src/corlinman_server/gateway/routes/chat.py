@@ -412,8 +412,11 @@ def _decode_b64_payload(data: str) -> bytes | None:
         return None
 
 
+# Canonical reasoning-tier vocabulary (superset across model families —
+# see corlinman_providers.reasoning_tiers). The provider layer clamps a
+# tier onto each model's real ladder; the gateway only screens junk.
 _REASONING_EFFORTS: frozenset[str] = frozenset(
-    {"minimal", "low", "medium", "high", "xhigh"}
+    {"none", "minimal", "low", "on", "medium", "high", "xhigh", "max"}
 )
 
 

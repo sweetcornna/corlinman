@@ -318,3 +318,38 @@ def test_bulk_shape_with_default_still_replaces_alias_table(tmp_path: Path) -> N
     # name is dropped.
     assert body["aliases"]["chat"]["provider"] == "relay"
     assert "gone" not in body["aliases"]
+
+
+def test_alias_rows_carry_reasoning_tiers(tmp_path: Path) -> None:
+    """Each alias advertises the *resolved* model's effort ladder so the
+    composer renders real options ("cornna" alias → gpt-5.6 → six tiers)."""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("", encoding="utf-8")
+    for _state, snapshot, client in _with_models_client(config_path):
+        snapshot.update(
+            {
+                "providers": {
+                    "relay": {"kind": "openai_compatible", "enabled": True},
+                },
+                "models": {
+                    "default": "cornna",
+                    "aliases": {
+                        "cornna": {"provider": "relay", "model": "gpt-5.6-sol"},
+                        "grok": {"provider": "relay", "model": "grok-4"},
+                        "mystery": {"provider": "relay", "model": "sol-pro-x"},
+                    },
+                },
+            }
+        )
+        resp = client.get("/admin/models")
+
+    assert resp.status_code == 200, resp.text
+    rows = {a["name"]: a for a in resp.json()["aliases"]}
+    assert rows["cornna"]["reasoning_tiers"] == [
+        "none", "low", "medium", "high", "xhigh", "max",
+    ]
+    assert rows["cornna"]["reasoning_default"] == "medium"
+    # Known no-knob family → [] (hide the picker)
+    assert rows["grok"]["reasoning_tiers"] == []
+    # Unknown family → null (client heuristics)
+    assert rows["mystery"]["reasoning_tiers"] is None

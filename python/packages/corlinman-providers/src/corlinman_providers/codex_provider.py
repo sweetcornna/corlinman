@@ -137,6 +137,12 @@ def _reasoning_effort_from_extra(extra: dict[str, Any] | None) -> str:
         value = raw.strip().lower()
         if value in _CODEX_REASONING_EFFORTS:
             return value
+        # Canonical tiers outside the Codex ladder snap to the nearest
+        # supported step (e.g. ``max`` → ``xhigh``) instead of silently
+        # resetting to medium.
+        clamped = clamp_reasoning_tier("codex", value)
+        if clamped in _CODEX_REASONING_EFFORTS:
+            return clamped
     return "medium"
 
 

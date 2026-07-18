@@ -37,6 +37,7 @@ from corlinman_providers._anthropic_oauth import (
     save_anthropic_credential,
 )
 from corlinman_providers.base import ProviderChunk
+from corlinman_providers.reasoning_tiers import clamp_reasoning_tier
 from corlinman_providers.failover import (
     AuthError,
     AuthPermanentError,
@@ -556,7 +557,20 @@ class AnthropicProvider:
             kwargs["tools"] = _tools_list
         if extra:
             kwargs.update(extra)
-
+        # Canonical reasoning tier → Anthropic wire shape. 4.6+/Fable take
+        # adaptive thinking + ``output_config.effort``; the budget_tokens era
+        # (4.5 and below, all Haiku) has no effort knob so the tier is
+        # dropped (clamp returns None) and the request stays untouched.
+        _requested_effort = kwargs.pop("reasoning_effort", None)
+        if isinstance(_requested_effort, str) and _requested_effort.strip():
+            _tier = clamp_reasoning_tier(model, _requested_effort)
+            if _tier:
+                kwargs["thinking"] = {"type": "adaptive"}
+                _extra_body = kwargs.setdefault("extra_body", {})
+                if isinstance(_extra_body, dict):
+                    _extra_body.setdefault("output_config", {})
+                    if isinstance(_extra_body["output_config"], dict):
+                        _extra_body["output_config"]["effort"] = _tier
 
         _max_retries = 3
         _attempt = 0
@@ -1352,6 +1366,13 @@ _ANTHROPIC_PARAMS_SCHEMA: dict[str, Any] = {
             "type": "integer",
             "minimum": 100,
             "description": "Client-side request timeout in milliseconds.",
+        },
+        "reasoning_effort": {
+            "type": "string",
+            # Canonical tier superset — clamped onto the model's real
+            # ladder (output_config.effort, 4.6+/Fable only) in chat_stream.
+            "enum": ["none", "minimal", "low", "on", "medium", "high", "xhigh", "max"],
+            "description": "Canonical reasoning-effort tier (clamped per model).",
         },
     },
 }

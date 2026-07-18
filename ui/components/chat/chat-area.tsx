@@ -15,7 +15,10 @@ import { MessageList } from "@/components/chat/message-list";
 import { PresenceOrb } from "@/components/ui/presence-orb";
 import { AgentPicker } from "@/components/playground/agent-picker";
 import { useChatStream } from "@/lib/chat/use-chat-stream";
-import { modelSupportsReasoningEffort } from "@/lib/chat/reasoning-effort";
+import {
+  clampReasoningTier,
+  modelSupportsReasoningEffort,
+} from "@/lib/chat/reasoning-effort";
 import type { ReasoningEffort } from "@/lib/api/chat";
 import {
   deriveArtifactKind,
@@ -41,6 +44,9 @@ interface ChatAreaProps {
   onReasoningEffortChange?: (effort: ReasoningEffort) => void;
   modelProvider?: string | null;
   modelTarget?: string | null;
+  /** Effort ladder for the resolved model, from the models API. `null` =
+   *  unknown family (legacy heuristics apply); `[]` = no effort knob. */
+  reasoningTiers?: string[] | null;
   onAgentChange?: (agentId: string | null) => void;
   showActionTrace?: boolean;
   /** W5 — an older history page exists; show the "load earlier" pill. */
@@ -72,9 +78,17 @@ export function effectiveReasoningEffortForModel(
   reasoningEffort: ReasoningEffort,
   provider?: string | null,
   targetModel?: string | null,
+  reasoningTiers?: string[] | null,
 ): ReasoningEffort | undefined {
   const id = model.trim().toLowerCase();
   if (!id) return undefined;
+  // Authoritative path: the models API sent the resolved model's ladder —
+  // clamp the stored preference onto it ([] = no knob, send nothing).
+  if (reasoningTiers != null) {
+    if (reasoningTiers.length === 0) return undefined;
+    return clampReasoningTier(reasoningTiers, reasoningEffort);
+  }
+  // Legacy heuristics (stale/record-shaped models responses).
   const targetId = targetModel?.trim().toLowerCase() ?? "";
   const normalized =
     !modelAllowsXHighReasoningEffort(id, provider, targetId) &&
@@ -163,6 +177,7 @@ export function ChatArea({
   onReasoningEffortChange,
   modelProvider,
   modelTarget,
+  reasoningTiers,
   onAgentChange,
   showActionTrace = true,
   hasEarlier,
@@ -181,11 +196,15 @@ export function ChatArea({
     reasoningEffort,
     modelProvider,
     modelTarget,
+    reasoningTiers,
   );
+  // What the composer highlights: the tier that will actually be sent
+  // (per-model clamp), falling back to the stored preference.
   const normalizedReasoningEffort =
-    !allowsCodexReasoning && reasoningEffort === "xhigh"
+    effectiveReasoningEffort ??
+    (!allowsCodexReasoning && reasoningEffort === "xhigh"
       ? "high"
-      : reasoningEffort;
+      : reasoningEffort);
   const chat = useChatStream({
     sessionKey,
     model,
@@ -253,6 +272,15 @@ export function ChatArea({
       return chat.editAndRerun(messageId, newContent).catch((err) => {
         console.warn("chat edit-rerun failed", err);
         throw err;
+      });
+    },
+    [chat],
+  );
+
+  const handleQuestionAnswer = React.useCallback(
+    (text: string) => {
+      chat.sendMessage(text).catch((err) => {
+        console.warn("chat send failed", err);
       });
     },
     [chat],
@@ -436,6 +464,7 @@ export function ChatArea({
             hasEarlier={hasEarlier}
             loadingEarlier={loadingEarlier}
             onLoadEarlier={onLoadEarlier}
+            onQuestionAnswer={handleQuestionAnswer}
           />
         </div>
 
@@ -449,6 +478,7 @@ export function ChatArea({
           reasoningEffort={normalizedReasoningEffort}
           onReasoningEffortChange={onReasoningEffortChange}
           allowXHighReasoningEffort={allowsCodexReasoning}
+          reasoningTiers={reasoningTiers}
           replyContext={reply}
           onClearReply={() => setReply(null)}
           onSend={(text, attachments) => {

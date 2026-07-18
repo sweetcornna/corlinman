@@ -15,6 +15,10 @@ import {
 
 import { cn } from "@/lib/utils";
 import type { ReasoningEffort } from "@/lib/api/chat";
+import {
+  clampReasoningTier,
+  isReasoningTier,
+} from "@/lib/chat/reasoning-effort";
 import type { ChatAttachment } from "@/lib/chat/types";
 import {
   attachmentKindFromMime,
@@ -49,6 +53,10 @@ interface ComposerProps {
   reasoningEffort?: ReasoningEffort;
   onReasoningEffortChange?: (effort: ReasoningEffort) => void;
   allowXHighReasoningEffort?: boolean;
+  /** The active model's effort ladder (models API). `null`/`undefined` =
+   *  unknown family → legacy low/medium/high(/xhigh) options; `[]` = the
+   *  model has no effort knob → the control is hidden. */
+  reasoningTiers?: string[] | null;
   extraSlashCommands?: SlashCommand[];
   onSlashClear?: () => void;
   placeholder?: string;
@@ -58,15 +66,24 @@ interface ComposerProps {
 }
 
 const MAX_TEXTAREA_PX = 220;
+const REASONING_TIER_LABEL_KEYS: Record<ReasoningEffort, string> = {
+  none: "chat.reasoningEffortNone",
+  minimal: "chat.reasoningEffortMinimal",
+  low: "chat.reasoningEffortLow",
+  on: "chat.reasoningEffortOn",
+  medium: "chat.reasoningEffortMedium",
+  high: "chat.reasoningEffortHigh",
+  xhigh: "chat.reasoningEffortXHigh",
+  max: "chat.reasoningEffortMax",
+};
+// Legacy option set for models whose ladder is unknown to the registry.
 const REASONING_EFFORT_OPTIONS: Array<{
   value: ReasoningEffort;
   labelKey: string;
-}> = [
-  { value: "low", labelKey: "chat.reasoningEffortLow" },
-  { value: "medium", labelKey: "chat.reasoningEffortMedium" },
-  { value: "high", labelKey: "chat.reasoningEffortHigh" },
-  { value: "xhigh", labelKey: "chat.reasoningEffortXHigh" },
-];
+}> = (["low", "medium", "high", "xhigh"] as const).map((value) => ({
+  value,
+  labelKey: REASONING_TIER_LABEL_KEYS[value],
+}));
 
 export function Composer({
   isStreaming,
@@ -81,6 +98,7 @@ export function Composer({
   reasoningEffort = "medium",
   onReasoningEffortChange,
   allowXHighReasoningEffort = false,
+  reasoningTiers,
   extraSlashCommands,
   onSlashClear,
   placeholder,
@@ -98,17 +116,30 @@ export function Composer({
   const fileRef = React.useRef<HTMLInputElement | null>(null);
   const emojiWrapRef = React.useRef<HTMLDivElement | null>(null);
   const emojiBtnRef = React.useRef<HTMLButtonElement | null>(null);
-  const reasoningEffortOptions = React.useMemo(
-    () =>
-      allowXHighReasoningEffort
-        ? REASONING_EFFORT_OPTIONS
-        : REASONING_EFFORT_OPTIONS.filter((option) => option.value !== "xhigh"),
-    [allowXHighReasoningEffort],
-  );
+  const reasoningEffortOptions = React.useMemo(() => {
+    // Authoritative ladder from the models API — render the model's real
+    // tiers, in canonical order.
+    if (reasoningTiers && reasoningTiers.length > 0) {
+      return reasoningTiers
+        .filter(isReasoningTier)
+        .map((value) => ({
+          value,
+          labelKey: REASONING_TIER_LABEL_KEYS[value],
+        }));
+    }
+    return allowXHighReasoningEffort
+      ? REASONING_EFFORT_OPTIONS
+      : REASONING_EFFORT_OPTIONS.filter((option) => option.value !== "xhigh");
+  }, [reasoningTiers, allowXHighReasoningEffort]);
   const activeReasoningEffort =
-    !allowXHighReasoningEffort && reasoningEffort === "xhigh"
-      ? "high"
-      : reasoningEffort;
+    clampReasoningTier(
+      reasoningEffortOptions.map((option) => option.value),
+      reasoningEffort,
+    ) ?? reasoningEffort;
+  // `[]` = the model is known to have no effort knob — hide the control.
+  const showReasoningControl = Boolean(
+    onReasoningEffortChange && !(reasoningTiers && reasoningTiers.length === 0),
+  );
 
   React.useEffect(() => {
     const el = taRef.current;
@@ -657,7 +688,7 @@ export function Composer({
                 />
               ) : null}
             </div>
-            {onReasoningEffortChange ? (
+            {showReasoningControl && onReasoningEffortChange ? (
               <div
                 role="radiogroup"
                 aria-label={t("chat.reasoningEffortAriaLabel")}

@@ -21,6 +21,8 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from corlinman_providers.reasoning_tiers import reasoning_tiers_for_model
+
 from corlinman_server.gateway.core.config_mutation import (
     publish_config_mutation as _publish_config_mutation_core,
 )
@@ -62,6 +64,12 @@ class AliasRow(BaseModel):
     provider: str = ""
     params: dict[str, Any] = Field(default_factory=dict)
     effective_params_schema: dict[str, Any] = Field(default_factory=dict)
+    # Reasoning-effort ladder for the *resolved* upstream model (family
+    # registry in corlinman_providers.reasoning_tiers). ``None`` = unknown
+    # family (client falls back to its own heuristics); ``[]`` = the model
+    # is known to have no effort knob (hide the picker).
+    reasoning_tiers: list[str] | None = None
+    reasoning_default: str | None = None
 
 
 class ModelsResponse(BaseModel):
@@ -133,12 +141,15 @@ def _alias_row(
     provider_entry = providers_cfg.get(provider_name) if provider_name else None
     if isinstance(provider_entry, dict):
         schema = _view_from_entry(provider_name, provider_entry).params_schema
+    tiers, tier_default = reasoning_tiers_for_model(model)
     return AliasRow(
         name=name,
         model=model,
         provider=provider_name,
         params=params,
         effective_params_schema=schema,
+        reasoning_tiers=list(tiers) if tiers is not None else None,
+        reasoning_default=tier_default,
     )
 
 
