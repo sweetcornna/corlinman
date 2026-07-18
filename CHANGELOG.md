@@ -4,6 +4,20 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.31.1] — 2026-07-18 — reasoning summaries stay in the thinking block
+
+### Fixed
+- **OpenAI-compatible relays** (Responses→chat.completions shims, e.g.
+  gpt-5.x): reasoning-summary bodies streamed as plain `content` while
+  only the bold headline arrived on `reasoning_content` — the planning
+  prose rendered as the assistant's reply, glued together across steps.
+  The provider stream now buffers content after a headline-only
+  reasoning chunk and routes it by what the step turns out to be: tool
+  calls → reasoning block; plain stop / oversized buffer / dropped
+  finish → the real answer, streamed as content. DeepSeek-R1-style
+  reasoning is unaffected. Summary parts join with blank lines in the
+  thinking block.
+
 ## [1.31.0] — 2026-07-18 — Eclipse Minimal v2 design language
 
 > The whole admin UI switches from Spatial Glass (visionOS colored glass)
