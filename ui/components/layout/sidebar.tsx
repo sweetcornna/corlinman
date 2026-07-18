@@ -281,10 +281,19 @@ export function Sidebar({ user }: SidebarProps) {
         ) : (
           <div className="flex items-center gap-2">
             <div className="relative flex h-7 w-7 shrink-0 items-center justify-center">
-              <PresenceOrb size="md" className="absolute inset-0 !h-7 !w-7" />
+              {/* Orb stays in-flow so `.presence-orb`'s own position:relative
+                  anchors its bloom/pseudo-elements; it fills the 28px box via
+                  !h-7 !w-7. The initial floats above as an absolute overlay —
+                  do NOT put `absolute` on the orb (globals.css .presence-orb
+                  overrides an unprefixed absolute and drops it back in-flow,
+                  shoving the initial out of the pearl). */}
+              <PresenceOrb size="md" className="!h-7 !w-7" />
               {/* The pearl's disc is always #000 — the initial must stay
                   white in BOTH themes (theme ink would vanish on Paper). */}
-              <span className="relative text-[11px] font-medium text-white">
+              <span
+                data-testid="nav-user-initial"
+                className="absolute inset-0 flex items-center justify-center text-[11px] font-medium text-white"
+              >
                 {(user ?? "a").slice(0, 1).toUpperCase()}
               </span>
             </div>
