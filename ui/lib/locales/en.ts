@@ -47,6 +47,8 @@ export const en = {
     loadFailed: "Load failed",
     saveSuccess: "Saved",
     saveFailed: "Save failed",
+    saved: "Saved",
+    copied: "Copied",
     invalidJson: "Invalid JSON",
   },
 
@@ -160,6 +162,68 @@ export const en = {
       "Using default admin/root — change later in Account & Security.",
   },
 
+  onboard: {
+    step: {
+      api: {
+        title: "Configure API",
+      },
+      username: {
+        title: "Change the default username",
+        subtitle: "The default username is admin — pick one of your own.",
+        unchanged: "The new username must differ from the current one",
+      },
+      password: {
+        title: "Change the default password",
+        subtitle: "The default password is root. Set a strong new one.",
+      },
+      persona: {
+        title: "Personalize the assistant",
+        subtitle: "Choose how to initialize the assistant's persona.",
+      },
+      image: {
+        title: "Image generation API",
+        subtitle: "Choose how image-generation requests are handled.",
+      },
+    },
+    persona: {
+      choice: {
+        default: "Use the default assistant grantley",
+        defaultBody: "Use the built-in assistant grantley — no extra setup needed.",
+        custom: "Create a custom persona",
+        customBody: "Build a personal persona through a guided Q&A (opens after setup).",
+        skip: "Skip for now",
+        skipBody: "Configure the persona later from the admin panel.",
+      },
+    },
+    image: {
+      notSupported: "This API doesn't support image generation",
+      notSupportedHint:
+        "No image models were found on your current API endpoint. Configure a separate image provider, or skip this step.",
+      choice: {
+        reuse: "Reuse the current API",
+        reuseBody: "Try generating images with the LLM provider you just configured.",
+        separate: "Configure separately",
+        separateBody: "Register a separate provider for images (for example OpenAI gpt-image-1).",
+        skip: "Skip",
+        skipBody: "Set up image generation later.",
+      },
+      separate: {
+        subtitle: "Register a dedicated OpenAI-compatible provider for image generation.",
+        required: "Name, Base URL, and API Key are all required.",
+        nameLabel: "Name",
+        baseUrlLabel: "Base URL",
+        apiKeyLabel: "API Key",
+        modelLabel: "Image model ID",
+      },
+    },
+    done: {
+      subtitle: "First-run setup is complete. Head to the admin panel to explore.",
+      title: "All steps completed",
+      body: "You can fine-tune things later under Account & Security, Credentials, Persona, and System.",
+      cta: "Open admin panel",
+    },
+  },
+
   notFound: {
     description: "This page slipped out of the routing table. Let's get you back.",
     backToDashboard: "Back to dashboard",
@@ -205,6 +269,7 @@ export const en = {
       usernameChanged: "Username changed to {{name}}",
       passwordChanged: "Password updated",
       passwordMismatch: "Passwords don't match",
+      invalidUsername: "Username cannot be empty",
       reveal: "Show password",
       hide: "Hide password",
       revealUsernamePassword: "Show password for username change",
@@ -897,6 +962,10 @@ export const en = {
         offlineHint:
           "The panels below will populate once `/admin/channels/qq/status` responds.",
       },
+      accountOfflineTitle: "QQ account offline",
+      accountOfflineBody:
+        "NapCat is running, but the QQ account was kicked offline. Re-scan the login QR so the bot can send and receive again.",
+      accountOfflineAction: "Open scan login",
     },
     telegram: {
       tp: {
@@ -1212,14 +1281,14 @@ export const en = {
 
   schedulerQzone: {
     title: "QZone daily publishing",
-    lede: "Drive a persona's daily QQ-空间 说说 pipeline on a cron schedule. Each job runs one agent turn under the persona's voice and asserts it ends with a qzone_publish tool call.",
+    lede: "Post a daily QZone update in each persona's own voice, on a schedule you set.",
     create: "Create a daily QZone job",
     createHelp: "Re-submitting the same name updates the existing job in place — useful for editing the cron or prompt without churning the registry.",
     created: "Saved scheduler job {{name}}",
     createFail: "Failed to save scheduler job: {{msg}}",
-    enableDaily: "Enable daily 说说",
+    enableDaily: "Enable daily posts",
     needPersona: "Pick a persona in the form below first.",
-    dailyEnabled: "Daily 说说 job enabled for {{persona}} ({{name}})",
+    dailyEnabled: "Daily QZone job enabled for {{persona}} ({{name}})",
     dailyEnableFail: "Failed to enable daily job: {{msg}}",
     fieldName: "Job name",
     fieldNameHelp: "[a-z0-9_.-]{1,128} — used as the unique key in the registry.",
@@ -1493,6 +1562,7 @@ export const en = {
     paramsBackendPending:
       "Backend feature pending. Upgrade the gateway to 0.2.x.",
     backendPending: "Backend feature pending. Upgrade the gateway to 0.2.x.",
+    pickerAddedHint: "Row added — enter an alias name, then click Save.",
     picker: {
       title: "Pick a model",
       searchPlaceholder: "Search providers or models…",
@@ -1878,6 +1948,7 @@ export const en = {
     toastSavedTitle: "Config saved",
     toastSavedDescription:
       "Changes applied immediately for hot-reloadable sections.",
+    sectionModified: "Modified",
     // Tidepool (Phase 5e) — glass-surfaced config editor copy.
     tp: {
       heroTitle: "Config",
@@ -2404,6 +2475,26 @@ export const en = {
       editSaveFailedToast: "Could not save skill",
       editBundledNotice: "Bundled skills can be edited; your changes live in the active profile copy.",
     },
+    drawer: {
+      descriptionLabel: "Description",
+      descriptionPlaceholder: "What this skill does…",
+      whenToUseLabel: "When to use",
+      whenToUseHint: "The model reads this hint when deciding whether to pull in this skill.",
+      whenToUsePlaceholder: "When should the model reach for this skill…",
+      allowedToolsLabel: "Allowed tools",
+      allowedToolsHint: "One tool name per line.",
+      allowedToolsPlaceholder: "One tool per line, e.g. web_search",
+      disableInvocationLabel: "Disable model auto-invocation",
+      disableInvocationHint:
+        "When on, the model never picks this skill on its own — it only runs when referenced explicitly.",
+      bodyLabel: "Body (markdown)",
+      bodyHint: "Injected into the conversation verbatim when the skill is used.",
+      bodyPlaceholder: "Write the skill instructions in markdown…",
+      unsaved: "Unsaved changes",
+      noChanges: "No changes",
+      saving: "Saving…",
+      save: "Save",
+    },
   },
 
   marketplace: {
@@ -2650,6 +2741,18 @@ export const en = {
       builtIn: "built-in",
       user: "user",
       project: "project",
+      triggerAuto: "Auto-route",
+      triggerPicked: "{{name}}",
+      autoLabel: "Auto-route",
+      autoHint: "Pick an agent automatically based on the message.",
+      loading: "Loading agents…",
+      empty: "No agents available.",
+      noMatch: "No agents match your search.",
+      source: {
+        "built-in": "built-in",
+        user: "user",
+        project: "project",
+      },
     },
     skills: {
       hint: {
@@ -2866,6 +2969,35 @@ export const en = {
       body:
         "This persists every transition: active skills idle past the stale threshold flip to ``stale``, stale skills idle past the archive threshold flip to ``archived``. SKILL.md files are rewritten on disk.",
       action: "Run",
+    },
+    settings: {
+      title: "Evolution settings",
+      subtitle: "Meta approvers, weekly proposal budget, and auto-rollback thresholds.",
+      loading: "Loading…",
+      configUnset: "Evolution is disabled in the gateway config — these settings can't be saved until it's enabled.",
+      metaApprovers: "Meta approvers",
+      metaApproversHint: "Users allowed to approve engine-level proposals.",
+      metaApproversEmpty:
+        "No approvers yet — every engine-level proposal will be rejected until you add one.",
+      removeApprover: "Remove {{id}}",
+      approverPlaceholder: "User ID…",
+      addApprover: "Add",
+      budget: "Proposal budget",
+      budgetEnabled: "Enable budget",
+      weeklyTotal: "Weekly total",
+      weeklyTotalHint: "Maximum proposals per week.",
+      perKind: "Per-kind caps",
+      autoRollback: "Auto-rollback",
+      autoRollbackEnabled: "Enable auto-rollback",
+      graceWindowHours: "Grace window (hours)",
+      graceWindowHint: "How long an applied change is watched — it rolls back if metrics degrade.",
+      errRateDelta: "Error-rate delta (%)",
+      p95Delta: "p95 latency delta (%)",
+      signalWindowSecs: "Signal window (seconds)",
+      minBaselineSignals: "Min baseline signals",
+      saveFailed: "Save failed: {{msg}}",
+      saving: "Saving…",
+      save: "Save",
     },
   },
 
@@ -3145,14 +3277,14 @@ export const en = {
     deleteAriaLabel: "Delete session {{key}}",
     deleteConfirmTitle: "Delete this session?",
     deleteConfirmBody:
-      "This will permanently remove the session history from the journal.\n确认删除此会话?会话历史会从 journal 永久移除。",
+      "This will permanently remove the session history.",
     deleteConfirmAction: "Permanently delete",
     deleteSucceeded: "Deleted session {{key}}",
     deleteFailed: "Delete failed: {{msg}}",
     clearAll: "Clear all",
     clearAllConfirmTitle: "Clear all sessions?",
     clearAllConfirmBody:
-      "This will permanently remove all {{n}} session records.\n清空所有会话?将永久删除 {{n}} 条会话记录。",
+      "This will permanently remove all {{n}} session records.",
     clearAllConfirmAction: "Clear everything",
     clearAllSucceeded: "Cleared {{n}} sessions",
     clearAllFailed: "Clear failed: {{msg}}",
@@ -3299,6 +3431,49 @@ export const en = {
       sandbox: "Sandbox mode",
     },
   },
+
+  identity: {
+    title: "Identity",
+    subtitle:
+      "Canonical user IDs across QQ, Telegram, and other channels. Issue verification phrases or merge identities by hand.",
+    disabled: {
+      title: "Identity service disabled",
+      body: "The cross-channel identity store isn't enabled on this deployment yet.",
+    },
+    empty: "No users yet — one is created the first time someone chats on any channel.",
+    col: {
+      user: "User",
+      display_name: "Display name",
+      aliases: "Aliases",
+    },
+    detail: {
+      title: "Identity",
+      subtitle:
+        "Aliases bound to this user. Issue a verification phrase from one alias and have the person paste it on another channel to merge identities.",
+      aliases: "Aliases",
+      not_found: "User not found — it may have just been merged into another user.",
+      no_aliases: "No aliases bound to this user yet.",
+      merge: {
+        title: "Manual merge",
+      },
+    },
+    phrase: {
+      issued: "Verification phrase issued",
+      disabled: "Identity service disabled — cannot issue a phrase.",
+      issuing: "Issuing…",
+      issue: "Issue phrase",
+    },
+    merge: {
+      ok: "Identities merged",
+      not_found: "Source user ID not found — nothing to merge.",
+      disabled: "Identity service disabled — cannot merge.",
+      from_label: "From user_id",
+      decided_by_label: "Decided by",
+      merging: "Merging…",
+      submit: "Merge into this user",
+    },
+  },
+
   persona: {
     title: "Persona — human-like chat",
     subtitle:
@@ -3347,7 +3522,7 @@ export const en = {
     loadFailed: "Could not load personas",
     deleteConfirmTitle: "Delete this persona?",
     deleteConfirmBody:
-      "This will permanently remove the persona.\n确认删除此 persona?将永久移除。",
+      "This will permanently remove the persona.",
     deleteConfirmAction: "Permanently delete",
     deleteSucceeded: "Deleted persona {{name}}",
     deleteFailed: "Delete failed: {{msg}}",
@@ -3362,6 +3537,7 @@ export const en = {
     fieldId: "Slug",
     fieldIdHint: "Stable ID, lowercase a–z / 0–9 / hyphens. Cannot be changed after creation.",
     fieldDisplayName: "Display name",
+    fieldDisplayNamePlaceholder: "Grantley Bell",
     fieldShortSummary: "Short summary",
     fieldShortSummaryHint: "One or two lines — shown in the list row.",
     fieldSystemPrompt: "System prompt (markdown)",
@@ -3404,7 +3580,7 @@ export const en = {
       "Stickers the agent can send via send_attachment. One label per slot — keep them short (happy, angry, sleepy …).",
     assetsRefsTitle: "Reference images",
     assetsRefsDescription:
-      "Character立绘 fed into image_with_refs. The first {{cap}} are used by the model; extras stay stored but are ignored.",
+      "Character art used when generating images. The first {{cap}} are used by the model; extras stay stored but are ignored.",
     assetsRefsOverCapHint:
       "Only the first {{cap}} reference images are passed to image_with_refs. Extras are kept for swapping but are ignored at generation time.",
     assetsAddEmoji: "+ Add emoji",

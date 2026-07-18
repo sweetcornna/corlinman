@@ -10,10 +10,10 @@ import { i18next, initI18n, resolvePreferredLang } from "@/lib/i18n";
 import { CommandPaletteProvider } from "./cmdk-palette";
 import { CursorLight } from "@/components/ui/cursor-light";
 
-// Init at module load. `initI18n()` is SSR-safe: on the server it skips
-// the LanguageDetector plugin and defaults to zh-CN, matching the
-// `<html lang="zh-CN">` we emit. On the client it re-runs inside
-// <Providers /> too but the function is idempotent.
+// Init at module load. `initI18n()` is SSR-safe and defaults to zh-CN,
+// matching the `<html lang="zh-CN">` we emit. After mount the effect below
+// applies the operator's persisted toggle choice (localStorage only — no
+// navigator.language sniffing). Idempotent; re-runs inside <Providers />.
 initI18n();
 
 // --- providers --------------------------------------------------------------

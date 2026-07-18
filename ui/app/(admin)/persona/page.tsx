@@ -987,7 +987,9 @@ function PersonaEditorDialog({
                 value={displayName}
                 onChange={(e) => setDisplayName(e.target.value)}
                 data-testid="persona-display-name-input"
-                placeholder="格兰特利·贝尔"
+                placeholder={t("persona.fieldDisplayNamePlaceholder", {
+                  defaultValue: "格兰特利·贝尔",
+                })}
               />
               {errors.display_name ? (
                 <p className="text-xs text-destructive">{errors.display_name}</p>

@@ -99,12 +99,11 @@ describe("<AgentPicker>", () => {
     const onChange = vi.fn();
     render(wrap(<AgentPicker value={null} onChange={onChange} />));
 
-    // Default trigger label is the auto-route key (when the locale
-    // doesn't define the key yet, react-i18next returns the key — that
-    // still satisfies the "shows auto-route" contract because the key
-    // string itself reads ``playground.agentPicker.triggerAuto``).
+    // Default trigger label resolves `playground.agentPicker.triggerAuto`
+    // — zh-CN "自动路由" in the default test locale (English "Auto route"
+    // when the suite runs under en).
     const trigger = screen.getByTestId("agent-picker-trigger");
-    expect(trigger.textContent ?? "").toMatch(/auto|triggerAuto/i);
+    expect(trigger.textContent ?? "").toMatch(/自动路由|auto/i);
 
     // Open the popover.
     await act(async () => {
