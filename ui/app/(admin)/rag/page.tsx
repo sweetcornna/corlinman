@@ -35,8 +35,6 @@ export default function RagPage() {
 
   const [q, setQ] = React.useState("");
   const [k, setK] = React.useState(10);
-  const [tagFilter, setTagFilter] = React.useState<string[]>([]);
-  const [tagDraft, setTagDraft] = React.useState("");
   const [results, setResults] = React.useState<RagQueryResponse | null>(null);
   const [queryError, setQueryError] = React.useState<string | null>(null);
 
@@ -77,16 +75,6 @@ export default function RagPage() {
     if (!window.confirm(t("rag.rebuildConfirm"))) return;
     rebuildMutation.mutate();
   };
-
-  const addTag = (raw: string) => {
-    const t = raw.trim();
-    if (!t) return;
-    if (tagFilter.includes(t)) return;
-    setTagFilter([...tagFilter, t]);
-    setTagDraft("");
-  };
-  const removeTag = (t: string) =>
-    setTagFilter(tagFilter.filter((x) => x !== t));
 
   return (
     <>
@@ -157,42 +145,6 @@ export default function RagPage() {
             >
               {queryMutation.isPending ? t("rag.searching") : t("rag.search")}
             </Button>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <label className="text-[10px] uppercase tracking-wider text-sg-ink-3">
-              {t("rag.tagsLabel")}
-            </label>
-            {tagFilter.map((tag) => (
-              <button
-                key={tag}
-                type="button"
-                onClick={() => removeTag(tag)}
-                className="inline-flex items-center gap-1 rounded-md border border-sg-border bg-sg-inset-hover px-2 py-0.5 font-mono text-[10px] text-accent-foreground hover:bg-sg-inset-hover"
-                aria-label={t("rag.removeTagAria", { name: tag })}
-              >
-                #{tag}
-                <span aria-hidden>×</span>
-              </button>
-            ))}
-            <input
-              type="text"
-              value={tagDraft}
-              onChange={(e) => setTagDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  addTag(tagDraft);
-                } else if (e.key === "Backspace" && !tagDraft && tagFilter.length > 0) {
-                  e.preventDefault();
-                  setTagFilter(tagFilter.slice(0, -1));
-                }
-              }}
-              placeholder={t("rag.addTagPlaceholder")}
-              className="h-7 rounded-md border border-input bg-transparent px-2 font-mono text-[11px] outline-none focus-visible:ring-1 focus-visible:ring-sg-accent/40"
-            />
-            <p className="text-[10px] text-sg-ink-3">
-              {t("rag.tagFilterHint")}
-            </p>
           </div>
         </form>
 

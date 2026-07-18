@@ -47,11 +47,62 @@ describe("parseList", () => {
   });
 });
 
-describe("buildChannelConfigBody", () => {
+const keys = (fields: { key: string }[]) => fields.map((f) => f.key);
+
+describe("CHANNEL_CONFIG_SPEC", () => {
   it("treats QQ NapCat URL as editable and WebUI token as secret", () => {
-    expect(CHANNEL_CONFIG_SPEC.qq.secrets).toContain("napcat_access_token");
-    expect(CHANNEL_CONFIG_SPEC.qq.urls).toContain("napcat_url");
+    expect(keys(CHANNEL_CONFIG_SPEC.qq.secrets)).toContain("napcat_access_token");
+    expect(keys(CHANNEL_CONFIG_SPEC.qq.urls)).toContain("napcat_url");
   });
+
+  it("marks every endpoint-override URL advanced (expert-only)", () => {
+    const advancedUrls = Object.values(CHANNEL_CONFIG_SPEC).flatMap((spec) =>
+      spec.urls.filter((f) => f.advanced).map((f) => f.key),
+    );
+    for (const key of [
+      "ws_url",
+      "napcat_url",
+      "base_url",
+      "webhook_url",
+      "gateway_url",
+      "rest_base",
+      "api_base",
+    ]) {
+      expect(advancedUrls).toContain(key);
+    }
+    // app_id is a public client id, not an endpoint — stays visible.
+    for (const ch of ["feishu", "wechat_official", "qq_official"] as const) {
+      expect(
+        CHANNEL_CONFIG_SPEC[ch].urls.find((f) => f.key === "app_id")?.advanced,
+      ).toBeUndefined();
+    }
+  });
+
+  it("surfaces the QQ group-behaviour keys with the right kinds", () => {
+    const qq = CHANNEL_CONFIG_SPEC.qq;
+    expect(keys(qq.flags)).toEqual(["group_replies_enabled", "proactive_enabled"]);
+    expect(keys(qq.ids)).toEqual(["self_ids", "group_whitelist", "proactive_groups"]);
+    expect(keys(qq.numbers)).toEqual([
+      "group_reply_cooldown_secs",
+      "proactive_min_gap_minutes",
+      "proactive_max_gap_minutes",
+      "proactive_daily_max",
+      "proactive_active_start_hour",
+      "proactive_active_end_hour",
+    ]);
+    // Every tuning number is expert-only.
+    expect(qq.numbers.every((f) => f.advanced)).toBe(true);
+    const policy = qq.urls.find((f) => f.key === "group_reply_policy");
+    expect(policy?.input).toBe("select");
+    expect(policy?.options).toEqual(["mention_or_keyword", "all"]);
+    expect(policy?.advanced).toBeUndefined(); // basic field
+    const prompt = qq.urls.find((f) => f.key === "proactive_prompt");
+    expect(prompt?.input).toBe("textarea");
+    expect(prompt?.advanced).toBe(true);
+  });
+});
+
+describe("buildChannelConfigBody", () => {
 
   it("emits an empty body when nothing was edited", () => {
     const initial = seedDraft("telegram", {
@@ -78,6 +129,7 @@ describe("buildChannelConfigBody", () => {
       ids: { allowed_chat_ids: "1, 2, 3" },
       filters: { keyword_filter: "" },
       flags: { require_mention_in_groups: true, drop_pending_updates: false },
+      numbers: {},
     };
     const body = buildChannelConfigBody("telegram", draft, initial);
     // structured groups

@@ -66,7 +66,7 @@ export const zhCN = {
     sessionHint: "会话安全存储，服务端加密校验。",
     forgotPassword: "忘记密码？",
     forgotPasswordBody:
-      "暂无站内重置流程。请 SSH 登录网关主机，编辑 ~/.corlinman/config.toml 的 [admin].password_hash 字段，替换为新的 argon2 哈希，然后重启容器。生成新哈希：`python -c \"from argon2 import PasswordHasher; print(PasswordHasher().hash('新密码'))\"`。",
+      "请联系服务器管理员在主机上重置管理员密码后重新登录。",
     resetIntro:
       "通过网关主机文件挑战自助重置：点击下方按钮生成一次性令牌，SSH 上主机读出来粘回这里，配新密码即可。",
     resetMint: "生成重置令牌",
@@ -805,7 +805,7 @@ export const zhCN = {
   rag: {
     title: "RAG",
     subtitle:
-      "`/admin/rag/stats` · `/query` · `/rebuild` —— BM25 调试查询；稠密向量需 embedding 服务。",
+      "检索知识库、查看统计并按需重建索引。",
     chunks: "分片",
     files: "文件",
     tags: "标签",
@@ -815,10 +815,6 @@ export const zhCN = {
     topKAria: "top-k",
     search: "查询",
     searching: "查询中…",
-    tagsLabel: "标签",
-    addTagPlaceholder: "添加标签...",
-    removeTagAria: "移除标签 {{name}}",
-    tagFilterHint: "（当服务端支持时将作为标签过滤传入）",
     hits: "{{n}} 条命中 · 后端={{backend}}",
     noHits: "未命中",
     rebuildTitle: "重建 FTS 索引",
@@ -1250,31 +1246,35 @@ export const zhCN = {
 
   schedulerQzone: {
     title: "QZone 每日发布",
-    lede: "按 cron 计划驱动人格的 QQ 空间说说流水线。每个任务以该人格的口吻运行一轮对话，并确保以 qzone_publish 工具调用结束。",
-    create: "创建每日 QZone 任务",
-    createHelp: "重复提交同名任务会就地更新——便于修改 cron 或提示词而不打乱注册表。",
+    lede: "让人格按计划每天自动发布一条 QQ 空间说说。",
+    create: "配置每日说说任务",
+    createHelp: "选择人格并保存；同一人格重复保存会就地更新任务。",
     created: "已保存定时任务 {{name}}",
     createFail: "保存定时任务失败：{{msg}}",
     enableDaily: "一键启用每日说说",
     needPersona: "请先在下方选择人格。",
     dailyEnabled: "已为 {{persona}} 启用每日说说任务（{{name}}）",
     dailyEnableFail: "启用每日任务失败：{{msg}}",
-    fieldName: "任务名称",
-    fieldNameHelp: "[a-z0-9_.-]{1,128} — 作为注册表中的唯一键。",
     fieldPersona: "人格",
     fieldPersonaPlaceholder: "— 选择人格 —",
     loadingPersonas: "加载人格中…",
-    fieldPrompt: "提示词模板（用户轮）",
-    fieldPromptHelp: "将原样作为用户轮发送。人格系统提示词与要求以 qzone_publish 收尾的指令会自动附加。",
+    fieldPrompt: "提示词",
+    fieldPromptHelp: "告诉人格每天写什么，可随时修改。",
+    fieldPromptDetail: "内容会原样作为用户消息发送；人格设定与发布指令由系统自动附加。",
     fieldPromptPlaceholder: "用今日的视角写一条 200 字以内的 QQ 空间说说，配一张你最近状态的立绘图。",
-    fieldCron: "Cron 表达式",
+    fieldCron: "发布时间",
+    derivedName: "任务名：{{name}}",
+    cronPreset09: "每天 09:00",
+    cronPreset12: "每天 12:00",
+    cronPreset21: "每天 21:00",
+    cronPresetCustom: "自定义…",
     cronInvalid: "请使用 5 段 cron（分 时 日 月 周）。",
     cronNext: "下次触发：{{when}}",
     save: "保存任务",
     refresh: "刷新",
     tableTitle: "QZone 每日任务",
-    tableHelp: '此处仅展示 action_type="qzone.daily_publish" 的任务。其他任务请在 /admin/scheduler 主页面管理。',
-    empty: "暂无 QZone 每日任务。使用上方表单创建，或启用格兰模板。",
+    tableHelp: "此处仅显示每日说说任务，其他定时任务请在「定时任务」页面管理。",
+    empty: "暂无每日说说任务，在上方选择人格并保存即可创建。",
     toggleOn: "已启用",
     toggleOff: "已暂停",
     triggered: "{{name}} 已发布 — {{url}}",
@@ -1302,7 +1302,7 @@ export const zhCN = {
   scheduler: {
     title: "定时任务",
     subtitle:
-      "`[[scheduler.jobs]]` 快照。Cron 运行时将在 M7 落地；触发会被记录，501 表示 dry run。",
+      "查看并手动触发定时任务。",
     colName: "名称",
     colCron: "Cron",
     colTz: "时区",
@@ -1375,7 +1375,7 @@ export const zhCN = {
       scheduleNoLast: "尚无记录",
       historyEmpty: "该任务暂无历史记录。",
       emptyTitle: "尚未配置定时任务",
-      emptyHint: "`[[scheduler.jobs]]` 当前为空。在配置中新增 cron 任务即可。",
+      emptyHint: "暂无定时任务。",
       filterEmptyTitle: "没有符合筛选条件的任务",
       filterEmptyHint: "调整搜索或状态过滤。",
     },
@@ -1384,7 +1384,7 @@ export const zhCN = {
   approvals: {
     title: "审批",
     subtitle:
-      "被 `[[approvals.rules]]` 门控的待审工具调用。由 corlinman-gateway::middleware::approval 支持。",
+      "等待人工批准的工具调用。",
     tabsAria: "审批分页",
     tabPending: "待审批",
     tabHistory: "历史",
@@ -1492,7 +1492,7 @@ export const zhCN = {
   models: {
     title: "模型",
     subtitle:
-      "`/admin/models` · `/admin/models/aliases`。provider 启停在配置编辑器里（切换 `[providers.*]`）。",
+      "管理模型别名与路由。",
     providers: "Providers",
     providersEmpty: "未配置任何 provider。",
     keyKind: "key: {{kind}}",
@@ -1575,7 +1575,7 @@ export const zhCN = {
     },
     title: "Providers",
     subtitle:
-      "`/admin/providers` — 动态 provider 注册表。新增任意 OpenAI 兼容端点或第一方供应商。",
+      "接入任意 OpenAI 兼容端点或第一方供应商。",
     add: "+ 新增 provider",
     edit: "编辑",
     remove: "删除",
@@ -1663,7 +1663,7 @@ export const zhCN = {
     custom: {
       title: "自定义 Provider",
       subtitle:
-        "通过 /admin/providers/custom 注册的自定义 provider。传输类型（transport kind）决定用哪种内置协议（OpenAI 兼容、Anthropic 等）承载请求。",
+        "自定义接入的服务商；选择与其接口匹配的协议类型即可。",
       add: "添加自定义 provider",
       loadFailed: "加载失败: {{msg}}",
       emptyTitle: "尚无自定义 provider。",
@@ -1825,7 +1825,7 @@ export const zhCN = {
   profiles: {
     title: "Profiles",
     subtitle:
-      "`/admin/profiles` — 智能体人格管理。每个 profile 拥有独立的 SOUL、记忆与 skills 目录。",
+      "每个 Profile 是一套独立的人格、记忆与技能。",
     create: "新建 profile",
     creating: "创建中…",
     cancel: "取消",
@@ -2906,6 +2906,7 @@ export const zhCN = {
       action: "执行",
     },
     settings: {
+      thresholdsAdvanced: "阈值调优",
       title: "进化设置",
       subtitle: "元提案审批人、每周提案预算与自动回滚阈值。",
       loading: "加载中…",
@@ -3325,12 +3326,25 @@ export const zhCN = {
 
   channelConfig: {
     title: "通道配置",
-    description:
-      "编辑该通道的凭据、端点与路由。更改会持久化到 config.toml；留空的密钥保持原值。部分更改下一条消息即生效；启用/停用通道需要重启。",
+    description: "编辑该通道的凭据与行为设置；留空的密钥保持原值。",
+    advancedToggle: "高级设置",
     secretsLegend: "密钥",
     secretPlaceholder: "留空则保持当前值",
     listPlaceholder: "用逗号或换行分隔",
     listHint: "多个值用逗号分隔。",
+    hint: {
+      group_replies_enabled: "关闭后机器人在所有群保持沉默，私聊不受影响。",
+      group_whitelist: "只有列出的群会被回复；留空表示所有群静音。",
+      group_reply_policy: "默认仅回应 @提及、命令与已配置的关键词。",
+      proactive_enabled: "按拟人节奏在群里主动发消息，默认关闭。",
+      proactive_groups: "留空则使用群组白名单。",
+    },
+    option: {
+      group_reply_policy: {
+        mention_or_keyword: "仅 @提及 / 关键词",
+        all: "全部消息（旧行为）",
+      },
+    },
     save: "保存通道配置",
     saving: "保存中…",
     saved: "通道配置已保存（{{count}} 项）",
@@ -3358,6 +3372,19 @@ export const zhCN = {
       drop_pending_updates: "启动时丢弃积压更新",
       respond_to_all: "回复所有消息",
       sandbox: "沙箱模式",
+      napcat_url: "NapCat 地址",
+      group_replies_enabled: "群组回复",
+      group_whitelist: "群组白名单",
+      group_reply_policy: "群回复策略",
+      group_reply_cooldown_secs: "回复冷却（秒）",
+      proactive_enabled: "主动发言",
+      proactive_groups: "主动发言群组",
+      proactive_prompt: "主动发言提示词",
+      proactive_min_gap_minutes: "最小间隔（分钟）",
+      proactive_max_gap_minutes: "最大间隔（分钟）",
+      proactive_daily_max: "每群每日上限",
+      proactive_active_start_hour: "活跃开始（时）",
+      proactive_active_end_hour: "活跃结束（时）",
     },
   },
 
@@ -3467,6 +3494,7 @@ export const zhCN = {
     fieldIdHint: "稳定标识，仅限小写 a–z / 0–9 / 连字符。创建后不可修改。",
     fieldDisplayName: "显示名",
     fieldDisplayNamePlaceholder: "格兰特利·贝尔",
+    fieldIdAutoHint: "根据显示名称自动生成，可手动修改；仅小写字母/数字/连字符，创建后不可更改。",
     fieldShortSummary: "简短描述",
     fieldShortSummaryHint: "一两行 — 显示在列表行中。",
     fieldSystemPrompt: "系统提示词（Markdown）",
@@ -3491,15 +3519,10 @@ export const zhCN = {
     resetToDefault: "重置为默认",
     resetToDefaultTooltip: "暂未实现",
     // Test box (disabled placeholder)
-    testBoxTitle: "测试消息",
-    testBoxPlaceholder: "发送一条假消息预览…",
-    testBoxButton: "测试",
-    testBoxTooltip: "实测请直接给 @QQbot 发消息",
     // Validation
     errIdRequired: "Slug 必填",
     errIdInvalid: "Slug 仅限小写 a–z、0–9、连字符",
     errDisplayNameRequired: "显示名必填",
-    errSummaryRequired: "简介必填",
     errPromptRequired: "System prompt 不能为空",
     // W2 — 素材上传区（表情包 + 参考立绘）
     assetsSaveFirstHint:

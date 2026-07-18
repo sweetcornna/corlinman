@@ -94,3 +94,55 @@ def test_qq_status_returns_non_secret_napcat_config_keys(tmp_path) -> None:
     assert keys["napcat_url"] == "http://user-napcat:6099"
     assert keys["self_ids"] == ["10001", "10002"]
     assert "napcat_access_token" not in keys
+
+
+def test_put_qq_config_accepts_group_behavior_fields(tmp_path) -> None:
+    """The W4 editor writes whitelist/policy/numbers — backend must accept
+    them typed (numbers persist as TOML numbers, integral → int)."""
+    writes: list[dict[str, Any]] = []
+
+    async def writer(cfg: dict[str, Any]) -> None:
+        writes.append(cfg)
+
+    state = AdminState(
+        data_dir=tmp_path,
+        admin_username="admin",
+        admin_password_hash=hash_password("rootroot"),
+        session_store=AdminSessionStore(86_400),
+        channels_config={
+            "qq": {"enabled": True, "ws_url": "ws://napcat:3001"}
+        },
+        channels_writer=writer,
+    )
+    set_admin_state(state)
+    try:
+        app = FastAPI()
+        app.include_router(build_router())
+        with TestClient(app, headers={"Authorization": _basic_auth_header()}) as c:
+            resp = c.put(
+                "/admin/channels/qq/config",
+                json={
+                    "flags": {
+                        "group_replies_enabled": True,
+                        "proactive_enabled": False,
+                    },
+                    "ids": {"group_whitelist": ["123456", "789"]},
+                    "urls": {"group_reply_policy": "mention_or_keyword"},
+                    "numbers": {
+                        "group_reply_cooldown_secs": 20,
+                        "proactive_daily_max": 4.0,
+                    },
+                },
+            )
+    finally:
+        set_admin_state(None)
+
+    assert resp.status_code == 200, resp.text
+    qq = writes[-1]["qq"]
+    assert qq["group_replies_enabled"] is True
+    assert qq["group_whitelist"] == [123456, 789]
+    assert qq["group_reply_policy"] == "mention_or_keyword"
+    assert qq["group_reply_cooldown_secs"] == 20
+    # Integral floats persist as ints.
+    assert qq["proactive_daily_max"] == 4
+    assert isinstance(qq["proactive_daily_max"], int)

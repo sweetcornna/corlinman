@@ -46,8 +46,12 @@ import {
   type ProviderModel,
   type ProviderView,
 } from "@/lib/api";
-import { DynamicParamsForm } from "@/components/dynamic-params-form";
+import {
+  DynamicParamsForm,
+  validateAgainstSchema,
+} from "@/components/dynamic-params-form";
 import { cn } from "@/lib/utils";
+import { SETUP_PRESETS } from "./presets";
 import {
   BLANK_DRAFT,
   KINDS,
@@ -70,6 +74,22 @@ export interface ProviderEditorDialogProps {
   editing: ProviderView | null;
 }
 
+/**
+ * Canonical api-key env var for a provider kind, sourced from the SAME
+ * presets the guided setup flow uses (`./presets.ts`). Prefers the preset
+ * whose id matches the kind; for `openai_compatible` that falls through to
+ * the generic "custom" preset (the vendor-pinned xai preset is skipped via
+ * its `defaultBaseUrl`). Kinds without a preset yield "" — no prefill.
+ */
+function suggestedEnvVarForKind(kind: ProviderKind): string {
+  const exact = SETUP_PRESETS.find((p) => p.id === kind);
+  if (exact) return exact.suggestedEnvVar;
+  const generic = SETUP_PRESETS.find(
+    (p) => p.kind === kind && !p.defaultBaseUrl,
+  );
+  return generic?.suggestedEnvVar ?? "";
+}
+
 export function ProviderEditorDialog({
   open,
   onOpenChange,
@@ -83,9 +103,10 @@ export function ProviderEditorDialog({
     error?: string;
   }>({ models: [] });
   const modelDiscoveryGeneration = React.useRef(0);
-  const [paramErrors, setParamErrors] = React.useState<
-    Record<string, string>
-  >({});
+  // Params live behind the "advanced" disclosure; errors are computed
+  // directly (not bubbled from the form) so save-gating stays correct even
+  // while the DynamicParamsForm is collapsed/unmounted.
+  const [showAdvanced, setShowAdvanced] = React.useState(false);
   // Per-model "add to corlinman" state: ids registered as aliases (bound to
   // this provider) during this dialog session, plus the in-flight set for
   // spinner / disabled affordances.
@@ -102,9 +123,18 @@ export function ProviderEditorDialog({
   React.useEffect(() => {
     modelDiscoveryGeneration.current += 1;
     if (open) {
-      setDraft(editing ? toDraft(editing) : { ...BLANK_DRAFT });
+      // A brand-new draft prefills the canonical env var for its kind (kept
+      // editable); an editing draft keeps whatever the server stored.
+      setDraft(
+        editing
+          ? toDraft(editing)
+          : {
+              ...BLANK_DRAFT,
+              api_key_env_name: suggestedEnvVarForKind(BLANK_DRAFT.kind),
+            },
+      );
       setModelDiscovery({ models: [] });
-      setParamErrors({});
+      setShowAdvanced(false);
       setAddedModels(new Set());
       setPendingAdds(new Set());
       // An existing provider already has its ``[providers.<name>]`` block;
@@ -133,13 +163,32 @@ export function ProviderEditorDialog({
   }, []);
 
   const schema = editing?.params_schema ?? { type: "object", properties: {} };
+  const paramErrors = React.useMemo(
+    () => validateAgainstSchema(schema, draft.params),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [editing, draft.params],
+  );
   const hasErrors = Object.keys(paramErrors).length > 0;
   const nameOk = draft.name.trim().length > 0;
-  const baseUrlOk =
-    draft.kind !== "openai_compatible" || draft.base_url.trim().length > 0;
+  const showBaseUrl = draft.kind === "openai_compatible";
+  const baseUrlOk = !showBaseUrl || draft.base_url.trim().length > 0;
+
+  // Invalid stored params would silently disable Save while collapsed —
+  // force the disclosure open so the operator can see why.
+  React.useEffect(() => {
+    if (hasErrors) setShowAdvanced(true);
+  }, [hasErrors]);
+
+  // What actually goes over the wire. For every kind except
+  // openai_compatible the backend supplies the base_url default, so the
+  // (hidden) field is never sent.
+  const effectiveDraft = React.useMemo<DraftProvider>(
+    () => (showBaseUrl ? draft : { ...draft, base_url: "" }),
+    [draft, showBaseUrl],
+  );
 
   const saveMutation = useMutation({
-    mutationFn: () => upsertProvider(toUpsert(draft)),
+    mutationFn: () => upsertProvider(toUpsert(effectiveDraft)),
     onSuccess: () => {
       toast.success(t("providers.saveSuccess"));
       qc.invalidateQueries({ queryKey: ["admin", "providers"] });
@@ -219,7 +268,7 @@ export function ProviderEditorDialog({
         // (updateDraft resets the flag — a pristine editing session never
         // re-upserts).
         if (!providerPersistedRef.current) {
-          await upsertProvider(toUpsert(draft));
+          await upsertProvider(toUpsert(effectiveDraft));
           providerPersistedRef.current = true;
         }
         // Alias name == upstream model id, bound to this provider. This is
@@ -356,11 +405,21 @@ export function ProviderEditorDialog({
                 <select
                   id="provider-kind"
                   value={draft.kind}
-                  onChange={(e) =>
-                    updateDraft({
-                      kind: e.target.value as ProviderKind,
-                    })
-                  }
+                  onChange={(e) => {
+                    const kind = e.target.value as ProviderKind;
+                    const patch: Partial<DraftProvider> = { kind };
+                    // Follow the kind with its canonical env var unless the
+                    // operator typed a custom one (empty or still equal to
+                    // the previous kind's suggestion → safe to replace).
+                    const current = draft.api_key_env_name.trim();
+                    if (
+                      current === "" ||
+                      current === suggestedEnvVarForKind(draft.kind)
+                    ) {
+                      patch.api_key_env_name = suggestedEnvVarForKind(kind);
+                    }
+                    updateDraft(patch);
+                  }}
                   className="flex h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm"
                 >
                   {KINDS.map((k) => (
@@ -372,23 +431,25 @@ export function ProviderEditorDialog({
               </div>
             </div>
 
-            <div className="space-y-1.5">
-              <Label htmlFor="provider-base-url" className="text-xs">
-                {t("providers.fieldBaseUrl")}
-              </Label>
-              <Input
-                id="provider-base-url"
-                value={draft.base_url}
-                onChange={(e) =>
-                  updateDraft({ base_url: e.target.value })
-                }
-                className="font-mono text-xs"
-                placeholder="https://api.openai.com/v1"
-              />
-              <p className="text-[11px] text-sg-ink-3">
-                {t("providers.fieldBaseUrlHint")}
-              </p>
-            </div>
+            {showBaseUrl ? (
+              <div className="space-y-1.5">
+                <Label htmlFor="provider-base-url" className="text-xs">
+                  {t("providers.fieldBaseUrl")}
+                </Label>
+                <Input
+                  id="provider-base-url"
+                  value={draft.base_url}
+                  onChange={(e) =>
+                    updateDraft({ base_url: e.target.value })
+                  }
+                  className="font-mono text-xs"
+                  placeholder="https://api.openai.com/v1"
+                />
+                <p className="text-[11px] text-sg-ink-3">
+                  {t("providers.fieldBaseUrlHint")}
+                </p>
+              </div>
+            ) : null}
 
             <div className="space-y-1.5">
               <Label className="text-xs">
@@ -482,7 +543,7 @@ export function ProviderEditorDialog({
                     onClick={() =>
                       modelDiscoveryMutation.mutate({
                         generation: modelDiscoveryGeneration.current,
-                        draft,
+                        draft: effectiveDraft,
                         editing,
                       })
                     }
@@ -621,23 +682,36 @@ export function ProviderEditorDialog({
               </button>
             </div>
 
-            <div className="space-y-2 rounded-md border border-sg-border p-3">
-              <div>
-                <h3 className="text-sm font-semibold">
-                  {t("providers.fieldParams")}
-                </h3>
-                <p className="text-[11px] text-sg-ink-3">
-                  {t("providers.fieldParamsHint")}
-                </p>
-              </div>
-              <DynamicParamsForm
-                schema={schema}
-                value={draft.params}
-                onChange={(next) => updateDraft({ params: next })}
-                onErrorsChange={setParamErrors}
-                testIdPrefix="provider-params"
-              />
+            <div>
+              <button
+                type="button"
+                onClick={() => setShowAdvanced((v) => !v)}
+                data-testid="provider-toggle-advanced"
+                className="text-[11px] text-sg-ink-3 underline-offset-2 hover:text-sg-ink hover:underline focus-visible:outline-none focus-visible:underline"
+              >
+                {showAdvanced ? "—" : "+"}{" "}
+                {t("common.advancedOptions", { defaultValue: "高级选项" })}
+              </button>
             </div>
+
+            {showAdvanced ? (
+              <div className="space-y-2 rounded-md border border-sg-border p-3">
+                <div>
+                  <h3 className="text-sm font-semibold">
+                    {t("providers.fieldParams")}
+                  </h3>
+                  <p className="text-[11px] text-sg-ink-3">
+                    {t("providers.fieldParamsHint")}
+                  </p>
+                </div>
+                <DynamicParamsForm
+                  schema={schema}
+                  value={draft.params}
+                  onChange={(next) => updateDraft({ params: next })}
+                  testIdPrefix="provider-params"
+                />
+              </div>
+            ) : null}
           </div>
 
           <DialogFooter>
