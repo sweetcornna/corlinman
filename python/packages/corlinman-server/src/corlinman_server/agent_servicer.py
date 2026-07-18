@@ -1971,6 +1971,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                         # malformed JSON (counts as success then).
                         _result_is_error = False
                         _result_err_summary = ""
+                        _result_payload_json = ""
                         try:
                             if isinstance(result_json, str):
                                 _parsed = json.loads(result_json or "{}")
@@ -1987,6 +1988,22 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                                             or _parsed.get("message")
                                             or ""
                                         )[:200]
+                                    # Forward the parsed result envelope on
+                                    # the observation frame so downstream
+                                    # observers (scheduler qzone_daily) can
+                                    # harvest tid / qzone_url without a second
+                                    # dispatch. Cap at 8 KiB so a large tool
+                                    # payload can't bloat the frame; skip on
+                                    # serialize failure — best-effort
+                                    # observability, never fatal.
+                                    try:
+                                        _payload = json.dumps(
+                                            _parsed, ensure_ascii=False
+                                        )
+                                        if len(_payload.encode("utf-8")) <= 8192:
+                                            _result_payload_json = _payload
+                                    except (TypeError, ValueError):
+                                        pass
                         except (json.JSONDecodeError, TypeError, ValueError):
                             pass
                         logger.info(
@@ -2012,6 +2029,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                                     "duration_ms": _dispatch_dur_ms,
                                     "is_error": _result_is_error,
                                     "error_summary": _result_err_summary,
+                                    "payload_json": _result_payload_json,
                                 }).encode("utf-8"),
                                 seq=seq,
                             )

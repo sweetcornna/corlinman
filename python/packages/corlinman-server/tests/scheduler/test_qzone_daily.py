@@ -34,6 +34,7 @@ from corlinman_server.gateway_api.types import (
     ErrorEvent,
     InternalChatError,
     ToolCallEvent,
+    ToolResultEvent,
 )
 from corlinman_server.scheduler.builtins import (
     BUILTIN_ACTIONS,
@@ -142,42 +143,31 @@ def _qzone_tool_call(
     )
 
 
-class _ToolResultWithPayload(SimpleNamespace):
-    """Duck-typed stand-in for :class:`ToolResultEvent` that carries a
-    sidecar ``payload`` attribute.
-
-    The real :class:`ToolResultEvent` is a frozen + slotted dataclass,
-    so test code can't stamp ad-hoc attributes onto it. The builtin's
-    :func:`_harvest_envelope` helper reads the event via plain
-    :func:`getattr` (it tolerates dataclass / pydantic / dict / stub
-    shapes interchangeably) so a :class:`SimpleNamespace` with the
-    right fields is wire-equivalent for the test.
-    """
-
-
 def _qzone_tool_result(
     *,
     call_id: str = "call-1",
     is_error: bool = False,
     payload: dict[str, Any] | None = None,
     error_summary: str = "",
-) -> Any:
-    """Mint a tool-result event carrying a publish envelope.
+) -> ToolResultEvent:
+    """Mint a real :class:`ToolResultEvent` carrying a publish envelope.
 
-    The harvester probes a small set of sidecar attribute names
-    (``payload`` / ``payload_json`` / ``result`` / ``envelope``). We
-    park the dict on ``payload`` so the happy path exercises the
-    primary harvest branch.
+    The gateway forwards the tool's parsed result envelope as a JSON
+    string on ``ToolResultEvent.payload_json``; the builtin's
+    :func:`_harvest_envelope` decodes it to recover ``tid`` /
+    ``qzone_url``. We JSON-encode ``payload`` onto that field so the
+    test exercises the real wire type + the primary harvest branch.
     """
-    return _ToolResultWithPayload(
-        kind="tool_result",
+    import json
+
+    return ToolResultEvent(
         plugin="corlinman_agent.qzone",
         tool="qzone_publish",
         call_id=call_id,
         duration_ms=42,
         is_error=is_error,
         error_summary=error_summary,
-        payload=payload,
+        payload_json=json.dumps(payload) if payload is not None else "",
     )
 
 
@@ -239,6 +229,9 @@ async def test_happy_path_records_tid_and_qzone_url() -> None:
     assert out["uin"] == "1234"
     assert out["images"] == 1
     assert out["generated"] is False
+    # Published body — falls back to the decoded input args (intent)
+    # when the envelope doesn't echo it. Surfaced for post-log.
+    assert out["text"] == "today!"
     assert out["persona_id"] == "grantley"
     assert out["qq_account"] == "1234"
     assert any("qzone_publish" in name for name in out["tools_called"])
@@ -253,6 +246,44 @@ async def test_happy_path_records_tid_and_qzone_url() -> None:
     assert messages[1].role == "user"
     assert messages[1].content == "Write today's update."
     assert req.session_key.startswith("scheduler:qzone:grantley:")
+
+
+async def test_harvest_result_overrides_input_args() -> None:
+    """The envelope is the union of the decoded input args and the
+    harvested result — result fields win. Here the tool published a
+    normalized ``text`` different from the raw input, and returns the
+    real ``tid`` / ``qzone_url``; all three come from the result."""
+    store = _FakePersonaStore(
+        {"grantley": _FakePersona(id="grantley", system_prompt="x")}
+    )
+    chat = _ScriptedChatService(
+        events=[
+            _qzone_tool_call(args={"text": "draft"}),
+            _qzone_tool_result(
+                payload={
+                    "ok": True,
+                    "tid": "tid-real",
+                    "qzone_url": "https://qzone.test/mood/tid-real",
+                    "text": "published body",
+                },
+            ),
+            DoneEvent(finish_reason="stop"),
+        ],
+    )
+    ctx = BuiltinContext(
+        app_state=_make_app_state(
+            chat=chat,
+            persona_store=store,
+            metadata={"persona_id": "grantley", "prompt_template": "x"},
+        ),
+        name="grantley.daily_qzone",
+    )
+    out = await _qzone_daily_publish_action(ctx)
+    assert out["ok"] is True, out
+    assert out["tid"] == "tid-real"
+    assert out["qzone_url"] == "https://qzone.test/mood/tid-real"
+    # Result-carried ``text`` overrides the raw input-arg ``text``.
+    assert out["text"] == "published body"
 
 
 # ---------------------------------------------------------------------------

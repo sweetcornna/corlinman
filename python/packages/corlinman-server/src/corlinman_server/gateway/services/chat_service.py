@@ -366,6 +366,7 @@ async def _run_chat(
                         duration_ms=int(meta.get("duration_ms", 0) or 0),
                         is_error=bool(meta.get("is_error", False)),
                         error_summary=str(meta.get("error_summary", ""))[:200],
+                        payload_json=str(meta.get("payload_json", "") or ""),
                     )
                     continue
                 # ``_builtin:`` prefix on ``plugin`` marks an observation-

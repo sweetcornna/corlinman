@@ -21,9 +21,12 @@ finicky inside editable installs / pytest tmpdir runs).
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -31,6 +34,11 @@ from corlinman_server.gateway.routes_admin_b.infra import scheduler as scheduler
 from corlinman_server.gateway.routes_admin_b.state import (
     AdminState,
     set_admin_state,
+)
+from corlinman_server.gateway_api.types import (
+    DoneEvent,
+    ToolCallEvent,
+    ToolResultEvent,
 )
 from corlinman_server.scheduler.builtins import (
     BUILTIN_ACTIONS,
@@ -313,6 +321,100 @@ async def test_trigger_runtime_qzone_job_invokes_builtin(
     finally:
         if original is not None:
             register_builtin(QZONE_DAILY_BUILTIN_NAME, original)
+
+
+@dataclass
+class _Persona:
+    id: str
+    system_prompt: str
+
+
+class _FakeStore:
+    def __init__(self, personas: dict[str, _Persona]) -> None:
+        self._p = personas
+
+    async def get(self, pid: str) -> _Persona | None:
+        return self._p.get(pid)
+
+
+class _ScriptedChat:
+    """Yields a pre-recorded event list the same shape the gateway
+    ChatService emits on the wire."""
+
+    def __init__(self, events: list[Any]) -> None:
+        self._events = events
+
+    def run(self, req: Any, cancel: asyncio.Event) -> Any:
+        events = list(self._events)
+
+        async def _gen() -> Any:
+            for ev in events:
+                yield ev
+
+        return _gen()
+
+
+async def test_trigger_real_builtin_harvests_qzone_url(
+    grantley_template: Path,
+    client: TestClient,
+    admin_state: AdminState,
+) -> None:
+    """End-to-end through the REAL ``qzone.daily_publish`` builtin.
+
+    A scripted chat service emits a genuine :class:`ToolResultEvent`
+    carrying the publish envelope on ``payload_json``. The trigger
+    route's audit dict must surface a non-empty ``last_qzone_url`` /
+    ``tid``. This is the tid/qzone_url observability fix: before the
+    ``payload_json`` forward, the harvester's sidecar probe always
+    missed, so every successful publish recorded ``last_qzone_url=None``
+    and the admin history showed a bare "ran".
+    """
+    published = {
+        "ok": True,
+        "tid": "tid-live",
+        "qzone_url": "https://user.qzone.qq.com/1234/mood/tid-live",
+        "uin": "1234",
+    }
+    chat = _ScriptedChat(
+        events=[
+            ToolCallEvent(
+                plugin="corlinman_agent.qzone",
+                tool="qzone_publish",
+                args_json=b'{"text":"today"}',
+                call_id="c1",
+            ),
+            ToolResultEvent(
+                plugin="corlinman_agent.qzone",
+                tool="qzone_publish",
+                call_id="c1",
+                duration_ms=5,
+                payload_json=json.dumps(published),
+            ),
+            DoneEvent(finish_reason="stop"),
+        ]
+    )
+    # Wire a live-ish AppState onto the admin extras so the trigger
+    # route's runtime fallback hands it to the real builtin.
+    admin_state.extras["app_state"] = SimpleNamespace(
+        chat=chat,
+        persona_store=_FakeStore(
+            {"grantley": _Persona(id="grantley", system_prompt="be a tiger")}
+        ),
+        persona_asset_store=None,
+    )
+
+    enable = client.post("/admin/scheduler/qzone/templates/grantley/enable")
+    assert enable.status_code == 200, enable.text
+    res = client.post("/admin/scheduler/jobs/grantley.daily_qzone/trigger")
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["ok"] is True, body
+    assert body["result"]["tid"] == "tid-live"
+    assert body["result"]["qzone_url"] == published["qzone_url"]
+    assert body["result"]["text"] == "today"
+    # The fix: last_qzone_url is populated (was None on every success).
+    assert body["job"]["last_qzone_url"] == published["qzone_url"]
+    assert body["job"]["last_run_ok"] is True
 
 
 def test_trigger_unknown_job_returns_404(client: TestClient) -> None:

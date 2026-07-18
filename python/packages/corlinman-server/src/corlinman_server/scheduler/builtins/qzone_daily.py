@@ -228,12 +228,11 @@ async def _drive_chat_turn(
     * the first ``qzone_publish`` ``tool_call`` — record its call_id so
       we know which ``tool_result`` corresponds (the agent may call
       multiple tools before / after).
-    * any matching ``tool_result`` — this carries the ok/error flag.
-      The ``qzone_publish`` tool also emits a textual envelope through
-      the chat reply path that we do NOT see here; the ``ToolResultEvent``
-      only carries the success/error flag + a short summary. To get the
-      actual ``tid`` / ``qzone_url``, we re-invoke the tool's dispatcher
-      shape via a sidecar — see :func:`_extract_qzone_envelope`.
+    * any matching ``tool_result`` — this carries the ok/error flag plus
+      the tool's parsed result envelope on ``payload_json``. That is
+      where the actual ``tid`` / ``qzone_url`` live; we recover them via
+      :func:`_harvest_envelope`, falling back to the decoded input args
+      (which at least know the intended ``text``).
     * the terminal ``DoneEvent`` / ``ErrorEvent`` — stops the loop.
 
     We bound the drive with a generous timeout (``CORLINMAN_QZONE_DAILY_
@@ -349,15 +348,14 @@ async def _drive_chat_turn(
             "duration_ms": _elapsed_ms(started_at),
         }
 
-    # ToolResultEvent carries an ``is_error`` flag + ``error_summary``,
-    # not the full envelope. The publish envelope (``tid``, ``qzone_url``)
-    # lives on the tool result text the agent sees; some implementations
-    # park it on a sidecar attribute (e.g. ``payload`` / ``payload_json``)
-    # so we probe a small set of conventional fields before falling back
-    # to the recorded args.
+    # ToolResultEvent carries an ``is_error`` flag + ``error_summary``
+    # plus the tool's parsed result envelope on ``payload_json``. The
+    # publish envelope (``tid``, ``qzone_url``) lives there. Union the
+    # decoded input args (intent — has ``text``) with the harvested
+    # result so the result's fields win where both are present.
     is_error = bool(_event_field(qzone_result, "is_error", default=False))
     error_summary = _event_field(qzone_result, "error_summary", default="")
-    envelope = _harvest_envelope(qzone_result) or qzone_envelope or {}
+    envelope = {**(qzone_envelope or {}), **_harvest_envelope(qzone_result)}
 
     if is_error or (envelope and envelope.get("ok") is False):
         return {
@@ -379,6 +377,9 @@ async def _drive_chat_turn(
         "uin": envelope.get("uin"),
         "images": envelope.get("images"),
         "generated": envelope.get("generated"),
+        # Published body — harvested from the envelope, else the decoded
+        # input args (intent). Surfaced for a future post-log feature.
+        "text": envelope.get("text"),
         "tools_called": tools_called,
         "finish_reason": finish_reason,
         "duration_ms": _elapsed_ms(started_at),
@@ -863,29 +864,33 @@ def _decode_qzone_args(args_json: Any) -> dict[str, Any] | None:
     return obj if isinstance(obj, dict) else None
 
 
-def _harvest_envelope(tool_result: Any) -> dict[str, Any] | None:
-    """Probe the ``ToolResultEvent`` for the publish envelope.
+def _harvest_envelope(tool_result: Any) -> dict[str, Any]:
+    """Parse the publish envelope off ``ToolResultEvent.payload_json``.
 
-    The dataclass shape doesn't carry an explicit ``payload`` slot, but
-    test doubles + future result shapes may park the parsed JSON
-    envelope on a sidecar attribute. Probe a small list of conventional
-    field names; return ``None`` when none of them is present.
+    The gateway forwards the ``qzone_publish`` tool's parsed result
+    envelope (the same dict the agent saw) as a JSON string on the
+    event's ``payload_json`` field — added in the tid/qzone_url
+    observability fix. Decoding it here is how we recover the actual
+    ``tid`` / ``qzone_url`` a successful publish returned.
+
+    Tolerant + total: returns an empty dict when the field is absent,
+    blank, or malformed, and accepts ``str`` / ``bytes`` payloads. Never
+    raises — scheduler builtins fold every failure into the audit dict,
+    never up the stack.
     """
-    for attr in ("payload", "payload_json", "result", "envelope"):
-        val = getattr(tool_result, attr, None)
-        if val is None and isinstance(tool_result, dict):
-            val = tool_result.get(attr)
-        if isinstance(val, dict):
-            return val
-        if isinstance(val, (bytes, str)):
-            raw = val.decode("utf-8") if isinstance(val, bytes) else val
-            try:
-                obj = json.loads(raw)
-            except (ValueError, json.JSONDecodeError):
-                continue
-            if isinstance(obj, dict):
-                return obj
-    return None
+    raw = _event_field(tool_result, "payload_json", default="")
+    if isinstance(raw, (bytes, bytearray)):
+        try:
+            raw = bytes(raw).decode("utf-8")
+        except UnicodeDecodeError:
+            return {}
+    if not isinstance(raw, str) or not raw.strip():
+        return {}
+    try:
+        obj = json.loads(raw)
+    except (ValueError, json.JSONDecodeError):
+        return {}
+    return obj if isinstance(obj, dict) else {}
 
 
 def _coerce_str(value: Any) -> str:
