@@ -929,6 +929,9 @@ napcat_arch_suffix() {
 # sized, skip the re-download. Echoes the absolute AppImage path on stdout for
 # write_napcat_unit to consume; returns non-zero (with a warning) on any
 # failure so the caller can degrade gracefully.
+# NOTE: stdout is the return channel — every log inside MUST go to stderr
+# (log ... >&2), or the caller's $(...) capture bakes the log line into the
+# systemd unit's ExecStart and the unit fails to load (bad-setting).
 download_napcat_appimage() {
     local arch
     arch="$(napcat_arch_suffix)"
@@ -951,7 +954,7 @@ download_napcat_appimage() {
         existing_sz=$(wc -c < "$dest" 2>/dev/null || echo 0)
         if [[ "$existing_sz" =~ ^[0-9]+$ && "$existing_sz" -gt 10485760 ]]; then
             chmod +x "$dest" 2>/dev/null || true
-            log "NapCat: AppImage already present ($dest, $((existing_sz / 1024 / 1024)) MiB) — skipping download"
+            log "NapCat: AppImage already present ($dest, $((existing_sz / 1024 / 1024)) MiB) — skipping download" >&2
             echo "$dest"
             return 0
         fi
@@ -963,7 +966,7 @@ download_napcat_appimage() {
     # GITHUB_RAW/GITHUB_CLONE_BASE: the asset lives on github.com release
     # downloads, so reuse the clone proxy prefix when set.
     local api="https://api.github.com/repos/NapNeko/NapCatAppImageBuild/releases/tags/${NAPCAT_VERSION}"
-    log "NapCat: resolving AppImage URL for ${NAPCAT_VERSION} (${arch})"
+    log "NapCat: resolving AppImage URL for ${NAPCAT_VERSION} (${arch})" >&2
     local asset_url=""
     asset_url=$(curl -fsSL -m 30 "$api" 2>/dev/null \
         | grep -oE '"browser_download_url":[[:space:]]*"[^"]*"' \
@@ -981,7 +984,7 @@ download_napcat_appimage() {
         asset_url="${GITHUB_CLONE_BASE%/https://github.com}/${asset_url}"
     fi
 
-    log "NapCat: downloading AppImage → $dest"
+    log "NapCat: downloading AppImage → $dest" >&2
     local tmp="${dest}.part"
     if ! curl -fL -m 600 -o "$tmp" "$asset_url" 2>/dev/null; then
         rm -f "$tmp"
@@ -1000,7 +1003,7 @@ download_napcat_appimage() {
     fi
     mv "$tmp" "$dest"
     chmod +x "$dest"
-    log "NapCat: AppImage ready ($dest, $((sz / 1024 / 1024)) MiB)"
+    log "NapCat: AppImage ready ($dest, $((sz / 1024 / 1024)) MiB)" >&2
     echo "$dest"
     return 0
 }
