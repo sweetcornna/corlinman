@@ -98,6 +98,24 @@ describe("Sidebar", () => {
     expect(screen.getByTestId("nav-user")).toHaveTextContent("admin");
   });
 
+  it("overlays the avatar initial on the presence orb without displacing it", () => {
+    // Regression (PR-F5): the initial must be an absolute overlay centered
+    // on the orb, and the orb itself must NOT carry `absolute` — otherwise
+    // `.presence-orb`'s own position:relative drops it back into flow and
+    // shoves the "A"/"C" out of the pearl.
+    const { container } = render(<Sidebar user="admin" />);
+    const initial = screen.getByTestId("nav-user-initial");
+    // The initial shows the uppercased first character.
+    expect(initial).toHaveTextContent("A");
+    // It is positioned as a centered absolute overlay.
+    expect(initial.className).toMatch(/\babsolute\b/);
+    expect(initial.className).toMatch(/\binset-0\b/);
+    // The orb (the .presence-orb sibling) stays in-flow — no `absolute`.
+    const orb = container.querySelector(".presence-orb") as HTMLElement;
+    expect(orb).not.toBeNull();
+    expect(orb.className).not.toMatch(/\babsolute\b/);
+  });
+
   it("hides developer-only pages in operator mode (default)", () => {
     render(<Sidebar user="admin" />);
     // Hooks, Tenants, Plugins, Agents are developer-only.
