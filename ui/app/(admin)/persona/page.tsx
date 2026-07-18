@@ -79,6 +79,7 @@ import {
   resetPersonaToDefault,
   runPersonaDecay,
   setHumanlike,
+  slugifyAssetLabel,
   updatePersona,
   uploadAsset,
   type AssetKind,
@@ -1282,25 +1283,6 @@ interface PendingAsset {
   preview_url: string;
 }
 
-/** Strip the extension + lowercase + collapse whitespace into hyphens.
- * Used as the default label when the operator drops a file with a
- * messy name (e.g. `"Happy Face.PNG" → "happy-face"`). Anything still
- * outside the backend slug rule falls through the editor's per-cell
- * validation. */
-function slugifyFilename(name: string): string {
-  const stem = name.replace(/\.[^.]+$/, "");
-  return stem
-    .toLowerCase()
-    .replace(/\s+/g, "-")
-    // Drop any character that isn't already in the slug alphabet so we
-    // don't ship a label the server will immediately reject.
-    .replace(/[^a-z0-9_-]/g, "-")
-    // Trim leading/trailing hyphens; collapse runs.
-    .replace(/-+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 64);
-}
-
 /** Pretty-print a byte count in MiB / KiB. Mirrors the convention the
  * admin uses elsewhere (e.g. /admin/agents bytes column). */
 function formatBytes(n: number): string {
@@ -1577,7 +1559,7 @@ function AssetSection({
     (files: FileList | File[]) => {
       const list = Array.from(files);
       for (const file of list) {
-        const label = slugifyFilename(file.name) || "asset";
+        const label = slugifyAssetLabel(file.name) || "asset";
         onUpload(file, label);
       }
     },

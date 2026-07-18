@@ -19,6 +19,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  ASSET_LABEL_RE,
   AssetUploadError,
   PERSONAS_LIST_PATH,
   QQ_HUMANLIKE_PATH,
@@ -41,6 +42,7 @@ import {
   runPersonaDecay,
   setHumanlike,
   setQqHumanlike,
+  slugifyAssetLabel,
   updatePersona,
 } from "./personas";
 
@@ -110,6 +112,42 @@ describe("URL builders", () => {
 
   it("encodes non-ASCII / punctuation in slugs", () => {
     expect(personaPath("foo/bar baz")).toBe("/admin/personas/foo%2Fbar%20baz");
+  });
+});
+
+describe("slugifyAssetLabel", () => {
+  it("strips the extension, lowercases, and hyphenates whitespace", () => {
+    expect(slugifyAssetLabel("Happy Face.PNG")).toBe("happy-face");
+  });
+
+  it("drops out-of-alphabet characters and collapses hyphen runs", () => {
+    expect(slugifyAssetLabel("秋日 街景 (v2).jpeg")).toBe("v2");
+    expect(slugifyAssetLabel("a___b")).toBe("a___b");
+    expect(slugifyAssetLabel("a / b / c")).toBe("a-b-c");
+  });
+
+  it("trims leading/trailing hyphens and only strips the final extension", () => {
+    expect(slugifyAssetLabel("--edge--.png")).toBe("edge");
+    expect(slugifyAssetLabel("my.photo.final.png")).toBe("my-photo-final");
+  });
+
+  it("caps the result at 64 chars", () => {
+    const out = slugifyAssetLabel(`${"x".repeat(100)}.png`);
+    expect(out).toHaveLength(64);
+    expect(out).toBe("x".repeat(64));
+  });
+
+  it("returns an empty string when nothing survives (caller falls back)", () => {
+    expect(slugifyAssetLabel("图片.png")).toBe("");
+    expect(slugifyAssetLabel(".gitignore")).toBe("");
+  });
+
+  it("produces labels that satisfy ASSET_LABEL_RE (when non-empty)", () => {
+    for (const raw of ["Happy Face.PNG", "a / b / c", "--edge--.png"]) {
+      const out = slugifyAssetLabel(raw);
+      expect(out).not.toBe("");
+      expect(ASSET_LABEL_RE.test(out)).toBe(true);
+    }
   });
 });
 

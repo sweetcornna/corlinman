@@ -53,6 +53,14 @@ export interface SchedulerJobRow {
   last_run_ok?: boolean | null;
   last_qzone_url?: string | null;
   last_error?: string | null;
+  /** Reference-image asset labels the QZone builtin attaches when it
+   * publishes. Forward-compat: the backend carries these inside a
+   * runtime job's `metadata` today, so this stays optional and is only
+   * populated once the gateway surfaces it on the wire. */
+  image_ref_labels?: string[];
+  /** Random +/- minutes of send-time jitter applied before firing.
+   * Forward-compat alongside {@link SchedulerJobRow.image_ref_labels}. */
+  jitter_minutes?: number;
   /** `"config"` for `[[scheduler.jobs]]`-derived rows; `"runtime"` for
    * operator-created jobs sitting in the AdminState overlay. */
   source?: "config" | "runtime";
@@ -68,7 +76,31 @@ export interface NewSchedulerJob {
   persona_id?: string | null;
   prompt_template?: string | null;
   qq_account?: string | null;
+  /** Reference-image asset labels for the QZone builtin. Forward-compat:
+   * the backend consumes these via `metadata` today, so callers that
+   * need them applied server-side should also fold them into `metadata`
+   * until the gateway accepts them top-level. */
+  image_ref_labels?: string[];
+  /** Random +/- minutes of send-time jitter. Forward-compat alongside
+   * {@link NewSchedulerJob.image_ref_labels}. */
+  jitter_minutes?: number;
   metadata?: Record<string, unknown>;
+}
+
+/** Partial-update body for `PATCH /admin/scheduler/jobs/{name}`.
+ *
+ * Mirrors the backend `EditJobBody`: every field is optional and only the
+ * ones present are applied server-side — the rest carry over. `name` is
+ * taken from the path (a runtime job's name is its identity), so it is
+ * not part of the body. */
+export type SchedulerJobPatch = Partial<Omit<NewSchedulerJob, "name">>;
+
+/** Response envelope from `DELETE /admin/scheduler/jobs/{name}`. The
+ * backend answers with a 200 body (not 204) so the caller can confirm
+ * which row was removed. */
+export interface SchedulerDeleteResult {
+  ok: boolean;
+  deleted: string;
 }
 
 /** Response from `POST /admin/scheduler/jobs/{name}/trigger` for
@@ -114,6 +146,36 @@ export function createSchedulerJob(
     method: "POST",
     body,
   });
+}
+
+/** Partial-update a runtime scheduler job (`PATCH`). Only the fields set
+ * on `patch` are applied server-side; the rest carry over. Returns the
+ * refreshed row. Throws `CorlinmanApiError` on 404 (config-derived jobs
+ * aren't editable here — edit those in the TOML) or 422 (invalid cron /
+ * qzone args). Pause / resume live in `lib/api.ts` — use those, not a
+ * `{ enabled }` patch, so the backend re-validates before re-arming. */
+export function patchSchedulerJob(
+  name: string,
+  patch: SchedulerJobPatch,
+): Promise<SchedulerJobRow> {
+  return apiFetch<SchedulerJobRow>(
+    `/admin/scheduler/jobs/${encodeURIComponent(name)}`,
+    { method: "PATCH", body: patch },
+  );
+}
+
+/** Delete a runtime scheduler job (`DELETE`). The backend cancels its
+ * live tick loop, drops it from the overlay + metadata table, and
+ * re-persists the sidecar, then answers `{ ok, deleted }`. Throws
+ * `CorlinmanApiError` on 404 (config-derived jobs can't be deleted
+ * here). */
+export function deleteSchedulerJob(
+  name: string,
+): Promise<SchedulerDeleteResult> {
+  return apiFetch<SchedulerDeleteResult>(
+    `/admin/scheduler/jobs/${encodeURIComponent(name)}`,
+    { method: "DELETE" },
+  );
 }
 
 /** Activate a bundled persona template (today: only `grantley`).

@@ -327,6 +327,27 @@ export const PERSONA_TOTAL_BYTES_CAP = 200 * 1024 * 1024;
  * route's regex so the client gate is identical to the server gate. */
 export const ASSET_LABEL_RE = /^[a-z0-9_-]{1,64}$/;
 
+/** Derive a default asset label from a dropped file's name: strip the
+ * extension, lowercase, collapse whitespace into hyphens, drop any
+ * character outside the slug alphabet, trim/collapse hyphen runs, and
+ * cap at 64 chars (e.g. `"Happy Face.PNG" → "happy-face"`). The result
+ * is a best-effort default that still satisfies {@link ASSET_LABEL_RE};
+ * anything that reduces to an empty string is the caller's cue to fall
+ * back to a literal (e.g. `"asset"`). */
+export function slugifyAssetLabel(name: string): string {
+  const stem = name.replace(/\.[^.]+$/, "");
+  return stem
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    // Drop any character that isn't already in the slug alphabet so we
+    // don't ship a label the server will immediately reject.
+    .replace(/[^a-z0-9_-]/g, "-")
+    // Trim leading/trailing hyphens; collapse runs.
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+}
+
 /** Practical limit for `image_with_refs` reference packs. Reference uploads
  * past this point keep persisting (so users can swap which 8 are active),
  * but the model only sees the first N. Surfaced as a hint in the editor. */
