@@ -4,6 +4,53 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.31.0] — 2026-07-18 — Eclipse Minimal v2 design language
+
+> The whole admin UI switches from Spatial Glass (visionOS colored glass)
+> to **Eclipse Minimal v2** — the corlinman design language from the
+> claude.ai/design project: a pure-black canvas with a moonrise halo,
+> matte charcoal surfaces, a five-step moon-white ink scale, and a tint
+> pipeline that colors only the "light". The eclipse pearl becomes the
+> product's signature — and the README's mascot.
+
+### Added
+- **Tint pipeline** (`lib/tint.ts` + `data-tint`) — five presets
+  (dawn/ice/rose/moss/iris, L/C locked) plus a custom hue wheel; tint
+  colors only the pearl, streaming thread, live dots, caret, solid
+  primary buttons and selected states. Replaces Theme Studio; legacy
+  theme-CSS localStorage keys are purged at boot.
+- **Eclipse pearl** (`components/ui/presence-orb.tsx`) — the signature
+  element: brand mark, chat identity, app-bar streaming indicator
+  (spins while a turn streams), login/onboard/404 hero.
+- **Self-drawn icon sprite** (`public/icons-sprite.svg`, 149 symbols,
+  24 grid / 1.8 stroke / round caps) served once and cached; the
+  `components/icons` barrel keeps lucide-compatible PascalCase exports.
+- Self-hosted type stack: M PLUS 1 (display) + MiSans (body) +
+  JetBrains Mono, latin subsets in-repo (Docker builds stay offline).
+- Animated SVG mascot (`docs/assets/eclipse-pearl.svg`) with a tiny
+  dot-eyed face; replaces the 9MB product-tour GIF in the README.
+
+### Changed
+- Every surface is matte opaque charcoal: shells, cards, overlays,
+  chat bubbles (tail corners + streaming thread), composer well,
+  approval sheet, session rows — per the moon-edge/well/elevation
+  light grammar. Chat prose, code and JSON render monochrome.
+- Chat assistant messages gain the agent-bubble chrome (600px cap,
+  bottom-left tail); streaming shows the luminous thread + caret.
+- `font-semibold`/`font-bold` resolve to 500 — hierarchy comes from
+  the ink scale, per the weight discipline.
+
+### Removed
+- `backdrop-filter` everywhere (Tailwind core plugins disabled),
+  Liquid Glass optics (lg-*), aurora/nebula/starfield backdrops,
+  CursorLight, tilt-card, mascot sprite, Theme Studio, the `geist`
+  and `lucide-react` dependencies.
+
+### Enforced (vitest)
+- Zero backdrop-filter repo-wide; zero lucide-react imports; bloom and
+  grad-text whitelists; nebula tokens pinned transparent; tint preset
+  pairs in both themes; font weights capped at 500.
+
 ## [1.30.0] — 2026-07-18 — human-paced QQ groups + truthful admin UI
 
 > QQ group behaviour goes from "replies to everything, always" to
