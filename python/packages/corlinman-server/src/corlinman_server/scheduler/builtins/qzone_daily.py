@@ -75,6 +75,7 @@ import logging
 import os
 import time
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -695,11 +696,46 @@ async def _resolve_life_block(
                     entries.append(f"  · {str(text)[:120]}")
             if entries:
                 lines.append("- 最近日记：\n" + "\n".join(entries))
+        # gap-fill B2: append the life-rhythm signals (best-effort). Two
+        # "节奏" lines, plus one priority nudge line when a threshold trips.
+        signals = _life_signals(life, datetime.now(UTC).astimezone())
+        dics = signals.get("days_in_current_state")
+        if isinstance(dics, int):
+            lines.append(f"- 当前状态已持续：{dics} 天")
+        dslo = signals.get("days_since_last_outing")
+        if isinstance(dslo, int):
+            lines.append(f"- 距上次外出：{dslo} 天")
+        nudge = signals.get("life_nudge")
+        if isinstance(nudge, dict):
+            msg = nudge.get("message")
+            if isinstance(msg, str) and msg.strip():
+                lines.append(f"⚠ 生活节奏提示（优先响应）：{msg.strip()}")
         if lines:
             return "## 我最近的生活（写说说时自然带上，别逐条念）\n" + "\n".join(
                 lines
             )
     return None
+
+
+def _life_signals(life: dict[str, Any], now: datetime) -> dict[str, Any]:
+    """Compute life-rhythm signals via the agent-side pure helper.
+
+    Lazy + guarded server→agent import: the layering contract allows the
+    server→agent direction, but a degraded boot that excluded
+    corlinman-agent (or a future refactor of the pure helper) must never
+    crash the scheduler. Returns ``{}`` on any miss so the caller simply
+    omits the rhythm lines."""
+    try:
+        from corlinman_agent.persona.life import (  # noqa: PLC0415
+            compute_life_signals,
+        )
+    except Exception:  # noqa: BLE001 — best-effort; scheduler never raises
+        return {}
+    try:
+        result = compute_life_signals(life, now)
+    except Exception:  # noqa: BLE001
+        return {}
+    return result if isinstance(result, dict) else {}
 
 
 def _build_session_key(persona_id: str) -> str:
