@@ -31,8 +31,8 @@ from corlinman_providers._auth_refresh import (
     with_401_recovery,
 )
 from corlinman_providers.base import ProviderChunk
-from corlinman_providers.reasoning_tiers import clamp_reasoning_tier
 from corlinman_providers.failover import AuthError, CorlinmanError
+from corlinman_providers.reasoning_tiers import clamp_reasoning_tier
 from corlinman_providers.specs import ProviderKind, ProviderSpec
 
 logger = structlog.get_logger(__name__)

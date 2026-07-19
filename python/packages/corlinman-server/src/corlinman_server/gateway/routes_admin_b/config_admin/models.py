@@ -17,11 +17,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from corlinman_providers.reasoning_tiers import reasoning_tiers_for_model
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-
-from corlinman_providers.reasoning_tiers import reasoning_tiers_for_model
 
 from corlinman_server.gateway.core.config_mutation import (
     publish_config_mutation as _publish_config_mutation_core,
