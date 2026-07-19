@@ -48,8 +48,8 @@
 
     <!-- cute face — tiny moon-white dots, no mouth -->
     <g fill="#ffffff">
-      <circle class="eye" cx="102" cy="118" r="4.4"/>
-      <circle class="eye eye-r" cx="138" cy="118" r="4.4"/>
+      <ellipse class="eye" cx="102" cy="118" rx="4.8" ry="6.8"/>
+      <ellipse class="eye eye-r" cx="138" cy="118" rx="4.8" ry="6.8"/>
     </g>
   </g>
 </svg>
