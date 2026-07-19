@@ -182,3 +182,15 @@ describe("glow and gradient whitelists", () => {
     expect(filesMatching("font-(extrabold|black)\\b|font-\\[[6-9]00\\]")).toEqual([]);
   });
 });
+
+describe("sticky chrome opacity", () => {
+  it(".c-appbar is opaque canvas, never transparent", () => {
+    // Regression: `.c-appbar { background: transparent }` lands after the
+    // utility layer, silently beating the topbar's `bg-sg-space-0` — with
+    // no backdrop-filter in this design language, a see-through sticky bar
+    // lets scrolled content bleed through (illegible on the Paper theme).
+    const appbar = blockOf(/\.c-appbar\s*\{([\s\S]*?)\}/);
+    expect(appbar).toContain("background: var(--sg-space-0)");
+    expect(appbar).not.toMatch(/background:\s*transparent/);
+  });
+});

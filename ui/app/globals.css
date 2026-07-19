@@ -549,7 +549,13 @@
 
   /* ── chrome bars ─────────────────────────────────────────────── */
   .c-appbar {
-    background: transparent;
+    /* Canvas-colored, NOT see-through: this rule lands after the
+       utility layer, so a transparent value here silently overrode
+       the topbar's `bg-sg-space-0` and let scrolled content bleed
+       through the bar (invisible on the pure-black dark canvas, a
+       mess on Paper). No backdrop-filter allowed, so opacity is the
+       only way sticky chrome stays legible. */
+    background: var(--sg-space-0);
     border-bottom: 1px solid var(--sg-border);
     box-shadow: var(--sg-scrim-down);
   }

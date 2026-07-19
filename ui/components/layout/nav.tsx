@@ -15,8 +15,9 @@ import { AccentPicker } from "@/components/ui/accent-picker";
 import { cn } from "@/lib/utils";
 
 /**
- * Spatial Glass topbar. Floating glass panel (shell tier — real blur allowed)
- * — matches the sidebar's gutter treatment. Left: breadcrumbs. Right: search
+ * Eclipse topbar. Opaque canvas-colored bar (no backdrop-filter exists in
+ * this design language, so sticky chrome must be solid to stay legible) —
+ * matches the sidebar's gutter treatment. Left: breadcrumbs. Right: search
  * (⌘K), health dot, language, theme. Logout + user info live in the sidebar.
  *
  * Mobile (<md): leading slot carries a hamburger that opens the sidebar
@@ -28,10 +29,14 @@ export function TopNav() {
     <header
       className={cn(
         "sticky top-2 md:top-4 z-40 flex h-14 items-center justify-between gap-2 md:gap-4 rounded-sg-lg px-3 md:px-4",
-        // Eclipse app bar: canvas-colored (reads as transparent over the
-        // pure-black backdrop, stays legible when content scrolls under),
+        // Eclipse app bar: opaque canvas color (c-appbar owns the actual
+        // background — a post-utility rule, so a utility here would lose),
         // hairline bottom border + downward scrim.
         "c-appbar bg-sg-space-0",
+        // Blank the sticky gutter above the bar (top-2/top-4): without this
+        // strip, scrolled content slides through the gap over the bar's top
+        // edge. Canvas-colored so it reads as part of the page chrome.
+        "before:absolute before:inset-x-0 before:-top-2 before:h-2 before:bg-sg-space-0 before:content-[''] md:before:-top-4 md:before:h-4",
       )}
     >
       <div className="flex min-w-0 flex-1 items-center gap-2 md:gap-3">
