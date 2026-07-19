@@ -4,6 +4,47 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.34.0] — 2026-07-19 — QZone folded into the QQ channel page + reference-image descriptions
+
+### Added
+- **reference-image descriptions, global ↔ task interop**: every
+  reference asset now carries an operator-authored free-text
+  `description` ("what this image shows / how to reference it", ≤500
+  chars). New sqlite column with an explicit `ALTER TABLE` migration;
+  upload form field + `PATCH assets/{aid}` accepts `label` and/or
+  `description` (empty body 400s `empty_patch`). The persona studio
+  grid gets a per-image description editor; the QZone job picker shows
+  the same text (tooltip + snippet) because jobs reference assets by
+  label — one source of truth, edits flow everywhere. Descriptions ride
+  into generation at both injection points: the `image_with_refs`
+  legend (`Reference image N = label (desc)`) and the qzone builtin's
+  system-prompt block (`label（描述）`, best-effort, never fails the
+  run). (#160)
+
+### Changed
+- **QZone publishing now lives inside the QQ channel page**: the whole
+  `/scheduler/qzone` surface (daily-post upsert + jobs table + B6
+  auto-reply sub-section) became `<QzonePanel>` and mounts on
+  `/channels/qq` below the channel config editor — QZone borrows the
+  running NapCat login state, so it belongs with the channel. The old
+  route redirects (bookmarks keep working); the standalone sidebar
+  entry is gone and its search keywords folded into the QQ item. (#160)
+- **QQ channel config form de-noised**: `access_token` (OneBot WS
+  auth) and `napcat_access_token` (NapCat WebUI auth) are both live
+  fields but meaningless for the bundled NapCat — they folded behind
+  the "advanced" disclosure next to the endpoint overrides they
+  authenticate, with human labels ("OneBot WS token" / "NapCat WebUI
+  token") and leave-blank-for-bundled hints. The default view is now
+  just reply policy / IDs / whitelist / toggles. (#160)
+- **eclipse-pearl mascot lost its mouth**: eyes-only face (blink
+  animation kept), eyes re-centered. (#160)
+
+### Fixed
+- **QQ config round-trip**: `group_whitelist`, `proactive_groups`,
+  both toggles and all six tuning numbers never echoed back through
+  `config_keys`, so the editor always rendered blank/off over a
+  configured value; they now pre-seed correctly. (#160)
+
 ## [1.33.1] — 2026-07-18 — opaque topbar
 
 ### Fixed
