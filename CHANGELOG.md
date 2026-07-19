@@ -4,6 +4,63 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.33.0] — 2026-07-18 — QZone daily-post diversity + scheduler UI rework + auto comment replies
+
+### Added
+- **QZone daily-post diversity engine**: every firing now composes its
+  system prompt as persona body → life block (with rhythm signals) →
+  "今日灵感种子" (one `persona_life_event_seed` freeform draw) →
+  "最近已发过的说说" (anti-repeat excerpts from a new per-persona
+  post-log sidecar, atomic-write, last 30) → an anti-formulaic tail
+  that demands a fresh topic/scene/opening every day and tells the
+  model to act on ⚠ life-rhythm nudges by advancing its persona state.
+  Metadata knobs: `diversity` (default on), `recent_posts_n` (1-14),
+  `jitter_minutes` (0-180 — runner-level random send-time delay so
+  posts stop landing on the exact same second; manual trigger
+  unaffected). (#155)
+- **life-rhythm signals** (hermes port, persona-generic):
+  `compute_life_signals` derives days-in-state / days-since-outing and
+  a three-tier nudge (≥13d not out → HIGH go_out, ≥8d out →
+  wrap_outing, ≥6d same state → change_scene); folded into
+  `persona_life_get` and the daily-post prompt. (#152)
+- **composition direction for reference-image art**: `image_with_refs`
+  now wraps prompts with a candid slice-of-life intro (different
+  actions/facings, off-axis framing, mid-action poses, lived-in
+  clutter; persona-generic style). Opt out with
+  `CORLINMAN_IMAGE_REFS_INTRO=off`; success envelope reports
+  `composition_intro`. (#153)
+- **task-level reference images + jitter on the scheduler API**:
+  `image_ref_labels` (persona-asset labels, ≤8, validated) and
+  `jitter_minutes` promoted to top-level `POST/PATCH/GET
+  /admin/scheduler/jobs` fields (metadata remains the store of
+  record); the daily builtin pins those labels in its prompt so
+  generated art uses the uploaded references. (#157)
+- **`qzone.reply_comments` scheduled builtin** (net-new vs hermes):
+  scans the persona's own recent 说说 and replies to fresh comments
+  in-character (`max_replies`, `lookback_posts`), with a per-persona
+  seen-comments sidecar for dedup and an honest audit dict
+  (`replies_posted` / `tids_scanned` / `skipped_seen`). Shared
+  chat-drive skeleton extracted to `builtins/_qzone_chat.py`. Admin
+  page gained an "自动回复评论" sub-section. (#158)
+- **scheduler page rework**: jobs are edited in place (row → backfilled
+  form → PATCH), cron is picked as 每天/每周/高级 via a schedule picker
+  backed by a pure `cron-schedule` lib (Sunday emits `0`, never `7`),
+  reference images are picked/uploaded/deleted in a thumbnail grid
+  that shares the persona-studio asset cache, and delete/pause/resume
+  ride per-row sprite actions. (#149, #151, #154, #156)
+
+### Fixed
+- **daily-post audit always lost `tid`/`qzone_url`**: `ToolResultEvent`
+  had no payload slot, so every successful publish recorded
+  `last_qzone_url=None` and history showed a bare "ran". The parsed
+  tool envelope (≤8 KiB) now rides `payload_json` through the gateway
+  and the builtin unions it over the input args; the audit also
+  carries the published `text` (fuel for the anti-repeat log). (#150)
+- **sidebar avatar initial overflowed the presence orb**: the orb's own
+  `position:relative` overrode the un-prefixed `absolute`, pushing it
+  back in-flow and shoving the initial out of the pearl; the initial
+  is now the absolute centered overlay instead. (#148)
+
 ## [1.32.0] — 2026-07-18 — ask_user question cards + per-family reasoning tiers
 
 ### Added
