@@ -51,6 +51,9 @@ from corlinman_server.scheduler.builtins import (
 from corlinman_server.scheduler.builtins.qzone_daily import (
     QZONE_DAILY_BUILTIN_NAME,
 )
+from corlinman_server.scheduler.builtins.qzone_reply import (
+    QZONE_REPLY_BUILTIN_NAME,
+)
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -661,6 +664,195 @@ def test_create_rejects_negative_jitter(client: TestClient) -> None:
     res = client.post("/admin/scheduler/jobs", json=body)
     assert res.status_code == 422
     assert res.json()["error"] == "invalid_qzone_daily_args"
+
+
+# ---------------------------------------------------------------------------
+# B6: qzone.reply_comments — create / validate / trigger
+# ---------------------------------------------------------------------------
+
+
+def test_create_reply_job_round_trips(
+    client: TestClient, admin_state: AdminState
+) -> None:
+    """POST with action_type=qzone.reply_comments + metadata knobs → 200,
+    JobOut echoes the knobs, and metadata is the store of record."""
+    body = {
+        "name": "grantley.qzone_reply",
+        "cron": "0 */2 * * *",
+        "action_type": QZONE_REPLY_BUILTIN_NAME,
+        "persona_id": "grantley",
+        "qq_account": "1234",
+        "metadata": {"max_replies": 5, "lookback_posts": 10},
+    }
+    res = client.post("/admin/scheduler/jobs", json=body)
+    assert res.status_code == 200, res.text
+    row = res.json()
+    assert row["name"] == "grantley.qzone_reply"
+    assert row["action_type"] == QZONE_REPLY_BUILTIN_NAME
+    assert row["persona_id"] == "grantley"
+    assert row["source"] == "runtime"
+    # B6 read-back echo (write path stays metadata).
+    assert row["max_replies"] == 5
+    assert row["lookback_posts"] == 10
+    meta = _runtime_metadata(admin_state, "grantley.qzone_reply")
+    assert meta["max_replies"] == 5
+    assert meta["lookback_posts"] == 10
+    assert meta["persona_id"] == "grantley"
+    assert meta["qq_account"] == "1234"
+    # Survives the list endpoint round-trip.
+    listed = client.get("/admin/scheduler/jobs").json()
+    hit = next(j for j in listed if j["name"] == "grantley.qzone_reply")
+    assert hit["max_replies"] == 5
+    assert hit["lookback_posts"] == 10
+
+
+def test_create_reply_job_requires_persona_id(client: TestClient) -> None:
+    body = {
+        "name": "no-persona-reply",
+        "cron": "0 */2 * * *",
+        "action_type": QZONE_REPLY_BUILTIN_NAME,
+    }
+    res = client.post("/admin/scheduler/jobs", json=body)
+    assert res.status_code == 422
+    assert res.json()["error"] == "invalid_qzone_reply_args"
+
+
+def test_create_reply_job_rejects_out_of_range_max_replies(
+    client: TestClient,
+) -> None:
+    body = {
+        "name": "grantley.qzone_reply",
+        "cron": "0 */2 * * *",
+        "action_type": QZONE_REPLY_BUILTIN_NAME,
+        "persona_id": "grantley",
+        "metadata": {"max_replies": 99},
+    }
+    res = client.post("/admin/scheduler/jobs", json=body)
+    assert res.status_code == 422
+    assert res.json()["error"] == "invalid_qzone_reply_args"
+
+
+def test_create_reply_job_rejects_out_of_range_lookback(
+    client: TestClient,
+) -> None:
+    for bad in (0, 21):
+        body = {
+            "name": "grantley.qzone_reply",
+            "cron": "0 */2 * * *",
+            "action_type": QZONE_REPLY_BUILTIN_NAME,
+            "persona_id": "grantley",
+            "metadata": {"lookback_posts": bad},
+        }
+        res = client.post("/admin/scheduler/jobs", json=body)
+        assert res.status_code == 422, bad
+        assert res.json()["error"] == "invalid_qzone_reply_args"
+
+
+def test_create_reply_job_rejects_non_int_knob(client: TestClient) -> None:
+    body = {
+        "name": "grantley.qzone_reply",
+        "cron": "0 */2 * * *",
+        "action_type": QZONE_REPLY_BUILTIN_NAME,
+        "persona_id": "grantley",
+        "metadata": {"max_replies": "three"},
+    }
+    res = client.post("/admin/scheduler/jobs", json=body)
+    assert res.status_code == 422
+    assert res.json()["error"] == "invalid_qzone_reply_args"
+
+
+def test_patch_reply_job_revalidates_metadata(
+    client: TestClient, admin_state: AdminState
+) -> None:
+    """PATCH runs the reply validator on the merged shape — a bad knob
+    422s without mutating; a good knob lands in metadata + the echo."""
+    create = client.post(
+        "/admin/scheduler/jobs",
+        json={
+            "name": "grantley.qzone_reply",
+            "cron": "0 */2 * * *",
+            "action_type": QZONE_REPLY_BUILTIN_NAME,
+            "persona_id": "grantley",
+            "metadata": {"max_replies": 3, "lookback_posts": 5},
+        },
+    )
+    assert create.status_code == 200, create.text
+
+    bad = client.patch(
+        "/admin/scheduler/jobs/grantley.qzone_reply",
+        json={"metadata": {"max_replies": 0}},
+    )
+    assert bad.status_code == 422
+    assert bad.json()["error"] == "invalid_qzone_reply_args"
+    meta = _runtime_metadata(admin_state, "grantley.qzone_reply")
+    assert meta["max_replies"] == 3  # rejected PATCH didn't mutate
+
+    good = client.patch(
+        "/admin/scheduler/jobs/grantley.qzone_reply",
+        json={
+            "metadata": {
+                "persona_id": "grantley",
+                "max_replies": 8,
+                "lookback_posts": 12,
+            }
+        },
+    )
+    assert good.status_code == 200, good.text
+    row = good.json()
+    assert row["max_replies"] == 8
+    assert row["lookback_posts"] == 12
+
+
+async def test_trigger_runtime_reply_job_invokes_builtin(
+    client: TestClient, admin_state: AdminState
+) -> None:
+    """The trigger route's runtime fallback fires the registered
+    ``qzone.reply_comments`` builtin and stamps its audit dict into the
+    history + the job row summary."""
+    captured: list[BuiltinContext] = []
+
+    async def _stub_action(ctx: BuiltinContext) -> dict[str, Any]:
+        captured.append(ctx)
+        return {
+            "ok": True,
+            "replies_posted": 2,
+            "tids_scanned": 4,
+            "skipped_seen": 1,
+            "persona_id": "grantley",
+        }
+
+    original = BUILTIN_ACTIONS.get(QZONE_REPLY_BUILTIN_NAME)
+    register_builtin(QZONE_REPLY_BUILTIN_NAME, _stub_action)
+    try:
+        create = client.post(
+            "/admin/scheduler/jobs",
+            json={
+                "name": "grantley.qzone_reply",
+                "cron": "0 */2 * * *",
+                "action_type": QZONE_REPLY_BUILTIN_NAME,
+                "persona_id": "grantley",
+                "metadata": {"max_replies": 3},
+            },
+        )
+        assert create.status_code == 200, create.text
+        res = client.post("/admin/scheduler/jobs/grantley.qzone_reply/trigger")
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert body["ok"] is True
+        assert body["result"]["replies_posted"] == 2
+        assert body["job"]["last_run_ok"] is True
+        hist = client.get("/admin/scheduler/history").json()
+        hit = next(h for h in hist if h["job"] == "grantley.qzone_reply")
+        assert hit["status"] == "ok"
+        assert "replies=2" in hit["message"]
+        # The builtin saw the job's metadata via the synced per-job map.
+        assert len(captured) == 1
+        assert captured[0].name == "grantley.qzone_reply"
+        synced = admin_state.extras.get("scheduler_job_metadata", {})
+        assert synced.get("grantley.qzone_reply", {}).get("max_replies") == 3
+    finally:
+        if original is not None:
+            register_builtin(QZONE_REPLY_BUILTIN_NAME, original)
 
 
 def test_patch_rejects_bad_labels(client: TestClient) -> None:

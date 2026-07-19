@@ -1348,6 +1348,16 @@ export const zhCN = {
       deleted: "已删除 {{label}}",
       deleteFail: "删除失败：{{msg}}",
     },
+    reply: {
+      title: "评论自动回复",
+      editTitle: "编辑自动回复任务",
+      help: "定时查看人格自己说说下的新评论，并以人设口吻自动回复；已回过的评论会被跳过。",
+      maxRepliesLabel: "每次最多回复（条）",
+      maxRepliesHint: "单次触发最多回复这么多条新评论（1–10）。",
+      lookbackLabel: "扫描最近说说（条）",
+      lookbackHint: "每次检查自己最近这么多条说说的评论（1–20）。",
+      empty: "暂无自动回复任务，在上方选择人格并保存即可创建。",
+    },
   },
   scheduler: {
     title: "定时任务",

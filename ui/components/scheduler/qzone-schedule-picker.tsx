@@ -33,6 +33,13 @@ export interface QzoneSchedulePickerProps {
   value: ScheduleState;
   /** Emits the next state on every edit; the parent re-renders with it. */
   onChange: (next: ScheduleState) => void;
+  /**
+   * Prefix for the picker's element ids / data-testids. Defaults to
+   * `"qzone-schedule"` (the historical values), so the daily form keeps
+   * its selectors; a second picker on the same page (the B6 auto-reply
+   * sub-section) passes its own prefix to avoid duplicate ids.
+   */
+  idPrefix?: string;
 }
 
 /** Weekday chips render Monday-first for display; the stored values stay
@@ -50,7 +57,11 @@ const WEEKDAY_KEY: Record<number, string> = {
   6: "dowSat",
 };
 
-export function QzoneSchedulePicker({ value, onChange }: QzoneSchedulePickerProps) {
+export function QzoneSchedulePicker({
+  value,
+  onChange,
+  idPrefix = "qzone-schedule",
+}: QzoneSchedulePickerProps) {
   const { t } = useTranslation();
 
   const modeOptions = [
@@ -65,7 +76,7 @@ export function QzoneSchedulePicker({ value, onChange }: QzoneSchedulePickerProp
   }));
 
   return (
-    <div className="flex flex-col gap-3" data-testid="qzone-schedule-picker">
+    <div className="flex flex-col gap-3" data-testid={`${idPrefix}-picker`}>
       <FilterChipGroup
         options={modeOptions}
         value={value.mode}
@@ -75,16 +86,16 @@ export function QzoneSchedulePicker({ value, onChange }: QzoneSchedulePickerProp
 
       {value.mode !== "advanced" ? (
         <div className="flex flex-col gap-1.5">
-          <Label htmlFor="qzone-schedule-time">
+          <Label htmlFor={`${idPrefix}-time`}>
             {t("schedulerQzone.schedule.timeLabel")}
           </Label>
           <Input
-            id="qzone-schedule-time"
+            id={`${idPrefix}-time`}
             type="time"
             value={value.time}
             onChange={(e) => onChange({ ...value, time: e.target.value })}
             className="max-w-[160px]"
-            data-testid="qzone-schedule-time"
+            data-testid={`${idPrefix}-time`}
           />
         </div>
       ) : null}
@@ -109,18 +120,18 @@ export function QzoneSchedulePicker({ value, onChange }: QzoneSchedulePickerProp
 
       {value.mode === "advanced" ? (
         <div className="flex flex-col gap-1.5">
-          <Label htmlFor="qzone-schedule-raw">
+          <Label htmlFor={`${idPrefix}-raw`}>
             {t("schedulerQzone.schedule.rawLabel")}
           </Label>
           <Input
-            id="qzone-schedule-raw"
+            id={`${idPrefix}-raw`}
             type="text"
             value={value.raw}
             onChange={(e) => onChange({ ...value, raw: e.target.value })}
             className="max-w-[260px] font-mono"
             placeholder="0 9 * * *"
             spellCheck={false}
-            data-testid="qzone-schedule-raw"
+            data-testid={`${idPrefix}-raw`}
           />
         </div>
       ) : null}

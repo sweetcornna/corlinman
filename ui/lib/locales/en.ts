@@ -1380,6 +1380,16 @@ export const en = {
       deleted: "Deleted {{label}}",
       deleteFail: "Delete failed: {{msg}}",
     },
+    reply: {
+      title: "Comment auto-reply",
+      editTitle: "Edit the auto-reply job",
+      help: "Periodically scan comments under the persona's own posts and reply in its voice; already-answered comments are skipped.",
+      maxRepliesLabel: "Max replies per run",
+      maxRepliesHint: "Answer at most this many new comments per firing (1–10).",
+      lookbackLabel: "Posts to scan",
+      lookbackHint: "Check the comments on this many of the persona's most recent posts (1–20).",
+      empty: "No auto-reply jobs yet — pick a persona above and save to create one.",
+    },
   },
   scheduler: {
     title: "Scheduler",

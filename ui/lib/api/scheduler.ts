@@ -28,6 +28,10 @@ import { uiLocale } from "@/lib/format";
  * Python constant `QZONE_DAILY_BUILTIN_NAME`). */
 export const QZONE_DAILY_ACTION_TYPE = "qzone.daily_publish" as const;
 
+/** Wire-stable name of the QZone comment auto-reply builtin (B6 — mirrors
+ * the Python constant `QZONE_REPLY_BUILTIN_NAME`). */
+export const QZONE_REPLY_ACTION_TYPE = "qzone.reply_comments" as const;
+
 /** Job row shape returned by `GET /admin/scheduler/jobs`.
  *
  * Legacy fields stay non-optional so existing code keeps compiling;
@@ -61,6 +65,13 @@ export interface SchedulerJobRow {
   /** Random +/- minutes of send-time jitter applied before firing.
    * Forward-compat alongside {@link SchedulerJobRow.image_ref_labels}. */
   jitter_minutes?: number;
+  /** B6 `qzone.reply_comments` — max comments answered per firing.
+   * Read-back echo from job metadata (the write path stays
+   * `metadata.max_replies`); `null`/absent on other job types. */
+  max_replies?: number | null;
+  /** B6 `qzone.reply_comments` — how many of the persona's most-recent
+   * posts to scan. Read-back echo from `metadata.lookback_posts`. */
+  lookback_posts?: number | null;
   /** `"config"` for `[[scheduler.jobs]]`-derived rows; `"runtime"` for
    * operator-created jobs sitting in the AdminState overlay. */
   source?: "config" | "runtime";
@@ -211,6 +222,11 @@ export function triggerSchedulerJobTyped(
  * suite exercise the predicate in isolation. */
 export function isQzoneDailyJob(j: SchedulerJobRow): boolean {
   return j.action_type === QZONE_DAILY_ACTION_TYPE;
+}
+
+/** Same idea for the B6 comment auto-reply jobs. */
+export function isQzoneReplyJob(j: SchedulerJobRow): boolean {
+  return j.action_type === QZONE_REPLY_ACTION_TYPE;
 }
 
 /** Compute the next firing time from a 5-field cron expression.

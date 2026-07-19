@@ -98,6 +98,24 @@ function runtimeJob(over: Partial<SchedulerJobRow> = {}): SchedulerJobRow {
   };
 }
 
+function replyJob(over: Partial<SchedulerJobRow> = {}): SchedulerJobRow {
+  return {
+    name: "grantley.qzone_reply",
+    cron: "30 21 * * *",
+    timezone: null,
+    action_kind: "run_tool",
+    action_type: "qzone.reply_comments",
+    next_fire_at: null,
+    last_status: null,
+    enabled: true,
+    persona_id: "grantley",
+    max_replies: 5,
+    lookback_posts: 10,
+    source: "runtime",
+    ...over,
+  };
+}
+
 function persona(over: Partial<Persona> = {}): Persona {
   return {
     id: "grantley",
@@ -159,8 +177,9 @@ describe("QzoneSchedulerPage", () => {
     await waitFor(() =>
       expect(screen.getByTestId("qzone-schedule-time")).toHaveValue("21:00"),
     );
-    // Persona is locked while editing.
-    expect(screen.getByRole("combobox")).toBeDisabled();
+    // Persona is locked while editing (the daily select renders first;
+    // the B6 reply sub-section adds a second combobox below it).
+    expect(screen.getAllByRole("combobox")[0]).toBeDisabled();
     // Cancel-edit affordance appears.
     expect(screen.getByTestId("qzone-cancel-edit")).toBeInTheDocument();
 
@@ -185,9 +204,10 @@ describe("QzoneSchedulerPage", () => {
     fetchJobsMock.mockResolvedValue([]);
     renderPage();
 
-    // Wait for the persona option to render before selecting it.
-    await screen.findByRole("option", { name: "Grantley (grantley)" });
-    fireEvent.change(screen.getByRole("combobox"), {
+    // Wait for the persona options to render before selecting (both the
+    // daily and the reply persona selects list the same personas).
+    await screen.findAllByRole("option", { name: "Grantley (grantley)" });
+    fireEvent.change(screen.getAllByRole("combobox")[0], {
       target: { value: "grantley" },
     });
 
@@ -260,8 +280,8 @@ describe("QzoneSchedulerPage", () => {
     fetchJobsMock.mockResolvedValue([]);
     renderPage();
 
-    await screen.findByRole("option", { name: "Grantley (grantley)" });
-    fireEvent.change(screen.getByRole("combobox"), {
+    await screen.findAllByRole("option", { name: "Grantley (grantley)" });
+    fireEvent.change(screen.getAllByRole("combobox")[0], {
       target: { value: "grantley" },
     });
 
@@ -269,10 +289,113 @@ describe("QzoneSchedulerPage", () => {
     expect(screen.getByTestId("qzone-job-save")).not.toBeDisabled();
 
     // …switch to weekly with no weekday selected → composeCron === null.
-    fireEvent.click(screen.getByText("schedulerQzone.schedule.modeWeekly"));
+    // (Two schedule pickers on the page → target the daily one, first.)
+    fireEvent.click(screen.getAllByText("schedulerQzone.schedule.modeWeekly")[0]);
 
     await waitFor(() =>
       expect(screen.getByTestId("qzone-job-save")).toBeDisabled(),
     );
+  });
+});
+
+describe("QzoneSchedulerPage — auto-reply sub-section (B6)", () => {
+  it("renders qzone.reply_comments jobs in the reply table", async () => {
+    fetchJobsMock.mockResolvedValue([runtimeJob(), replyJob()]);
+    renderPage();
+
+    // The reply row lands with the shared QzoneJobRow testid…
+    const row = await screen.findByTestId("qzone-job-row-grantley.qzone_reply");
+    expect(row).toBeInTheDocument();
+    // …alongside (not instead of) the daily row.
+    expect(
+      screen.getByTestId("qzone-job-row-grantley.daily_qzone"),
+    ).toBeInTheDocument();
+    // The reply form's own controls are present.
+    expect(screen.getByTestId("qzone-reply-max")).toBeInTheDocument();
+    expect(screen.getByTestId("qzone-reply-lookback")).toBeInTheDocument();
+  });
+
+  it("creates a reply job via POST with action_type + metadata knobs", async () => {
+    createMock.mockResolvedValue(replyJob());
+    fetchJobsMock.mockResolvedValue([]);
+    renderPage();
+
+    await screen.findAllByRole("option", { name: "Grantley (grantley)" });
+    fireEvent.change(screen.getByTestId("qzone-reply-persona"), {
+      target: { value: "grantley" },
+    });
+    fireEvent.change(screen.getByTestId("qzone-reply-max"), {
+      target: { value: "7" },
+    });
+    fireEvent.change(screen.getByTestId("qzone-reply-lookback"), {
+      target: { value: "12" },
+    });
+
+    fireEvent.click(screen.getByTestId("qzone-reply-save"));
+
+    await waitFor(() => expect(createMock).toHaveBeenCalledTimes(1));
+    expect(createMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "grantley.qzone_reply",
+        cron: "30 21 * * *",
+        action_type: "qzone.reply_comments",
+        persona_id: "grantley",
+        metadata: { max_replies: 7, lookback_posts: 12 },
+      }),
+    );
+    expect(patchMock).not.toHaveBeenCalled();
+  });
+
+  it("edit backfills the reply form and saves via PATCH (not POST)", async () => {
+    patchMock.mockResolvedValue(replyJob());
+    fetchJobsMock.mockResolvedValue([replyJob()]);
+    renderPage();
+
+    const editBtn = await screen.findByTestId(
+      "qzone-job-edit-grantley.qzone_reply",
+    );
+    fireEvent.click(editBtn);
+
+    // Wire echo (max_replies=5 / lookback_posts=10) backfills the knobs;
+    // parseCron("30 21 * * *") backfills the reply picker's time input.
+    await waitFor(() =>
+      expect(screen.getByTestId("qzone-reply-max")).toHaveValue(5),
+    );
+    expect(screen.getByTestId("qzone-reply-lookback")).toHaveValue(10);
+    expect(screen.getByTestId("qzone-reply-schedule-time")).toHaveValue(
+      "21:30",
+    );
+    // Persona is locked while editing; cancel affordance appears.
+    expect(screen.getByTestId("qzone-reply-persona")).toBeDisabled();
+    expect(screen.getByTestId("qzone-reply-cancel-edit")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("qzone-reply-save"));
+
+    await waitFor(() => expect(patchMock).toHaveBeenCalledTimes(1));
+    expect(patchMock).toHaveBeenCalledWith(
+      "grantley.qzone_reply",
+      expect.objectContaining({
+        cron: "30 21 * * *",
+        action_type: "qzone.reply_comments",
+        persona_id: "grantley",
+        metadata: { max_replies: 5, lookback_posts: 10 },
+      }),
+    );
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
+  it("toggling a reply job routes through pause like the daily rows", async () => {
+    fetchJobsMock.mockResolvedValue([replyJob({ enabled: true })]);
+    renderPage();
+
+    const toggle = await screen.findByTestId(
+      "qzone-job-toggle-grantley.qzone_reply",
+    );
+    fireEvent.click(toggle);
+
+    await waitFor(() =>
+      expect(pauseMock).toHaveBeenCalledWith("grantley.qzone_reply"),
+    );
+    expect(resumeMock).not.toHaveBeenCalled();
   });
 });
