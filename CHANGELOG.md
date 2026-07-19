@@ -4,6 +4,18 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.33.1] — 2026-07-18 — opaque topbar
+
+### Fixed
+- **topbar was see-through**: `.c-appbar`'s post-utility
+  `background: transparent` silently beat the topbar's `bg-sg-space-0`
+  utility — invisible on the pure-black dark canvas, but on the Paper
+  theme scrolled content bled straight through the sticky bar, and the
+  floating bar's `top-2/4` gutter let content slide past its top edge.
+  The bar is now opaque canvas color (`var(--sg-space-0)`, dark theme
+  visually unchanged) with a canvas-colored strip blanking the sticky
+  gutter, plus a guard test pinning `.c-appbar` opaque forever. (#159)
+
 ## [1.33.0] — 2026-07-18 — QZone daily-post diversity + scheduler UI rework + auto comment replies
 
 ### Added
