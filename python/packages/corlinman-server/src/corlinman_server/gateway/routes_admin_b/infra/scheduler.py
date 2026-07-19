@@ -56,6 +56,9 @@ from corlinman_server.gateway.routes_admin_b.state import (
 from corlinman_server.scheduler.builtins.qzone_daily import (
     QZONE_DAILY_BUILTIN_NAME,
 )
+from corlinman_server.scheduler.builtins.qzone_reply import (
+    QZONE_REPLY_BUILTIN_NAME,
+)
 
 from ._scheduler_lib import (
     _JOB_NAME_RE,
@@ -80,6 +83,7 @@ from ._scheduler_lib import (
     _unregister_runtime_loop,
     _validate_cron,
     _validate_qzone_daily,
+    _validate_qzone_reply,
     make_history_entry,
     rehydrate_runtime_jobs_on_boot,
 )
@@ -139,6 +143,16 @@ def router() -> APIRouter:
                     status_code=422,
                     content={
                         "error": "invalid_qzone_daily_args",
+                        "message": err or "",
+                    },
+                )
+        elif body.action_type == QZONE_REPLY_BUILTIN_NAME:
+            ok, err = _validate_qzone_reply(body)
+            if not ok:
+                return JSONResponse(
+                    status_code=422,
+                    content={
+                        "error": "invalid_qzone_reply_args",
                         "message": err or "",
                     },
                 )
@@ -211,6 +225,16 @@ def router() -> APIRouter:
                     status_code=422,
                     content={
                         "error": "invalid_qzone_daily_args",
+                        "message": err or "",
+                    },
+                )
+        elif merged.action_type == QZONE_REPLY_BUILTIN_NAME:
+            ok, err = _validate_qzone_reply(merged)
+            if not ok:
+                return JSONResponse(
+                    status_code=422,
+                    content={
+                        "error": "invalid_qzone_reply_args",
                         "message": err or "",
                     },
                 )
@@ -375,7 +399,10 @@ def router() -> APIRouter:
         # Runtime fallback — drive the registered builtin in-process.
         # This is the path the W6 admin UI relies on when there's no
         # live scheduler handle (the common dev / test case).
-        if rj is not None and rj.action_type == QZONE_DAILY_BUILTIN_NAME:
+        if rj is not None and rj.action_type in (
+            QZONE_DAILY_BUILTIN_NAME,
+            QZONE_REPLY_BUILTIN_NAME,
+        ):
             return await _trigger_runtime_qzone_daily(state, rj, history)
 
         entry = HistoryEntry(

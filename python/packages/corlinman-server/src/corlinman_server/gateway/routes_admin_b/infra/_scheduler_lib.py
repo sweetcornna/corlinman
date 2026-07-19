@@ -34,6 +34,9 @@ from corlinman_server.gateway.routes_admin_b.state import (
 from corlinman_server.scheduler.builtins.qzone_daily import (
     QZONE_DAILY_BUILTIN_NAME,
 )
+from corlinman_server.scheduler.builtins.qzone_reply import (
+    QZONE_REPLY_BUILTIN_NAME,
+)
 
 #: Slot name for the runtime-job overlay on
 #: :attr:`AdminState.extras`. Keep stable — other modules may probe it.
@@ -89,6 +92,14 @@ _ASSET_LABEL_RE = re.compile(r"^[a-z0-9_-]{1,64}$")
 #: anyway, so pinning more would be silently dropped at draw time).
 _MAX_IMAGE_REF_LABELS: int = 8
 
+#: ``qzone.reply_comments`` metadata bounds (B6). Mirror the builtin's
+#: clamps (``qzone_reply._MAX_REPLIES_*`` / ``_LOOKBACK_*``) so a value the
+#: admin accepts is exactly the value the firing uses.
+_REPLY_MAX_REPLIES_MIN: int = 1
+_REPLY_MAX_REPLIES_MAX: int = 10
+_REPLY_LOOKBACK_MIN: int = 1
+_REPLY_LOOKBACK_MAX: int = 20
+
 
 def _jitter_secs_from_metadata(metadata: dict[str, Any]) -> int:
     """Derive a runner-level ``jitter_secs`` from a job's ``jitter_minutes``
@@ -127,6 +138,11 @@ class JobOut(BaseModel):
     # config-derived rows (they default to None).
     image_ref_labels: list[str] | None = None
     jitter_minutes: int | None = None
+    # B6 — ``qzone.reply_comments`` knobs echoed back from job metadata so
+    # the admin UI can backfill the edit form. Read-path only: the write
+    # path stays metadata (``body.metadata.max_replies`` etc.).
+    max_replies: int | None = None
+    lookback_posts: int | None = None
     last_run_at_ms: int | None = None
     last_run_ok: bool | None = None
     last_qzone_url: str | None = None
@@ -518,6 +534,9 @@ def _runtime_job_to_out(rj: _RuntimeJob) -> JobOut:
         # store). ``None`` when absent / malformed so the wire stays clean.
         image_ref_labels=_read_image_ref_labels(rj.metadata),
         jitter_minutes=_read_jitter_minutes(rj.metadata),
+        # B6 — reply-job knobs, echoed the same way.
+        max_replies=_read_metadata_int(rj.metadata, "max_replies"),
+        lookback_posts=_read_metadata_int(rj.metadata, "lookback_posts"),
         last_run_at_ms=rj.last_run_at_ms,
         last_run_ok=rj.last_run_ok,
         last_qzone_url=rj.last_qzone_url,
@@ -556,10 +575,27 @@ def _read_jitter_minutes(metadata: dict[str, Any]) -> int | None:
     return None
 
 
+def _read_metadata_int(metadata: dict[str, Any], key: str) -> int | None:
+    """Read an int metadata knob back out for the wire (B6 echo fields).
+
+    Mirrors :func:`_read_jitter_minutes`'s tolerance: a ``bool`` (an
+    ``int`` subclass we must not read as 0/1) or a non-numeric value
+    reads as ``None``; a ``float`` is floored so the ``int``-typed wire
+    field stays honest. Never raises."""
+    raw = metadata.get(key)
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, float):
+        return int(raw)
+    return None
+
+
 def _action_kind_for_runtime(action_type: str) -> str:
     """Map an action_type slug to the legacy ``action_kind`` discriminant
     so the existing UI rows still render with a meaningful badge."""
-    if action_type == QZONE_DAILY_BUILTIN_NAME:
+    if action_type in (QZONE_DAILY_BUILTIN_NAME, QZONE_REPLY_BUILTIN_NAME):
         return "run_tool"
     return action_type or "unknown"
 
@@ -634,6 +670,39 @@ def _validate_qzone_daily(body: NewJobBody) -> tuple[bool, str | None]:
             f"jitter_minutes must be between 0 and {_JITTER_MINUTES_MAX} "
             f"(got {jitter})"
         )
+    return True, None
+
+
+def _validate_qzone_reply(body: NewJobBody) -> tuple[bool, str | None]:
+    """Type-specific gate for ``qzone.reply_comments`` jobs (B6).
+
+    ``persona_id`` is required; the two metadata knobs are range-checked
+    when present (both are optional — the builtin has defaults):
+
+    * ``metadata.max_replies`` — int, :data:`_REPLY_MAX_REPLIES_MIN` ..
+      :data:`_REPLY_MAX_REPLIES_MAX`.
+    * ``metadata.lookback_posts`` — int, :data:`_REPLY_LOOKBACK_MIN` ..
+      :data:`_REPLY_LOOKBACK_MAX`.
+
+    A ``bool`` (an ``int`` subclass) or non-int value is rejected rather
+    than silently coerced so a typo'd form submit surfaces as a 422.
+    """
+    if not body.persona_id or not body.persona_id.strip():
+        return False, "persona_id is required for qzone.reply_comments"
+    metadata = body.metadata or {}
+    for key, lo, hi in (
+        ("max_replies", _REPLY_MAX_REPLIES_MIN, _REPLY_MAX_REPLIES_MAX),
+        ("lookback_posts", _REPLY_LOOKBACK_MIN, _REPLY_LOOKBACK_MAX),
+    ):
+        raw = metadata.get(key)
+        if raw is None:
+            continue
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            return False, f"metadata.{key} must be an integer (got {raw!r})"
+        if raw < lo or raw > hi:
+            return False, (
+                f"metadata.{key} must be between {lo} and {hi} (got {raw})"
+            )
     return True, None
 
 
@@ -746,6 +815,24 @@ def _set_enabled_route(name: str, *, enabled: bool) -> Any:
                         "message": err or "",
                     },
                 )
+        elif rj.action_type == QZONE_REPLY_BUILTIN_NAME:
+            ok, err = _validate_qzone_reply(
+                NewJobBody(
+                    name=rj.name,
+                    cron=rj.cron,
+                    action_type=rj.action_type,
+                    persona_id=rj.persona_id,
+                    metadata=dict(rj.metadata),
+                )
+            )
+            if not ok:
+                return JSONResponse(
+                    status_code=422,
+                    content={
+                        "error": "invalid_qzone_reply_args",
+                        "message": err or "",
+                    },
+                )
     rj.enabled = enabled
     rj.updated_at_ms = _now_ms()
     _apply_enabled_state(state, rj)
@@ -852,7 +939,8 @@ async def _trigger_runtime_qzone_daily(
     rj: _RuntimeJob,
     history: SchedulerHistory,
 ) -> Any:
-    """Fire a runtime ``qzone.daily_publish`` job in-process.
+    """Fire a runtime qzone builtin job (``qzone.daily_publish`` /
+    ``qzone.reply_comments``) in-process.
 
     Builds a fresh :class:`BuiltinContext` carrying ``state.extras
     ['app_state']`` (mirroring what the scheduler tick loop would pass)
@@ -896,6 +984,9 @@ async def _trigger_runtime_qzone_daily(
             message_bits.append(f"tid={result['tid']}")
         if result.get("qzone_url"):
             message_bits.append(f"url={result['qzone_url']}")
+        # B6 reply-job audit — surfaces how many comments were answered.
+        if isinstance(result.get("replies_posted"), int):
+            message_bits.append(f"replies={result['replies_posted']}")
     else:
         err = result.get("error") or "unknown"
         message_bits.append(f"error={err}")
@@ -907,7 +998,7 @@ async def _trigger_runtime_qzone_daily(
             at=now_iso,
             source="manual",
             status=status_word,
-            message="; ".join(message_bits) or "qzone.daily_publish ran",
+            message="; ".join(message_bits) or f"{rj.action_type} ran",
         )
     )
     return {"ok": ok, "result": result, "job": _runtime_job_to_out(rj).model_dump()}

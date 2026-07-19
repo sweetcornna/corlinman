@@ -72,13 +72,46 @@ import asyncio
 import contextlib
 import json
 import logging
-import os
-import time
-import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
+from corlinman_server.scheduler.builtins._qzone_chat import (
+    ChatDriveOutcome,
+)
+from corlinman_server.scheduler.builtins._qzone_chat import (
+    build_internal_chat_request as _build_internal_chat_request,
+)
+from corlinman_server.scheduler.builtins._qzone_chat import (
+    build_session_key as _build_session_key,
+)
+from corlinman_server.scheduler.builtins._qzone_chat import (
+    coerce_optional_str as _coerce_optional_str,
+)
+from corlinman_server.scheduler.builtins._qzone_chat import (
+    coerce_str as _coerce_str,
+)
+from corlinman_server.scheduler.builtins._qzone_chat import (
+    drive_chat_turn as _drive_chat_stream,
+)
+from corlinman_server.scheduler.builtins._qzone_chat import (
+    resolve_chat_service as _resolve_chat_service,
+)
+from corlinman_server.scheduler.builtins._qzone_chat import (
+    resolve_data_dir as _resolve_data_dir,
+)
+from corlinman_server.scheduler.builtins._qzone_chat import (
+    resolve_default_model as _resolve_default_model,
+)
+from corlinman_server.scheduler.builtins._qzone_chat import (
+    resolve_metadata as _resolve_shared_metadata,
+)
+from corlinman_server.scheduler.builtins._qzone_chat import (
+    resolve_or_open_persona_stores as _resolve_or_open_persona_stores,
+)
+from corlinman_server.scheduler.builtins._qzone_chat import (
+    valid_persona_slug as _valid_persona_slug,
+)
 from corlinman_server.scheduler.builtins.registry import (
     BuiltinContext,
     register_builtin,
@@ -283,143 +316,102 @@ async def _drive_chat_turn(
     cancel: asyncio.Event,
     base: dict[str, Any],
 ) -> dict[str, Any]:
-    """Consume the ``chat_service.run`` event stream, harvest the
-    ``qzone_publish`` envelope, and shape the audit dict.
+    """Drive one chat turn via the shared skeleton and harvest the
+    ``qzone_publish`` envelope into the daily-publish audit dict.
 
-    The stream is allowed to emit any number of intermediate
-    ``tool_call`` / ``token_delta`` events; we only care about:
+    The consume loop itself lives in
+    :func:`corlinman_server.scheduler.builtins._qzone_chat.drive_chat_turn`
+    (PR-B6 extraction — shared with ``qzone.reply_comments``); this
+    wrapper translates the generic :class:`ChatDriveOutcome` into the
+    exact audit-dict vocabulary this builtin has always produced:
 
-    * the first ``qzone_publish`` ``tool_call`` — record its call_id so
-      we know which ``tool_result`` corresponds (the agent may call
-      multiple tools before / after).
-    * any matching ``tool_result`` — this carries the ok/error flag plus
-      the tool's parsed result envelope on ``payload_json``. That is
-      where the actual ``tid`` / ``qzone_url`` live; we recover them via
-      :func:`_harvest_envelope`, falling back to the decoded input args
-      (which at least know the intended ``text``).
-    * the terminal ``DoneEvent`` / ``ErrorEvent`` — stops the loop.
+    * drive-level failures map to ``chat_service_failed`` /
+      ``chat_timeout`` / ``chat_error`` (same fields as before);
+    * the first ``qzone_publish`` ``tool_call`` / ``tool_result`` pair
+      is harvested — result-envelope fields win over the decoded input
+      args, exactly as the pre-extraction loop unioned them;
+    * a turn that never called / never resolved ``qzone_publish``
+      surfaces ``qzone_not_called`` / ``qzone_no_result``.
 
-    We bound the drive with a generous timeout (``CORLINMAN_QZONE_DAILY_
-    TIMEOUT_SECS``, default 300s) so a hung backend can't park the
-    scheduler tick loop indefinitely.
+    The drive stays bounded by ``CORLINMAN_QZONE_DAILY_TIMEOUT_SECS``
+    (default 300s) so a hung backend can't park the scheduler tick loop.
     """
-    started_at = time.monotonic()
-    timeout_secs = _resolve_drive_timeout()
+    outcome: ChatDriveOutcome = await _drive_chat_stream(
+        chat_service=chat_service,
+        request=request,
+        cancel=cancel,
+        timeout_env="CORLINMAN_QZONE_DAILY_TIMEOUT_SECS",
+    )
 
-    qzone_call_id: str | None = None
-    qzone_result: Any | None = None
-    qzone_envelope: dict[str, Any] | None = None
-    tools_called: list[str] = []
-    chat_error: dict[str, str] | None = None
-    finish_reason: str | None = None
-
-    try:
-        stream = chat_service.run(request, cancel)
-    except Exception as exc:  # noqa: BLE001 — surface as audit dict
-        _logger.exception("scheduler.builtin.qzone_daily.run_failed")
+    if outcome.error == "run_failed":
         return {
             **base,
             "ok": False,
             "error": "chat_service_failed",
-            "message": str(exc),
-            "duration_ms": _elapsed_ms(started_at),
+            "message": outcome.message,
+            "duration_ms": outcome.duration_ms,
         }
-
-    deadline = time.monotonic() + timeout_secs
-
-    async def _consume() -> None:
-        nonlocal qzone_call_id, qzone_result, qzone_envelope
-        nonlocal finish_reason, chat_error
-        async for event in stream:
-            kind = _event_kind(event)
-            if kind == "tool_call":
-                plugin = _event_field(event, "plugin", default="")
-                tool = _event_field(event, "tool", default="")
-                call_id = _event_field(event, "call_id", default="")
-                tools_called.append(f"{plugin}.{tool}" if plugin else tool)
-                if tool == _QZONE_PUBLISH_TOOL and qzone_call_id is None:
-                    qzone_call_id = str(call_id) if call_id else ""
-                    # Capture the raw args bytes so we can fall back to
-                    # decoding the agent's intended payload if the
-                    # tool_result doesn't expose the publish envelope.
-                    qzone_envelope = qzone_envelope or _decode_qzone_args(
-                        _event_field(event, "args_json", default=b"")
-                    )
-            elif kind == "tool_result":
-                tool = _event_field(event, "tool", default="")
-                if tool == _QZONE_PUBLISH_TOOL and qzone_result is None:
-                    qzone_result = event
-            elif kind == "done":
-                finish_reason = _event_field(event, "finish_reason", default="")
-                return
-            elif kind == "error":
-                inner = _event_field(event, "error", default=None)
-                reason = getattr(inner, "reason", "unknown")
-                message = getattr(inner, "message", "")
-                chat_error = {"reason": str(reason), "message": str(message)}
-                return
-
-    try:
-        await asyncio.wait_for(_consume(), timeout=max(1.0, deadline - time.monotonic()))
-    except TimeoutError:
-        cancel.set()
+    if outcome.error == "timeout":
         return {
             **base,
             "ok": False,
             "error": "chat_timeout",
-            "tools_called": tools_called,
-            "duration_ms": _elapsed_ms(started_at),
+            "tools_called": outcome.tools_called,
+            "duration_ms": outcome.duration_ms,
         }
-    except Exception as exc:  # noqa: BLE001 — defensive
-        _logger.exception("scheduler.builtin.qzone_daily.consume_failed")
+    if outcome.error == "consume_failed":
         return {
             **base,
             "ok": False,
             "error": "chat_service_failed",
-            "message": str(exc),
-            "tools_called": tools_called,
-            "duration_ms": _elapsed_ms(started_at),
+            "message": outcome.message,
+            "tools_called": outcome.tools_called,
+            "duration_ms": outcome.duration_ms,
         }
-
-    if chat_error is not None:
+    if outcome.error == "chat_error":
         return {
             **base,
             "ok": False,
             "error": "chat_error",
-            "chat_error_reason": chat_error["reason"],
-            "chat_error_message": chat_error["message"],
-            "tools_called": tools_called,
-            "duration_ms": _elapsed_ms(started_at),
+            "chat_error_reason": outcome.chat_error_reason,
+            "chat_error_message": outcome.chat_error_message,
+            "tools_called": outcome.tools_called,
+            "duration_ms": outcome.duration_ms,
         }
 
-    if qzone_call_id is None:
+    publish_call = next(
+        (c for c in outcome.calls if c.tool == _QZONE_PUBLISH_TOOL), None
+    )
+    if publish_call is None:
         return {
             **base,
             "ok": False,
             "error": "qzone_not_called",
-            "tools_called": tools_called,
-            "finish_reason": finish_reason,
-            "duration_ms": _elapsed_ms(started_at),
+            "tools_called": outcome.tools_called,
+            "finish_reason": outcome.finish_reason,
+            "duration_ms": outcome.duration_ms,
         }
 
-    if qzone_result is None:
+    publish_result = next(
+        (r for r in outcome.results if r.tool == _QZONE_PUBLISH_TOOL), None
+    )
+    if publish_result is None:
         return {
             **base,
             "ok": False,
             "error": "qzone_no_result",
-            "tools_called": tools_called,
-            "finish_reason": finish_reason,
-            "duration_ms": _elapsed_ms(started_at),
+            "tools_called": outcome.tools_called,
+            "finish_reason": outcome.finish_reason,
+            "duration_ms": outcome.duration_ms,
         }
 
-    # ToolResultEvent carries an ``is_error`` flag + ``error_summary``
-    # plus the tool's parsed result envelope on ``payload_json``. The
-    # publish envelope (``tid``, ``qzone_url``) lives there. Union the
-    # decoded input args (intent — has ``text``) with the harvested
-    # result so the result's fields win where both are present.
-    is_error = bool(_event_field(qzone_result, "is_error", default=False))
-    error_summary = _event_field(qzone_result, "error_summary", default="")
-    envelope = {**(qzone_envelope or {}), **_harvest_envelope(qzone_result)}
+    # The result envelope (``tid``, ``qzone_url``) rides on
+    # ``payload_json``; union the decoded input args (intent — has
+    # ``text``) with the harvested result so the result's fields win
+    # where both are present.
+    is_error = publish_result.is_error
+    error_summary = publish_result.error_summary
+    envelope = {**(publish_call.args or {}), **publish_result.envelope}
 
     if is_error or (envelope and envelope.get("ok") is False):
         return {
@@ -428,9 +420,9 @@ async def _drive_chat_turn(
             "error": "qzone_failed",
             "inner_error": envelope.get("error") if envelope else error_summary,
             "inner_message": envelope.get("message") if envelope else error_summary,
-            "tools_called": tools_called,
-            "finish_reason": finish_reason,
-            "duration_ms": _elapsed_ms(started_at),
+            "tools_called": outcome.tools_called,
+            "finish_reason": outcome.finish_reason,
+            "duration_ms": outcome.duration_ms,
         }
 
     return {
@@ -444,9 +436,9 @@ async def _drive_chat_turn(
         # Published body — harvested from the envelope, else the decoded
         # input args (intent). Surfaced for a future post-log feature.
         "text": envelope.get("text"),
-        "tools_called": tools_called,
-        "finish_reason": finish_reason,
-        "duration_ms": _elapsed_ms(started_at),
+        "tools_called": outcome.tools_called,
+        "finish_reason": outcome.finish_reason,
+        "duration_ms": outcome.duration_ms,
     }
 
 
@@ -458,177 +450,11 @@ async def _drive_chat_turn(
 def _resolve_metadata(context: BuiltinContext) -> dict[str, Any]:
     """Pull the job's metadata dict off the context.
 
-    Convention: scheduler firings stash the job's ``metadata`` (the
-    free-form ``[[scheduler.jobs]].metadata`` table from TOML) onto
-    ``context.app_state.scheduler_job_metadata[context.name]`` so the
-    builtin can recover it without re-parsing the config. Tests pass
-    the dict directly via ``context.app_state.qzone_daily_metadata``
-    so the test surface stays small.
-
-    Returns an empty dict when nothing is found — the action then
-    surfaces ``missing_persona_id`` / ``missing_prompt_template`` for
-    a clean operator error message.
+    Delegates to the shared resolver (see
+    :func:`.._qzone_chat.resolve_metadata`) with this builtin's direct
+    test seam (``app_state.qzone_daily_metadata``).
     """
-    app_state = context.app_state
-    if app_state is None:
-        return {}
-
-    # Production seam — a per-job map keyed by name. Checked first so a
-    # gateway boot wiring per-job metadata wins over the simpler test
-    # seam below (the test seam is meant for "one qzone job in this
-    # process" environments, not for cohabiting with the per-job map).
-    table = getattr(app_state, "scheduler_job_metadata", None)
-    if isinstance(table, dict) and context.name:
-        per_job = table.get(context.name)
-        if isinstance(per_job, dict) and per_job:
-            return per_job
-
-    # Direct test seam — a plain dict park. Useful for single-job test
-    # harnesses that don't want to spin up the per-job map.
-    direct = getattr(app_state, "qzone_daily_metadata", None)
-    if isinstance(direct, dict) and direct:
-        return direct
-
-    # Fallback — the runtime scheduler store keeps job metadata on a
-    # dataclass with ``.metadata``; resolve by name.
-    jobs = getattr(app_state, "scheduler_jobs", None)
-    if isinstance(jobs, list) and context.name:
-        for job in jobs:
-            if getattr(job, "name", None) == context.name:
-                meta = getattr(job, "metadata", None)
-                if isinstance(meta, dict):
-                    return meta
-    return {}
-
-
-def _resolve_chat_service(context: BuiltinContext) -> Any | None:
-    """Find the live ``ChatService`` on the AppState bundle.
-
-    The gateway lifecycle parks the constructed service on
-    ``state.chat`` (see ``gateway/services/chat_bootstrap.py``); the
-    fallback probes ``state.extras["chat"]`` for tests that build a
-    degraded AppState.
-    """
-    app_state = context.app_state
-    if app_state is None:
-        return None
-    chat = getattr(app_state, "chat", None)
-    if chat is not None:
-        return chat
-    extras = getattr(app_state, "extras", None)
-    if isinstance(extras, dict):
-        return extras.get("chat")
-    return None
-
-
-async def _resolve_or_open_persona_stores(
-    context: BuiltinContext,
-) -> tuple[Any, Any, list[Any]] | None:
-    """Return ``(persona_store, asset_store, owned)`` or ``None``.
-
-    Tries three resolution strategies in order:
-
-    1. Live handle on ``app_state.persona_store`` — the canonical path
-       once the lifecycle wired the open store.
-    2. Admin_a state on ``app_state.admin_a_state.persona_store`` —
-       fallback for the wiring that parks the handle on the admin
-       state bundle.
-    3. Fresh open against ``<DATA_DIR>/personas.sqlite``. Returned
-       handles are recorded in ``owned`` so the caller closes them on
-       the ``finally`` branch.
-
-    Returns ``None`` only when every probe + open fails — the action
-    then surfaces ``persona_store_unavailable``.
-    """
-    app_state = context.app_state
-    persona_store = _probe_persona_store(app_state)
-    asset_store = _probe_asset_store(app_state)
-    owned: list[Any] = []
-
-    if persona_store is not None:
-        return persona_store, asset_store, owned
-
-    # Fresh-open fallback. Cheap on a typical deployment because the
-    # store is just a single aiosqlite connection.
-    data_dir = _resolve_data_dir(app_state)
-    if data_dir is None:
-        return None
-    try:
-        from corlinman_server.persona import PersonaAssetStore, PersonaStore
-    except Exception as exc:  # noqa: BLE001
-        _logger.warning(
-            "scheduler.builtin.qzone_daily.persona_import_failed",
-            extra={"error": repr(exc)},
-        )
-        return None
-    try:
-        ps = await PersonaStore.open(data_dir / "personas.sqlite")
-        owned.append(ps)
-    except Exception as exc:  # noqa: BLE001
-        _logger.warning(
-            "scheduler.builtin.qzone_daily.persona_open_failed",
-            extra={"error": repr(exc)},
-        )
-        return None
-    if asset_store is None:
-        try:
-            asset_store = await PersonaAssetStore.open(
-                data_dir / "persona_assets.sqlite",
-                data_dir / "personas",
-            )
-            owned.append(asset_store)
-        except Exception as exc:  # noqa: BLE001 — asset store is optional
-            _logger.warning(
-                "scheduler.builtin.qzone_daily.asset_open_failed",
-                extra={"error": repr(exc)},
-            )
-            asset_store = None
-    return ps, asset_store, owned
-
-
-def _probe_persona_store(app_state: Any | None) -> Any | None:
-    if app_state is None:
-        return None
-    store = getattr(app_state, "persona_store", None)
-    if store is not None:
-        return store
-    admin_a = getattr(app_state, "admin_a_state", None)
-    if admin_a is not None:
-        store = getattr(admin_a, "persona_store", None)
-        if store is not None:
-            return store
-    extras = getattr(app_state, "extras", None)
-    if isinstance(extras, dict):
-        return extras.get("persona_store")
-    return None
-
-
-def _probe_asset_store(app_state: Any | None) -> Any | None:
-    if app_state is None:
-        return None
-    store = getattr(app_state, "persona_asset_store", None)
-    if store is not None:
-        return store
-    admin_a = getattr(app_state, "admin_a_state", None)
-    if admin_a is not None:
-        store = getattr(admin_a, "persona_asset_store", None)
-        if store is not None:
-            return store
-    extras = getattr(app_state, "extras", None)
-    if isinstance(extras, dict):
-        return extras.get("persona_asset_store")
-    return None
-
-
-def _resolve_data_dir(app_state: Any | None) -> Path | None:
-    if app_state is not None:
-        dd = getattr(app_state, "data_dir", None)
-        if dd is not None:
-            return Path(dd)
-    env = os.environ.get("CORLINMAN_DATA_DIR")
-    if env:
-        return Path(env)
-    return None
+    return _resolve_shared_metadata(context, direct_attr="qzone_daily_metadata")
 
 
 def _compose_system_prompt(
@@ -915,19 +741,6 @@ def _resolve_recent_posts_n(metadata: dict[str, Any]) -> int:
     return max(_RECENT_POSTS_N_MIN, min(n, _RECENT_POSTS_N_MAX))
 
 
-def _valid_persona_slug(persona_id: str) -> bool:
-    """True iff ``persona_id`` is a safe filename slug (blocks path traversal).
-
-    Mirrors the agent-side ``persona_life._valid_persona_slug`` rule so the
-    post-log path lookup agrees with the seed-library lookup: stripping ``_``
-    / ``-`` must leave a non-empty ascii-alphanumeric run, so ``..``, ``/``
-    and ``\\`` are all rejected before the id is spliced into a path."""
-    if not persona_id:
-        return False
-    stripped = persona_id.replace("_", "").replace("-", "")
-    return bool(stripped) and stripped.isascii() and stripped.isalnum()
-
-
 def _post_log_path(data_dir: Path | None, persona_id: str) -> Path | None:
     """Resolve ``<DATA_DIR>/qzone_post_log/<persona_id>.json`` or ``None``.
 
@@ -1078,209 +891,6 @@ async def _draw_event_seed(
         if isinstance(key, str) and isinstance(val, str) and val.strip():
             out[key] = val.strip()
     return out
-
-
-def _build_session_key(persona_id: str) -> str:
-    """Per-firing scheduler-scoped key.
-
-    Including a fresh uuid means consecutive firings don't accidentally
-    inherit the previous turn's per-session memory / approvals.
-    """
-    return f"scheduler:qzone:{persona_id}:{uuid.uuid4().hex[:8]}"
-
-
-def _resolve_default_model(context: BuiltinContext) -> str:
-    """Pick the model to drive the scheduled chat with.
-
-    Resolution chain:
-
-    1. ``app_state.scheduler_default_model`` — explicit override set by
-       the scheduler lifecycle (or tests).
-    2. ``cfg["models"]["default"]`` — matches the channels-runtime
-       resolution, so a daily QZone post uses the same model the bot
-       replies with in QQ.
-    3. Empty string — the gateway then falls back to its own default;
-       the rest of the pipeline tolerates the empty value.
-    """
-    app_state = context.app_state
-    if app_state is not None:
-        explicit = getattr(app_state, "scheduler_default_model", None)
-        if isinstance(explicit, str) and explicit:
-            return explicit
-        cfg = getattr(app_state, "config", None)
-        if isinstance(cfg, dict):
-            models_cfg = cfg.get("models")
-            if isinstance(models_cfg, dict):
-                model = models_cfg.get("default")
-                if isinstance(model, str) and model:
-                    return model
-    return ""
-
-
-def _build_internal_chat_request(
-    *,
-    model: str,
-    session_key: str,
-    system_prompt: str,
-    user_turn: str,
-    persona_id: str | None = None,
-) -> Any | None:
-    """Construct an :class:`InternalChatRequest` for the scheduler turn.
-
-    Imported lazily so a degraded gateway boot that excluded
-    ``corlinman_server.gateway_api`` doesn't crash the registry import.
-
-    ``persona_id`` is forwarded onto the request so the agent servicer
-    wires ``ChatStart.extra["persona_id"]`` — without it the scheduler-
-    fired turn has no persona binding, so persona-life placeholders and
-    ``image_with_refs`` / ``qzone_publish`` persona resolution all fall
-    back to requiring an explicit ``persona_id`` arg from the model.
-    """
-    try:
-        from corlinman_server.gateway_api.types import (
-            InternalChatRequest,
-            Message,
-            Role,
-        )
-    except Exception as exc:  # noqa: BLE001 — best-effort
-        _logger.warning(
-            "scheduler.builtin.qzone_daily.gateway_api_import_failed",
-            extra={"error": repr(exc)},
-        )
-        return None
-
-    return InternalChatRequest(
-        model=model,
-        messages=[
-            Message(role=Role.SYSTEM, content=system_prompt),
-            Message(role=Role.USER, content=user_turn),
-        ],
-        session_key=session_key,
-        stream=False,
-        max_tokens=None,
-        temperature=None,
-        attachments=[],
-        binding=None,
-        persona_id=persona_id,
-    )
-
-
-def _resolve_drive_timeout() -> float:
-    """Per-firing chat-drive timeout in seconds."""
-    raw = os.environ.get("CORLINMAN_QZONE_DAILY_TIMEOUT_SECS", "")
-    try:
-        return max(10.0, float(raw)) if raw else 300.0
-    except ValueError:
-        return 300.0
-
-
-def _elapsed_ms(started_at: float) -> int:
-    return int((time.monotonic() - started_at) * 1000)
-
-
-# ---------------------------------------------------------------------------
-# Event-introspection helpers — tolerate both pydantic / dataclass shapes
-# ---------------------------------------------------------------------------
-
-
-def _event_kind(event: Any) -> str:
-    """Return the discriminator for an InternalChatEvent.
-
-    The dataclass shapes carry a ``kind`` literal field; older / mocked
-    shapes may use ``isinstance`` matches. We probe a small ladder so
-    test stubs can use the simplest dict-like shape.
-    """
-    kind = getattr(event, "kind", None)
-    if isinstance(kind, str):
-        return kind
-    cls_name = type(event).__name__
-    return {
-        "TokenDeltaEvent": "token_delta",
-        "ToolCallEvent": "tool_call",
-        "ToolResultEvent": "tool_result",
-        "DoneEvent": "done",
-        "ErrorEvent": "error",
-    }.get(cls_name, cls_name.lower())
-
-
-def _event_field(event: Any, name: str, *, default: Any = None) -> Any:
-    """Read ``name`` off an event, falling back to ``default``.
-
-    Tolerates both attribute access (dataclasses, pydantic models) and
-    item access (dict stubs) so tests can use whichever shape is
-    cheapest.
-    """
-    val = getattr(event, name, None)
-    if val is not None:
-        return val
-    if isinstance(event, dict) and name in event:
-        return event[name]
-    return default
-
-
-def _decode_qzone_args(args_json: Any) -> dict[str, Any] | None:
-    """Decode the ``args_json`` payload on a ``ToolCallEvent``.
-
-    Used as a fallback for the ``qzone_url`` envelope when the
-    ``ToolResultEvent`` carries no payload — we at least know what the
-    agent intended to publish.
-    """
-    if not args_json:
-        return None
-    raw: str
-    if isinstance(args_json, (bytes, bytearray)):
-        try:
-            raw = bytes(args_json).decode("utf-8")
-        except UnicodeDecodeError:
-            return None
-    else:
-        raw = str(args_json)
-    try:
-        obj = json.loads(raw)
-    except (ValueError, json.JSONDecodeError):
-        return None
-    return obj if isinstance(obj, dict) else None
-
-
-def _harvest_envelope(tool_result: Any) -> dict[str, Any]:
-    """Parse the publish envelope off ``ToolResultEvent.payload_json``.
-
-    The gateway forwards the ``qzone_publish`` tool's parsed result
-    envelope (the same dict the agent saw) as a JSON string on the
-    event's ``payload_json`` field — added in the tid/qzone_url
-    observability fix. Decoding it here is how we recover the actual
-    ``tid`` / ``qzone_url`` a successful publish returned.
-
-    Tolerant + total: returns an empty dict when the field is absent,
-    blank, or malformed, and accepts ``str`` / ``bytes`` payloads. Never
-    raises — scheduler builtins fold every failure into the audit dict,
-    never up the stack.
-    """
-    raw = _event_field(tool_result, "payload_json", default="")
-    if isinstance(raw, (bytes, bytearray)):
-        try:
-            raw = bytes(raw).decode("utf-8")
-        except UnicodeDecodeError:
-            return {}
-    if not isinstance(raw, str) or not raw.strip():
-        return {}
-    try:
-        obj = json.loads(raw)
-    except (ValueError, json.JSONDecodeError):
-        return {}
-    return obj if isinstance(obj, dict) else {}
-
-
-def _coerce_str(value: Any) -> str:
-    if isinstance(value, str):
-        return value.strip()
-    return ""
-
-
-def _coerce_optional_str(value: Any) -> str | None:
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    return None
 
 
 # Register at import time. ``__init__.py`` imports this module so any
