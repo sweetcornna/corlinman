@@ -302,9 +302,16 @@ export interface AssetRecord {
   sha256: string;
   /** Unix milliseconds. */
   created_at_ms: number;
+  /** Operator-authored free text: what this image shows / how to use it
+   * as a reference. Also injected into the image-generation prompt
+   * legend. Empty string = no annotation. */
+  description: string;
   /** Absolute admin path (`/admin/personas/{persona_id}/assets/{id}`). */
   url: string;
 }
+
+/** Backend cap on `description` length (clipped server-side too). */
+export const ASSET_DESCRIPTION_MAX_CHARS = 500;
 
 /** MIME types the backend's `PersonaAssetStore.put` accepts. Kept in
  * sync so the client-side gate rejects bad files before the upload
@@ -394,21 +401,23 @@ export function personaAssetItemPath(personaId: string, assetId: string): string
 }
 
 /**
- * `PATCH /admin/personas/{id}/assets/{aid}` — rename an asset's label.
- * Returns the updated `AssetRecord`. The label must match {@link
- * ASSET_LABEL_RE}; the backend re-validates and 400s a bad slug or 409s a
- * collision (we surface those through {@link AssetUploadError} so the
- * editor can reuse the same per-code toast switch as upload).
+ * `PATCH /admin/personas/{id}/assets/{aid}` — edit an asset's label
+ * and/or description. Returns the updated `AssetRecord`. The label must
+ * match {@link ASSET_LABEL_RE}; the backend re-validates and 400s a bad
+ * slug or 409s a collision (we surface those through {@link
+ * AssetUploadError} so the editor can reuse the same per-code toast
+ * switch as upload). Omitted fields keep their current value;
+ * `description: ""` clears the annotation.
  */
-export async function renameAsset(
+export async function patchAsset(
   personaId: string,
   assetId: string,
-  label: string,
+  patch: { label?: string; description?: string },
 ): Promise<AssetRecord> {
   try {
     return await apiFetch<AssetRecord>(
       personaAssetItemPath(personaId, assetId),
-      { method: "PATCH", body: { label } },
+      { method: "PATCH", body: patch },
     );
   } catch (err) {
     if (
@@ -508,10 +517,12 @@ export async function uploadAsset(
   kind: AssetKind,
   label: string,
   file: File,
+  description?: string,
 ): Promise<AssetRecord> {
   const form = new FormData();
   form.append("kind", kind);
   form.append("label", label);
+  if (description !== undefined) form.append("description", description);
   form.append("file", file, file.name);
 
   const res = await fetch(

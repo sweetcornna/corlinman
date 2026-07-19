@@ -262,6 +262,9 @@ export function QzoneRefImagePicker({
                   onClick={() => toggle(asset.label)}
                   aria-pressed={isSel}
                   aria-label={asset.label}
+                  // Description authored on the persona page rides along
+                  // here as a tooltip — same asset row, zero duplication.
+                  title={asset.description || undefined}
                   data-testid={`qzone-ref-toggle-${asset.label}`}
                   className="flex flex-col items-center gap-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40 focus-visible:rounded"
                 >
@@ -275,6 +278,14 @@ export function QzoneRefImagePicker({
                   <span className="max-w-full truncate font-mono text-[10px] text-sg-ink-3">
                     {asset.label}
                   </span>
+                  {asset.description ? (
+                    <span
+                      className="line-clamp-2 max-w-full px-0.5 text-left text-[9.5px] leading-snug text-sg-ink-4"
+                      data-testid={`qzone-ref-desc-${asset.label}`}
+                    >
+                      {asset.description}
+                    </span>
+                  ) : null}
                 </button>
 
                 {isSel ? (

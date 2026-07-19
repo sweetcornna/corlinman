@@ -150,6 +150,9 @@ class AssetOut(BaseModel):
     size_bytes: int
     sha256: str
     created_at_ms: int
+    # Free-text "what this image is / how to reference it"; also rides
+    # the image-generation prompt legend. Empty = label-only.
+    description: str
     # Convenience URL the UI uses directly in <img src=…>.
     url: str
 
@@ -165,6 +168,7 @@ class AssetOut(BaseModel):
             size_bytes=r.size_bytes,
             sha256=r.sha256,
             created_at_ms=r.created_at_ms,
+            description=r.description,
             url=f"/admin/personas/{r.persona_id}/assets/{r.id}",
         )
 
@@ -174,9 +178,12 @@ class AssetListOut(BaseModel):
 
 
 class AssetLabelPatch(BaseModel):
-    """Rename one asset's slot label (``PATCH …/assets/{aid}``)."""
+    """Edit one asset's metadata (``PATCH …/assets/{aid}``): rename its
+    slot ``label``, set its ``description``, or both. Omitted (``None``)
+    fields keep their current value; ``description: ""`` clears it."""
 
-    label: str
+    label: str | None = None
+    description: str | None = None
 
 
 # ---- Persona-liveness wire shapes (R3 life-state / diary / seeds) --------

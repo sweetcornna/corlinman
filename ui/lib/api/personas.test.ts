@@ -37,7 +37,7 @@ import {
   patchLifeState,
   personaPath,
   putLifeSeeds,
-  renameAsset,
+  patchAsset,
   resetPersonaToDefault,
   runPersonaDecay,
   setHumanlike,
@@ -519,7 +519,7 @@ describe("persona life layer", () => {
   });
 });
 
-describe("renameAsset", () => {
+describe("patchAsset", () => {
   it("PATCHes the asset item path with the new label", async () => {
     const { fn, calls } = makeFetchStub(() =>
       jsonResponse(200, {
@@ -532,11 +532,12 @@ describe("renameAsset", () => {
         size_bytes: 10,
         sha256: "x",
         created_at_ms: 1,
+        description: "",
         url: "/admin/personas/grantley/assets/ast_1",
       }),
     );
     vi.stubGlobal("fetch", fn);
-    const updated = await renameAsset("grantley", "ast_1", "new-label");
+    const updated = await patchAsset("grantley", "ast_1", { label: "new-label" });
     expect(updated.label).toBe("new-label");
     expect(calls[0]?.url).toContain(
       "/admin/personas/grantley/assets/ast_1",
@@ -551,8 +552,37 @@ describe("renameAsset", () => {
       jsonResponse(409, { detail: { error: "duplicate_label" } }),
     );
     vi.stubGlobal("fetch", fn);
-    await expect(renameAsset("grantley", "ast_1", "dup")).rejects.toBeInstanceOf(
+    await expect(
+      patchAsset("grantley", "ast_1", { label: "dup" }),
+    ).rejects.toBeInstanceOf(
       AssetUploadError,
     );
+  });
+
+  it("PATCHes only the description when no label is given", async () => {
+    const { fn, calls } = makeFetchStub(() =>
+      jsonResponse(200, {
+        id: "ast_1",
+        persona_id: "grantley",
+        kind: "reference",
+        label: "front",
+        file_name: "a.png",
+        mime: "image/png",
+        size_bytes: 10,
+        sha256: "x",
+        created_at_ms: 1,
+        description: "front view, use for full-body shots",
+        url: "/admin/personas/grantley/assets/ast_1",
+      }),
+    );
+    vi.stubGlobal("fetch", fn);
+    const updated = await patchAsset("grantley", "ast_1", {
+      description: "front view, use for full-body shots",
+    });
+    expect(updated.description).toBe("front view, use for full-body shots");
+    const body = JSON.parse(String(calls[0]?.init.body ?? "{}"));
+    expect(body).toEqual({
+      description: "front view, use for full-body shots",
+    });
   });
 });

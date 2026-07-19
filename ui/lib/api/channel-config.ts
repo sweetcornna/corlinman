@@ -70,7 +70,13 @@ export interface ChannelConfigSpec {
 /** Mirror of the backend `_CHANNEL_EDITABLE` spec. Keep in sync. */
 export const CHANNEL_CONFIG_SPEC: Record<ConfigEditableChannel, ChannelConfigSpec> = {
   qq: {
-    secrets: [{ key: "access_token" }, { key: "napcat_access_token" }],
+    // Both tokens only matter when pointing at an EXTERNAL NapCat — the
+    // bundled NapCat needs neither, so they fold behind "advanced" next to
+    // the endpoint overrides they authenticate (ws_url / napcat_url).
+    secrets: [
+      { key: "access_token", advanced: true },
+      { key: "napcat_access_token", advanced: true },
+    ],
     urls: [
       { key: "ws_url", advanced: true },
       { key: "napcat_url", advanced: true },

@@ -51,8 +51,8 @@ function matchesHref(pathname: string, href: string): boolean {
 
 /**
  * Active = this href matches AND no other nav item matches more
- * specifically — so /scheduler/qzone lights only "QZone 发布", never
- * its /scheduler sibling as well.
+ * specifically — so a nested route (e.g. /channels/qq/…) lights only
+ * its own entry, never a shorter-prefix sibling as well.
  */
 function isActiveHref(pathname: string, href: string): boolean {
   if (!matchesHref(pathname, href)) return false;

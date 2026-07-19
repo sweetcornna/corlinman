@@ -44,7 +44,6 @@ import {
   MessagesSquare,
   MonitorCog,
   Network,
-  Newspaper,
   Plug,
   Radio,
   Route as RouteIcon,
@@ -186,14 +185,8 @@ export const NAV_PAGES: NavPageDef[] = [
     section: "ops",
     keywords: "cron jobs 定时任务",
   },
-  {
-    id: "schedulerQzone",
-    href: "/scheduler/qzone",
-    labelKey: "nav.schedulerQzone",
-    icon: Newspaper,
-    section: "ops",
-    keywords: "qzone publish 说说 空间",
-  },
+  // NOTE: QZone publishing lives inside the QQ channel page now (it
+  // borrows the NapCat login state); /scheduler/qzone redirects there.
 
   // ── 配置 / Configuration (models FIRST — PR4 canonical hub) ───────
   {
@@ -227,7 +220,7 @@ export const NAV_PAGES: NavPageDef[] = [
     icon: MessageCircle,
     section: "config",
     groupId: "channels",
-    keywords: "channels messaging 通道 qq",
+    keywords: "channels messaging 通道 qq qzone publish 说说 空间",
   },
   {
     id: "telegram",

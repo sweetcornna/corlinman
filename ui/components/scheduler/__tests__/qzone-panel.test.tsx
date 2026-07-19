@@ -79,7 +79,7 @@ vi.mock("@/lib/api/personas", async (importOriginal) => {
   };
 });
 
-import QzoneSchedulerPage from "@/app/(admin)/scheduler/qzone/page";
+import { QzonePanel } from "@/components/scheduler/qzone-panel";
 
 function runtimeJob(over: Partial<SchedulerJobRow> = {}): SchedulerJobRow {
   return {
@@ -141,7 +141,7 @@ function renderPage() {
   });
   return render(
     <QueryClientProvider client={qc}>
-      <QzoneSchedulerPage />
+      <QzonePanel />
     </QueryClientProvider>,
   );
 }
@@ -162,7 +162,7 @@ beforeEach(() => {
 
 afterEach(cleanup);
 
-describe("QzoneSchedulerPage", () => {
+describe("QzonePanel", () => {
   it("edit flow backfills the form and saves via PATCH (not POST)", async () => {
     fetchJobsMock.mockResolvedValue([runtimeJob()]);
     renderPage();
@@ -298,7 +298,7 @@ describe("QzoneSchedulerPage", () => {
   });
 });
 
-describe("QzoneSchedulerPage — auto-reply sub-section (B6)", () => {
+describe("QzonePanel — auto-reply sub-section (B6)", () => {
   it("renders qzone.reply_comments jobs in the reply table", async () => {
     fetchJobsMock.mockResolvedValue([runtimeJob(), replyJob()]);
     renderPage();

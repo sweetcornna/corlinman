@@ -218,7 +218,7 @@ async def _qzone_daily_publish_action(context: BuiltinContext) -> dict[str, Any]
     store_bundle = await _resolve_or_open_persona_stores(context)
     if store_bundle is None:
         return {**base, "ok": False, "error": "persona_store_unavailable"}
-    persona_store, _asset_store, owned_handles = store_bundle
+    persona_store, asset_store, owned_handles = store_bundle
 
     try:
         try:
@@ -255,6 +255,9 @@ async def _qzone_daily_publish_action(context: BuiltinContext) -> dict[str, Any]
                 data_dir, persona_id, _resolve_recent_posts_n(metadata)
             )
         image_ref_labels = _resolve_image_ref_labels(metadata)
+        image_ref_descriptions = await _resolve_image_ref_descriptions(
+            asset_store, persona_id, image_ref_labels
+        )
         system_prompt = _compose_system_prompt(
             persona.system_prompt,
             life_block=life_block,
@@ -262,6 +265,7 @@ async def _qzone_daily_publish_action(context: BuiltinContext) -> dict[str, Any]
             recent_posts_block=recent_posts_block,
             diversity=diversity,
             image_ref_labels=image_ref_labels,
+            image_ref_descriptions=image_ref_descriptions,
         )
         model = _resolve_default_model(context)
         session_key = _build_session_key(persona_id)
@@ -465,6 +469,7 @@ def _compose_system_prompt(
     recent_posts_block: str | None = None,
     diversity: bool = True,
     image_ref_labels: list[str] | None = None,
+    image_ref_descriptions: dict[str, str] | None = None,
 ) -> str:
     """Glue the persona body + (optional) runtime life block + (B4 diversity)
     inspiration-seed + recent-posts blocks + the scheduler tail together.
@@ -494,7 +499,9 @@ def _compose_system_prompt(
     else:
         tail = QZONE_DAILY_SYSTEM_TAIL
     parts.append(tail)
-    ref_block = _compose_image_ref_block(image_ref_labels)
+    ref_block = _compose_image_ref_block(
+        image_ref_labels, image_ref_descriptions
+    )
     if ref_block:
         parts.append(ref_block)
     return "".join(
@@ -522,22 +529,70 @@ def _resolve_image_ref_labels(metadata: dict[str, Any]) -> list[str]:
     return out
 
 
-def _compose_image_ref_block(labels: list[str] | None) -> str | None:
+def _compose_image_ref_block(
+    labels: list[str] | None,
+    descriptions: dict[str, str] | None = None,
+) -> str | None:
     """Render the B5 reference-image instruction block, or ``None``.
 
     When the job pinned one or more ``image_ref_labels``, the daily post's
     ``image_with_refs`` call MUST draw with exactly those labels — the block
     tells the model which labels are available and steers the framing toward
     a candid life-slice rather than a posed group shot. ``None`` (no labels)
-    omits the block entirely."""
+    omits the block entirely. ``descriptions`` (label → operator-authored
+    "这张图是什么/怎么参考") annotates each label so the model knows what
+    each reference actually shows."""
     if not labels:
         return None
-    joined = "、".join(labels)
+    descriptions = descriptions or {}
+    rendered: list[str] = []
+    annotated = False
+    for label in labels:
+        desc = (descriptions.get(label) or "").strip()
+        if desc:
+            rendered.append(f"{label}（{desc}）")
+            annotated = True
+        else:
+            rendered.append(label)
+    joined = "、".join(rendered)
+    legend_hint = "；括号内是该参考图的说明" if annotated else ""
     return (
         "[scheduler·qzone.daily_publish 配图参考图]\n"
         "如需配图：image_with_refs 的 characters 必须用这些参考图标签："
-        f"{joined}；画面要像随手拍的生活切片而非摆拍合影。"
+        f"{joined}{legend_hint}。画面要像随手拍的生活切片而非摆拍合影。"
     )
+
+
+async def _resolve_image_ref_descriptions(
+    asset_store: Any | None,
+    persona_id: str,
+    labels: list[str],
+) -> dict[str, str]:
+    """Resolve label → description off the persona's global reference
+    assets (the single source of truth — the job pins only labels, so an
+    operator edit on the persona page flows here automatically).
+
+    Best-effort + total: a missing store, a listing failure, or a label
+    without a description all degrade to "no annotation" rather than
+    failing the run."""
+    if asset_store is None or not labels:
+        return {}
+    try:
+        assets = await asset_store.list(persona_id, kind="reference")
+    except Exception as exc:  # noqa: BLE001 — never raise out of a builtin
+        _logger.warning(
+            "scheduler.builtin.qzone_daily.asset_list_failed",
+            extra={"persona_id": persona_id, "error": repr(exc)},
+        )
+        return {}
+    wanted = set(labels)
+    out: dict[str, str] = {}
+    for a in assets:
+        label = getattr(a, "label", None)
+        desc = str(getattr(a, "description", "") or "").strip()
+        if label in wanted and desc:
+            out[label] = desc
+    return out
 
 
 async def _resolve_life_block(

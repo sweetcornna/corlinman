@@ -542,7 +542,6 @@ export const en = {
     qq: "QQ Channel",
     telegram: "Telegram",
     scheduler: "Scheduler",
-    schedulerQzone: "QZone publishing",
     approvals: "Approvals",
     evolution: "Evolution",
     models: "Models & Keys",
@@ -3476,6 +3475,10 @@ export const en = {
       group_reply_policy: "Default answers only @mentions, commands, and configured keywords.",
       proactive_enabled: "Occasionally posts in groups at a human pace; off by default.",
       proactive_groups: "Empty falls back to the group whitelist.",
+      access_token: "Auth for the OneBot WebSocket (ws_url). The bundled NapCat needs none — only set this for an external NapCat.",
+      napcat_access_token: "Auth for the NapCat WebUI (napcat_url), used by QR login and diagnostics. The bundled NapCat needs none.",
+      ws_url: "OneBot WebSocket endpoint. Leave blank for the bundled NapCat.",
+      napcat_url: "NapCat WebUI endpoint (QR login / diagnostics). Leave blank for the bundled NapCat.",
     },
     option: {
       group_reply_policy: {
@@ -3488,7 +3491,7 @@ export const en = {
     saved: "Channel config saved ({{count}} field(s))",
     saveFailed: "Save failed: {{msg}}",
     field: {
-      access_token: "Access token",
+      access_token: "OneBot WS token",
       bot_token: "Bot token",
       secret_token: "Webhook secret token",
       app_token: "App token",
@@ -3510,7 +3513,8 @@ export const en = {
       drop_pending_updates: "Drop pending updates on start",
       respond_to_all: "Respond to all messages",
       sandbox: "Sandbox mode",
-      napcat_url: "NapCat URL",
+      napcat_url: "NapCat WebUI URL",
+      napcat_access_token: "NapCat WebUI token",
       group_replies_enabled: "Group replies",
       group_whitelist: "Group whitelist",
       group_reply_policy: "Group reply policy",
@@ -3716,6 +3720,13 @@ export const en = {
     assetsRenameHint: "Rename — a–z, 0–9, _, - (1–64 chars).",
     assetsRenameSucceeded: "Renamed to {{label}}",
     assetsRenameFailed: "Rename failed: {{msg}}",
+    // Reference-image description (PATCH assets/{aid} description)
+    assetsDescribe: "Describe this reference image",
+    assetsDescribeEmpty: "Add a description — what this shows, how to reference it…",
+    assetsDescribePlaceholder:
+      "e.g. Front view in the signature outfit — use for full-body shots; keep the hair ornament visible.",
+    assetsDescribeSucceeded: "Description saved",
+    assetsDescribeFailed: "Saving description failed: {{msg}}",
     // W3 — avatar
     avatarAlt: "{{name}} avatar",
     // W3 — life layer (mood / fatigue / topics + decay + diary + seeds)

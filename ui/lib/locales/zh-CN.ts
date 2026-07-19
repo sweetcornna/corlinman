@@ -525,7 +525,6 @@ export const zhCN = {
     qq: "QQ 通道",
     telegram: "电报",
     scheduler: "定时任务",
-    schedulerQzone: "QZone 发布",
     approvals: "审批",
     evolution: "演化",
     models: "模型与密钥",
@@ -3404,6 +3403,10 @@ export const zhCN = {
       group_reply_policy: "默认仅回应 @提及、命令与已配置的关键词。",
       proactive_enabled: "按拟人节奏在群里主动发消息，默认关闭。",
       proactive_groups: "留空则使用群组白名单。",
+      access_token: "OneBot WebSocket（ws_url）的鉴权令牌。内置 NapCat 无需填写，仅外接 NapCat 时使用。",
+      napcat_access_token: "NapCat WebUI（napcat_url）的鉴权令牌，用于扫码登录与诊断。内置 NapCat 无需填写。",
+      ws_url: "OneBot WebSocket 端点。使用内置 NapCat 时留空即可。",
+      napcat_url: "NapCat WebUI 端点（扫码登录 / 诊断）。使用内置 NapCat 时留空即可。",
     },
     option: {
       group_reply_policy: {
@@ -3416,7 +3419,7 @@ export const zhCN = {
     saved: "通道配置已保存（{{count}} 项）",
     saveFailed: "保存失败：{{msg}}",
     field: {
-      access_token: "访问令牌",
+      access_token: "OneBot WS 令牌",
       bot_token: "Bot 令牌",
       secret_token: "Webhook 密钥令牌",
       app_token: "App 令牌",
@@ -3438,7 +3441,8 @@ export const zhCN = {
       drop_pending_updates: "启动时丢弃积压更新",
       respond_to_all: "回复所有消息",
       sandbox: "沙箱模式",
-      napcat_url: "NapCat 地址",
+      napcat_url: "NapCat WebUI 地址",
+      napcat_access_token: "NapCat WebUI 令牌",
       group_replies_enabled: "群组回复",
       group_whitelist: "群组白名单",
       group_reply_policy: "群回复策略",
@@ -3641,6 +3645,13 @@ export const zhCN = {
     assetsRenameHint: "重命名 — a–z、0–9、_、-（1–64 字符）。",
     assetsRenameSucceeded: "已重命名为 {{label}}",
     assetsRenameFailed: "重命名失败：{{msg}}",
+    // 参考图描述（PATCH assets/{aid} description）
+    assetsDescribe: "为这张参考图添加描述",
+    assetsDescribeEmpty: "添加描述——这张图是什么、如何参考…",
+    assetsDescribePlaceholder:
+      "例如：标志性服装的正面立绘——全身镜头时参考此图；注意保留发饰。",
+    assetsDescribeSucceeded: "描述已保存",
+    assetsDescribeFailed: "保存描述失败：{{msg}}",
     // W3 — 头像
     avatarAlt: "{{name}} 头像",
     // W3 — 生活状态层（心情 / 疲劳 / 近期话题 + 衰减 + 日记 + 种子）

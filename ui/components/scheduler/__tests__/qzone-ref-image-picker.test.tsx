@@ -50,6 +50,7 @@ function refAsset(label: string, over: Partial<AssetRecord> = {}): AssetRecord {
     size_bytes: 1234,
     sha256: "sha-abc",
     created_at_ms: 0,
+    description: "",
     url: `/admin/personas/grantley/assets/id-${label}`,
     ...over,
   };

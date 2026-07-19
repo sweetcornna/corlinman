@@ -21,6 +21,7 @@ import { QqAccountPanel } from "@/components/channels/qq/qq-account-panel";
 import { QqFiltersPanel } from "@/components/channels/qq/qq-filters-panel";
 import { QqMessagesPanel } from "@/components/channels/qq/qq-messages-panel";
 import { ChannelConfigEditor } from "@/components/channels/ChannelConfigEditor";
+import { QzonePanel } from "@/components/scheduler/qzone-panel";
 import {
   QqHeroSkeleton,
   QqOfflineBlock,
@@ -40,6 +41,9 @@ import { ScanLoginDialog } from "./ScanLoginDialog";
  *     [ QqHero (glass strong, prose + reconnect + scan-login) ]
  *     [ QqStatsRow — Inbound · Chats · Keywords · Throttled ]
  *     [ QqAccountPanel │ QqFiltersPanel ]  (lg: 2-col)
+ *     [ ChannelConfigEditor ]
+ *     [ QzonePanel — QZone daily publishing + auto-reply (borrows the
+ *       NapCat login state, so it lives with the channel) ]
  *     [ QqMessagesPanel (LogRow dense feed) ]
  *
  * Data flow preserved from pre-cutover:
@@ -250,6 +254,10 @@ export default function QqChannelPage() {
                 })
               }
             />
+
+            <section className="rounded-sg-md border border-sg-border bg-sg-inset px-4 py-4">
+              <QzonePanel />
+            </section>
 
             <QqMessagesPanel
               messages={recentMessages}

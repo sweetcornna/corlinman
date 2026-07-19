@@ -262,3 +262,95 @@ async def test_used_bytes_tracks_writes_and_deletes(store) -> None:
     assert await store.used_bytes("p1") == r1.size_bytes + r2.size_bytes
     await store.delete("p1", "emoji", "h")
     assert await store.used_bytes("p1") == r2.size_bytes
+
+
+# ---------------------------------------------------------------------------
+# Description (free-text annotation)
+# ---------------------------------------------------------------------------
+
+
+async def test_put_with_description_round_trips(store) -> None:
+    rec = await store.put(
+        "grantley", "reference", "front",
+        bytes_=_png(), mime="image/png", file_name="front.png",
+        description="正面立绘，画全身镜头时参考",
+    )
+    assert rec.description == "正面立绘，画全身镜头时参考"
+    got = await store.get("grantley", "reference", "front")
+    assert got is not None
+    assert got.description == "正面立绘，画全身镜头时参考"
+
+
+async def test_replacement_preserves_description_when_omitted(store) -> None:
+    await store.put(
+        "grantley", "reference", "front",
+        bytes_=_png(), mime="image/png", file_name="front.png",
+        description="keep me",
+    )
+    # Re-upload the slot with new bytes and NO description arg.
+    rec = await store.put(
+        "grantley", "reference", "front",
+        bytes_=_png(64), mime="image/png", file_name="front-v2.png",
+    )
+    assert rec.description == "keep me"
+    # An explicit empty string clears it.
+    rec = await store.put(
+        "grantley", "reference", "front",
+        bytes_=_png(128), mime="image/png", file_name="front-v3.png",
+        description="",
+    )
+    assert rec.description == ""
+
+
+async def test_set_description_by_id(store) -> None:
+    rec = await store.put(
+        "grantley", "reference", "side",
+        bytes_=_png(), mime="image/png", file_name="side.png",
+    )
+    assert rec.description == ""
+    updated = await store.set_description_by_id(rec.id, "侧面视角")
+    assert updated.description == "侧面视角"
+    # Clipped to the cap rather than erroring.
+    long = "x" * 10_000
+    clipped = await store.set_description_by_id(rec.id, long)
+    assert len(clipped.description) == 500
+
+
+async def test_description_column_migration(tmp_path) -> None:
+    """A pre-description sqlite file grows the column on open (ALTER
+    TABLE migration) instead of crashing every SELECT."""
+    import aiosqlite
+
+    db = tmp_path / "legacy.sqlite"
+    conn = await aiosqlite.connect(db)
+    await conn.executescript(
+        """
+        CREATE TABLE persona_assets (
+            id            TEXT PRIMARY KEY,
+            persona_id    TEXT NOT NULL,
+            kind          TEXT NOT NULL,
+            label         TEXT NOT NULL,
+            file_name     TEXT NOT NULL,
+            mime          TEXT NOT NULL,
+            size_bytes    INTEGER NOT NULL,
+            sha256        TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            UNIQUE(persona_id, kind, label)
+        );
+        INSERT INTO persona_assets VALUES
+            ('a1', 'p1', 'reference', 'front', 'f.png', 'image/png',
+             10, 'deadbeef', 0);
+        """
+    )
+    await conn.commit()
+    await conn.close()
+
+    s = await PersonaAssetStore.open(db, tmp_path / "personas")
+    try:
+        got = await s.get_by_id("a1")
+        assert got is not None
+        assert got.description == ""
+        updated = await s.set_description_by_id("a1", "migrated")
+        assert updated.description == "migrated"
+    finally:
+        await s.close()

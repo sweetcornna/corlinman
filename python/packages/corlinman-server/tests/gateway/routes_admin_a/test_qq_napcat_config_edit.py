@@ -146,3 +146,45 @@ def test_put_qq_config_accepts_group_behavior_fields(tmp_path) -> None:
     # Integral floats persist as ints.
     assert qq["proactive_daily_max"] == 4
     assert isinstance(qq["proactive_daily_max"], int)
+
+
+def test_qq_status_echoes_behavior_fields_for_editor_seeding(tmp_path) -> None:
+    """The editor pre-seeds from ``config_keys`` — whitelist, flags and
+    tuning numbers must round-trip through the status route (they used to
+    be silently dropped, so the form always rendered blank/off over a
+    configured value)."""
+    state = AdminState(
+        data_dir=tmp_path,
+        admin_username="admin",
+        admin_password_hash=hash_password("rootroot"),
+        session_store=AdminSessionStore(86_400),
+        channels_config={
+            "qq": {
+                "enabled": True,
+                "self_ids": [10001],
+                "group_whitelist": [123, 456],
+                "proactive_groups": [123],
+                "group_replies_enabled": True,
+                "proactive_enabled": False,
+                "group_reply_cooldown_secs": 45,
+                "proactive_daily_max": 2,
+            }
+        },
+    )
+    set_admin_state(state)
+    try:
+        app = FastAPI()
+        app.include_router(build_router())
+        with TestClient(app, headers={"Authorization": _basic_auth_header()}) as c:
+            resp = c.get("/admin/channels/qq/status")
+    finally:
+        set_admin_state(None)
+
+    assert resp.status_code == 200, resp.text
+    keys = resp.json()["config_keys"]
+    assert keys["group_whitelist"] == ["123", "456"]
+    assert keys["proactive_groups"] == ["123"]
+    assert keys["group_replies_enabled"] == "True"
+    assert keys["proactive_enabled"] == "False"
+    assert keys["group_reply_cooldown_secs"] == "45"
+    assert keys["proactive_daily_max"] == "2"

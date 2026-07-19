@@ -1098,3 +1098,49 @@ async def test_builtin_prompt_omits_ref_block_without_labels() -> None:
     assert out["ok"] is True
     prompt = chat.requests[0].messages[0].content
     assert "必须用这些参考图标签" not in prompt
+
+
+def test_image_ref_block_annotates_labels_with_descriptions() -> None:
+    """When the persona's reference assets carry operator-authored
+    descriptions, the block renders ``label（描述)``-style annotations so
+    the model knows what each reference shows; labels without one render
+    bare. (Assembled via ``image_ref_descriptions`` — resolved off the
+    global asset store, which is the interop point with the persona page.)"""
+    prompt = _compose_system_prompt(
+        "You are a tiger.",
+        image_ref_labels=["front", "side"],
+        image_ref_descriptions={"front": "正面立绘，全身镜头参考"},
+    )
+    assert "front（正面立绘，全身镜头参考）" in prompt
+    assert "括号内是该参考图的说明" in prompt
+    # `side` has no description — appears bare, not with empty brackets.
+    assert "side（" not in prompt
+
+
+async def test_resolve_image_ref_descriptions_is_best_effort() -> None:
+    from corlinman_server.scheduler.builtins.qzone_daily import (
+        _resolve_image_ref_descriptions,
+    )
+
+    class _Asset:
+        def __init__(self, label: str, description: str) -> None:
+            self.label = label
+            self.description = description
+
+    class _Store:
+        async def list(self, persona_id, *, kind=None):
+            assert kind == "reference"
+            return [_Asset("front", "正面"), _Asset("side", ""), _Asset("x", "y")]
+
+    got = await _resolve_image_ref_descriptions(_Store(), "p1", ["front", "side"])
+    assert got == {"front": "正面"}
+
+    # Missing store / no labels / listing failure → {} (never raises).
+    assert await _resolve_image_ref_descriptions(None, "p1", ["front"]) == {}
+    assert await _resolve_image_ref_descriptions(_Store(), "p1", []) == {}
+
+    class _Broken:
+        async def list(self, persona_id, *, kind=None):
+            raise RuntimeError("boom")
+
+    assert await _resolve_image_ref_descriptions(_Broken(), "p1", ["front"]) == {}
