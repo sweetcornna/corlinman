@@ -336,6 +336,7 @@ def router() -> APIRouter:
         kind: Annotated[str, Form()],
         label: Annotated[str, Form()],
         file: Annotated[UploadFile, File()],
+        description: Annotated[str | None, Form()] = None,
     ) -> AssetOut:
         persona_store = _persona_store(state)
         asset_store = _asset_store(state)
@@ -366,6 +367,7 @@ def router() -> APIRouter:
                 bytes_=bytes_,
                 mime=mime,
                 file_name=(file.filename or f"{label_v}.bin")[:200],
+                description=description,
             )
         except AssetMimeRejected as exc:
             raise HTTPException(
@@ -447,7 +449,7 @@ def router() -> APIRouter:
     @r.patch(
         "/admin/personas/{persona_id}/assets/{asset_id}",
         response_model=AssetOut,
-        summary="Rename one asset's slot label",
+        summary="Edit one asset's slot label and/or description",
     )
     async def patch_persona_asset(
         persona_id: str,
@@ -456,17 +458,31 @@ def router() -> APIRouter:
         state: Annotated[AdminState, Depends(get_admin_state)],
     ) -> AssetOut:
         asset_store = _asset_store(state)
-        label = _validate_label(body.label)
+        if body.label is None and body.description is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": "empty_patch",
+                    "message": "provide label and/or description",
+                },
+            )
         # Confirm the asset both exists AND belongs to this persona before
-        # the rename — same path-confusion guard the serve/delete routes use.
+        # the edit — same path-confusion guard the serve/delete routes use.
         record = await asset_store.get_by_id(asset_id)
         if record is None or record.persona_id != persona_id:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={"error": "asset_not_found", "id": asset_id},
             )
+        updated = record
         try:
-            updated = await asset_store.relabel_by_id(asset_id, label)
+            if body.label is not None:
+                label = _validate_label(body.label)
+                updated = await asset_store.relabel_by_id(asset_id, label)
+            if body.description is not None:
+                updated = await asset_store.set_description_by_id(
+                    asset_id, body.description
+                )
         except AssetNotFound as exc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -475,7 +491,7 @@ def router() -> APIRouter:
         except AssetExists as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail={"error": "duplicate_label", "label": label},
+                detail={"error": "duplicate_label", "label": body.label},
             ) from exc
         return AssetOut.from_record(updated)
 

@@ -122,7 +122,11 @@ def _intro_enabled() -> bool:
     return os.environ.get(_INTRO_ENV, "on").strip().lower() != "off"
 
 
-def _compose_refs_prompt(prompt: str, chars_used: list[str]) -> str:
+def _compose_refs_prompt(
+    prompt: str,
+    chars_used: list[str],
+    descriptions: list[str] | None = None,
+) -> str:
     """Wrap the user ``prompt`` with the composition direction + a
     reference-image legend.
 
@@ -137,12 +141,22 @@ def _compose_refs_prompt(prompt: str, chars_used: list[str]) -> str:
 
     ``chars_used`` is the in-sequence list of labels whose reference
     assets were actually sent (aligned 1:1 with the ``ref_paths`` order
-    passed to :func:`generate_with_refs`).
+    passed to :func:`generate_with_refs`). ``descriptions`` aligns 1:1
+    with ``chars_used``; a non-empty entry is the operator-authored
+    "what this image is / how to reference it" text and rides the
+    legend so the model knows what each conditioning image carries.
     """
-    legend = ", ".join(
-        f"Reference image {i} = {label}"
-        for i, label in enumerate(chars_used, start=1)
-    )
+    if descriptions is None:
+        descriptions = [""] * len(chars_used)
+    parts: list[str] = []
+    for i, (label, desc) in enumerate(
+        zip(chars_used, descriptions, strict=False), start=1
+    ):
+        entry = f"Reference image {i} = {label}"
+        if desc.strip():
+            entry += f" ({desc.strip()})"
+        parts.append(entry)
+    legend = ", ".join(parts)
     return (
         f"{_COMPOSITION_INTRO}\n\n"
         f"Reference images, in order: {legend}.\n\n"
@@ -366,6 +380,7 @@ async def dispatch_image_with_refs(
         return _err("asset_list_failed", str(exc))
     by_label: dict[str, Any] = {a.label: a for a in assets}
     chars_used: list[str] = []
+    chars_descs: list[str] = []
     chars_missing: list[str] = []
     ref_paths: list[Path] = []
     for label in characters:
@@ -385,6 +400,7 @@ async def dispatch_image_with_refs(
             chars_missing.append(label)
             continue
         chars_used.append(label)
+        chars_descs.append(str(getattr(record, "description", "") or ""))
 
     if not ref_paths:
         return _err(
@@ -398,7 +414,9 @@ async def dispatch_image_with_refs(
     # legend (unless the operator opted out via CORLINMAN_IMAGE_REFS_INTRO).
     intro_enabled = _intro_enabled()
     gen_prompt = (
-        _compose_refs_prompt(prompt, chars_used) if intro_enabled else prompt
+        _compose_refs_prompt(prompt, chars_used, chars_descs)
+        if intro_enabled
+        else prompt
     )
 
     # Generate the image.

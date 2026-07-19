@@ -370,8 +370,8 @@ def _channel_config(state: AdminState, name: str) -> dict[str, Any] | None:
 _CHANNEL_CONFIG_KEYS: dict[str, dict[str, list[str]]] = {
     "qq": {
         "id_keys": [],
-        "list_keys": ["self_ids"],
-        "bool_keys": [],
+        "list_keys": ["self_ids", "group_whitelist", "proactive_groups"],
+        "bool_keys": ["group_replies_enabled", "proactive_enabled"],
     },
     "discord": {
         "id_keys": [],
@@ -430,6 +430,14 @@ def _non_secret_config_keys(
             continue
         val = section.get(key)
         if val is not None:
+            out[key] = str(val)
+    # Tuning numbers echo the same way, so the editor can pre-seed them
+    # instead of rendering blank over a configured value.
+    for key in edit_spec.get("number_keys", []):
+        if key in out:
+            continue
+        val = section.get(key)
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
             out[key] = str(val)
     return out
 

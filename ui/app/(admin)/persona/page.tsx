@@ -72,10 +72,11 @@ import {
   fetchLifeSeeds,
   fetchLifeState,
   fetchPersonas,
+  ASSET_DESCRIPTION_MAX_CHARS,
   listAssets,
+  patchAsset,
   patchLifeState,
   putLifeSeeds,
-  renameAsset,
   resetPersonaToDefault,
   runPersonaDecay,
   setHumanlike,
@@ -1435,7 +1436,7 @@ function PersonaAssetsPanel({ personaId }: { personaId: string }) {
         return false;
       }
       try {
-        await renameAsset(personaId, asset.id, label);
+        await patchAsset(personaId, asset.id, { label });
         toast.success(t("persona.assetsRenameSucceeded", { label }));
         await refresh();
         return true;
@@ -1446,6 +1447,24 @@ function PersonaAssetsPanel({ personaId }: { personaId: string }) {
           const msg = err instanceof Error ? err.message : String(err);
           toast.error(t("persona.assetsRenameFailed", { msg }));
         }
+        return false;
+      }
+    },
+    [personaId, refresh, t],
+  );
+
+  /** Persist one asset's free-text description ("" clears it). Returns a
+   * boolean so the cell only leaves edit mode on a successful save. */
+  const handleDescribe = React.useCallback(
+    async (asset: AssetRecord, description: string): Promise<boolean> => {
+      try {
+        await patchAsset(personaId, asset.id, { description });
+        toast.success(t("persona.assetsDescribeSucceeded"));
+        await refresh();
+        return true;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        toast.error(t("persona.assetsDescribeFailed", { msg }));
         return false;
       }
     },
@@ -1491,6 +1510,7 @@ function PersonaAssetsPanel({ personaId }: { personaId: string }) {
         onUpload={(file, label) => beginUpload("reference", label, file)}
         onDelete={handleDelete}
         onRename={handleRename}
+        onDescribe={handleDescribe}
         overCap={refs.length > REFERENCE_VISIBLE_CAP}
         overCapHint={t("persona.assetsRefsOverCapHint", {
           cap: REFERENCE_VISIBLE_CAP,
@@ -1525,6 +1545,7 @@ function AssetSection({
   onUpload,
   onDelete,
   onRename,
+  onDescribe,
   overCap = false,
   overCapHint,
 }: {
@@ -1540,6 +1561,9 @@ function AssetSection({
   onDelete: (asset: AssetRecord) => void;
   /** Rename `asset` to `label`; resolves `true` on a successful save. */
   onRename: (asset: AssetRecord, label: string) => Promise<boolean>;
+  /** Persist `asset`'s description; resolves `true` on a successful save.
+   * Absent = the section renders no per-asset description affordance. */
+  onDescribe?: (asset: AssetRecord, description: string) => Promise<boolean>;
   overCap?: boolean;
   overCapHint?: string;
 }) {
@@ -1699,6 +1723,11 @@ function AssetSection({
                     asset={asset}
                     onDelete={() => setPendingDelete(asset)}
                     onRename={(label) => onRename(asset, label)}
+                    onDescribe={
+                      onDescribe
+                        ? (desc) => onDescribe(asset, desc)
+                        : undefined
+                    }
                     testId={`${sectionTestId}-cell-${asset.label}`}
                   />
                 ))}
@@ -1739,12 +1768,15 @@ function AssetCell({
   asset,
   onDelete,
   onRename,
+  onDescribe,
   testId,
 }: {
   asset: AssetRecord;
   onDelete: () => void;
   /** Resolves `true` when the rename persisted, so we can leave edit mode. */
   onRename: (label: string) => Promise<boolean>;
+  /** Resolves `true` when the description persisted. Absent = no editor. */
+  onDescribe?: (description: string) => Promise<boolean>;
   testId: string;
 }) {
   const { t } = useTranslation();
@@ -1755,12 +1787,20 @@ function AssetCell({
   const [editing, setEditing] = React.useState(false);
   const [draft, setDraft] = React.useState(asset.label);
   const [saving, setSaving] = React.useState(false);
+  // Description editor state — same pattern as the label editor but for
+  // the free-text annotation ("what this image is / how to reference it").
+  const [descEditing, setDescEditing] = React.useState(false);
+  const [descDraft, setDescDraft] = React.useState(asset.description ?? "");
+  const [descSaving, setDescSaving] = React.useState(false);
 
   // Re-seed the draft whenever the underlying label changes (e.g. after a
   // successful rename refetch) or the operator re-enters edit mode.
   React.useEffect(() => {
     setDraft(asset.label);
   }, [asset.label]);
+  React.useEffect(() => {
+    setDescDraft(asset.description ?? "");
+  }, [asset.description]);
 
   const draftOk = ASSET_LABEL_RE.test(draft);
 
@@ -1784,6 +1824,20 @@ function AssetCell({
       if (ok) setEditing(false);
     } finally {
       setSaving(false);
+    }
+  }
+  async function commitDesc() {
+    if (!onDescribe) return;
+    if (descDraft === (asset.description ?? "")) {
+      setDescEditing(false);
+      return;
+    }
+    setDescSaving(true);
+    try {
+      const ok = await onDescribe(descDraft.slice(0, ASSET_DESCRIPTION_MAX_CHARS));
+      if (ok) setDescEditing(false);
+    } finally {
+      setDescSaving(false);
     }
   }
 
@@ -1858,6 +1912,69 @@ function AssetCell({
           <Pencil className="ml-auto h-3 w-3 shrink-0 opacity-60" aria-hidden="true" />
         </button>
       )}
+      {onDescribe ? (
+        descEditing ? (
+          <div className="flex flex-col gap-1">
+            <textarea
+              value={descDraft}
+              onChange={(e) => setDescDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setDescDraft(asset.description ?? "");
+                  setDescEditing(false);
+                }
+              }}
+              rows={3}
+              maxLength={ASSET_DESCRIPTION_MAX_CHARS}
+              autoFocus
+              disabled={descSaving}
+              placeholder={t("persona.assetsDescribePlaceholder")}
+              className="w-full rounded-md border border-input bg-transparent px-1.5 py-1 text-[11px] placeholder:text-sg-ink-4 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              data-testid={`${testId}-desc-input`}
+            />
+            <div className="flex items-center justify-end gap-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setDescDraft(asset.description ?? "");
+                  setDescEditing(false);
+                }}
+                disabled={descSaving}
+                className="text-[10px] text-sg-ink-3 hover:text-sg-ink disabled:opacity-40"
+                data-testid={`${testId}-desc-cancel`}
+              >
+                {t("persona.assetsRenameCancel")}
+              </button>
+              <button
+                type="button"
+                onClick={() => void commitDesc()}
+                disabled={descSaving}
+                className="text-[10px] text-sg-ink hover:underline disabled:opacity-40"
+                data-testid={`${testId}-desc-save`}
+              >
+                {t("persona.assetsRenameSave")}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => {
+              setDescDraft(asset.description ?? "");
+              setDescEditing(true);
+            }}
+            title={t("persona.assetsDescribe")}
+            className={cn(
+              "line-clamp-2 rounded-md px-1 text-left text-[10px] leading-snug hover:bg-sg-card",
+              asset.description ? "text-sg-ink-2" : "text-sg-ink-4 italic",
+            )}
+            data-testid={`${testId}-desc`}
+          >
+            {asset.description || t("persona.assetsDescribeEmpty")}
+          </button>
+        )
+      ) : null}
       <div className="flex items-center justify-between text-[10px] text-sg-ink-3">
         <span>{formatBytes(asset.size_bytes)}</span>
         <button

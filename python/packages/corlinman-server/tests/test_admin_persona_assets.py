@@ -408,3 +408,65 @@ def test_humanlike_put_can_disable(client: TestClient) -> None:
     assert resp.json() == {"enabled": False, "persona_id": None}
     got = client.get("/admin/channels/slack/humanlike")
     assert got.json() == {"enabled": False, "persona_id": None}
+
+
+# ---------------------------------------------------------------------------
+# Description (upload form field + PATCH)
+# ---------------------------------------------------------------------------
+
+
+def test_upload_with_description_then_patch(client: TestClient) -> None:
+    resp = client.post(
+        "/admin/personas/kawaii/assets",
+        data={
+            "kind": "reference",
+            "label": "front",
+            "description": "正面立绘——全身镜头参考",
+        },
+        files={"file": ("front.png", _PNG, "image/png")},
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["description"] == "正面立绘——全身镜头参考"
+    aid = body["id"]
+
+    # PATCH description only — label untouched.
+    patched = client.patch(
+        f"/admin/personas/kawaii/assets/{aid}",
+        json={"description": "改成侧写参考"},
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["description"] == "改成侧写参考"
+    assert patched.json()["label"] == "front"
+
+    # PATCH label only — description survives.
+    relabeled = client.patch(
+        f"/admin/personas/kawaii/assets/{aid}",
+        json={"label": "front-v2"},
+    )
+    assert relabeled.status_code == 200, relabeled.text
+    assert relabeled.json()["label"] == "front-v2"
+    assert relabeled.json()["description"] == "改成侧写参考"
+
+    # Both at once; "" clears the description.
+    both = client.patch(
+        f"/admin/personas/kawaii/assets/{aid}",
+        json={"label": "front-v3", "description": ""},
+    )
+    assert both.status_code == 200, both.text
+    assert both.json()["label"] == "front-v3"
+    assert both.json()["description"] == ""
+
+
+def test_patch_empty_body_400s(client: TestClient) -> None:
+    up = client.post(
+        "/admin/personas/kawaii/assets",
+        data={"kind": "reference", "label": "front"},
+        files={"file": ("front.png", _PNG, "image/png")},
+    )
+    aid = up.json()["id"]
+    resp = client.patch(
+        f"/admin/personas/kawaii/assets/{aid}", json={}
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["error"] == "empty_patch"

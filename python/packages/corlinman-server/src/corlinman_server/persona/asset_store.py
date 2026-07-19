@@ -52,6 +52,7 @@ __all__ = [
     "ALLOWED_MIMES",
     "DEFAULT_MAX_BYTES_PER_ASSET",
     "DEFAULT_MAX_BYTES_PER_PERSONA",
+    "MAX_DESCRIPTION_CHARS",
     "AssetExists",
     "AssetKind",
     "AssetMimeRejected",
@@ -98,6 +99,7 @@ CREATE TABLE IF NOT EXISTS persona_assets (
     size_bytes    INTEGER NOT NULL,
     sha256        TEXT NOT NULL,
     created_at_ms INTEGER NOT NULL,
+    description   TEXT NOT NULL DEFAULT '',
     UNIQUE(persona_id, kind, label)
 );
 CREATE INDEX IF NOT EXISTS idx_persona_assets_persona
@@ -105,6 +107,10 @@ CREATE INDEX IF NOT EXISTS idx_persona_assets_persona
 CREATE INDEX IF NOT EXISTS idx_persona_assets_kind
     ON persona_assets(persona_id, kind);
 """
+
+#: Cap on the free-text ``description``; long enough for "what this view
+#: shows + how to reference it", short enough to ride a prompt legend.
+MAX_DESCRIPTION_CHARS: int = 500
 
 
 @dataclass(frozen=True)
@@ -115,6 +121,9 @@ class AssetRecord:
     bucket (``happy`` / ``angry`` for emoji; ``front`` / ``casual``
     for reference). ``sha256`` doubles as the on-disk filename stem
     and as the HTTP ``ETag`` value when the asset is served.
+    ``description`` is free text ("what this image shows / how to use
+    it as a reference") surfaced to the operator AND injected into the
+    image-generation prompt legend; empty = label-only.
     """
 
     id: str
@@ -126,6 +135,7 @@ class AssetRecord:
     size_bytes: int
     sha256: str
     created_at_ms: int
+    description: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +225,7 @@ def _row_to_record(row: aiosqlite.Row) -> AssetRecord:
         size_bytes=int(row["size_bytes"]),
         sha256=row["sha256"],
         created_at_ms=int(row["created_at_ms"]),
+        description=str(row["description"] or ""),
     )
 
 
@@ -287,6 +298,16 @@ class PersonaAssetStore:
         await conn.execute("PRAGMA synchronous = NORMAL")
         await conn.execute("PRAGMA busy_timeout = 5000")
         await conn.executescript(_SCHEMA)
+        # Additive migration for pre-description databases: CREATE TABLE
+        # IF NOT EXISTS never grows columns on an existing table, so probe
+        # and ALTER explicitly. Safe to re-run (probe guards the ALTER).
+        async with conn.execute("PRAGMA table_info(persona_assets)") as cur:
+            cols = {row[1] for row in await cur.fetchall()}
+        if "description" not in cols:
+            await conn.execute(
+                "ALTER TABLE persona_assets "
+                "ADD COLUMN description TEXT NOT NULL DEFAULT ''"
+            )
         await conn.commit()
         self._conn = conn
 
@@ -354,9 +375,14 @@ class PersonaAssetStore:
         bytes_: bytes,
         mime: str,
         file_name: str,
+        description: str | None = None,
     ) -> AssetRecord:
         """Upload one asset, replacing any existing slot at
         ``(persona_id, kind, label)``.
+
+        ``description`` is optional free text; ``None`` keeps the
+        existing slot's description on replacement (new slots start
+        empty), a string (including ``""``) overwrites it.
 
         Raises:
           * :class:`AssetMimeRejected` if ``mime`` is outside
@@ -397,6 +423,12 @@ class PersonaAssetStore:
             )
 
         digest = hashlib.sha256(bytes_).hexdigest()
+        if description is None:
+            resolved_description = (
+                existing.description if existing is not None else ""
+            )
+        else:
+            resolved_description = description[:MAX_DESCRIPTION_CHARS]
         record = AssetRecord(
             id=existing.id if existing is not None else _ulid(),
             persona_id=persona_id,
@@ -408,6 +440,7 @@ class PersonaAssetStore:
             sha256=digest,
             created_at_ms=existing.created_at_ms if existing is not None
             else _now_ms(),
+            description=resolved_description,
         )
 
         # Write the new blob FIRST so a row never points at a missing
@@ -425,7 +458,7 @@ class PersonaAssetStore:
                 """
                 UPDATE persona_assets
                    SET file_name = ?, mime = ?, size_bytes = ?,
-                       sha256 = ?, created_at_ms = ?
+                       sha256 = ?, created_at_ms = ?, description = ?
                  WHERE id = ?
                 """,
                 (
@@ -434,6 +467,7 @@ class PersonaAssetStore:
                     record.size_bytes,
                     record.sha256,
                     record.created_at_ms,
+                    record.description,
                     record.id,
                 ),
             )
@@ -447,8 +481,8 @@ class PersonaAssetStore:
                 """
                 INSERT INTO persona_assets (
                     id, persona_id, kind, label, file_name, mime,
-                    size_bytes, sha256, created_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    size_bytes, sha256, created_at_ms, description
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.id,
@@ -460,6 +494,7 @@ class PersonaAssetStore:
                     record.size_bytes,
                     record.sha256,
                     record.created_at_ms,
+                    record.description,
                 ),
             )
         await self._c.commit()
@@ -504,6 +539,27 @@ class PersonaAssetStore:
         assert row is not None
         return row
 
+    async def set_description_by_id(
+        self, asset_id: str, description: str
+    ) -> AssetRecord:
+        """Set one asset's free-text ``description`` (metadata only).
+        ``""`` clears it. Raises :class:`AssetNotFound` for a missing id.
+        """
+        existing = await self.get_by_id(asset_id)
+        if existing is None:
+            raise AssetNotFound(f"asset not found: {asset_id!r}")
+        clipped = description[:MAX_DESCRIPTION_CHARS]
+        if existing.description == clipped:
+            return existing
+        await self._c.execute(
+            "UPDATE persona_assets SET description = ? WHERE id = ?",
+            (clipped, asset_id),
+        )
+        await self._c.commit()
+        row = await self.get_by_id(asset_id)
+        assert row is not None
+        return row
+
     # ------------------------------------------------------------------
     # Read paths
     # ------------------------------------------------------------------
@@ -514,7 +570,7 @@ class PersonaAssetStore:
         async with self._c.execute(
             """
             SELECT id, persona_id, kind, label, file_name, mime,
-                   size_bytes, sha256, created_at_ms
+                   size_bytes, sha256, created_at_ms, description
               FROM persona_assets
              WHERE persona_id = ? AND kind = ? AND label = ?
             """,
@@ -527,7 +583,7 @@ class PersonaAssetStore:
         async with self._c.execute(
             """
             SELECT id, persona_id, kind, label, file_name, mime,
-                   size_bytes, sha256, created_at_ms
+                   size_bytes, sha256, created_at_ms, description
               FROM persona_assets
              WHERE id = ?
             """,
@@ -542,7 +598,7 @@ class PersonaAssetStore:
         if kind is None:
             sql = """
                 SELECT id, persona_id, kind, label, file_name, mime,
-                       size_bytes, sha256, created_at_ms
+                       size_bytes, sha256, created_at_ms, description
                   FROM persona_assets
                  WHERE persona_id = ?
                  ORDER BY kind ASC, label ASC
@@ -551,7 +607,7 @@ class PersonaAssetStore:
         else:
             sql = """
                 SELECT id, persona_id, kind, label, file_name, mime,
-                       size_bytes, sha256, created_at_ms
+                       size_bytes, sha256, created_at_ms, description
                   FROM persona_assets
                  WHERE persona_id = ? AND kind = ?
                  ORDER BY label ASC
