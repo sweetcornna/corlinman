@@ -351,3 +351,40 @@ async def test_append_messages_atomic_under_concurrent_commit(
         )
     finally:
         await backend.close()
+
+
+# ---------------------------------------------------------------------------
+# Same-ms tie-break — ``get_session_turn_ids`` must order deterministically.
+# ---------------------------------------------------------------------------
+
+
+async def test_get_session_turn_ids_breaks_same_ms_ties_by_turn_id(
+    tmp_path: Path,
+) -> None:
+    """Two turns seeded within one wall-clock ms tie on ``started_at_ms``
+    (``begin_turn``'s integrity-collision retry bumps ``turn_id`` +1 but
+    keeps the timestamp) — without the ``turn_id DESC`` secondary sort
+    the listing came back in scrambled natural-row order, which flaked
+    ``fork_session``'s faithful-copy comparison under full-suite timing."""
+    j = await AgentJournal.open(tmp_path / "j.sqlite")
+    try:
+        first = await j.begin_turn("sess", "first")
+        second = await j.begin_turn("sess", "second")
+        assert first is not None and second is not None
+        await j.complete_turn(first)
+        await j.complete_turn(second)
+        # Force the same-ms tie regardless of how fast the seeds ran.
+        backend = j.backend
+        assert isinstance(backend, SqliteJournalBackend)
+        await backend._c.execute(  # noqa: SLF001 — deliberate white-box seed
+            "UPDATE turns SET started_at_ms = ? WHERE turn_id IN (?, ?)",
+            (1_000_000, first, second),
+        )
+        await backend._c.commit()
+
+        ids = await j.get_session_turn_ids("sess", limit=10)
+        assert ids == sorted([first, second], reverse=True), (
+            f"tie on started_at_ms must fall back to turn_id DESC — got {ids!r}"
+        )
+    finally:
+        await j.close()
