@@ -4,7 +4,223 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.35.0] — 2026-07-20 — gap-close backlog lands: 7 PRs + ordering fix
+
+### fix: deterministic turn ordering on same-ms ties (#161)
+
+- `get_session_turn_ids` (SQLite + Postgres) and `find_resumable_turn`
+  now carry the same `(started_at_ms DESC, turn_id DESC)` contract as
+  `list_session_turns` — two turns seeded within one wall-clock ms no
+  longer come back in scrambled natural-row order (surfaced as a
+  full-suite-only flake in the fork faithful-copy test).
+
+### Dim 5 MCP leftovers 2/2 — `.mcp.json` layered scopes + MCP client resources (#116)
+
+> claude-code parity Dim 5 收官：四项残留全部关闭。
+> Dim 5 leftovers, part 2 of 2 — the last two verified-open items close.
+
+### Added
+- **`.mcp.json` 分层作用域**（`corlinman_mcp_server.scoped_config`）——
+  claude-code 式 server 配置发现：`local`（`<项目>/.mcp.local.json`，
+  gitignored）> `project`（`<项目>/.mcp.json`，入库）> `user`
+  （`~/.corlinman/mcp.json`）> 网关内联 `[mcp]` 配置；按 server 名去重、
+  强作用域胜出。文件形态兼容 claude-code 的 `{"mcpServers": {…}}`
+  （`mcp_servers`/`servers` 别名亦可）。坏文件/坏条目只跳过不崩溃。
+  网关 lifespan 与嵌入式控制台两个启动点同时接线。
+- **MCP client resources**（`resources/list` + `resources/read`）——
+  连接期分页发现（无该能力的 server 干净地降级为空）；每个有资源的
+  server 合成一个 `{server}_read_resource` 工具进入现有广告/路由通道
+  （schema 带资源清单、上限 10 条防膨胀；server 自带 **literal**
+  `read_resource` 工具时合成让位、走正常 `tools/call`——advertise 与
+  bridge 两侧同一 literal-wins 规则）；`McpToolBridge` 新增
+  `resources/read` 分支，text 内容折叠、blob 以占位说明呈现；
+  allow/deny server 策略同样约束资源面。
+
+### Environment seam + Docker per-process sandbox backend (Wave D) (#120)
+
+> claude-code parity Wave D（Dim 4 sandbox，phase 1）：三个代码执行工具
+> （前台 `run_shell`、后台 shell 任务注册表、持久 REPL）的进程孵化统一
+> 收敛到一个 `Environment` 缝合层——默认 local 后端与历史行为字节等价，
+> 新增 docker 后端把每个孵化进程放进自己的一次性容器。
+> Wave D of the parity program (Dim 4 sandbox, phase 1): all three
+> code-execution tools now spawn through a single `Environment` seam — the
+> default local backend is byte-identical to historical behavior, and a new
+> docker backend runs each spawned process in its own throwaway container.
+
+### Added
+- **`Environment` 缝合层**（D1，`corlinman_agent.coding.environment`）——
+  `spawn_shell` / `spawn_repl` 返回 `SpawnedProcess` 句柄（`.proc` +
+  `kill()` + `reap()`）：终止逻辑随孵化的子进程走而不是挂在后端上——
+  持久 REPL 会话比孵化它的调用活得久，kill 不能依赖事后重新解析后端。
+  `LocalEnvironment`（默认）逐字节复刻历史 `create_subprocess_*` 调用
+  （workspace cwd、env 白名单、POSIX rlimits + `setsid` preexec），全部
+  既有行为与测试不变；`_build_child_env` / `_preexec_apply_rlimits` /
+  `kill_process_group` / `reap_orphan_group` 原样从 `shell.py` 迁入并
+  re-export（shell 依赖 environment，留在原处会循环导入）。
+- **Docker 后端**（D2，`CORLINMAN_SANDBOX_BACKEND=docker`）——
+  **一进程一容器**：每次孵化 = 一个 `docker run --rm`，容器名
+  `corlinman-sbx-<uuid>` 即 kill token（`docker kill <name>` 原生精确，
+  宿主 `killpg` 够不到容器内 PID；不用长驻容器 + `exec`，其 PID 追踪
+  脆弱）。加固旗标：`no-new-privileges`、`--pids-limit=64`、
+  `--memory=2g`（swap 同额）、`--ulimit nofile/cpu/fsize` 对齐本地
+  rlimits；只转发 `LANG`/`LC_ALL`/`TZ`（宿主 `PATH`/`HOME`/`USER` 与
+  一切密钥永不进容器）；REPL 直接跑镜像内解释器，只 `-i` 绝不 `-t`
+  （tty 会破坏 marker 帧协议）。镜像知
+  `CORLINMAN_SANDBOX_IMAGE`（默认 `python:3.12-slim-bookworm`）、
+  用户重映射知 `CORLINMAN_SANDBOX_USER`（默认镜像自身用户；Linux
+  宿主想避免 workspace 出现 root 属主文件时设 `uid:gid`）。docker
+  故障以 `SandboxSpawnError(OSError)` / `DaemonUnavailableError` 抛出
+  ——既有 except-OSError → `spawn_failed` 信封路径零改动复用；docker
+  二进制缺失在孵化时就大声失败，绝不静默回落到宿主执行。
+- **后端选择器**（D3，`get_environment`）—— `CORLINMAN_SANDBOX_BACKEND`
+  默认 `local`，未知值抛出点名该变量的 `RuntimeError`；每次调用现读、
+  不缓存，与 `open_backend_from_env` 同款形状。
+
+### Fixed / Hardening（审查阶段预先消除的二阶边界）
+- **docker 客户端自建会话**——`docker run` 客户端不 fork 时与服务器同
+  进程组，后台任务终局 reap 的 `killpg` 会连服务器一起 SIGKILL；现在
+  docker 客户端一律 `preexec_fn=os.setsid`（刻意不套 rlimits——那会
+  绑住宿主 docker CLI，容器限额由 `--ulimit` 负责），且注册表 7 个
+  终局路径全部改走句柄感知的 `_reap_task`（非本地句柄先
+  `handle.reap()` 做容器原生清理，本地路径字节不变）。
+- **前台超时不再可能挂死**——`DockerSpawnedProcess.kill()` 在
+  `docker kill` 之后同时清扫 setsid 后的客户端进程组：即使 daemon
+  挂死，dispatcher 的 `await proc.wait()` 也必然解除（该极端下容器
+  可能泄漏——挂死的 daemon 无法受托删除它——属已记录的取舍）。
+- 已记录取舍：`docker kill` 为兼容 `atexit` 走同步 `subprocess.run`
+  （超时 10s 有界），daemon 挂死时单次终局清理最多阻塞事件循环 10s
+  ——仅 opt-in 的 docker 后端受影响，local 默认路径零变化。
+
+### Notes
+- 沙箱**不是**安全边界的替身（见 `shell.py` 模块文档）：workspace
+  bind-mount 刻意可读写、容器联网保持开启（与本地 shell 对齐，构建要
+  拉依赖）、`_DENY` 前置筛查照旧对所有后端生效。docker 后端收窄的是
+  宿主 workspace 之外的面与网关进程内密钥的暴露。
+
+### Wave E parity — settings persistence, exit_plan_mode, --fork-session, fallback signature strip, hermetic tests (#119)
+
+> claude-code parity Wave E（小批量五连）：权限设置终于能落盘分层加载、
+> 模型可以自己结束 plan mode、会话可以无损分叉、跨模型 fallback 不再被
+> thinking 签名炸出 400、测试套件对宿主路由环境免疫。
+> Wave E of the parity program: durable layered permission settings, a
+> model-callable `exit_plan_mode`, `--fork-session`, cross-model
+> thinking-signature stripping on fallback, and hermetic tests.
+
+### Added
+- **分层权限设置持久化**（E1，`corlinman_agent.permission_settings`）——
+  `from_layered_sources` 此前零生产调用方：所有部署只从 env 建 gate，
+  durable 规则只能写环境变量。新增加载器按
+  `<data_dir>/settings.json`（用户层）→ `<项目>/.corlinman/
+  settings.local.json`（项目层，gitignored 惯例同 claude-code）→
+  `CORLINMAN_AGENT_PERMISSIONS` env（最终话语权）叠层；`mode`/`strict`
+  同样 env > 项目 > 用户。无任何设置文件时与旧 `from_env()` 字节等价
+  （含 first-match-wins 默认）。坏文件/坏块只跳过不崩溃。
+  `ApprovalGate` 与 servicer 的默认 gate 构造双双切换到新加载器。
+- **控制台审批第三答案 `p`/`persist`**（E1）—— 交互审批在
+  y（一次）/ a（本会话）之外新增 **persist**：等同 always 并通过
+  `persist_allow_rule` 原子写入（tmp + rename、幂等去重）用户层
+  `settings.json`，未来会话不再询问；persist 钩子失败降级为会话级
+  授权而不是拒绝（操作员明明答了 allow）。`a` 保持会话级语义不变
+  （Codex #104 —— 授权不得越过其上下文边界）。
+- **`exit_plan_mode` 内置工具**（E2，claude-code 对标）—— plan mode
+  会拒掉全部 mutating 工具，此前只能靠人 `/permissions` 手动放行。
+  现在模型计划就绪后自己调用：plan → default 翻转 + 交互审批缓存
+  重置（两个 resolver 来源 —— `set_approval_resolver` 与
+  `app_state.approval_resolver` —— 都重置，plan 期间答的 always
+  不得带进实施阶段）；非 plan mode 下干净 no-op；可选 `plan` 摘要
+  回显给用户。**子代理拒绝**：权限 mode 是 servicer 级全局的，
+  plan 模式下派生的 subagent 不得替父回合结束 plan mode（child
+  executor 与递归 spawn / 后台 shell 同款拒绝信封）；skill
+  allowed-tools 控制工具直通名单同步加入，防止 skill 把模型困死在
+  plan mode。
+- **`--fork-session`**（E3，claude-code 对标）——
+  `AgentJournal.fork_session` 把源会话的 **completed** 回合按时间序
+  复制到全新 session key（in_progress 在别处直播、errored 带 T4.4
+  面包屑，均不复制；单回合损坏只跳过不废整个 fork；源会话全程只读）。
+  控制台 `--fork-session` 旗标在恢复前铸新 `console:<id>` key 并
+  fork，原会话零污染;attach 模式回显不支持说明后不 fork 继续。
+- **fallback 跨模型 thinking 签名剥离**(E4,`reasoning_loop`)——
+  thinking 块签名按模型铸造;OpenAI 兼容入口带进来的客户端历史在
+  model-not-found / 持续过载两条 fallback 分支切换模型重放时,会把
+  可恢复错误变成硬 400。现在两条分支在重放前剥掉
+  `thinking`/`redacted_thinking` 块与 `signature` 键(纯 thinking
+  消息内容折叠为 `""`,部分后端拒绝空块列表)。
+- **测试封闭性**(E5,根 `conftest.py`)—— 宿主机泄漏的
+  `ANTHROPIC_BASE_URL`/代理 env 会把 respx-mock 的 provider 测试
+  重路由到真网络造成假失败;autouse fixture 对非 live 标记的测试
+  统一清洗 7 个路由变量(测试自身 `monkeypatch.setenv` 仍生效,
+  `live_llm`/`live_transport` 不受影响)。CI 里原先的
+  `env -u ANTHROPIC_BASE_URL` 包装不再需要。
+
+### #108 residuals — always-on subagent registry feed + resume user bubble + crashed-turn replay (#118)
+
+> Closes the last three #108 items. The live-subagents panel no longer
+> depends on someone having a chat page open, a resumed in-flight turn
+> shows the question it is answering, and a crashed turn's messages stop
+> vanishing from the transcript.
+
+### Added
+- **Process-wide subagent journal tail** (#108 item 2). A gateway
+  background task (`run_journal_subagent_tail`) now tails the journal's
+  `Subagent*` lifecycle events into the `LiveSubagentRegistry`
+  continuously. Previously the ONLY cross-process feed point was the
+  per-session SSE poll, so in `grpc_agent` mode `/admin/subagents` stayed
+  empty unless that exact session's chat page was open. The tail is
+  forward-only (cursor seeded at the boot high-water mark), idempotent
+  with the SSE-poll feed, race-free (bounded scan against a snapshotted
+  `MAX(rowid)`), and best-effort throughout. New journal surface:
+  `latest_event_rowid()` + `load_subagent_events_since()` (SQLite;
+  Postgres degrades to a no-op alongside the rest of the event plane).
+  进程级子代理事件尾随：`/admin/subagents` 不再依赖恰好有人打开该会话的
+  聊天页才能看到 grpc_agent 模式下的子代理。
+- **Resume user bubble** (#108 item 3). Returning to a chat with an
+  in-flight turn now renders the user's message (from the turn's
+  `user_text_preview`) above the live streaming bubble — previously the
+  assistant streamed a reply to nothing, because the settled transcript
+  excludes the in-progress turn wholesale. The synthetic bubble is washed
+  out by the authoritative transcript refetch when the turn settles.
+  回到进行中的会话时，问题气泡随直播气泡一起渲染。
+
+### Fixed
+- **L-103 — crashed in-progress turns vanished from the transcript.**
+  `_replay_from_journal` skipped EVERY `in_progress` turn; for a turn
+  that crashed mid-run (never completed) and was followed by newer turns,
+  the user's message and any partial answer disappeared from the thread
+  forever. The skip is now scoped to the one turn that can legitimately
+  still be live — the newest turn of the first page; older `in_progress`
+  rows are crash artifacts and replay as real history.
+  崩溃的历史 turn 不再从会话记录中消失（跳过逻辑收窄到最新 turn）。
+
+### Dim 5 MCP leftovers 1/2 — sampling completer prod wiring + /mcp command + embedded MCP plane (#115)
+
+> claude-code parity Dim 5 剩余四项中的两个 M 级项。
+> Dim 5 leftovers, part 1 of 2: the sampling responder finally runs real
+> completions, and the console gains claude-code's `/mcp` — backed by a
+> real MCP client plane in embedded (Mode A) sessions.
+
+### Added
+- **MCP sampling completer（生产接线）** — v1.26.0 的 `SamplingResponder`
+  机制此前没有任何 completer 写入（`state.extras["mcp_sampling_completer"]`
+  零写入方 → 永远 `sampling_unavailable`）。新增
+  `gateway/mcp/sampling_completer.py`：包装网关 **live** provider
+  registry（逐调用读取 —— provider bootstrap 晚于 MCP 块、热重载会换
+  handle），流式 token 折叠为单结果，reasoning 增量绝不泄漏给请求方
+  MCP server；`finish_reason` → MCP `stopReason` 映射。registry 未就绪
+  时干净地降级为单请求 `INTERNAL_ERROR`。
+- **`/mcp` 控制台命令**（claude-code 对标）——
+  `list / tools [server] / add <name> <cmd|url> [args…] / remove /
+  restart / test / enable / disable`。attach 模式与降级路径回显
+  unavailable（与 `/hooks` 同款约定）。
+- **嵌入式（Mode A）MCP 客户端面** — 控制台"全脑"此前
+  `mcp_manager=None`（外部 MCP 工具在 console 完全不可用）。现在
+  `EmbeddedBrain` 按 `[mcp]` 配置连接外部 servers，用与网关相同的
+  `register_mcp_tools` 通道完成 **广告**（`ChatStart.tools_json`）与
+  **执行路由**（合成 `mcp`-kind registry 条目 → `McpToolBridge`）；
+  `allowedMcpServers`/`deniedMcpServers` 策略同语义生效；
+  `/mcp` 热插拔后 `refresh_mcp_tools()` 重跑广告 + 清理 stale 条目
+  （`ChatService.with_advertised_tools` 新 setter），下一轮即生效；
+  `aclose()` 一并回收连接。
+
 
 ### Dim 9 hooks residuals 1/2 — prompt evaluator prod wiring + 6 newly-live hook events (#117)
 
@@ -84,6 +300,7 @@ All notable changes to corlinman are documented here. Format follows
   `cancel` now 404; `DELETE /admin/sessions` (nuke) only wipes the
   resolved tenant's sessions; `GET /admin/sessions` no longer lists
   other tenants' sessions.
+
 
 ## [1.34.0] — 2026-07-19 — QZone folded into the QQ channel page + reference-image descriptions
 
