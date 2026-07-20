@@ -514,6 +514,148 @@ async def _cmd_hooks(app: Any, args: str) -> str:
     return "usage: /hooks [test <event> [tool] [json-args] | reload]"
 
 
+def _mcp_manager_of(app: Any) -> Any | None:
+    """The embedded brain's live MCP manager, or ``None`` (attach mode /
+    direct fallback / MCP package unavailable)."""
+    brain = getattr(getattr(app, "session", None), "brain", None)
+    return getattr(brain, "mcp_manager", None)
+
+
+def _render_mcp_servers(manager: Any) -> str:
+    servers = manager.servers()
+    if not servers:
+        return "no MCP servers configured — /mcp add <name> <command|url> [args…]"
+    lines = ["mcp servers:"]
+    for s in servers:
+        spec = s.spec
+        target = spec.url or " ".join([spec.command, *spec.args]).strip()
+        state = s.status + ("" if spec.enabled else " (disabled)")
+        extra = f" — {s.error}" if s.error and s.error != "disabled" else ""
+        lines.append(
+            f"  {spec.name:<20} {state:<10} tools={len(s.tools):<3} {target}{extra}"
+        )
+    return "\n".join(lines)
+
+
+def _render_mcp_tools(manager: Any, server: str) -> str:
+    discovered = manager.discovered_tools()
+    if server:
+        discovered = {k: v for k, v in discovered.items() if k == server}
+        if not discovered:
+            return f"no ready server named {server!r}"
+    if not discovered:
+        return "no tools discovered (no ready servers)"
+    lines = ["mcp tools:"]
+    for name, tools in sorted(discovered.items()):
+        for t in tools:
+            desc = (getattr(t, "description", "") or "").strip().splitlines()
+            summary = desc[0][:80] if desc else ""
+            lines.append(f"  {name}_{t.name} — {summary}")
+    return "\n".join(lines)
+
+
+async def _cmd_mcp(app: Any, args: str) -> str:
+    """Manage external MCP servers (claude-code ``/mcp`` analog).
+
+    Reads use the live manager when present; mutations lazily create an
+    empty manager so ``/mcp add`` works on a console booted with no
+    ``[mcp]`` config. Every mutation re-runs the advertisement pass
+    (``EmbeddedBrain.refresh_mcp_tools``) so the model sees the change
+    on the next turn.
+    """
+    head, _, rest = args.strip().partition(" ")
+    sub = head.strip().lower()
+    rest = rest.strip()
+
+    if sub in ("", "list", "show"):
+        manager = _mcp_manager_of(app)
+        if manager is None:
+            return (
+                "no MCP servers configured — /mcp add <name> <command|url> "
+                "[args…] (embedded mode only)"
+            )
+        return _render_mcp_servers(manager)
+    if sub == "tools":
+        manager = _mcp_manager_of(app)
+        if manager is None:
+            return "mcp unavailable (attach mode or direct fallback)"
+        return _render_mcp_tools(manager, rest)
+
+    # Mutations — need (or lazily create) the manager.
+    brain = getattr(getattr(app, "session", None), "brain", None)
+    ensure = getattr(brain, "ensure_mcp_manager", None)
+    manager = await ensure() if ensure is not None else None
+    if manager is None:
+        return "mcp unavailable (attach mode or direct fallback)"
+
+    async def _refresh() -> str:
+        refresh = getattr(brain, "refresh_mcp_tools", None)
+        if refresh is None or not await refresh():
+            return " (tool re-advertisement unavailable — restart to apply)"
+        return ""
+
+    if sub == "add":
+        parts = rest.split()
+        if len(parts) < 2:
+            return "usage: /mcp add <name> <command|url> [args…]"
+        name, target, *extra_args = parts
+        from corlinman_mcp_server.client_manager import (  # noqa: PLC0415
+            McpServerSpec,
+        )
+
+        raw: dict[str, Any] = (
+            {"url": target}
+            if target.startswith(("ws://", "wss://", "http://", "https://"))
+            else {"command": target, "args": extra_args}
+        )
+        try:
+            spec = McpServerSpec.from_mapping(name, raw)
+            managed = await manager.add_server(spec, replace=False)
+        except ValueError as exc:
+            return str(exc)
+        note = await _refresh()
+        return (
+            f"added {name!r}: {managed.status}"
+            + (f" — {managed.error}" if managed.error else "")
+            + f", tools={len(managed.tools)}{note}"
+        )
+    if sub in ("remove", "rm"):
+        if not rest:
+            return "usage: /mcp remove <name>"
+        if not await manager.remove_server(rest):
+            return f"no server named {rest!r}"
+        note = await _refresh()
+        return f"removed {rest!r}{note}"
+    if sub in ("restart", "test"):
+        if not rest:
+            return f"usage: /mcp {sub} <name>"
+        if not await manager.restart_one(rest):
+            return f"no server named {rest!r}"
+        managed = manager.server(rest)
+        note = await _refresh()
+        status = getattr(managed, "status", "unknown")
+        err = getattr(managed, "error", None)
+        tools = len(getattr(managed, "tools", []) or [])
+        return (
+            f"{rest!r}: {status}"
+            + (f" — {err}" if err else "")
+            + f", tools={tools}{note}"
+        )
+    if sub in ("enable", "disable"):
+        if not rest:
+            return f"usage: /mcp {sub} <name>"
+        fn = manager.enable_one if sub == "enable" else manager.disable_one
+        if not await fn(rest):
+            return f"no server named {rest!r}"
+        note = await _refresh()
+        return f"{sub}d {rest!r}{note}"
+    return (
+        "usage: /mcp [list | tools [server] | add <name> <command|url> "
+        "[args…] | remove <name> | restart <name> | test <name> | "
+        "enable <name> | disable <name>]"
+    )
+
+
 async def _cmd_init(app: Any, args: str) -> TurnRequest:
     """Bootstrap CORLINMAN.md from a one-shot codebase-analysis turn (the
     claude-code ``/init`` analog). Returns a :class:`TurnRequest` so the brain
@@ -551,6 +693,13 @@ _REGISTRY: tuple[SlashCommand, ...] = (
         "list, test, or reload lifecycle hooks",
         _cmd_hooks,
         usage="[test <event> [tool] [json] | reload]",
+    ),
+    SlashCommand(
+        "mcp",
+        "list or manage external MCP servers",
+        _cmd_mcp,
+        usage="[list | tools [server] | add <name> <cmd|url> [args…] | "
+        "remove|restart|test|enable|disable <name>]",
     ),
     SlashCommand("compact", "summarize older turns to shrink the context window", _cmd_compact),
     SlashCommand(

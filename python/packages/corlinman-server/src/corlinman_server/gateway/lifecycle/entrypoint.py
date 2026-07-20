@@ -1127,12 +1127,20 @@ def build_app(
             from corlinman_mcp_server.client_manager import McpServerSpec
 
             # Dim 5 sampling: parse [mcp.sampling] and build a responder.
-            # The completer (which runs the actual LLM completion) is a
-            # documented follow-up — until one is injected the responder
-            # never advertises the capability and rejects requests
-            # (secure-by-default; mode defaults to "off" anyway).
+            # The completer wraps the gateway's live provider registry
+            # (read per call — the providers bootstrap runs AFTER this
+            # block and hot-reload swaps the handle). An operator/test
+            # override in extras wins; mode still defaults to "off" so
+            # nothing is advertised unless [mcp.sampling] opts in.
             _mcp_cfg = state.config.get("mcp") if isinstance(state.config, dict) else None
             _sampling_completer = state.extras.get("mcp_sampling_completer")
+            if _sampling_completer is None:
+                from corlinman_server.gateway.mcp.sampling_completer import (
+                    build_sampling_completer,
+                )
+
+                _sampling_completer = build_sampling_completer(state)
+                state.extras["mcp_sampling_completer"] = _sampling_completer
             _sampling = SamplingResponder(
                 SamplingConfig.from_mcp_config(_mcp_cfg),
                 _sampling_completer,
