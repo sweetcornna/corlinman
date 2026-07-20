@@ -117,6 +117,25 @@ def test_build_chat_start_tolerates_request_without_persona_id() -> None:
     assert start.persona_id == ""
 
 
+def test_build_chat_start_carries_tenant_id() -> None:
+    """W8 — the authenticated tenant rides ``ChatStart.tenant_id``."""
+    req = InternalChatRequest(model="x", messages=[], tenant_id="acme")
+
+    start = _build_chat_start(req)
+
+    assert start.tenant_id == "acme"
+
+
+def test_build_chat_start_tolerates_request_without_tenant_id() -> None:
+    """W8 regression guard (lesson: channel duck-typed contract) — a
+    channel ``SimpleNamespace`` request carries no ``tenant_id``; the
+    proto builder must read it tolerantly (→ "") instead of raising and
+    killing every channel turn."""
+    start = _build_chat_start(_channel_style_request())
+
+    assert start.tenant_id == ""
+
+
 def test_build_chat_start_defaults_to_empty_tools_json() -> None:
     start = _build_chat_start(InternalChatRequest(model="x", messages=[]))
 

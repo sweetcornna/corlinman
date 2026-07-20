@@ -261,6 +261,16 @@ class InternalChatRequest(BaseModel):
     schema for every provider option.
     """
 
+    tenant_id: str | None = None
+    """W8 — tenant the request was authenticated for.
+
+    Stamped by the OpenAI-compatible route from ``request.state.tenant``
+    (API-key auth or the admin-session bridge) and carried into
+    ``ChatStart.tenant_id`` so the journal turn row is tenant-attributed.
+    ``None`` / ``""`` = unattributed (channels, scheduler, console) —
+    such turns are owned by the default tenant.
+    """
+
 
 # ─── Usage / events / errors ──────────────────────────────────────────
 

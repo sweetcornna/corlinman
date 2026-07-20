@@ -138,6 +138,7 @@ class AgentJournal:
         *,
         user_id: str | None = None,
         channel: str = "",
+        tenant_id: str = "",
         pending_question_json: str | None = None,
     ) -> int | None:
         """Forward to the backend, including the optional S4 user_id scope.
@@ -158,12 +159,17 @@ class AgentJournal:
         payload of an ``ask_user`` tool call that ended the turn — a
         question + canned answer options. Purely informational at this
         layer; the chat handler doesn't read it back yet.
+
+        ``tenant_id`` (W8) stamps the row with the authenticated tenant
+        so journal-backed admin surfaces can scope by tenant. ``""``
+        keeps the legacy shape (owned by the default tenant).
         """
         return await self._backend.begin_turn(
             session_key,
             user_text,
             user_id=user_id,
             channel=channel,
+            tenant_id=tenant_id,
             pending_question_json=pending_question_json,
         )
 
@@ -287,25 +293,41 @@ class AgentJournal:
     # ------------------------------------------------------------------
 
     async def list_session_summaries(
-        self, *, limit: int = 200
+        self, *, limit: int = 200, tenant_id: str | None = None
     ) -> list[SessionSummary]:
         """Return one :class:`SessionSummary` per ``session_key``,
         ordered by ``last_seen_at_ms DESC``. Powers
         ``GET /admin/sessions``.
-        """
-        return await self._backend.list_session_summaries(limit=limit)
 
-    async def delete_session(self, session_key: str) -> int:
+        ``tenant_id`` (W8) scopes the listing to one tenant; ``None``
+        keeps the single-tenant fast path.
+        """
+        return await self._backend.list_session_summaries(
+            limit=limit, tenant_id=tenant_id
+        )
+
+    async def delete_session(
+        self, session_key: str, *, tenant_id: str | None = None
+    ) -> int:
         """Wipe every turn (and its cascading messages) for
         ``session_key``. Returns the count of ``turns`` rows deleted —
         the route maps ``0`` to ``404 not_found``.
-        """
-        return await self._backend.delete_session(session_key)
 
-    async def session_exists(self, session_key: str) -> bool:
+        ``tenant_id`` (W8): a cross-tenant delete matches nothing and
+        returns ``0``.
+        """
+        return await self._backend.delete_session(
+            session_key, tenant_id=tenant_id
+        )
+
+    async def session_exists(
+        self, session_key: str, *, tenant_id: str | None = None
+    ) -> bool:
         """Cheap existence probe powering the ``PATCH /admin/sessions/{key}``
         404 branch — see :meth:`JournalBackend.session_exists`."""
-        return await self._backend.session_exists(session_key)
+        return await self._backend.session_exists(
+            session_key, tenant_id=tenant_id
+        )
 
     async def update_session_meta(
         self,
@@ -314,6 +336,7 @@ class AgentJournal:
         title: str | None = None,
         pinned: bool | None = None,
         archived: bool | None = None,
+        tenant_id: str | None = None,
     ) -> SessionSummary | None:
         """Upsert title/pinned/archived for ``session_key`` and return
         the refreshed :class:`SessionSummary`, or ``None`` when the
@@ -321,12 +344,14 @@ class AgentJournal:
 
         See :meth:`JournalBackend.update_session_meta` for the
         partial-update semantics (None means "leave alone").
+        ``tenant_id`` (W8) makes a cross-tenant PATCH read as 404.
         """
         return await self._backend.update_session_meta(
             session_key,
             title=title,
             pinned=pinned,
             archived=archived,
+            tenant_id=tenant_id,
         )
 
     # ------------------------------------------------------------------
@@ -405,6 +430,7 @@ class AgentJournal:
         *,
         limit: int = 50,
         before_turn_id: str | None = None,
+        tenant_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Return per-turn metadata for the past-turns navigator.
 
@@ -418,9 +444,15 @@ class AgentJournal:
         ``before_turn_id`` cursor — returns turns started strictly
         before the cursor turn's ``started_at_ms``, suitable for
         infinite-scroll without offset drift.
+
+        ``tenant_id`` (W8) filters out turns owned by another tenant —
+        a cross-tenant session reads as empty.
         """
         return await self._backend.list_session_turns(
-            session_key, limit=limit, before_turn_id=before_turn_id
+            session_key,
+            limit=limit,
+            before_turn_id=before_turn_id,
+            tenant_id=tenant_id,
         )
 
     async def update_turn_cost(

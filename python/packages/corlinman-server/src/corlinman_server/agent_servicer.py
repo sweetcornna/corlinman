@@ -1644,6 +1644,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     user_text,
                     user_id=turn_user_id,
                     channel=turn_channel,
+                    tenant_id=_extract_tenant_id(start),
                 )
                 # C5 — the Postgres backend returns ``None`` when its
                 # partial-unique index says another gateway already
@@ -6320,6 +6321,22 @@ def _attachment_size_for_journal(a: Any) -> int | None:
     return size if size > 0 else None
 
 
+def _extract_tenant_id(start: AgentChatStart) -> str:
+    """Peek the authenticated tenant off the chat start frame (W8).
+
+    Mirrors :func:`_bound_persona_id_from_start` — the gateway stamps
+    ``ChatStart.tenant_id`` (proto field 14) and ``_to_agent_start``
+    mirrors it into ``extra["tenant_id"]``. ``""`` = unattributed; the
+    journal treats such rows as owned by the default tenant.
+    """
+    extra = getattr(start, "extra", None) or {}
+    if isinstance(extra, Mapping):
+        raw = extra.get("tenant_id")
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    return ""
+
+
 def _extract_user_id(start: AgentChatStart) -> str | None:
     """Peek the channel-level sender id off the chat start frame.
 
@@ -6432,6 +6449,11 @@ def _to_agent_start(pb_start: agent_pb2.ChatStart) -> AgentChatStart:
     extra: dict[str, Any] = {}
     if pb_start.persona_id:
         extra["persona_id"] = pb_start.persona_id
+    # W8 — tolerant getattr: a gateway built against a pre-tenant proto
+    # simply omits the field and the turn stays unattributed ("").
+    tenant_id = (getattr(pb_start, "tenant_id", "") or "").strip()
+    if tenant_id:
+        extra["tenant_id"] = tenant_id
     binding = getattr(pb_start, "binding", None)
     if binding is not None:
         binding_payload = {

@@ -58,6 +58,7 @@ from corlinman_server.gateway.routes_admin_a.state import (
     AdminState,
     get_admin_state,
 )
+from corlinman_server.tenancy import default_tenant
 
 # ``argon2-cffi`` is the shared hashing implementation already pinned
 # in the server package's deps. Constructed once at module import time
@@ -340,7 +341,13 @@ def router() -> APIRouter:
         )
 
         store = _ensure_session_store(state)
-        token = store.create(body.username)
+        # W8 — record the tenant this login was verified against on the
+        # session row. The single-operator credential is deployment
+        # scoped, i.e. the (configured) default tenant; when per-tenant
+        # logins land, the verified tenant rides here instead and the
+        # cookie auth path picks it up without further changes.
+        login_tenant = state.default_tenant or default_tenant()
+        token = store.create(body.username, tenant=login_tenant.as_str())
         max_age = (
             store.ttl_seconds() if hasattr(store, "ttl_seconds") else state.session_ttl_seconds
         )

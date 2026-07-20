@@ -439,6 +439,33 @@ def test_proto_chat_start_persona_id_maps_to_extra() -> None:
     assert start.extra == {"persona_id": "grantley"}
 
 
+def test_proto_chat_start_tenant_id_maps_to_extra() -> None:
+    """W8 — ``ChatStart.tenant_id`` (proto field 14) mirrors into
+    ``extra["tenant_id"]`` so ``begin_turn`` stamps the journal row."""
+    from corlinman_grpc import agent_pb2
+    from corlinman_server.agent_servicer import (
+        _extract_tenant_id,
+        _to_agent_start,
+    )
+
+    start = _to_agent_start(
+        agent_pb2.ChatStart(
+            model="gpt-4o-mini",
+            session_key="sess-w8",
+            tenant_id="acme",
+        )
+    )
+    assert start.extra == {"tenant_id": "acme"}
+    assert _extract_tenant_id(start) == "acme"
+
+    # Unset field → no extra entry, extractor returns "".
+    bare = _to_agent_start(
+        agent_pb2.ChatStart(model="gpt-4o-mini", session_key="s")
+    )
+    assert "tenant_id" not in bare.extra
+    assert _extract_tenant_id(bare) == ""
+
+
 def test_proto_chat_start_provider_config_maps_provider_hint_to_extra() -> None:
     from corlinman_grpc import agent_pb2
     from corlinman_server.agent_servicer import _to_agent_start
@@ -2202,18 +2229,13 @@ async def test_chat_resumes_in_progress_turn_replaying_tool_results(
         self_inner: Any,
         session_key: str,
         user_text: str,
-        *,
-        user_id: str | None = None,
-        channel: str = "",
+        **kwargs: Any,
     ) -> int | None:
+        # ``**kwargs`` pass-through so new keyword-only params on the
+        # facade (channel / tenant_id / pending_question_json / …) don't
+        # silently TypeError inside the servicer's guarded call.
         begin_calls.append((session_key, user_text))
-        return await real_begin(
-            self_inner,
-            session_key,
-            user_text,
-            user_id=user_id,
-            channel=channel,
-        )
+        return await real_begin(self_inner, session_key, user_text, **kwargs)
 
     monkeypatch.setattr(AgentJournal, "begin_turn", _counting_begin)
 
@@ -2318,18 +2340,13 @@ async def test_chat_does_not_resume_stale_in_progress_turn(
         self_inner: Any,
         session_key: str,
         user_text: str,
-        *,
-        user_id: str | None = None,
-        channel: str = "",
+        **kwargs: Any,
     ) -> int | None:
+        # ``**kwargs`` pass-through so new keyword-only params on the
+        # facade (channel / tenant_id / pending_question_json / …) don't
+        # silently TypeError inside the servicer's guarded call.
         begin_calls.append((session_key, user_text))
-        return await real_begin(
-            self_inner,
-            session_key,
-            user_text,
-            user_id=user_id,
-            channel=channel,
-        )
+        return await real_begin(self_inner, session_key, user_text, **kwargs)
 
     monkeypatch.setattr(AgentJournal, "begin_turn", _counting_begin)
 

@@ -55,6 +55,7 @@ class ChatStart(_message.Message):
         "provider_config_json",
         "attachments",
         "persona_id",
+        "tenant_id",
     )
     class PlaceholdersEntry(_message.Message):
         __slots__ = ("key", "value")
@@ -79,6 +80,7 @@ class ChatStart(_message.Message):
     PROVIDER_CONFIG_JSON_FIELD_NUMBER: _ClassVar[int]
     ATTACHMENTS_FIELD_NUMBER: _ClassVar[int]
     PERSONA_ID_FIELD_NUMBER: _ClassVar[int]
+    TENANT_ID_FIELD_NUMBER: _ClassVar[int]
     model: str
     messages: _containers.RepeatedCompositeFieldContainer[_common_pb2.Message]
     tools_json: bytes
@@ -92,6 +94,7 @@ class ChatStart(_message.Message):
     provider_config_json: bytes
     attachments: _containers.RepeatedCompositeFieldContainer[Attachment]
     persona_id: str
+    tenant_id: str
     def __init__(
         self,
         model: _Optional[str] = ...,
@@ -107,6 +110,7 @@ class ChatStart(_message.Message):
         provider_config_json: _Optional[bytes] = ...,
         attachments: _Optional[_Iterable[_Union[Attachment, _Mapping]]] = ...,
         persona_id: _Optional[str] = ...,
+        tenant_id: _Optional[str] = ...,
     ) -> None: ...
 
 class Attachment(_message.Message):

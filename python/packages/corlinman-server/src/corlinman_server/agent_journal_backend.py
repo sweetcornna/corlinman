@@ -184,6 +184,7 @@ class JournalBackend(Protocol):
         *,
         user_id: str | None = None,
         channel: str = "",
+        tenant_id: str = "",
         pending_question_json: str | None = None,
     ) -> int | None:
         """Insert an in-progress row; return the new turn_id.
@@ -199,6 +200,11 @@ class JournalBackend(Protocol):
         tag to dispatch the right re-delivery path. The default ``""``
         keeps every existing call site (and every pre-column row)
         working unchanged.
+
+        ``tenant_id`` (W8) stamps the row with the tenant the request
+        was authenticated for, so journal-backed admin surfaces can
+        scope list/delete/replay by tenant. ``""`` keeps the legacy
+        shape — such rows are owned by the default tenant.
 
         ``pending_question_json`` (ask_user) optionally stores the JSON
         payload of the ``ask_user`` tool call that ended the turn — the
@@ -324,7 +330,7 @@ class JournalBackend(Protocol):
         ...
 
     async def list_session_summaries(
-        self, *, limit: int = 200
+        self, *, limit: int = 200, tenant_id: str | None = None
     ) -> list[SessionSummary]:
         """Aggregate ``turns`` by ``session_key`` and return one row per
         session ordered by ``MAX(started_at_ms) DESC``.
@@ -332,10 +338,16 @@ class JournalBackend(Protocol):
         Powers the ``/admin/sessions`` admin surface. Backends compute
         the aggregate server-side so a chat history with 100k turns
         across 50 sessions doesn't ship 100k rows over the wire.
+
+        ``tenant_id`` (W8): when set, only sessions owned by that
+        tenant are returned (legacy ``''`` rows belong to the default
+        tenant). ``None`` = no scoping (single-tenant fast path).
         """
         ...
 
-    async def delete_session(self, session_key: str) -> int:
+    async def delete_session(
+        self, session_key: str, *, tenant_id: str | None = None
+    ) -> int:
         """Wipe every turn (and its cascading messages) for
         ``session_key``. Returns the number of turn rows deleted.
 
@@ -344,13 +356,23 @@ class JournalBackend(Protocol):
         ``ON DELETE CASCADE`` (SQLite) / explicit ``REFERENCES ... ON
         DELETE CASCADE`` (Postgres) so callers don't need to issue a
         second statement.
+
+        ``tenant_id`` (W8): when set, only turns owned by that tenant
+        are deleted — a cross-tenant delete matches nothing and returns
+        ``0`` (routes surface it as 404, indistinguishable from an
+        unknown session).
         """
         ...
 
-    async def session_exists(self, session_key: str) -> bool:
+    async def session_exists(
+        self, session_key: str, *, tenant_id: str | None = None
+    ) -> bool:
         """Return ``True`` when at least one ``turns`` row exists for
         ``session_key``. Used by ``PATCH /admin/sessions/{key}`` to
         decide between 404 (no such session) and an empty-meta upsert.
+
+        ``tenant_id`` (W8): when set, a session owned by a different
+        tenant reads as absent.
         """
         ...
 
@@ -361,6 +383,7 @@ class JournalBackend(Protocol):
         title: str | None = None,
         pinned: bool | None = None,
         archived: bool | None = None,
+        tenant_id: str | None = None,
     ) -> SessionSummary | None:
         """Upsert the operator-supplied metadata for ``session_key``.
 
@@ -421,8 +444,13 @@ class JournalBackend(Protocol):
         *,
         limit: int = 50,
         before_turn_id: str | None = None,
+        tenant_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Per-turn metadata for the past-turns navigator (W1.2 UI)."""
+        """Per-turn metadata for the past-turns navigator (W1.2 UI).
+
+        ``tenant_id`` (W8): when set, turns owned by another tenant are
+        filtered out — a cross-tenant session reads as empty.
+        """
         ...
 
     async def update_turn_cost(
@@ -452,9 +480,13 @@ CREATE TABLE IF NOT EXISTS turns (
     user_text            TEXT,
     user_id              TEXT,
     channel              TEXT    NOT NULL DEFAULT '',
+    tenant_id            TEXT    NOT NULL DEFAULT '',
     pending_question_json TEXT,
     error                TEXT
 );
+-- NOTE: idx_turns_tenant is created in ``_open()`` AFTER the gated
+-- tenant_id migration — placing it here would break opens against
+-- pre-W8 journals (the executescript runs before the ALTER).
 
 CREATE INDEX IF NOT EXISTS idx_turns_session_status
     ON turns(session_key, status, started_at_ms);
@@ -506,6 +538,41 @@ _ATTACHMENTS_MIGRATION = (
 _PENDING_QUESTION_MIGRATION = (
     "ALTER TABLE turns ADD COLUMN pending_question_json TEXT"
 )
+
+# W8 (tenant isolation) — pre-existing journals have no ``tenant_id``
+# column, which made every journal-backed admin surface cross-tenant
+# readable/writable by session_key. Same gated-ALTER pattern as
+# ``channel``: ``NOT NULL DEFAULT ''`` so a row written by an old
+# process and read by a new one round-trips to the canonical empty
+# string. ``''`` rows are owned by the default tenant on the read side
+# (see ``_TENANT_GUARD_SQL``).
+_TENANT_MIGRATION = (
+    "ALTER TABLE turns ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''"
+)
+
+# Owner of legacy ``tenant_id = ''`` rows. MUST stay in lockstep with
+# ``corlinman_server.tenancy.DEFAULT_TENANT_ID`` — pinned by
+# ``test_default_tenant_constant_matches_tenancy_package``. Kept as a
+# local literal (not an import) so the storage layer stays free of the
+# tenancy package's admin-db dependency chain.
+DEFAULT_TENANT_ID = "default"
+
+def _tenant_guard_sql(col: str = "tenant_id") -> str:
+    """Reusable WHERE fragment scoping a ``turns`` query to one tenant.
+
+    Binds THREE parameters (see :func:`_tenant_guard_params`) — a row
+    matches when its ``tenant_id`` equals the requested tenant, or when
+    it is a legacy ``''`` row and the requested tenant IS the default
+    tenant (legacy rows belong to the operator's default tenant, never
+    to other tenants). ``col`` lets callers qualify the column with a
+    table alias (e.g. ``t.tenant_id``).
+    """
+    return f"({col} = ? OR ({col} = '' AND ? = ?))"
+
+
+def _tenant_guard_params(tenant_id: str) -> tuple[str, str, str]:
+    """Positional parameters matching :func:`_tenant_guard_sql`."""
+    return (tenant_id, tenant_id, DEFAULT_TENANT_ID)
 
 
 # ---------------------------------------------------------------------------
@@ -778,6 +845,20 @@ class SqliteJournalBackend:
                     "agent.journal.migrated",
                     migration="pending_question_json_column",
                 )
+            # W8 — tenant isolation column + covering index. The index
+            # CREATE is safe to run unconditionally (IF NOT EXISTS) but
+            # must come after the column exists on migrated journals.
+            if "tenant_id" not in existing:
+                await conn.execute(_TENANT_MIGRATION)
+                await conn.commit()
+                logger.info(
+                    "agent.journal.migrated", migration="tenant_id_column"
+                )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_turns_tenant "
+                "ON turns(tenant_id, session_key)"
+            )
+            await conn.commit()
             # W1.2 — turn_events table + per-turn aggregate columns. The
             # CREATE statements in ``_TURN_EVENTS_SCHEMA`` already carry
             # ``IF NOT EXISTS`` guards; the ALTERs need an explicit
@@ -837,6 +918,7 @@ class SqliteJournalBackend:
         *,
         user_id: str | None = None,
         channel: str = "",
+        tenant_id: str = "",
         pending_question_json: str | None = None,
     ) -> int | None:
         """Insert an in-progress row; return the new ``turn_id``.
@@ -896,8 +978,8 @@ class SqliteJournalBackend:
                 await conn.execute(
                     "INSERT INTO turns (turn_id, session_key, status, "
                     "started_at_ms, user_text, user_id, channel, "
-                    "pending_question_json) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    "tenant_id, pending_question_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         tid,
                         session_key or "",
@@ -906,6 +988,7 @@ class SqliteJournalBackend:
                         user_text,
                         user_id,
                         channel or "",
+                        tenant_id or "",
                         pending_question_json,
                     ),
                 )
@@ -1452,10 +1535,16 @@ class SqliteJournalBackend:
         ]
 
     async def list_session_summaries(
-        self, *, limit: int = 200
+        self, *, limit: int = 200, tenant_id: str | None = None
     ) -> list[SessionSummary]:
         """Aggregate ``turns`` by ``session_key`` for the
         ``/admin/sessions`` UI.
+
+        W8 — ``tenant_id`` scopes the aggregate to one tenant's turns
+        (legacy ``''`` rows belong to the default tenant); the guard is
+        applied inside BOTH CTEs and the outer aggregate so a
+        cross-tenant session never leaks a row, a message count, or a
+        preview line.
 
         PERF-006: the aggregate is computed with grouped CTEs + a window
         function rather than per-grouped-row correlated subqueries. The
@@ -1485,6 +1574,17 @@ class SqliteJournalBackend:
         """
         if limit <= 0:
             return []
+        # W8 — optional tenant guard, spliced into each pass over
+        # ``turns``. The fragment binds 3 params per occurrence (see
+        # ``_TENANT_GUARD_SQL``); ``""`` (no scoping) keeps the SQL
+        # byte-identical to the pre-W8 single-tenant query.
+        guard = ""
+        aliased_guard = ""
+        guard_params: tuple[str, ...] = ()
+        if tenant_id is not None:
+            guard = f"WHERE {_tenant_guard_sql()} "
+            aliased_guard = f"WHERE {_tenant_guard_sql('t.tenant_id')} "
+            guard_params = _tenant_guard_params(tenant_id)
         try:
             cur = await self._c.execute(
                 # ``msg_counts``: one grouped pass over turn_messages
@@ -1503,7 +1603,8 @@ class SqliteJournalBackend:
                 "           COUNT(*)      AS message_count "
                 "    FROM turn_messages tm "
                 "    JOIN turns t ON t.turn_id = tm.turn_id "
-                "    GROUP BY t.session_key"
+                + aliased_guard
+                + "    GROUP BY t.session_key"
                 "), "
                 "last_turn AS ("
                 "    SELECT session_key, user_text, status, "
@@ -1511,8 +1612,9 @@ class SqliteJournalBackend:
                 "               PARTITION BY session_key "
                 "               ORDER BY started_at_ms DESC, turn_id DESC"
                 "           ) AS rn "
-                "    FROM turns"
-                ") "
+                "    FROM turns "
+                + guard
+                + ") "
                 "SELECT t.session_key, "
                 "       MIN(t.started_at_ms) AS first_seen, "
                 "       MAX(t.started_at_ms) AS last_seen, "
@@ -1528,10 +1630,11 @@ class SqliteJournalBackend:
                 "LEFT JOIN last_turn lt "
                 "       ON lt.session_key = t.session_key AND lt.rn = 1 "
                 "LEFT JOIN session_meta sm ON sm.session_key = t.session_key "
-                "GROUP BY t.session_key "
+                + aliased_guard
+                + "GROUP BY t.session_key "
                 "ORDER BY pinned_sort DESC, last_seen DESC "
                 "LIMIT ?",
-                (int(limit),),
+                (*guard_params, *guard_params, *guard_params, int(limit)),
             )
             rows = await cur.fetchall()
             await cur.close()
@@ -1562,7 +1665,9 @@ class SqliteJournalBackend:
             )
         return out
 
-    async def delete_session(self, session_key: str) -> int:
+    async def delete_session(
+        self, session_key: str, *, tenant_id: str | None = None
+    ) -> int:
         """Wipe every turn (and its cascading turn_messages) for
         ``session_key``. Returns the count of ``turns`` rows deleted.
 
@@ -1573,9 +1678,17 @@ class SqliteJournalBackend:
         ``async with conn:`` shortcut re-awaits the connection, which
         explodes once the worker thread is already started — keep the
         manual envelope.
+
+        W8 — ``tenant_id`` restricts the DELETE to turns owned by that
+        tenant; a cross-tenant delete matches nothing and returns 0.
         """
         if not session_key:
             return 0
+        sql = "DELETE FROM turns WHERE session_key = ?"
+        params: tuple[Any, ...] = (session_key,)
+        if tenant_id is not None:
+            sql += f" AND {_tenant_guard_sql()}"
+            params = (session_key, *_tenant_guard_params(tenant_id))
         conn = self._c
         # B3: hold the shared-connection write lock for the whole
         # BEGIN IMMEDIATE..COMMIT envelope (DELETE + ON DELETE CASCADE)
@@ -1583,10 +1696,7 @@ class SqliteJournalBackend:
         async with self._write_lock:
             try:
                 await conn.execute("BEGIN IMMEDIATE")
-                cur = await conn.execute(
-                    "DELETE FROM turns WHERE session_key = ?",
-                    (session_key,),
-                )
+                cur = await conn.execute(sql, params)
                 n = cur.rowcount or 0
                 await cur.close()
                 await conn.commit()
@@ -1605,9 +1715,14 @@ class SqliteJournalBackend:
                 return 0
         return int(n)
 
-    async def session_exists(self, session_key: str) -> bool:
+    async def session_exists(
+        self, session_key: str, *, tenant_id: str | None = None
+    ) -> bool:
         """Cheap existence probe — used by ``PATCH /admin/sessions/{key}``
         to short-circuit the upsert with a 404 when the key is unknown.
+
+        W8 — ``tenant_id`` makes a session owned by a different tenant
+        read as absent.
 
         We restrict the lookup to ``turns`` (not ``session_meta``) so a
         stale meta row left behind by a mis-fired PATCH cannot resurrect
@@ -1618,11 +1733,14 @@ class SqliteJournalBackend:
         """
         if not session_key:
             return False
+        sql = "SELECT 1 FROM turns WHERE session_key = ?"
+        params: tuple[Any, ...] = (session_key,)
+        if tenant_id is not None:
+            sql += f" AND {_tenant_guard_sql()}"
+            params = (session_key, *_tenant_guard_params(tenant_id))
+        sql += " LIMIT 1"
         try:
-            cur = await self._c.execute(
-                "SELECT 1 FROM turns WHERE session_key = ? LIMIT 1",
-                (session_key,),
-            )
+            cur = await self._c.execute(sql, params)
             row = await cur.fetchone()
             await cur.close()
         except aiosqlite.Error as exc:
@@ -1637,9 +1755,13 @@ class SqliteJournalBackend:
         title: str | None = None,
         pinned: bool | None = None,
         archived: bool | None = None,
+        tenant_id: str | None = None,
     ) -> SessionSummary | None:
         """Upsert title/pinned/archived for ``session_key`` and return the
         refreshed :class:`SessionSummary`.
+
+        W8 — ``tenant_id`` gates the exists-probe, so a cross-tenant
+        PATCH reads as "no such session" (``None`` → 404).
 
         ``None`` for any field means "leave it alone" — the SQL is a
         partial UPDATE rather than a full row replace. Implemented via
@@ -1655,7 +1777,7 @@ class SqliteJournalBackend:
         is harmless if the session is gone, and ``list_session_summaries``
         drops it via the inner join on ``turns``).
         """
-        if not await self.session_exists(session_key):
+        if not await self.session_exists(session_key, tenant_id=tenant_id):
             return None
         # All-None body would be a no-op; the route layer enforces "at
         # least one field" with a 422, but we still tolerate the call
@@ -1714,7 +1836,9 @@ class SqliteJournalBackend:
         # serialisation; for typical (< 200 sessions) the cost is
         # negligible. A future optimisation could push a WHERE clause
         # into the aggregate query.
-        summaries = await self.list_session_summaries(limit=10_000)
+        summaries = await self.list_session_summaries(
+            limit=10_000, tenant_id=tenant_id
+        )
         for s in summaries:
             if s.session_key == session_key:
                 return s
@@ -2052,8 +2176,12 @@ class SqliteJournalBackend:
         *,
         limit: int = 50,
         before_turn_id: str | None = None,
+        tenant_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Return per-turn metadata for ``session_key`` in started_at_ms DESC.
+
+        W8 — ``tenant_id`` filters out turns owned by another tenant, so
+        a cross-tenant replay reads as an empty (unknown) session.
 
         Each row carries: ``turn_id``, ``started_at_ms``, ``ended_at_ms``,
         ``status``, ``finish_reason`` (always None until a future
@@ -2082,6 +2210,9 @@ class SqliteJournalBackend:
             "WHERE session_key = ? ",
         ]
         params: list[Any] = [session_key]
+        if tenant_id is not None:
+            sql_parts.append(f"AND {_tenant_guard_sql()} ")
+            params.extend(_tenant_guard_params(tenant_id))
         if before_turn_id is not None:
             # Composite cursor: ``(started_at_ms, turn_id) <
             # (cursor_started_at, cursor_turn_id)``. Same-ms turns
