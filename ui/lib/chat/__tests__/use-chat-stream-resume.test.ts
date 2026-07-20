@@ -150,6 +150,63 @@ describe("useChatStream.resumeInFlight", () => {
     expect(result.current.isStreaming).toBe(false);
   });
 
+  it("renders a user bubble from the turn's user_text_preview (C2 / #108)", async () => {
+    listSessionTurnsMock.mockResolvedValue([
+      {
+        turn_id: "t10",
+        status: "in_progress",
+        started_at_ms: 1234,
+        user_text_preview: "what's the weather?",
+      },
+    ]);
+    fetchTurnEventsMock.mockResolvedValue([
+      env("t10", 0, "TurnStart", { model: "m" }),
+      env("t10", 1, "TextDelta", { index: 0, text: "checking…" }),
+    ]);
+
+    const { result } = renderHook(
+      () => useChatStream({ sessionKey: "s-user-bubble", model: "m" }),
+      { wrapper },
+    );
+    await act(async () => {
+      await result.current.resumeInFlight();
+    });
+
+    // The settled transcript excludes the in-progress turn, so the resume
+    // path itself must re-render the user's message above the live bubble.
+    const userMsg = result.current.messages.find((m) => m.role === "user");
+    expect(userMsg).toBeDefined();
+    expect(userMsg!.content).toBe("what's the weather?");
+    expect(userMsg!.turnId).toBe("t10");
+    expect(userMsg!.createdAt).toBe(1234);
+    expect(result.current.pendingMessage!.content).toBe("checking…");
+
+    // Resuming twice (e.g. rapid tab focus events) must not duplicate it —
+    // and the second resume no-ops anyway while the first owns the turn.
+    await act(async () => {
+      await result.current.resumeInFlight();
+    });
+    expect(
+      result.current.messages.filter((m) => m.role === "user"),
+    ).toHaveLength(1);
+  });
+
+  it("skips the user bubble when the preview is empty", async () => {
+    listSessionTurnsMock.mockResolvedValue([
+      { turn_id: "t11", status: "in_progress", user_text_preview: "" },
+    ]);
+    fetchTurnEventsMock.mockResolvedValue([]);
+    const { result } = renderHook(
+      () => useChatStream({ sessionKey: "s-no-preview", model: "m" }),
+      { wrapper },
+    );
+    await act(async () => {
+      await result.current.resumeInFlight();
+    });
+    expect(result.current.messages.find((m) => m.role === "user")).toBeUndefined();
+    expect(result.current.pendingMessage).not.toBeNull();
+  });
+
   it("no-ops when the latest turn is settled", async () => {
     listSessionTurnsMock.mockResolvedValue([
       { turn_id: "t1", status: "completed" },

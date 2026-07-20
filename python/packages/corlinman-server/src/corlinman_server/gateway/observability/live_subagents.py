@@ -25,6 +25,8 @@ gateway can't leak memory under heavy fan-out.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -398,4 +400,67 @@ class LiveSubagentRegistry:
         self._bump()  # dropping a row is also a change
 
 
-__all__ = ["LiveSubagentRegistry", "LiveSubagentRow"]
+#: Poll cadence for the process-wide journal tail. Matches the session
+#: SSE poll's ~1s wake-up (``LIVE_POLL_SECONDS``) — the tail is the same
+#: cross-process delivery mechanism, minus the "a client must be
+#: watching" precondition.
+_TAIL_POLL_SECONDS: float = 1.0
+
+
+async def run_journal_subagent_tail(
+    journal: Any,
+    registry: LiveSubagentRegistry,
+    *,
+    poll_seconds: float = _TAIL_POLL_SECONDS,
+    cancel: asyncio.Event | None = None,
+) -> None:
+    """Background loop: tail the journal's subagent lifecycle events into
+    ``registry`` (C1 / #108 item 2).
+
+    In ``grpc_agent`` mode subagents run in the agent process; their
+    lifecycle events reach the gateway only through the journal. Before
+    this loop the ONLY journal→registry feed point was the per-session
+    SSE poll, so ``/admin/subagents`` stayed empty unless someone had
+    that session's chat page open. This loop is the always-on feed:
+    forward-only (cursor seeded at the boot high-water mark), idempotent
+    with the SSE-poll feed (``observe_journal_event`` re-applies the
+    same event as a no-op overwrite), and best-effort throughout — a
+    journal without the tail surface exits cleanly, a read error waits
+    out one poll interval and retries.
+    """
+    load = getattr(journal, "load_subagent_events_since", None)
+    seed = getattr(journal, "latest_event_rowid", None)
+    if load is None or seed is None:
+        logger.info("live_subagents.tail_unsupported_journal")
+        return
+    try:
+        cursor = int(await seed())
+    except Exception:  # noqa: BLE001 — best-effort bootstrap
+        logger.debug("live_subagents.tail_seed_failed", exc_info=True)
+        cursor = 0
+    while cancel is None or not cancel.is_set():
+        try:
+            # Drain everything currently pending before sleeping — a
+            # burst of spawns must not trickle in one page per second.
+            while True:
+                cursor, rows = await load(cursor)
+                for ev in rows:
+                    registry.observe_journal_event(ev)
+                if not rows:
+                    break
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — never kill the tail
+            logger.debug("live_subagents.tail_poll_failed", exc_info=True)
+        if cancel is not None:
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(cancel.wait(), timeout=poll_seconds)
+        else:
+            await asyncio.sleep(poll_seconds)
+
+
+__all__ = [
+    "LiveSubagentRegistry",
+    "LiveSubagentRow",
+    "run_journal_subagent_tail",
+]

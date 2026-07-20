@@ -677,6 +677,14 @@ async def _replay_from_journal(
             turn_rows = turn_rows[:page_limit]
         raw_oldest = turn_rows[-1].get("turn_id")
         oldest_turn_id = str(raw_oldest) if raw_oldest is not None else None
+        # The one turn that can legitimately still be running: the NEWEST
+        # turn of the FIRST page (rows are started_at_ms DESC; a session
+        # runs one turn at a time, and a ``before_turn_id`` page is by
+        # construction older than a newer turn). Everything else that
+        # reads ``in_progress`` is a crash artifact.
+        newest_raw_turn_id = (
+            turn_rows[0].get("turn_id") if before_turn_id is None else None
+        )
         for turn_row in reversed(turn_rows):
             raw_turn_id = turn_row.get("turn_id")
             if raw_turn_id is None:
@@ -685,17 +693,25 @@ async def _replay_from_journal(
                 tid = int(raw_turn_id)
             except (TypeError, ValueError):
                 continue
-            # Skip a still-in-progress turn: the /chat page renders it LIVE
-            # via ``resumeInFlight`` (a separate pending bubble that tails
-            # the journal). A multi-step agentic turn journals its
+            # Skip the still-in-progress LIVE turn: the /chat page renders
+            # it via ``resumeInFlight`` (a separate pending bubble that
+            # tails the journal). A multi-step agentic turn journals its
             # intermediate assistant/tool message rows AS IT RUNS, so
             # including them in the settled transcript too double-renders
             # the turn — a frozen "已隐藏 N 个工具调用" bubble stacked above
             # the live one. ``finalizeJournalTurn`` invalidates this
             # transcript query when the turn ends, so the completed turn
-            # lands here naturally on the refetch. (Only the latest turn is
-            # ever in_progress; older turns are always terminal.)
-            if str(turn_row.get("status") or "") == "in_progress":
+            # lands here naturally on the refetch.
+            #
+            # L-103: the skip is scoped to the newest turn only. An OLDER
+            # ``in_progress`` row is a crashed turn (never completed, then
+            # the user kept chatting) — skipping it silently vanished its
+            # user message + partial answer from the thread forever. Those
+            # rows are real history now; replay them.
+            if (
+                str(turn_row.get("status") or "") == "in_progress"
+                and raw_turn_id == newest_raw_turn_id
+            ):
                 continue
             started_at_ms = int(turn_row.get("started_at_ms") or 0)
             ts_iso = (

@@ -1000,6 +1000,17 @@ class PostgresJournalBackend:
         # the Postgres deployment doesn't wire it yet.
         return -1
 
+    async def latest_event_rowid(self) -> int:  # pragma: no cover
+        # No event table yet (see block comment above) — the subagent
+        # tail degrades to a no-op alongside the rest of the replay
+        # surface.
+        return 0
+
+    async def load_subagent_events_since(
+        self, after_rowid: int, *, limit: int = 500
+    ) -> tuple[int, list[dict[str, Any]]]:  # pragma: no cover
+        return int(after_rowid), []
+
     async def get_session_turn_ids(
         self, session_key: str, limit: int = 50
     ) -> list[int]:
