@@ -63,6 +63,38 @@ async def test_prompter_failure_fails_closed() -> None:
     assert await resolver("run_shell", {}, None) is False
 
 
+async def test_persist_answer_grants_and_persists() -> None:
+    """'p' allows, caches for the session, AND calls the persist hook (E1
+    — the durable variant of 'always')."""
+    persisted: list[str] = []
+    resolver = ConsoleApprovalResolver(
+        _ScriptedPrompter("p"), persist=persisted.append
+    )
+    assert await resolver("run_shell", {"command": "ls"}, None) is True
+    assert persisted == ["run_shell"]
+    assert resolver.always_allow == {"run_shell"}
+    # No further prompt this session.
+    assert await resolver("run_shell", {"command": "pwd"}, None) is True
+
+
+async def test_persist_answer_failure_degrades_to_session_grant() -> None:
+    """A persist hook that raises must not turn an approval into a deny —
+    the grant degrades to session-scoped."""
+
+    def _boom(tool: str) -> None:
+        raise OSError("disk full")
+
+    resolver = ConsoleApprovalResolver(_ScriptedPrompter("persist"), persist=_boom)
+    assert await resolver("run_shell", {}, None) is True
+    assert resolver.always_allow == {"run_shell"}
+
+
+async def test_persist_answer_without_hook_acts_like_always() -> None:
+    resolver = ConsoleApprovalResolver(_ScriptedPrompter("p"))
+    assert await resolver("write_file", {}, None) is True
+    assert resolver.always_allow == {"write_file"}
+
+
 async def test_args_preview_truncates_and_survives_bad_args() -> None:
     seen: list[str] = []
 
@@ -252,3 +284,23 @@ async def test_concurrent_approvals_are_serialized() -> None:
     )
     assert results == [True, True]
     assert max_in_flight == 1
+
+
+async def test_persist_answer_is_durable_across_gate_rebuild(tmp_path: Any) -> None:
+    """End-to-end E1: a 'persist' answer, wired to the real
+    ``persist_allow_rule``, must make a freshly-built permission gate decide
+    ``allow`` for the tool — the grant survives the session that granted it."""
+    from corlinman_agent.permission import ALLOW
+    from corlinman_agent.permission_settings import (
+        build_permission_gate,
+        persist_allow_rule,
+    )
+
+    resolver = ConsoleApprovalResolver(
+        _ScriptedPrompter("p"),
+        persist=lambda tool: persist_allow_rule(tool, data_dir=tmp_path),
+    )
+    assert await resolver("run_shell", {"command": "ls"}, None) is True
+
+    gate = build_permission_gate(data_dir=tmp_path, project_dir=tmp_path / "proj")
+    assert gate.decide("run_shell") == ALLOW

@@ -4,8 +4,17 @@ The permission gate's ``ask`` verdict escalates to an async resolver
 ``(tool, args, ctx) -> bool`` (``agent_servicer.set_approval_resolver``).
 Nothing ever wired one, so every ``ask`` fail-closed to deny in every
 deployment. The console is the first wiring: pause the live renderer, show the
-tool + an args preview, read **y**es / **a**lways / **N**o — "always" caches the
-tool name for the rest of the session so it is not asked again.
+tool + an args preview, read **y**es / **a**lways / **p**ersist / **N**o.
+The answers, least to most durable:
+
+* ``y``/``yes`` — allow this one call; the tool is asked again next time.
+* ``a``/``always`` — allow and cache the tool name for the rest of the
+  session so it is not asked again (evaporates with the session).
+* ``p``/``persist`` — like ``always`` PLUS record a durable allow rule in
+  the user settings layer (E1 ``persist_allow_rule``) so future sessions
+  never ask either; a failing persist hook degrades to a session grant
+  rather than a deny (the operator did answer "allow").
+* anything else (empty, EOF, ``N``, garbage) — deny (fail-closed).
 
 The resolver runs on the SHARED event loop while the REPL task is parked
 awaiting stream events (servicer and REPL are one process), so it must own the
@@ -20,6 +29,11 @@ import asyncio
 import json
 from collections.abc import Awaitable, Callable
 from typing import Any
+
+#: Records a durable allow rule for the given tool name (E1
+#: ``persist_allow_rule``). Optional and best-effort — see the resolver's
+#: persist answer for the degrade-to-session-grant contract.
+PersistHook = Callable[[str], Any]
 
 #: Presents an approval request (a one-line description of the tool call) and
 #: returns the user's raw answer. Injectable so tests never need a TTY.
@@ -41,11 +55,20 @@ class ConsoleApprovalResolver:
     """Session-scoped interactive approval resolver.
 
     Answers: ``y``/``yes`` → allow once; ``a``/``always`` → allow and stop
-    asking for this tool for the rest of the session; anything else → deny.
+    asking for this tool for the rest of the session; ``p``/``persist`` →
+    ``always`` plus a durable allow rule in the user settings layer (via the
+    injected ``persist`` hook); anything else → deny.
     """
 
-    def __init__(self, prompter: Prompter) -> None:
+    def __init__(
+        self, prompter: Prompter, *, persist: PersistHook | None = None
+    ) -> None:
         self._prompter = prompter
+        #: E1 durable-grant hook — given the tool name, records an allow rule
+        #: in the user settings layer (``persist_allow_rule``). A failing hook
+        #: degrades the grant to session-scoped rather than denying (the
+        #: operator answered "allow"). ``None`` makes ``p`` behave like ``a``.
+        self._persist = persist
         #: Tool names the user answered "always" for — session-scoped by
         #: design (a durable grant belongs in the permission rule list, not an
         #: interactive cache). Cleared by :meth:`reset` on session/mode
@@ -85,6 +108,18 @@ class ConsoleApprovalResolver:
             if answer in ("a", "always"):
                 self.always_allow.add(tool)
                 return True
+            if answer in ("p", "persist"):
+                # Durable variant of "always": cache for the session AND
+                # write a settings rule. A persist failure must not flip an
+                # approval into a deny — the operator said allow, so degrade
+                # to a session-scoped grant.
+                self.always_allow.add(tool)
+                if self._persist is not None:
+                    try:
+                        self._persist(tool)
+                    except Exception:  # noqa: BLE001 — degrade to session grant
+                        pass
+                return True
             return answer in ("y", "yes")
 
 
@@ -118,9 +153,16 @@ def build_console_prompter(
         if callable(stop):
             stop()
         renderer.console.print(f"⚠ approval needed — {desc}", style="bold yellow", highlight=False)
-        return await read("allow? [y]es / [a]lways this session / [N]o › ")
+        return await read(
+            "allow? [y]es / [a]lways this session / [p]ersist to settings / [N]o › "
+        )
 
     return _prompt
 
 
-__all__ = ["ConsoleApprovalResolver", "Prompter", "build_console_prompter"]
+__all__ = [
+    "ConsoleApprovalResolver",
+    "PersistHook",
+    "Prompter",
+    "build_console_prompter",
+]

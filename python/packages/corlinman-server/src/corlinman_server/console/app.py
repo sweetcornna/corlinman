@@ -28,7 +28,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from corlinman_server.console.brain import Brain, BrainSession
+from corlinman_agent.permission_settings import persist_allow_rule
+
+from corlinman_server.console.brain import Brain, BrainSession, new_session_key
 from corlinman_server.console.commands import (
     TurnRequest,
     _estimate_session_cost_usd,
@@ -293,6 +295,29 @@ class ConsoleApp:
                         replayed += 1
             return replayed
         except Exception:  # noqa: BLE001 — resume is best-effort
+            return 0
+        finally:
+            with contextlib.suppress(Exception):
+                await journal.close()
+
+    async def fork_from(self, source_key: str, new_key: str) -> int:
+        """Copy ``source_key``'s completed history onto ``new_key``.
+
+        Thin embedded-only wrapper over :meth:`AgentJournal.fork_session`
+        that owns the journal handle lifecycle (mirrors
+        :meth:`resume_session`'s open/close-in-finally shape). ``0`` in
+        attach mode or when no journal is available — the caller then
+        proceeds to resume the source key unforked, which is the correct
+        graceful degrade for ``--fork-session`` off a remote gateway.
+        """
+        if not self.embedded:
+            return 0
+        journal = await self._open_journal()
+        if journal is None:
+            return 0
+        try:
+            return int(await journal.fork_session(source_key, new_key))
+        except Exception:  # noqa: BLE001 — fork is best-effort
             return 0
         finally:
             with contextlib.suppress(Exception):
@@ -738,6 +763,7 @@ async def run_console(
     max_turns: int = 0,
     attach_token: str | None = None,
     continue_latest: bool = False,
+    fork_session: bool = False,
     system_prompt: str | None = None,
     append_system_prompt: str | None = None,
 ) -> int:
@@ -839,7 +865,13 @@ async def run_console(
 
         wire = getattr(brain, "set_approval_resolver", None)
         if callable(wire):
-            app.approval_resolver = ConsoleApprovalResolver(build_console_prompter(renderer))
+            # A "persist" answer writes a durable allow rule into this
+            # deployment's user settings layer (same data_dir the gate reads
+            # back from), so the grant survives the session — the E1 payoff.
+            app.approval_resolver = ConsoleApprovalResolver(
+                build_console_prompter(renderer),
+                persist=lambda tool: persist_allow_rule(tool, data_dir=data_dir),
+            )
             wire(app.approval_resolver)
 
     # ``--continue`` (Dim 11): resume the most recent journal session. An
@@ -862,6 +894,23 @@ async def run_console(
 
     if session_key:
         if embedded:
+            # ``--fork-session`` (Dim 11 parity): copy the source session's
+            # completed history onto a FRESH console:<id> key and continue
+            # there, leaving the original untouched. We mint the new key the
+            # same way a cold start does (new_session_key) and re-point
+            # session_key BEFORE the resume below, so the existing replay
+            # path rebuilds the window from the forked copy — no second
+            # replay codepath. A 0-turn fork (nothing completed / non-SQLite
+            # backend stub) still branches: the note reports the count.
+            if fork_session:
+                forked_key = new_session_key()
+                copied = await app.fork_from(session_key, forked_key)
+                console.print(
+                    f"forked {session_key} → {forked_key} ({copied} turn(s))",
+                    style="dim",
+                    highlight=False,
+                )
+                session_key = forked_key
             # ``--session`` continues a conversation — replay its journaled
             # turns into the window (the chat contract is a stateless
             # message window, so without the replay the first prompt
@@ -886,6 +935,17 @@ async def run_console(
                 style="yellow",
                 highlight=False,
             )
+            # ``--fork-session`` needs the journal to read+rewrite, which
+            # only the embedded brain owns — mirror the --session note and
+            # continue unforked rather than silently pretending to branch.
+            if fork_session:
+                console.print(
+                    "note: --fork-session only works with the embedded brain "
+                    "(the journal lives in the remote gateway); continuing "
+                    "without forking",
+                    style="yellow",
+                    highlight=False,
+                )
 
     if print_mode:
         if not prompt:
