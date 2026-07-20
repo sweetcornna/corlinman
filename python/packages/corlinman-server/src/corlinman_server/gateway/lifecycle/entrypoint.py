@@ -200,12 +200,18 @@ async def _wire_mcp_tool_plane(state: Any, mcp_manager: Any) -> None:
         from corlinman_server.gateway.mcp.advertise import register_mcp_tools
 
         discovered = mcp_manager.discovered_tools()
+        # Dim 5 client-resources — servers exposing resources gain a
+        # synthetic ``{server}_read_resource`` tool (tolerant getattr:
+        # older/mock managers without the surface contribute none).
+        _res_fn = getattr(mcp_manager, "discovered_resources", None)
+        _resources = _res_fn() if callable(_res_fn) else None
         _allowed, _denied = _mcp_server_policy(state)
         _mcp_added, _mcp_tools_json, _advertised = await register_mcp_tools(
             getattr(state, "plugin_registry", None),
             discovered,
             allowed=_allowed,
             denied=_denied,
+            resources=_resources,
         )
         state.extras["mcp_tools_json"] = _mcp_tools_json
         # The servers that ACTUALLY produced an entry this call — not
@@ -1169,8 +1175,27 @@ def build_app(
                 SamplingConfig.from_mcp_config(_mcp_cfg),
                 _sampling_completer,
             )
-            _mcp_manager = McpClientManager.from_config(
-                state.config, sampling_responder=_sampling
+            # Dim 5 — merge the layered ``.mcp.json`` scopes over the
+            # inline ``[mcp]`` config (local > project > user > inline;
+            # see corlinman_mcp_server.scoped_config). Fail-soft: any
+            # discovery error degrades to the inline config alone.
+            try:
+                from corlinman_mcp_server.scoped_config import (
+                    load_scoped_server_specs,
+                )
+
+                _mcp_specs = load_scoped_server_specs(state.config)
+            except Exception as exc:  # pragma: no cover — best-effort
+                logger.warning(
+                    "gateway.mcp.scoped_config_failed", error=str(exc)
+                )
+                from corlinman_mcp_server.client_manager import (
+                    load_server_specs,
+                )
+
+                _mcp_specs = load_server_specs(state.config)
+            _mcp_manager = McpClientManager(
+                _mcp_specs, sampling_responder=_sampling
             )
             # Server-pushed tools/list_changed → re-advertise the tool
             # plane (same entrypoint the admin hot-plug uses — issue #108).

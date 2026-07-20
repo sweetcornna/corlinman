@@ -215,11 +215,13 @@ async def _build_plugin_tool_executor(
                 )
 
                 allowed, denied = mcp_policy or (None, frozenset())
+                _res_fn = getattr(mcp_manager, "discovered_resources", None)
                 _added, mcp_tools_json, _servers = await register_mcp_tools(
                     registry,
                     mcp_manager.discovered_tools(),
                     allowed=allowed,
                     denied=denied,
+                    resources=_res_fn() if callable(_res_fn) else None,
                 )
         # Same invoker production uses (grpc_backend.build_tool_executor);
         # the console has no plugin supervisor, so that plugin kind
@@ -312,11 +314,13 @@ class EmbeddedBrain:
             )
 
             allowed, denied = _mcp_policy_from_config(self._config)
+            _res_fn = getattr(manager, "discovered_resources", None)
             _added, tools_json, advertised = await register_mcp_tools(
                 registry,
                 manager.discovered_tools(),
                 allowed=allowed,
                 denied=denied,
+                resources=_res_fn() if callable(_res_fn) else None,
             )
             await prune_stale_mcp_entries(registry, advertised)
             service.with_advertised_tools(tools_json)
@@ -364,8 +368,14 @@ class EmbeddedBrain:
             return None
         try:
             from corlinman_mcp_server import McpClientManager  # noqa: PLC0415
+            from corlinman_mcp_server.scoped_config import (  # noqa: PLC0415
+                load_scoped_server_specs,
+            )
 
-            manager = McpClientManager.from_config(cfg)
+            # Layered ``.mcp.json`` scopes over the inline config —
+            # local > project > user > inline; the console's CWD is the
+            # project scope, mirroring claude-code.
+            manager = McpClientManager(load_scoped_server_specs(cfg))
             if manager.server_count == 0:
                 return None
             await manager.connect_all()

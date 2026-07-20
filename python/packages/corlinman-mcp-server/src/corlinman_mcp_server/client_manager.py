@@ -49,6 +49,7 @@ from .session import INITIALIZE_METHOD, INITIALIZED_NOTIFICATION
 from .types import (
     MCP_PROTOCOL_VERSION,
     TOOLS_LIST_CHANGED_NOTIFICATION,
+    Resource,
     ToolDescriptor,
     error_codes,
 )
@@ -223,6 +224,7 @@ class McpManagedServer:
     status: str = "pending"  # "ready" | "error"
     peer: McpClientPeer | None = None
     tools: list[ToolDescriptor] = field(default_factory=list)
+    resources: list[Resource] = field(default_factory=list)
     error: str | None = None
 
     @property
@@ -315,6 +317,18 @@ class McpClientManager:
             name: list(s.tools)
             for name, s in self._servers.items()
             if s.is_ready
+        }
+
+    def discovered_resources(self) -> dict[str, list[Resource]]:
+        """All discovered resources, keyed by server name (Dim 5).
+
+        Only ``ready`` servers contribute; a server without the
+        ``resources`` capability simply lists empty.
+        """
+        return {
+            name: list(s.resources)
+            for name, s in self._servers.items()
+            if s.is_ready and s.resources
         }
 
     def has_tool(self, server: str, tool: str) -> bool:
@@ -415,6 +429,22 @@ class McpClientManager:
             return
 
         managed.tools = tools
+        # Dim 5 — resources are best-effort: a server without the
+        # ``resources`` capability answers method-not-found, which
+        # ``_list_resources`` folds to ``[]``; a discovery failure must
+        # not take down a tools-only server.
+        try:
+            managed.resources = await asyncio.wait_for(
+                self._list_resources(peer),
+                timeout=spec.handshake_timeout_s,
+            )
+        except Exception as exc:  # noqa: BLE001
+            managed.resources = []
+            log.debug(
+                "mcp.client.resources_discovery_failed",
+                server=spec.name,
+                error=str(exc),
+            )
         managed.status = "ready"
         managed.error = None
         log.info(
@@ -422,6 +452,7 @@ class McpClientManager:
             server=spec.name,
             transport=spec.transport,
             tools=len(tools),
+            resources=len(managed.resources),
         )
 
     # -- tools/list_changed (server-pushed) --
@@ -715,7 +746,111 @@ class McpClientManager:
                 break
         return out
 
+    async def _list_resources(
+        self, peer: McpClientPeer
+    ) -> list[Resource]:
+        """Discover resources via ``resources/list``, paging until
+        exhausted. A server without the capability (method-not-found /
+        any error on the first page) yields ``[]``.
+        """
+        out: list[Resource] = []
+        cursor: str | None = None
+        for _ in range(64):  # hard page cap — avoid a runaway cursor
+            params: dict[str, Any] = {}
+            if cursor:
+                params["cursor"] = cursor
+            try:
+                result = await peer.call("resources/list", params or None)
+            except Exception as exc:  # noqa: BLE001 — capability probe
+                log.debug("mcp.client.resources_unsupported", error=str(exc))
+                break
+            if not isinstance(result, dict):
+                break
+            for raw in result.get("resources", []) or []:
+                try:
+                    out.append(Resource.model_validate(raw))
+                except Exception as exc:  # noqa: BLE001
+                    log.debug(
+                        "mcp.client.bad_resource_descriptor", error=str(exc)
+                    )
+            cursor = result.get("nextCursor")
+            if not cursor:
+                break
+        return out
+
     # -- Calls --
+
+    async def read_resource(self, server: str, uri: str) -> McpToolCallOutcome:
+        """Route a ``resources/read`` to the named server. Never raises.
+
+        The result's ``contents`` (text parts; blob parts become a
+        placeholder note) are folded into one string suitable to feed
+        straight back into the reasoning loop — same contract as
+        :meth:`call_tool`.
+        """
+        managed = self._servers.get(server)
+        if managed is None:
+            return McpToolCallOutcome(
+                content=_err_json(
+                    "mcp_server_not_found",
+                    f"no configured MCP server named {server!r}",
+                ),
+                is_error=True,
+            )
+        if not managed.is_ready or managed.peer is None:
+            return McpToolCallOutcome(
+                content=_err_json(
+                    "mcp_server_unavailable",
+                    (
+                        f"MCP server {managed.spec.name!r} is not ready: "
+                        f"{managed.error or 'not connected'}"
+                    ),
+                ),
+                is_error=True,
+            )
+        if not uri:
+            return McpToolCallOutcome(
+                content=_err_json(
+                    "mcp_resource_uri_missing",
+                    "resources/read requires a non-empty 'uri'",
+                ),
+                is_error=True,
+            )
+        try:
+            result = await asyncio.wait_for(
+                managed.peer.call("resources/read", {"uri": uri}),
+                timeout=managed.spec.call_timeout_s,
+            )
+        except TimeoutError:
+            return McpToolCallOutcome(
+                content=_err_json(
+                    "mcp_call_timeout",
+                    (
+                        f"resources/read {uri!r} on {managed.spec.name!r} "
+                        f"timed out after {managed.spec.call_timeout_s}s"
+                    ),
+                ),
+                is_error=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return McpToolCallOutcome(
+                content=_err_json("mcp_call_failed", str(exc)),
+                is_error=True,
+            )
+        parts: list[str] = []
+        contents = result.get("contents") if isinstance(result, dict) else None
+        for item in contents or []:
+            if not isinstance(item, dict):
+                continue
+            text = item.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+            elif item.get("blob") is not None:
+                parts.append(
+                    f"[binary resource {item.get('uri') or uri} "
+                    f"({item.get('mimeType') or 'unknown type'}) omitted]"
+                )
+        return McpToolCallOutcome(content="\n".join(parts))
 
     async def call_tool(
         self,
