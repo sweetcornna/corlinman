@@ -1442,7 +1442,7 @@ class SqliteJournalBackend:
                     "WHERE session_key = ? AND status = ? AND user_text = ? "
                     "AND started_at_ms >= ? "
                     "AND (user_id = ? OR user_id IS NULL) "
-                    "ORDER BY started_at_ms DESC LIMIT 1",
+                    "ORDER BY started_at_ms DESC, turn_id DESC LIMIT 1",
                     (
                         session_key,
                         TURN_IN_PROGRESS,
@@ -1456,7 +1456,7 @@ class SqliteJournalBackend:
                     "SELECT turn_id, started_at_ms FROM turns "
                     "WHERE session_key = ? AND status = ? AND user_text = ? "
                     "AND started_at_ms >= ? "
-                    "ORDER BY started_at_ms DESC LIMIT 1",
+                    "ORDER BY started_at_ms DESC, turn_id DESC LIMIT 1",
                     (session_key, TURN_IN_PROGRESS, user_text, cutoff),
                 )
             row = await cur.fetchone()
@@ -2236,13 +2236,19 @@ class SqliteJournalBackend:
         bridge typically takes the head (live + next-to-live) and
         leaves the rest for the on-demand replay route. Returns ``[]``
         when no turns exist or the read fails (best-effort surface).
+
+        ``turn_id DESC`` is the same critical tie-break as
+        :meth:`list_session_turns`: two turns seeded within one ms tie
+        on ``started_at_ms`` (the integrity-collision retry bumps
+        ``turn_id`` +1 but not the timestamp) and would otherwise come
+        back in scrambled natural-row order.
         """
         if not session_key or limit <= 0:
             return []
         try:
             cur = await self._c.execute(
                 "SELECT turn_id FROM turns WHERE session_key = ? "
-                "ORDER BY started_at_ms DESC LIMIT ?",
+                "ORDER BY started_at_ms DESC, turn_id DESC LIMIT ?",
                 (session_key, int(limit)),
             )
             rows = await cur.fetchall()

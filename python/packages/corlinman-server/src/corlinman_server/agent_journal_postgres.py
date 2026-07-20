@@ -1027,7 +1027,7 @@ class PostgresJournalBackend:
                 rows = await conn.fetch(
                     "SELECT turn_id FROM journal_turns "
                     "WHERE session_key = $1 "
-                    "ORDER BY started_at_ms DESC LIMIT $2",
+                    "ORDER BY started_at_ms DESC, turn_id DESC LIMIT $2",
                     session_key,
                     int(limit),
                 )
