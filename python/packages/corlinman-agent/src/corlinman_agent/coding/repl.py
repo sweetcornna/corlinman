@@ -40,8 +40,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import signal
-import sys
 import time
 import uuid
 from pathlib import Path
@@ -54,9 +52,9 @@ from corlinman_agent.coding._common import (
     decode_args,
     resolve_workspace,
 )
-from corlinman_agent.coding.shell import (
-    _build_child_env,
-    _preexec_apply_rlimits,
+from corlinman_agent.coding.environment import (
+    SpawnedProcess,
+    get_environment,
 )
 
 logger = structlog.get_logger(__name__)
@@ -157,38 +155,20 @@ class _ReplSession:
     def __init__(self, workspace: Path) -> None:
         self._workspace = workspace
         self._proc: asyncio.subprocess.Process | None = None
+        self._handle: SpawnedProcess | None = None
         self._marker = f"{_DONE_MARKER_PREFIX}{uuid.uuid4().hex}"
         self._lock = asyncio.Lock()
-
-    @staticmethod
-    def _python_executable() -> str:
-        return os.environ.get("CORLINMAN_PYTHON") or sys.executable or "python3"
 
     async def _ensure_proc(self) -> asyncio.subprocess.Process:
         proc = self._proc
         if proc is not None and proc.returncode is None:
             return proc
-        spawn_kwargs: dict[str, Any] = {
-            "cwd": str(self._workspace),
-            "stdin": asyncio.subprocess.PIPE,
-            "stdout": asyncio.subprocess.PIPE,
-            "stderr": asyncio.subprocess.STDOUT,
-            "env": _build_child_env(),
-        }
-        if sys.platform != "win32":
-            spawn_kwargs["preexec_fn"] = _preexec_apply_rlimits
-        # ``-i`` keeps the interpreter alive reading from the pipe; ``-q``
-        # suppresses the banner. ``-u`` keeps stdout unbuffered so the
-        # done-marker arrives promptly. ``-`` (read program from stdin) is
-        # NOT used — we want the interactive line-reader so each
-        # subsequent ``execute`` is processed as its own statement.
-        proc = await asyncio.create_subprocess_exec(
-            self._python_executable(),
-            "-u",
-            "-i",
-            "-q",
-            **spawn_kwargs,
-        )
+        # Spawn the persistent interpreter through the sandbox seam. This is
+        # only reached from :meth:`execute`, which the dispatcher gates on
+        # ``CORLINMAN_ENABLE_EXECUTE_CODE`` — nothing spawns while disabled.
+        handle = await get_environment().spawn_repl(workspace=self._workspace)
+        self._handle = handle
+        proc = handle.proc
         self._proc = proc
         # Bootstrap the driver function ONCE. ``-i`` reads one *logical*
         # line at a time from the pipe; a multi-line compound statement
@@ -218,23 +198,13 @@ class _ReplSession:
         )
 
     def _kill(self) -> None:
-        proc = self._proc
-        if proc is None:
+        # Termination travels with the handle — the local backend SIGKILLs
+        # the whole process group (setsid leader), same as the old private
+        # killpg copy. Never raises.
+        handle = self._handle
+        if handle is None:
             return
-        if sys.platform == "win32":
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-            return
-        try:
-            pgid = os.getpgid(proc.pid)
-            os.killpg(pgid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
+        handle.kill()
 
     async def execute(self, code: str, timeout: int) -> tuple[str, bool]:
         """Run ``code`` in the session. Returns ``(output, timed_out)``.
@@ -254,6 +224,7 @@ class _ReplSession:
                 # Child died mid-write — respawn next call.
                 self._kill()
                 self._proc = None
+                self._handle = None
                 return ("error: interpreter pipe broken; session reset", False)
 
             marker_b = self._marker.encode("utf-8")
@@ -282,6 +253,7 @@ class _ReplSession:
                 timed_out = True
                 self._kill()
                 self._proc = None
+                self._handle = None
 
             # Strip the interpreter's own prompt fragments from the
             # captured output — they're protocol noise, not the snippet's.
@@ -293,6 +265,7 @@ class _ReplSession:
         async with self._lock:
             self._kill()
             self._proc = None
+            self._handle = None
 
 
 #: Process-wide session registry, keyed by an opaque session id. Lets a
