@@ -83,6 +83,8 @@ _EVENT_ALIASES: dict[str, str] = {
     "precompact": "pre_compact",
     "postcompact": "post_compact",
     "notification": "notification",
+    "filechanged": "file_changed",
+    "setup": "setup",
 }
 
 # Whether hooks on an event default to fire-and-forget. Blocking-capable
@@ -100,6 +102,8 @@ _EVENT_DEFAULT_ASYNC: dict[str, bool] = {
     "session_end": True,
     "session_reset": True,
     "notification": True,
+    "file_changed": True,
+    "setup": True,
 }
 
 # Per-kind default timeout (seconds). LLM-backed kinds need more headroom

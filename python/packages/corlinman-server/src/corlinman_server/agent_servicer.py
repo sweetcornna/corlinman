@@ -939,6 +939,13 @@ def _calculator_timeout_secs() -> float:
     return v if v > 0 else _DEFAULT_CALCULATOR_TIMEOUT_S
 
 
+# Dim 9 — builtin tools whose success mutates workspace files; the
+# ``file_changed`` hook event fires after their post_tool hooks.
+_FILE_MUTATING_TOOLS: frozenset[str] = frozenset(
+    {"write_file", "edit_file", "notebook_edit"}
+)
+
+
 def _hook_result_max_bytes() -> int:
     """Max bytes of a tool result passed to PostToolUse hooks.
 
@@ -1258,6 +1265,12 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         self._journal: AgentJournal | None = None
         self._journal_init_done = False
         self._journal_swept_stale = False
+        # Dim 9 — session_start hook: session keys this process has
+        # already announced. Bounded (cleared wholesale past the cap) so
+        # a key-churning deployment can't grow it without limit; a reset
+        # merely re-announces old sessions, harmless for an advisory
+        # lifecycle event.
+        self._hook_seen_sessions: set[str] = set()
         # T4.2 per-session async lock — same-session RPCs serialize so
         # the todo store / cost meter / workspace snapshot can't race;
         # different sessions run concurrently as today.
@@ -1444,6 +1457,28 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # returns early, so a start.messages write would be dropped).
         # Default-async groups return allow immediately and run detached.
         _hook_note: str | None = None
+        # Dim 9 — session_start fires once per session_key per process
+        # (advisory, default-async so it can never add turn latency).
+        if start.session_key and start.session_key not in self._hook_seen_sessions:
+            if len(self._hook_seen_sessions) >= 4096:
+                self._hook_seen_sessions.clear()
+            self._hook_seen_sessions.add(start.session_key)
+            _ss_runner = self._resolve_hook_runner()
+            _ss_run = getattr(_ss_runner, "run_event_async", None)
+            if _ss_run is not None:
+                try:
+                    await _ss_run(
+                        "session_start",
+                        {"model": start.model or ""},
+                        {
+                            "session_key": start.session_key,
+                            "user_id": _extract_user_id(start),
+                        },
+                    )
+                except Exception as exc:  # noqa: BLE001 — advisory only
+                    logger.warning(
+                        "agent.chat.session_start_hook_failed", error=str(exc)
+                    )
         if user_text:
             _runner = self._resolve_hook_runner()
             _run_event = getattr(_runner, "run_event_async", None)
@@ -2842,6 +2877,50 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             )
         except Exception as exc:  # noqa: BLE001 — post-hooks never affect the call
             logger.warning("agent.tool.post_hook_error", tool=tool, error=str(exc))
+        # Dim 9 — file_changed: a dedicated event for workspace mutations
+        # so operators can hook formatters/linters/sync without pattern-
+        # matching every post_tool payload. Fire-and-forget like post_tool.
+        if tool in _FILE_MUTATING_TOOLS:
+            run_event = getattr(runner, "run_event_async", None)
+            if run_event is not None:
+                _path = str(args.get("path") or args.get("file_path") or "")
+                try:
+                    await run_event(
+                        "file_changed",
+                        {"tool": tool, "path": _path},
+                        {
+                            "session_key": getattr(start, "session_key", None),
+                            "user_id": _extract_user_id(start),
+                        },
+                    )
+                except Exception as exc:  # noqa: BLE001 — advisory only
+                    logger.warning(
+                        "agent.tool.file_changed_hook_error",
+                        tool=tool,
+                        error=str(exc),
+                    )
+        # Dim 9 — notification (claude-code "agent needs input"): an
+        # ``ask_user`` call parks the turn on a human answer, the exact
+        # moment an operator wants a push (desktop notify, channel ping).
+        if tool == "ask_user":
+            run_event = getattr(runner, "run_event_async", None)
+            if run_event is not None:
+                try:
+                    await run_event(
+                        "notification",
+                        {
+                            "kind": "needs_input",
+                            "question": str(args.get("question") or ""),
+                        },
+                        {
+                            "session_key": getattr(start, "session_key", None),
+                            "user_id": _extract_user_id(start),
+                        },
+                    )
+                except Exception as exc:  # noqa: BLE001 — advisory only
+                    logger.warning(
+                        "agent.tool.notification_hook_error", error=str(exc)
+                    )
 
     async def _run_pre_tool_hook_gate(
         self, event: ToolCallEvent, start: AgentChatStart

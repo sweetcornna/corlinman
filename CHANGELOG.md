@@ -6,6 +6,43 @@ All notable changes to corlinman are documented here. Format follows
 
 ## [Unreleased]
 
+### Dim 9 hooks residuals 1/2 — prompt evaluator prod wiring + 6 newly-live hook events (#117)
+
+> claude-code parity Dim 9 残留：prompt-kind 钩子从"配置了但永远
+> fail-open"变为真跑 LLM 裁决；pre_compact / session_start /
+> session_reset / notification / file_changed / setup 六个事件从
+> "accepted-but-dormant"点亮为有生产发射点。
+> Dim 9 residuals part 1 of 2.
+
+### Added
+- **prompt-kind 钩子生产求值器**（`corlinman_server.hooks_evaluators`）——
+  单次 LLM 裁决：钩子的 `prompt` 是裁决指令、事件载荷是证据，模型回
+  `{"ok": bool, "reason": …}`（引擎已有的 verdict 协议）。两个
+  HookRunner 构造点（standalone `main._build_hook_runner` + 网关
+  `c2_wiring`）全部注入；provider **逐次惰性解析**（热重载即时生效、
+  与 provider bootstrap 顺序无关）。裁决模型：`hooks.evaluator_model`
+  > `CORLINMAN_HOOK_EVAL_MODEL` > `models.default`。reasoning 增量不
+  计入裁决文本；解析失败/无模型 → 维持原 fail-open 行为。
+- **agent-kind 晚绑定座**（`register_hook_agent_runner`）—— agent 钩子
+  需要 out-of-turn subagent 入口；座已备好 + verdict 解析就绪，注册方
+  落地前维持 fail-open（台账残留项）。
+- **六个新 live 钩子事件**：
+  - `pre_compact` —— reasoning loop 压缩临界时（同 elide 阈值门，静默
+    轮次不扰）**blocking** 征询；deny = 本轮缓压缩（overflow 收缩路径
+    无条件兜底，钩子只能延迟、不能弄死 turn）；
+  - `session_start` —— servicer 聊天入口，每 session_key 每进程一次
+    （有界 seen-set）；
+  - `session_reset` —— console `/new` `/clear`；
+  - `notification` —— `ask_user`（needs_input）+ 后台 subagent 终态
+    （dispatcher 新 `hook_notifier` 注入座，网关接到
+    `state.hook_runner` 惰性读取）；
+  - `file_changed` —— `write_file`/`edit_file`/`notebook_edit` 的
+    post_tool 之后，载荷带 `path`；
+  - `setup` —— 每进程一次（网关 lifespan 启动完成 / embedded 大脑装配
+    完成）。
+  `hooks_live.LIVE_HOOK_EVENTS` 与 `/hooks`、`GET /admin/hooks` 的
+  live/dormant 标注同步更新（仅剩 `session_end` 休眠）。
+
 ### W8: multi-tenant session isolation (security) (#114)
 
 > 修复 chat-perfect 审计（hunt-51）遗留的 **critical** 多租户隔离绕过：

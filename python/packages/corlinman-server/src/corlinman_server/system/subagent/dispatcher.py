@@ -157,6 +157,7 @@ class AsyncSubagentDispatcher:
 
     __slots__ = (
         "_audit_log",
+        "_hook_notifier",
         "_journal",
         "_lock",
         "_max_concurrent_per_tenant",
@@ -173,6 +174,7 @@ class AsyncSubagentDispatcher:
         journal: Any | None = None,
         audit_log: SystemAuditLog | None = None,
         max_concurrent_per_tenant: int = DEFAULT_MAX_CONCURRENT_PER_TENANT,
+        hook_notifier: Any | None = None,
     ) -> None:
         """Construct a dispatcher.
 
@@ -194,12 +196,18 @@ class AsyncSubagentDispatcher:
         max_concurrent_per_tenant
             Hard ceiling matching the supervisor's per-tenant cap.
             Default 15.
+        hook_notifier
+            Optional ``async (payload: dict) -> None`` fired alongside
+            every terminal notification (Dim 9 ``notification`` hook —
+            claude-code "task completed"). Best-effort: exceptions are
+            swallowed; ``None`` disables.
         """
         self._store = store
         self._run_child_factory = run_child_factory
         self._journal = journal
         self._audit_log = audit_log
         self._max_concurrent_per_tenant = max_concurrent_per_tenant
+        self._hook_notifier = hook_notifier
         self._lock = asyncio.Lock()
         self._tasks: dict[str, DispatchOutcome] = {}
 
@@ -550,11 +558,33 @@ class AsyncSubagentDispatcher:
         can render it differently from genuine user input. ``None``
         journal short-circuits — the store row still has the summary.
         """
-        journal = self._journal
-        if journal is None:
-            return
         req = await self._store.get_request(request_id)
         if req is None:
+            return
+
+        # Dim 9 — fire the ``notification`` hook (claude-code "task
+        # completed") regardless of journal availability: the hook is an
+        # operator push channel, not a transcript write. Best-effort.
+        if self._hook_notifier is not None:
+            try:
+                await self._hook_notifier(
+                    {
+                        "kind": "subagent_completed",
+                        "request_id": request_id,
+                        "subagent_type": agent_name,
+                        "terminal_state": terminal_state,
+                        "parent_session_key": req.parent_session_key,
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001 — advisory only
+                logger.warning(
+                    "subagent.dispatcher.hook_notify_failed",
+                    request_id=request_id,
+                    error=str(exc),
+                )
+
+        journal = self._journal
+        if journal is None:
             return
 
         body = _truncate(output_text or "", _NOTIFICATION_BODY_MAX_CHARS)

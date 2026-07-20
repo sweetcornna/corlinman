@@ -1868,16 +1868,27 @@ class ReasoningLoop:
             summary_allowed = (not self._summary_disabled) and (
                 rounds >= self._summary_cooldown_until_round
             )
+            # Dim 9 — consult pre_compact hooks only when compaction is
+            # actually imminent (same elide-threshold gate
+            # ``_compact_history`` applies internally, so a quiet round
+            # never spams the hook). A deny defers the budget-path
+            # compaction one round; the overflow path stays unconditional.
+            _compaction_allowed = True
+            if prev_estimate >= int(context_budget * _COMPACT_ELIDE_THRESHOLD):
+                _compaction_allowed = await self._maybe_emit_pre_compact(
+                    prev_estimate, context_budget
+                )
             compact_outcome: dict[str, Any] = {}
-            messages = await _compact_history(
-                messages,
-                budget=context_budget,
-                provider=self._provider,
-                model=start.model,
-                prev_estimate=prev_estimate,
-                summary_allowed=summary_allowed,
-                outcome=compact_outcome,
-            )
+            if _compaction_allowed:
+                messages = await _compact_history(
+                    messages,
+                    budget=context_budget,
+                    provider=self._provider,
+                    model=start.model,
+                    prev_estimate=prev_estimate,
+                    summary_allowed=summary_allowed,
+                    outcome=compact_outcome,
+                )
             self._update_summary_breaker_state(rounds, compact_outcome)
             # Identity check: ``_compact_history`` returns the SAME
             # list when no compaction was needed (passthrough below
@@ -2693,6 +2704,40 @@ class ReasoningLoop:
                 self._summary_low_savings_streak = 0
         except Exception as exc:  # noqa: BLE001 — bookkeeping must never break the loop
             logger.warning("reasoning_loop.summary_breaker_state_error", error=str(exc))
+
+    async def _maybe_emit_pre_compact(
+        self, estimated_tokens: int, budget: int
+    ) -> bool:
+        """Fire ``pre_compact`` hooks when compaction is imminent (Dim 9).
+
+        Blocking-capable (``_EVENT_DEFAULT_ASYNC`` marks ``pre_compact``
+        awaited-sync): a deny defers the NORMAL budget-path compaction by
+        one round — pressure persists, so the hook is consulted again
+        next round, and the context-overflow shrink path remains
+        unconditional as the safety backstop (a hook can delay
+        compaction, never brick the turn). Returns ``False`` to skip
+        this round's compaction. Every failure mode allows.
+        """
+        runner = getattr(self, "_hook_runner", None)
+        run_event = getattr(runner, "run_event_async", None)
+        if run_event is None:
+            return True
+        try:
+            decision = await run_event(
+                "pre_compact",
+                {"estimated_tokens": estimated_tokens, "budget": budget},
+                {"session_key": self._session_key},
+            )
+        except Exception as exc:  # noqa: BLE001 — hook must never break the loop
+            logger.warning("reasoning_loop.pre_compact_hook_error", error=str(exc))
+            return True
+        if not bool(getattr(decision, "allow", True)):
+            logger.info(
+                "reasoning_loop.compaction_deferred_by_hook",
+                reason=getattr(decision, "reason", None),
+            )
+            return False
+        return True
 
     async def _maybe_emit_post_compact(
         self, messages_before: int, messages_after: int

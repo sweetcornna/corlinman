@@ -320,6 +320,12 @@ class EmbeddedBrain:
         self._service = service
         self.descriptor = f"embedded full-agent ({bind})"
         log.info("console.embedded.serving bind=%s", bind)
+        # Dim 9 — ``setup`` fires once per process after the embedded
+        # brain is fully assembled. Advisory + best-effort.
+        _setup_run = getattr(hook_runner, "run_event_async", None)
+        if _setup_run is not None:
+            with contextlib.suppress(Exception):
+                await _setup_run("setup", {"surface": "console"}, {})
 
     async def _start_direct(self, data_dir: Path) -> None:
         """Fallback path: provider streaming only, no tools."""
