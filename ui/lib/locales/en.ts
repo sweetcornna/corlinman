@@ -3471,6 +3471,7 @@ export const en = {
     listHint: "Separate multiple values with commas.",
     hint: {
       group_replies_enabled: "Off = silent in every group; private chat is unaffected.",
+      freeze_risk_topic_blocking: "On by default and effective immediately. Blocks sexual, violent, self-harm, illegal, and other Tencent freeze-risk topics across QQ, QQ Official, and QZone. Unclassified images, audio, video, and scheduled QZone artwork are not sent while enabled.",
       group_whitelist: "Only listed groups get replies; empty mutes all groups.",
       group_reply_policy: "Default answers only @mentions, commands, and configured keywords.",
       proactive_enabled: "Occasionally posts in groups at a human pace; off by default.",
@@ -3516,6 +3517,7 @@ export const en = {
       napcat_url: "NapCat WebUI URL",
       napcat_access_token: "NapCat WebUI token",
       group_replies_enabled: "Group replies",
+      freeze_risk_topic_blocking: "QQ freeze-risk protection",
       group_whitelist: "Group whitelist",
       group_reply_policy: "Group reply policy",
       group_reply_cooldown_secs: "Reply cooldown (s)",

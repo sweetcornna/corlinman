@@ -490,6 +490,11 @@ async def _serve() -> int:
     # before. See :func:`_build_event_emitter`.
     event_emitter, observability_journal = await _build_event_emitter()
 
+    py_config_path = os.environ.get("CORLINMAN_PY_CONFIG")
+    from corlinman_server.tencent_policy import ReloadingTencentPolicyResolver
+
+    tencent_policy_resolver = ReloadingTencentPolicyResolver(py_config_path)
+
     if os.environ.get("CORLINMAN_TEST_MOCK_PROVIDER") is not None:
         # Test smoke path: leave provider_resolver unset so the Agent
         # servicer activates its offline mock provider instead of falling
@@ -502,9 +507,9 @@ async def _serve() -> int:
             hook_runner=hook_runner,
             subagent_config=subagent_config,
             event_emitter=event_emitter,
+            tencent_policy_resolver=tencent_policy_resolver,
         )
     else:
-        py_config_path = os.environ.get("CORLINMAN_PY_CONFIG")
         resolver = _ReloadingProviderResolver(py_config_path)
         if py_config_path is None:
             # No config handshake → legacy prefix fallback for every resolve.
@@ -517,6 +522,7 @@ async def _serve() -> int:
             hook_runner=hook_runner,
             subagent_config=resolver.subagent_config,
             event_emitter=event_emitter,
+            tencent_policy_resolver=tencent_policy_resolver,
         )
     agent_pb2_grpc.add_AgentServicer_to_server(agent_servicer, server)
 

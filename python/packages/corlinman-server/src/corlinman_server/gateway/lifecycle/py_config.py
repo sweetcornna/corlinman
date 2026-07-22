@@ -161,12 +161,45 @@ def render_py_config(cfg: Any) -> dict[str, Any]:
 
     embedding = _render_embedding(_attr(cfg, "embedding", None))
     subagent = _render_subagent(_attr(cfg, "subagent", None))
+    channels = _attr(cfg, "channels", None)
+    qq = _attr(channels, "qq", None)
+    tencent_safety = {
+        # Only the literal boolean false opts out. Missing/malformed stays on.
+        "enabled": _attr(qq, "freeze_risk_topic_blocking", True) is not False,
+        "unclassified_media": "deny",
+    }
+    qq_onebot = _render_qq_onebot(qq)
 
     return {
         "providers": providers,
         "aliases": aliases_out,
         "embedding": embedding,
         "subagent": subagent,
+        "tencent_safety": tencent_safety,
+        "qq_onebot": qq_onebot,
+    }
+
+
+def _render_qq_onebot(qq: Any) -> dict[str, Any] | None:
+    """Render the agent process's OneBot action transport settings.
+
+    QZone tools execute in the separate agent process, so they cannot read the
+    gateway's live QQ mapping directly. Keep this block narrow: only the WS
+    action endpoint and access token are needed, and the existing sidecar is
+    already the process boundary used for provider credentials.
+    """
+    if qq is None:
+        return None
+    ws_url = _attr(qq, "ws_url", None)
+    access_token = _attr(qq, "access_token", None)
+    if not access_token:
+        # The QQ editor exposes this legacy key for NapCat deployments.
+        access_token = _attr(qq, "napcat_access_token", None)
+    if not ws_url:
+        return None
+    return {
+        "ws_url": str(ws_url),
+        "access_token": str(access_token) if access_token else None,
     }
 
 

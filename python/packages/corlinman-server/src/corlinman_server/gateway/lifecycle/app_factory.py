@@ -47,7 +47,10 @@ from corlinman_server.gateway.lifecycle.config_resolve import (
     _trust_forwarded_proto_from_config,
     _trusted_forwarded_proto_proxies_from_config,
 )
-from corlinman_server.gateway.lifecycle.py_config import default_py_config_path
+from corlinman_server.gateway.lifecycle.py_config import (
+    default_py_config_path,
+    write_py_config_sync,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -322,6 +325,16 @@ def _make_channels_writer(app: Any, admin_a_state: Any) -> Any:
         live = getattr(app.state, "config", None)
         if isinstance(live, dict):
             live["channels"] = channels_cfg
+        else:
+            live = dict(on_disk)
+
+        # The agent process reads QZone safety from this mtime-watched sidecar.
+        # Propagate failures: the admin API must not claim an opt-out/opt-in
+        # succeeded while the separate process still holds the prior state.
+        py_config_path = Path(
+            os.environ.get("CORLINMAN_PY_CONFIG") or str(default_py_config_path())
+        )
+        write_py_config_sync(live, py_config_path)
 
     return _writer
 

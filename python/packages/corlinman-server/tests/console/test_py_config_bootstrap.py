@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from corlinman_server.console.embedded import _ensure_py_config_env
+from corlinman_server.console.embedded import EmbeddedBrain, _ensure_py_config_env
 
 _CONFIG: dict[str, Any] = {
     "providers": {
@@ -74,3 +74,64 @@ def test_env_already_set_is_untouched(
     _ensure_py_config_env(tmp_path, _CONFIG)
     assert os.environ["CORLINMAN_PY_CONFIG"] == "/explicit/operator/path.json"
     assert not (tmp_path / "py-config.json").exists()
+
+
+async def test_embedded_agent_wires_live_tencent_policy_resolver(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    drop = tmp_path / "py-config.json"
+    drop.write_text('{"tencent_safety":{"enabled":false}}', encoding="utf-8")
+    monkeypatch.setenv("CORLINMAN_PY_CONFIG", str(drop))
+
+    captured: dict[str, Any] = {}
+
+    class _FakeServicer:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+    class _FakeServer:
+        def add_insecure_port(self, _bind: str) -> int:
+            return 1
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self, *, grace: float) -> None:
+            return None
+
+    class _FakeChannel:
+        async def channel_ready(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "corlinman_server.agent_servicer.CorlinmanAgentServicer", _FakeServicer
+    )
+    monkeypatch.setattr("grpc.aio.server", lambda options=None: _FakeServer())
+    monkeypatch.setattr(
+        "corlinman_grpc.agent_pb2_grpc.add_AgentServicer_to_server",
+        lambda servicer, server: None,
+    )
+    monkeypatch.setattr(
+        "corlinman_grpc.agent_client.connect_channel", lambda bind: _FakeChannel()
+    )
+    monkeypatch.setattr(
+        "corlinman_grpc.agent_client.AgentClient", lambda channel: object()
+    )
+    monkeypatch.setattr(
+        "corlinman_server.console.embedded._build_plugin_tool_executor",
+        lambda *args, **kwargs: _async_value((None, b"", None)),
+    )
+
+    brain = EmbeddedBrain()
+    brain._config = {}
+    await brain._start_agent(tmp_path)
+    try:
+        assert captured["tencent_policy_resolver"]() is False
+        drop.write_text('{"tencent_safety":{"enabled":true}}', encoding="utf-8")
+        assert captured["tencent_policy_resolver"]() is True
+    finally:
+        await brain.aclose()
+
+
+async def _async_value(value: Any) -> Any:
+    return value

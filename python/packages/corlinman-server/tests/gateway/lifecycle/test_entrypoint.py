@@ -174,6 +174,32 @@ def test_build_app_degraded_mode_serves_health(tmp_path: Path) -> None:
         assert body["version"] == resolve_app_version()
 
 
+def test_build_app_defaults_py_config_to_resolved_data_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from corlinman_server.gateway.lifecycle import entrypoint
+
+    monkeypatch.delenv("CORLINMAN_PY_CONFIG", raising=False)
+    monkeypatch.setattr(entrypoint, "_MANAGED_PY_CONFIG_ENV", None)
+    first_data = tmp_path / "first"
+    second_data = tmp_path / "second"
+
+    first = build_app(config_path=None, data_dir=first_data)
+    assert first.state.corlinman_admin_b_state.py_config_path == (
+        first_data / "py-config.json"
+    )
+    import os
+
+    assert Path(os.environ["CORLINMAN_PY_CONFIG"]) == first_data / "py-config.json"
+
+    second = build_app(config_path=None, data_dir=second_data)
+    assert second.state.corlinman_admin_b_state.py_config_path == (
+        second_data / "py-config.json"
+    )
+    assert Path(os.environ["CORLINMAN_PY_CONFIG"]) == second_data / "py-config.json"
+
+
 def test_build_app_wires_admin_b_py_config_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

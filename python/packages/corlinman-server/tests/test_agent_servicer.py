@@ -193,6 +193,197 @@ async def test_servicer_emits_tool_call_frame() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_name", "args", "effect"),
+    [
+        (
+            "qzone_publish",
+            {"text": "safe shadow post"},
+            "qzone_publish",
+        ),
+        (
+            "qzone_post_comment",
+            {"owner_uin": "10001", "tid": "post-1", "content": "safe reply"},
+            "qzone_post_comment",
+        ),
+    ],
+)
+async def test_scheduler_shadow_executes_qzone_simulators(
+    tool_name: str,
+    args: dict[str, str],
+    effect: str,
+) -> None:
+    chunks = [
+        ProviderChunk(
+            kind="tool_call_start",
+            tool_call_id="call-shadow-simulator",
+            tool_name=tool_name,
+        ),
+        ProviderChunk(
+            kind="tool_call_delta",
+            tool_call_id="call-shadow-simulator",
+            arguments_delta=json.dumps(args),
+        ),
+        ProviderChunk(kind="tool_call_end", tool_call_id="call-shadow-simulator"),
+        ProviderChunk(kind="done", finish_reason="tool_calls"),
+    ]
+
+    class _ToolThenDoneProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def chat_stream(self, **_kwargs: Any) -> AsyncIterator[ProviderChunk]:
+            self.calls += 1
+            if self.calls == 1:
+                for chunk in chunks:
+                    yield chunk
+                return
+            yield ProviderChunk(kind="done", finish_reason="stop")
+
+    provider = _ToolThenDoneProvider()
+    servicer = CorlinmanAgentServicer(provider_resolver=lambda _model: provider)
+    server = grpc.aio.server()
+    agent_pb2_grpc.add_AgentServicer_to_server(servicer, server)
+    port = server.add_insecure_port("127.0.0.1:0")
+    await server.start()
+    try:
+        async with grpc.aio.insecure_channel(f"127.0.0.1:{port}") as channel:
+            stub = agent_pb2_grpc.AgentStub(channel)
+
+            async def frames():
+                yield agent_pb2.ClientFrame(
+                    start=agent_pb2.ChatStart(
+                        model="test-model",
+                        provider_config_json=json.dumps(
+                            {
+                                "scheduler_context": {
+                                    "execution_mode": "shadow",
+                                    "source_system": "external",
+                                    "source_job_id": "job-1",
+                                    "occurrence_key": "external:job-1:1234",
+                                }
+                            }
+                        ).encode(),
+                    )
+                )
+
+            payloads: list[dict[str, Any]] = []
+            async for frame in stub.Chat(frames()):
+                if (
+                    frame.WhichOneof("kind") == "tool_call"
+                    and frame.tool_call.plugin.startswith("_builtin_done:")
+                ):
+                    meta = json.loads(frame.tool_call.args_json)
+                    payloads.append(json.loads(meta["payload_json"]))
+            assert payloads == [
+                {
+                    "ok": True,
+                    "shadow": True,
+                    "effect": effect,
+                    **(
+                        {
+                            "text_chars": len(args["text"]),
+                            "media_suppressed": False,
+                        }
+                        if tool_name == "qzone_publish"
+                        else {
+                            "owner_uin": args["owner_uin"],
+                            "tid": args["tid"],
+                            "is_reply": False,
+                            "comment_identity": "",
+                            "content_chars": len(args["content"]),
+                        }
+                    ),
+                }
+            ]
+    finally:
+        await servicer.aclose()
+        await server.stop(grace=None)
+
+
+@pytest.mark.asyncio
+async def test_scheduler_shadow_suppresses_external_tool_frame() -> None:
+    chunks = [
+        ProviderChunk(
+            kind="tool_call_start",
+            tool_call_id="call-shadow",
+            tool_name="external.mutate",
+        ),
+        ProviderChunk(
+            kind="tool_call_delta",
+            tool_call_id="call-shadow",
+            arguments_delta='{"value":1}',
+        ),
+        ProviderChunk(kind="tool_call_end", tool_call_id="call-shadow"),
+        ProviderChunk(kind="done", finish_reason="tool_calls"),
+    ]
+    servicer = CorlinmanAgentServicer(provider_resolver=lambda _model: _FakeProvider(chunks))
+    server = grpc.aio.server()
+    agent_pb2_grpc.add_AgentServicer_to_server(servicer, server)
+    port = server.add_insecure_port("127.0.0.1:0")
+    await server.start()
+    try:
+        async with grpc.aio.insecure_channel(f"127.0.0.1:{port}") as channel:
+            stub = agent_pb2_grpc.AgentStub(channel)
+
+            async def frames():
+                yield agent_pb2.ClientFrame(
+                    start=agent_pb2.ChatStart(
+                        model="test-model",
+                        provider_config_json=json.dumps(
+                            {
+                                "scheduler_context": {
+                                    "execution_mode": "shadow",
+                                    "source_system": "external",
+                                    "source_job_id": "job-1",
+                                    "occurrence_key": "external:job-1:1234",
+                                }
+                            }
+                        ).encode(),
+                    )
+                )
+
+            emitted = []
+            async for frame in stub.Chat(frames()):
+                if frame.WhichOneof("kind") == "tool_call":
+                    emitted.append(frame.tool_call.tool)
+            assert emitted == []
+    finally:
+        await servicer.aclose()
+        await server.stop(grace=None)
+
+
+@pytest.mark.asyncio
+async def test_scheduler_store_lazy_init_is_single_flight(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from corlinman_server.scheduler import SchedulerStore
+
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    opened = 0
+    original = SchedulerStore.open.__func__
+
+    async def _open(cls, path, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal opened
+        opened += 1
+        await asyncio.sleep(0)
+        return await original(cls, path, **kwargs)
+
+    monkeypatch.setattr(SchedulerStore, "open", classmethod(_open))
+    servicer = CorlinmanAgentServicer()
+    first, second = await asyncio.gather(
+        servicer._get_scheduler_store(),
+        servicer._get_scheduler_store(),
+    )
+    try:
+        assert first is second
+        assert opened == 1
+    finally:
+        await servicer.aclose()
+
+
+@pytest.mark.asyncio
 async def test_servicer_threads_merged_params_into_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -480,6 +671,39 @@ def test_proto_chat_start_provider_config_maps_provider_hint_to_extra() -> None:
     )
 
     assert start.extra == {"provider_hint": "persona-provider"}
+
+
+def test_proto_chat_start_maps_scheduler_context_separately_from_params() -> None:
+    from corlinman_grpc import agent_pb2
+    from corlinman_server.agent_servicer import _to_agent_start
+
+    start = _to_agent_start(
+        agent_pb2.ChatStart(
+            model="gpt-4o-mini",
+            provider_config_json=json.dumps(
+                {
+                    "scheduler_context": {
+                        "execution_mode": "shadow",
+                        "source_system": "external",
+                        "source_job_id": "job-1",
+                        "occurrence_key": "external:job-1:1234",
+                        "unknown": "discarded",
+                    },
+                    "params": {"reasoning_effort": "high"},
+                }
+            ).encode("utf-8"),
+        )
+    )
+
+    assert start.extra == {
+        "scheduler_context": {
+            "execution_mode": "shadow",
+            "source_system": "external",
+            "source_job_id": "job-1",
+            "occurrence_key": "external:job-1:1234",
+        },
+        "reasoning_effort": "high",
+    }
 
 
 def test_proto_chat_start_provider_config_maps_params_to_extra() -> None:

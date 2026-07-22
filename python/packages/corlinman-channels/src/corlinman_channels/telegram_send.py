@@ -137,6 +137,7 @@ def build_multipart(
     bytes_: bytes,
     caption: str | None,
     content_type: str,
+    message_thread_id: int | None = None,
 ) -> _Multipart:
     """Assemble a minimal ``multipart/form-data`` body.
 
@@ -165,6 +166,16 @@ def build_multipart(
     body.extend(crlf)
     body.extend(str(chat_id).encode())
     body.extend(crlf)
+
+    if message_thread_id is not None:
+        body.extend(dash)
+        body.extend(boundary.encode())
+        body.extend(crlf)
+        body.extend(b'Content-Disposition: form-data; name="message_thread_id"')
+        body.extend(crlf)
+        body.extend(crlf)
+        body.extend(str(message_thread_id).encode())
+        body.extend(crlf)
 
     # caption text part (optional)
     if caption is not None:
@@ -233,6 +244,7 @@ class TelegramSender:
         text: str,
         reply_to_message_id: int | None = None,
         inline_keyboard: list[list[dict[str, str]]] | None = None,
+        message_thread_id: int | None = None,
     ) -> int:
         """POST ``/sendMessage``. Returns the Telegram ``message_id``.
 
@@ -256,6 +268,8 @@ class TelegramSender:
         last_id = 0
         for i, bubble in enumerate(bubbles):
             body: dict[str, object] = {"chat_id": chat_id, "text": bubble}
+            if message_thread_id is not None:
+                body["message_thread_id"] = message_thread_id
             # Only thread reply_to on the first bubble so the chain reads naturally.
             if reply_to_message_id is not None and i == 0:
                 body["reply_to_message_id"] = reply_to_message_id
@@ -304,6 +318,7 @@ class TelegramSender:
         chat_id: int,
         source: PhotoSourceT,
         caption: str | None = None,
+        message_thread_id: int | None = None,
     ) -> int:
         """POST ``/sendPhoto``. URL source uses the simple JSON form;
         local-path source uses multipart upload."""
@@ -311,6 +326,8 @@ class TelegramSender:
             body: dict[str, object] = {"chat_id": chat_id, "photo": source.url}
             if caption is not None:
                 body["caption"] = caption
+            if message_thread_id is not None:
+                body["message_thread_id"] = message_thread_id
             try:
                 resp = await self.client.post(self._endpoint("sendPhoto"), json=body)
             except httpx.HTTPError as exc:
@@ -324,7 +341,15 @@ class TelegramSender:
         except OSError as exc:
             raise SendIoError(str(exc)) from exc
         filename = path.name or "photo.bin"
-        mp = build_multipart(chat_id, "photo", filename, content, caption, "image/jpeg")
+        mp = build_multipart(
+            chat_id,
+            "photo",
+            filename,
+            content,
+            caption,
+            "image/jpeg",
+            message_thread_id=message_thread_id,
+        )
         return await self._post_multipart("sendPhoto", mp)
 
     async def send_voice(

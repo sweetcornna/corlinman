@@ -197,7 +197,12 @@ class TestSender:
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         sender = TelegramSender(client, "TEST")
-        message_id = await sender.send_message(123, "hi", reply_to_message_id=99)
+        message_id = await sender.send_message(
+            123,
+            "hi",
+            reply_to_message_id=99,
+            message_thread_id=13,
+        )
         await client.aclose()
 
         assert message_id == 42
@@ -206,6 +211,7 @@ class TestSender:
         assert b'"chat_id":123' in body
         assert b'"text":"hi"' in body
         assert b'"reply_to_message_id":99' in body
+        assert b'"message_thread_id":13' in body
 
     @pytest.mark.asyncio
     async def test_send_message_surface_api_errors(self) -> None:
@@ -241,13 +247,17 @@ class TestSender:
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         sender = TelegramSender(client, "TEST")
         message_id = await sender.send_photo(
-            42, PhotoSource.Url("https://cdn/cat.jpg"), caption="meow"
+            42,
+            PhotoSource.Url("https://cdn/cat.jpg"),
+            caption="meow",
+            message_thread_id=17,
         )
         await client.aclose()
         assert message_id == 7
         body = recorded[0].read()
         assert b'"photo":"https://cdn/cat.jpg"' in body
         assert b'"caption":"meow"' in body
+        assert b'"message_thread_id":17' in body
 
     @pytest.mark.asyncio
     async def test_send_photo_path_uses_multipart(
@@ -266,7 +276,10 @@ class TestSender:
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         sender = TelegramSender(client, "TEST")
         message_id = await sender.send_photo(
-            42, PhotoSource.Path(photo), caption="hi"
+            42,
+            PhotoSource.Path(photo),
+            caption="hi",
+            message_thread_id=19,
         )
         await client.aclose()
         assert message_id == 11
@@ -276,6 +289,8 @@ class TestSender:
         assert ct.startswith("multipart/form-data; boundary=")
         body = req.read()
         assert b'name="chat_id"' in body
+        assert b'name="message_thread_id"' in body
+        assert b"19" in body
         assert b'name="photo"' in body
         assert b'filename="cat.jpg"' in body
         # Raw image bytes survived the multipart encoder.

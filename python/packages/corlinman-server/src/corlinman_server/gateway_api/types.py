@@ -244,6 +244,14 @@ class InternalChatRequest(BaseModel):
     same persona-scoped state.
     """
 
+    scheduler_context: dict[str, str] = Field(default_factory=dict)
+    """Trusted scheduler-only routing metadata for an internal turn.
+
+    This is transported separately from provider parameters, copied into the
+    agent's internal ``ChatStart.extra`` map, and never forwarded to a model
+    provider. Public HTTP/channel callers leave it empty.
+    """
+
     provider_hint: str | None = None
     """Preferred provider slot for ``model`` resolution.
 

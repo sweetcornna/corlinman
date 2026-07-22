@@ -114,6 +114,20 @@ def _humanlike_initial(
     )
 
 
+def _tencent_policy_enabled(channel_cfg: Mapping[str, Any]) -> bool:
+    """Safety stays enabled unless the operator stored the boolean ``false``."""
+    return channel_cfg.get("freeze_risk_topic_blocking") is not False
+
+
+def _tencent_policy_resolver(channel_cfg: Mapping[str, Any]) -> Any:
+    """Return a callable that re-reads the shared Tencent policy live."""
+
+    def _live_tencent_policy() -> bool:
+        return _tencent_policy_enabled(channel_cfg)
+
+    return _live_tencent_policy
+
+
 def _humanlike_resolver(
     channel_cfg: Mapping[str, Any],
 ) -> Any:
@@ -186,6 +200,7 @@ def _build_qq_params(
         persona_store=persona_store,
         humanlike_resolver=_humanlike_resolver(qq_cfg),
         asset_store=asset_store,
+        tencent_policy_resolver=_tencent_policy_resolver(qq_cfg),
     )
 
 
@@ -326,6 +341,7 @@ def _build_qq_official_params(
     *,
     persona_store: Any = None,
     asset_store: Any = None,
+    tencent_policy_cfg: Mapping[str, Any] | None = None,
 ) -> Any:
     """Build :class:`corlinman_channels.QqOfficialChannelParams` from
     the ``[channels.qq_official]`` config table.
@@ -365,6 +381,9 @@ def _build_qq_official_params(
         persona_store=persona_store,
         humanlike_resolver=_humanlike_resolver(qq_cfg),
         asset_store=asset_store,
+        tencent_policy_resolver=_tencent_policy_resolver(
+            tencent_policy_cfg if tencent_policy_cfg is not None else {}
+        ),
     )
 
 
@@ -699,6 +718,7 @@ def build_channel_tasks(
                 qq_off_cfg, model, chat_service,
                 persona_store=persona_store,
                 asset_store=asset_store,
+                tencent_policy_cfg=qq_cfg,
             )
             task = asyncio.create_task(
                 _run_channel(

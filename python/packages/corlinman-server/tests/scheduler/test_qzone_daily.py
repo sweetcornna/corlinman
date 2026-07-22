@@ -927,6 +927,52 @@ async def test_diversity_on_composes_seed_recent_and_tail(tmp_path: Path) -> Non
     assert posts[-1]["text"] == "今天新说说"
 
 
+async def test_shadow_publish_does_not_write_post_log(tmp_path: Path) -> None:
+    _record_post_log(
+        data_dir=tmp_path,
+        persona_id="grantley",
+        job="j",
+        result={"text": "旧说说"},
+    )
+    store = _FakePersonaStore(
+        {"grantley": _FakePersona(id="grantley", system_prompt="x")}
+    )
+    chat = _ScriptedChatService(
+        events=[
+            _qzone_tool_call(),
+            _qzone_tool_result(
+                payload={
+                    "ok": True,
+                    "shadow": True,
+                    "effect": "qzone_publish",
+                    "text_chars": 4,
+                    "media_suppressed": True,
+                }
+            ),
+            DoneEvent(finish_reason="stop"),
+        ]
+    )
+    app_state = _make_app_state(
+        chat=chat,
+        persona_store=store,
+        metadata={"persona_id": "grantley", "prompt_template": "x"},
+    )
+    app_state.data_dir = tmp_path
+    out = await _qzone_daily_publish_action(
+        BuiltinContext(
+            app_state=app_state,
+            name="grantley.daily_qzone",
+            execution_mode="shadow",
+        )
+    )
+    assert out["ok"] is True
+    assert out["shadow"] is True
+    assert out["delivery_suppressed"] is True
+    posts = _read_post_log(tmp_path / "qzone_post_log" / "grantley.json")
+    assert len(posts) == 1 and posts[0]["text"] == "旧说说"
+    assert chat.requests[0].scheduler_context["execution_mode"] == "shadow"
+
+
 async def test_diversity_off_rolls_back_everything(tmp_path: Path) -> None:
     """diversity=False rolls back to pre-B4 behavior: no seed / recent blocks,
     the plain publish tail, and NO post-log write."""

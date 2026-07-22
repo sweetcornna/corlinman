@@ -41,13 +41,16 @@ from corlinman_server.scheduler.cron import (
 )
 from corlinman_server.scheduler.persistence import (
     SCHEDULER_SCHEMA_SQL,
+    EffectRecord,
     RunRecord,
+    SchedulerEffectConflict,
     SchedulerStore,
     SchedulerStoreConnectError,
     SchedulerStoreError,
 )
 from corlinman_server.scheduler.runner import (
     ActionSpec,
+    DispatchResult,
     JobAction,
     JobSpec,
     SchedulerConfig,
@@ -71,11 +74,14 @@ __all__ = [
     "BuiltinContext",
     # cron
     "CronParseError",
+    "DispatchResult",
+    "EffectRecord",
     "JobAction",
     "JobSpec",
     "RunRecord",
     "Schedule",
     "SchedulerConfig",
+    "SchedulerEffectConflict",
     "SchedulerHandle",
     "SchedulerJob",
     "SchedulerStore",

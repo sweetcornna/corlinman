@@ -54,6 +54,7 @@ from corlinman_channels.service import (
     telegram_record_inbound,
     telegram_record_reply_sent,
 )
+from corlinman_content_policy import QQ_SAFE_REFUSAL_TEXT
 
 # ---------------------------------------------------------------------------
 # Fake chat backend
@@ -106,6 +107,17 @@ class _FakeOneBotAdapter:
 
     async def send_action(self, action: Any) -> None:
         self.sent.append(action)
+
+
+class _MediaBlockingOneBotAdapter(_FakeOneBotAdapter):
+    async def send_action(self, action: Any) -> None:
+        from corlinman_channels.common import TransportError
+        from corlinman_channels.onebot import ImageSegment
+
+        message = getattr(action, "message", [])
+        if any(isinstance(segment, ImageSegment) for segment in message):
+            raise TransportError("tencent_content_policy_blocked")
+        await super().send_action(action)
 
 
 class _FakeTelegramSender:
@@ -626,6 +638,49 @@ class TestHandleOneQq:
         assert seg.file == (
             "base64://" + base64.b64encode(b"\x89PNG\r\n\x1a\nfake").decode("ascii")
         )
+
+    @pytest.mark.asyncio
+    async def test_policy_blocked_attachment_returns_fixed_refusal(
+        self, tmp_path: Any
+    ) -> None:
+        import asyncio
+        import json
+
+        f = tmp_path / "blocked.png"
+        f.write_bytes(b"\x89PNG\r\n\x1a\nblocked")
+        svc = _ScriptedChatService([
+            _Ev(
+                kind="tool_call",
+                plugin="send_attachment",
+                tool="send_attachment",
+                args_json=json.dumps({"path": str(f)}).encode(),
+            ),
+            _Ev(kind="done"),
+        ])
+        ev = _qq_private_event(user_id=20003)
+        req = RoutedRequest(
+            binding=ChannelBinding.qq_private(999, 20003),
+            content="send image",
+        )
+        adapter = _MediaBlockingOneBotAdapter()
+
+        await handle_one_qq(
+            svc, req, ev, "m", adapter, asyncio.Event()  # type: ignore[arg-type]
+        )
+
+        text_sends = [
+            action
+            for action in adapter.sent
+            if isinstance(action, SendPrivateMsg)
+        ]
+        assert len(text_sends) == 1
+        text = "".join(
+            segment.text
+            for segment in text_sends[0].message
+            if isinstance(segment, TextSegment)
+        )
+        assert text == QQ_SAFE_REFUSAL_TEXT
+        assert "blocked.png" not in text
 
     @pytest.mark.asyncio
     async def test_send_attachment_image_group_inline_segment(
@@ -3362,9 +3417,17 @@ class TestHandleOneQqOfficial:
             message_id="msg_c2c_99",
         )
         await handle_one_qq_official(
-            svc, inbound, "m", sender, asyncio.Event()  # type: ignore[arg-type]
+            svc,
+            inbound,
+            "m",
+            sender,
+            asyncio.Event(),
+            params=QqOfficialChannelParams(
+                config={},
+                tencent_policy_resolver=lambda: False,
+            ),
         )
-        # The upload + the image send must both have fired.
+        # Explicitly disabling protection restores the legacy image path.
         assert sender.uploads, "expected upload_c2c_image to be called"
         assert sender.uploads[0][0] == "ou_user_x"
         assert sender.image_sends, "expected send_c2c_image to be called"
@@ -3375,6 +3438,54 @@ class TestHandleOneQqOfficial:
         body = sender.text_sends[0][1]
         assert "已发送图片: chart.png" in body
         assert "see attached" in body
+
+    @pytest.mark.asyncio
+    async def test_enabled_policy_blocks_image_before_read_or_upload(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import asyncio
+        import json as _json
+
+        img = tmp_path / "blocked.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\nsecret")
+        args = _json.dumps({"path": str(img), "filename": "blocked.png"})
+        svc = _ScriptedChatService([
+            _Ev(
+                kind="tool_call",
+                plugin="send_attachment",
+                tool="send_attachment",
+                args_json=args.encode("utf-8"),
+            ),
+            _Ev(kind="done"),
+        ])
+        sender = _FakeQqOfficialSender()
+        inbound = _qq_official_inbound(
+            event_type="C2C_MESSAGE_CREATE",
+            thread="ou_safe",
+            sender="ou_safe",
+            message_id="msg_safe_1",
+        )
+
+        def _deny_read(*_args: Any, **_kwargs: Any) -> bytes:
+            raise AssertionError("protected QQ Official media must not be read")
+
+        monkeypatch.setattr(type(img), "read_bytes", _deny_read)
+        await handle_one_qq_official(
+            svc,
+            inbound,
+            "m",
+            sender,
+            asyncio.Event(),
+            params=QqOfficialChannelParams(
+                config={},
+                tencent_policy_resolver=lambda: True,
+            ),
+        )
+        assert sender.uploads == []
+        assert sender.image_sends == []
+        assert len(sender.text_sends) == 1
+        assert sender.text_sends[0][1] == QQ_SAFE_REFUSAL_TEXT
+        assert "blocked.png" not in sender.text_sends[0][1]
 
     @pytest.mark.asyncio
     async def test_non_image_attachment_renders_unsupported_status(

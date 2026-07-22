@@ -3399,6 +3399,7 @@ export const zhCN = {
     listHint: "多个值用逗号分隔。",
     hint: {
       group_replies_enabled: "关闭后机器人在所有群保持沉默，私聊不受影响。",
+      freeze_risk_topic_blocking: "默认开启并立即生效：拦截色情、暴力、自伤、违法与其他可能触发腾讯风控的话题，同时保护 QQ 官方机器人和 QQ 空间。开启时未分类的图片、语音、视频及定时 QQ 空间配图不会发送。",
       group_whitelist: "只有列出的群会被回复；留空表示所有群静音。",
       group_reply_policy: "默认仅回应 @提及、命令与已配置的关键词。",
       proactive_enabled: "按拟人节奏在群里主动发消息，默认关闭。",
@@ -3444,6 +3445,7 @@ export const zhCN = {
       napcat_url: "NapCat WebUI 地址",
       napcat_access_token: "NapCat WebUI 令牌",
       group_replies_enabled: "群组回复",
+      freeze_risk_topic_blocking: "QQ 风控话题保护",
       group_whitelist: "群组白名单",
       group_reply_policy: "群回复策略",
       group_reply_cooldown_secs: "回复冷却（秒）",

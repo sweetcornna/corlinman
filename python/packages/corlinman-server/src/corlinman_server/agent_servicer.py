@@ -385,6 +385,43 @@ _SUBAGENT_SPAWN_TOOLS: frozenset[str] = frozenset(
     {SUBAGENT_SPAWN_TOOL, SUBAGENT_SPAWN_MANY_TOOL, SUBAGENT_SPAWN_INLINE_TOOL}
 )
 
+_SCHEDULER_SHADOW_READ_ONLY_TOOLS: frozenset[str] = frozenset(
+    {
+        WEB_FETCH_TOOL,
+        WEB_SEARCH_TOOL,
+        CALCULATOR_TOOL,
+        VISION_ANALYZE_TOOL,
+        PERSONA_LIST_TOOL,
+        PERSONA_GET_TOOL,
+        PERSONA_LIST_ASSETS_TOOL,
+        PERSONA_LIFE_GET_TOOL,
+        PERSONA_LIFE_GET_SEEDS_TOOL,
+        QZONE_LIST_FEED_TOOL,
+        QZONE_GET_POST_TOOL,
+        QZONE_LIST_FRIENDS_TOOL,
+        MEMORY_READ_TOOL,
+        BLACKBOARD_READ_TOOL,
+        SKILL_TOOL,
+    }
+)
+
+# These two dispatchers inspect ``execution_mode`` before image generation,
+# OneBot auth, file access, effect reservation, or HTTP. Let them execute so
+# scheduled QZone builtins can harvest their planned-effect envelopes while
+# every other effectful tool remains suppressed by the generic shadow gate.
+_SCHEDULER_SHADOW_SIMULATOR_TOOLS: frozenset[str] = frozenset(
+    {QZONE_PUBLISH_TOOL, QZONE_POST_COMMENT_TOOL}
+)
+
+
+def _scheduler_shadow(start: AgentChatStart) -> bool:
+    extra = getattr(start, "extra", None) or {}
+    if not isinstance(extra, Mapping):
+        return False
+    context = extra.get("scheduler_context")
+    return isinstance(context, Mapping) and context.get("execution_mode") == "shadow"
+
+
 _SUBAGENT_POLICY_KEYS: tuple[str, ...] = (
     "max_concurrent_per_parent",
     "max_concurrent_per_tenant",
@@ -1170,6 +1207,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         event_emitter: Any | None = None,
         subagent_dispatcher: Any | None = None,
         subagent_config: Mapping[str, Any] | None = None,
+        tencent_policy_resolver: Any | None = None,
     ) -> None:
         """Construct the servicer.
 
@@ -1226,6 +1264,10 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # corlinman_subagent import lazy.
         self._subagent_supervisor: Any | None = None
         self._subagent_config: dict[str, Any] = dict(subagent_config or {})
+        self._tencent_policy_resolver = tencent_policy_resolver
+        self._scheduler_store: Any | None = None
+        self._scheduler_store_init_done: bool = False
+        self._scheduler_store_init_lock = asyncio.Lock()
         # v0.7.1 warm pool. Operators can call ``prewarm_providers`` at
         # boot to resolve known aliases before the first user request;
         # the SDK auth handshake then happens off the hot path. The
@@ -1441,6 +1483,12 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # here (alias-level ``tools = false`` wins over the provider's
         # ``supports_tools``) so it never reaches the SDK call body.
         tools_param = merged_params.pop("tools", None)
+        scheduler_context = (start.extra or {}).get("scheduler_context")
+        if (
+            isinstance(scheduler_context, Mapping)
+            and scheduler_context.get("tools_disabled") == "true"
+        ):
+            tools_param = False
         start.model = upstream_model
         _apply_merged_params(start, merged_params)
         # T3.5: surface the session key as the Responses API prompt-cache
@@ -1907,6 +1955,32 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     )
                     seq += 1
                 elif isinstance(event, ToolCallEvent):
+                    if (
+                        _scheduler_shadow(start)
+                        and event.tool not in _SCHEDULER_SHADOW_READ_ONLY_TOOLS
+                        and event.tool not in _SCHEDULER_SHADOW_SIMULATOR_TOOLS
+                    ):
+                        suppressed = json.dumps(
+                            {
+                                "ok": True,
+                                "shadow": True,
+                                "effect_suppressed": True,
+                                "tool": event.tool,
+                            }
+                        )
+                        logger.info(
+                            "agent.scheduler_shadow.tool_suppressed",
+                            tool=event.tool,
+                            call_id=event.call_id,
+                        )
+                        loop.feed_tool_result(
+                            ToolResult(
+                                call_id=event.call_id,
+                                content=suppressed,
+                                is_error=False,
+                            )
+                        )
+                        continue
                     if event.tool in BUILTIN_TOOLS:
                         # Builtin tools (subagent_spawn{,_many}, blackboard.*,
                         # web/calc/coding) are dispatched in-process — the
@@ -1931,12 +2005,15 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                             )
                         )
                         seq += 1
-                        logger.info(
-                            "agent.tool.dispatch",
-                            tool=event.tool,
-                            call_id=event.call_id,
-                            args=event.args_json.decode("utf-8", "replace")[:200],
-                        )
+                        log_fields: dict[str, Any] = {
+                            "tool": event.tool,
+                            "call_id": event.call_id,
+                        }
+                        if not _scheduler_shadow(start):
+                            log_fields["args"] = event.args_json.decode(
+                                "utf-8", "replace"
+                            )[:200]
+                        logger.info("agent.tool.dispatch", **log_fields)
                         _dispatch_started_at = time.monotonic()
                         # W3.1 — emit ToolStateRunning before dispatch,
                         # ToolStateHeartbeat every 10s while running,
@@ -2096,14 +2173,15 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                                         pass
                         except (json.JSONDecodeError, TypeError, ValueError):
                             pass
-                        logger.info(
-                            "agent.tool.result",
-                            tool=event.tool,
-                            call_id=event.call_id,
-                            result=result_json[:200],
-                            duration_ms=_dispatch_dur_ms,
-                            is_error=_result_is_error,
-                        )
+                        result_log_fields: dict[str, Any] = {
+                            "tool": event.tool,
+                            "call_id": event.call_id,
+                            "duration_ms": _dispatch_dur_ms,
+                            "is_error": _result_is_error,
+                        }
+                        if not _scheduler_shadow(start):
+                            result_log_fields["result"] = result_json[:200]
+                        logger.info("agent.tool.result", **result_log_fields)
                         # Companion observation frame — channels render
                         # this as the "tool finished" line on the mutable
                         # spinner. Same sentinel pattern as the in-process
@@ -2605,6 +2683,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             ("memory_kernel", self._memory_kernel),
             ("blackboard_store", self._blackboard_store),
             ("persona_state_store", self._persona_state_store),
+            ("scheduler_store", self._scheduler_store),
             ("inbox", getattr(self, "_inbox", None)),
             ("hook_bus", self._hook_bus),
         ]
@@ -2635,6 +2714,39 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         self._blackboard_store = None
         self._persona_state_store = None
         self._persona_state_store_init_done = True
+        self._scheduler_store = None
+        self._scheduler_store_init_done = True
+
+    async def _get_scheduler_store(self) -> Any | None:
+        """Open the shared scheduler effect store in this agent process."""
+        if self._scheduler_store is not None:
+            return self._scheduler_store
+        if self._scheduler_store_init_done or self._closing:
+            return None
+        async with self._scheduler_store_init_lock:
+            if self._scheduler_store is not None:
+                return self._scheduler_store
+            if self._scheduler_store_init_done or self._closing:
+                return None
+            try:
+                from corlinman_server.scheduler import SchedulerStore
+
+                store = await SchedulerStore.open(
+                    _resolve_data_dir() / "scheduler.sqlite"
+                )
+            except Exception as exc:  # noqa: BLE001 — tool dispatch fails closed
+                logger.warning(
+                    "agent.scheduler_store.open_failed",
+                    error_type=type(exc).__name__,
+                )
+                return None
+            if self._closing:
+                with contextlib.suppress(Exception):
+                    await store.close()
+                return None
+            self._scheduler_store = store
+            self._scheduler_store_init_done = True
+            return store
 
     # ------------------------------------------------------------------
     # T3.2 — hook bus emitters (no-op when no bus is configured)
@@ -3780,8 +3892,28 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                         provider,
                     )
                 )
+                scheduler_context = qz_extra.get("scheduler_context")
+                scheduler_context = (
+                    dict(scheduler_context)
+                    if isinstance(scheduler_context, Mapping)
+                    else {}
+                )
+                execution_mode = (
+                    "shadow"
+                    if scheduler_context.get("execution_mode") == "shadow"
+                    or qz_extra.get("scheduler_execution_mode") == "shadow"
+                    else "live"
+                )
                 return await dispatch_qzone_publish(
                     args_json=event.args_json,
+                    policy_resolver=self._tencent_policy_resolver,
+                    execution_mode=execution_mode,
+                    scheduler_store=(
+                        await self._get_scheduler_store()
+                        if scheduler_context and execution_mode == "live"
+                        else None
+                    ),
+                    effect_context=scheduler_context or None,
                     image_with_refs_dispatcher=dispatch_image_with_refs,
                     image_with_refs_kwargs={
                         "provider": qz_image_provider,
@@ -3798,13 +3930,45 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 # dispatcher) — no persona binding needed, these operate on
                 # the bound QQ account itself, not a persona.
                 if event.tool == QZONE_LIST_FEED_TOOL:
-                    return await dispatch_qzone_list_feed(args_json=event.args_json)
+                    return await dispatch_qzone_list_feed(
+                        args_json=event.args_json,
+                        policy_resolver=self._tencent_policy_resolver,
+                    )
                 if event.tool == QZONE_GET_POST_TOOL:
-                    return await dispatch_qzone_get_post(args_json=event.args_json)
+                    return await dispatch_qzone_get_post(
+                        args_json=event.args_json,
+                        policy_resolver=self._tencent_policy_resolver,
+                    )
                 if event.tool == QZONE_POST_COMMENT_TOOL:
-                    return await dispatch_qzone_post_comment(args_json=event.args_json)
+                    qz_extra = getattr(start, "extra", None) or {}
+                    scheduler_context = qz_extra.get("scheduler_context")
+                    scheduler_context = (
+                        dict(scheduler_context)
+                        if isinstance(scheduler_context, Mapping)
+                        else {}
+                    )
+                    execution_mode = (
+                        "shadow"
+                        if scheduler_context.get("execution_mode") == "shadow"
+                        or qz_extra.get("scheduler_execution_mode") == "shadow"
+                        else "live"
+                    )
+                    return await dispatch_qzone_post_comment(
+                        args_json=event.args_json,
+                        policy_resolver=self._tencent_policy_resolver,
+                        execution_mode=execution_mode,
+                        scheduler_store=(
+                            await self._get_scheduler_store()
+                            if scheduler_context and execution_mode == "live"
+                            else None
+                        ),
+                        effect_context=scheduler_context or None,
+                    )
                 if event.tool == QZONE_LIST_FRIENDS_TOOL:
-                    return await dispatch_qzone_list_friends(args_json=event.args_json)
+                    return await dispatch_qzone_list_friends(
+                        args_json=event.args_json,
+                        policy_resolver=self._tencent_policy_resolver,
+                    )
             if (
                 event.tool in MEMORY_TOOLS
                 or event.tool == MEMORY_WRITE_TOOL
@@ -6692,6 +6856,9 @@ def _to_agent_start(pb_start: agent_pb2.ChatStart) -> AgentChatStart:
     provider_hint = _provider_hint_from_provider_config(provider_config_json)
     if provider_hint is not None:
         extra["provider_hint"] = provider_hint
+    scheduler_context = _scheduler_context_from_provider_config(provider_config_json)
+    if scheduler_context is not None:
+        extra["scheduler_context"] = scheduler_context
     start = AgentChatStart(
         model=pb_start.model,
         messages=messages,
@@ -6731,6 +6898,28 @@ def _provider_params_from_provider_config(raw: bytes) -> dict[str, Any]:
         return {}
     params = obj.get("params")
     return dict(params) if isinstance(params, Mapping) else {}
+
+
+def _scheduler_context_from_provider_config(raw: bytes) -> dict[str, str] | None:
+    obj = _provider_config_from_json(raw)
+    if obj is None:
+        return None
+    value = obj.get("scheduler_context")
+    if not isinstance(value, Mapping):
+        return None
+    allowed = {
+        "execution_mode",
+        "source_system",
+        "source_job_id",
+        "occurrence_key",
+        "tools_disabled",
+    }
+    clean = {
+        str(key): str(item)
+        for key, item in value.items()
+        if key in allowed and isinstance(item, str) and item
+    }
+    return clean or None
 
 
 def _provider_hint_from_extra(extra: Mapping[str, Any] | None) -> str | None:

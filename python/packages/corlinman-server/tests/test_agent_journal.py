@@ -48,6 +48,75 @@ async def test_error_turn_records_breadcrumb(journal: AgentJournal) -> None:
     assert "BANG" in crumbs[0]["error"]
 
 
+async def test_query_messages_filters_scope_and_orders_by_turn_and_seq(
+    journal: AgentJournal,
+) -> None:
+    first = await journal.begin_turn(
+        "telegram:topic-alpha",
+        "first",
+        user_id="owner",
+        channel="telegram",
+        tenant_id="tenant-a",
+    )
+    second = await journal.begin_turn(
+        "qq:group-1",
+        "second",
+        user_id="owner",
+        channel="qq",
+        tenant_id="tenant-a",
+    )
+    other = await journal.begin_turn(
+        "telegram:topic-alpha",
+        "other",
+        user_id="other",
+        channel="telegram",
+        tenant_id="tenant-a",
+    )
+    assert first is not None and second is not None and other is not None
+    await journal.append_message(first, "user", "first-user")
+    await journal.append_message(first, "assistant", "first-assistant")
+    await journal.append_message(second, "user", "second-user")
+    await journal.append_message(other, "user", "other-user")
+
+    import aiosqlite
+
+    async with aiosqlite.connect(journal._path) as conn:
+        await conn.execute(
+            "UPDATE turns SET started_at_ms = ? WHERE turn_id = ?",
+            (1000, first),
+        )
+        await conn.execute(
+            "UPDATE turns SET started_at_ms = ? WHERE turn_id = ?",
+            (2000, second),
+        )
+        await conn.execute(
+            "UPDATE turns SET started_at_ms = ? WHERE turn_id = ?",
+            (1500, other),
+        )
+        await conn.commit()
+
+    rows = await journal.query_messages(
+        start_ms=900,
+        end_ms=2100,
+        roles=["user", "assistant"],
+        channels=["telegram", "qq"],
+        tenant_id="tenant-a",
+        user_id="owner",
+    )
+    assert [(row["started_at_ms"], row["seq"], row["content"]) for row in rows] == [
+        (1000, 0, "first-user"),
+        (1000, 1, "first-assistant"),
+        (2000, 0, "second-user"),
+    ]
+
+    session_rows = await journal.query_messages(
+        start_ms=0,
+        end_ms=3000,
+        session_key="qq:group-1",
+    )
+    assert [row["content"] for row in session_rows] == ["second-user"]
+
+
 async def test_append_and_load_messages_round_trip(
     journal: AgentJournal,
 ) -> None:

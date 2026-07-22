@@ -134,6 +134,7 @@ from corlinman_server.gateway.lifecycle.config_resolve import (
 from corlinman_server.gateway.lifecycle.legacy_migration import (
     migrate_legacy_data_files,
 )
+from corlinman_server.gateway.lifecycle.py_config import DEFAULT_PY_CONFIG_FILENAME
 from corlinman_server.gateway.lifecycle.scheduler_integration import (
     DEFAULT_UPDATE_CHECK_JOB_NAME,
     _effective_scheduler_config,
@@ -146,6 +147,11 @@ from corlinman_server.gateway.lifecycle.scheduler_integration import (
 )
 
 logger = structlog.get_logger(__name__)
+
+# ``build_app`` may be called repeatedly in one process by tests or embedding
+# hosts. Track only the value this module injected so a later call can follow
+# its newly resolved data dir without overriding an operator-set env path.
+_MANAGED_PY_CONFIG_ENV: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -322,6 +328,18 @@ def build_app(
 
     cfg = _load_config(config_path)
     resolved_data_dir = data_dir or _resolve_data_dir(None, cfg)
+    # ``default_py_config_path`` is environment-based because the standalone
+    # agent process cannot see this function's CLI arguments. Pin the resolved
+    # path before rendering so ``--data-dir`` / ``[server].data_dir`` keep the
+    # gateway and agent sidecar on the same file without mutating the operator's
+    # global ``CORLINMAN_DATA_DIR``.
+    global _MANAGED_PY_CONFIG_ENV
+    current_py_config = os.environ.get("CORLINMAN_PY_CONFIG")
+    if current_py_config is None or current_py_config == _MANAGED_PY_CONFIG_ENV:
+        _MANAGED_PY_CONFIG_ENV = str(
+            resolved_data_dir / DEFAULT_PY_CONFIG_FILENAME
+        )
+        os.environ["CORLINMAN_PY_CONFIG"] = _MANAGED_PY_CONFIG_ENV
 
     # Stamp the boot-resolved dir onto the (stateless) /v1/files route so
     # the chat file store lives in the SAME tree as the journal / session
@@ -452,6 +470,7 @@ def build_app(
                 _ps = await PersonaStore.open(resolved_data_dir / "personas.sqlite")
                 await seed_builtin_personas(_ps)
                 admin_a_state.persona_store = _ps
+                app.state.corlinman_persona_store = _ps
                 logger.info("gateway.persona_store.opened")
             except Exception as exc:  # pragma: no cover — best-effort
                 logger.warning("gateway.persona_store.init_failed", error=str(exc))
@@ -470,6 +489,7 @@ def build_app(
                     resolved_data_dir / "personas",
                 )
                 admin_a_state.persona_asset_store = _pas
+                app.state.corlinman_persona_asset_store = _pas
                 logger.info("gateway.persona_asset_store.opened")
             except Exception as exc:  # pragma: no cover — best-effort
                 logger.warning(
@@ -1600,7 +1620,8 @@ def build_app(
                         from corlinman_server.scheduler import SchedulerStore
 
                         _sched_store = await SchedulerStore.open(
-                            resolved_data_dir / "scheduler.sqlite"
+                            resolved_data_dir / "scheduler.sqlite",
+                            reconcile_prepared=True,
                         )
                         app.state.scheduler_store = _sched_store
                         logger.info(
@@ -1671,6 +1692,22 @@ def build_app(
             yield
         finally:
             cancel.set()
+            teardown_scheduler_handle = getattr(
+                app.state, "corlinman_scheduler_handle", None
+            )
+            if teardown_scheduler_handle is not None:
+                try:
+                    async with asyncio.timeout(5.0):
+                        await asyncio.shield(
+                            teardown_scheduler_handle.join_all()
+                        )
+                except TimeoutError:
+                    for task in teardown_scheduler_handle.tasks:
+                        task.cancel()
+                    with suppress(Exception):
+                        await teardown_scheduler_handle.join_all()
+                except Exception:
+                    pass
             for task in background:
                 task.cancel()
             for task in background:
@@ -1736,6 +1773,8 @@ def build_app(
             for _attr, _label in (
                 ("corlinman_identity_store", "identity.store"),
                 ("corlinman_persona_state_store", "persona.state_store"),
+                ("corlinman_persona_store", "persona.store"),
+                ("corlinman_persona_asset_store", "persona.asset_store"),
                 ("scheduler_store", "scheduler.store"),
             ):
                 _handle = getattr(app.state, _attr, None)

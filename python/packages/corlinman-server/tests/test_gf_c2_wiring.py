@@ -241,6 +241,8 @@ async def test_catch_up_fires_missed_run(tmp_path: Path) -> None:
     assert fired == ["catchup-test"], (
         "catch-up should fire the missed per-minute firing once"
     )
+    assert rows[0].scheduled_for_ms is not None
+    assert rows[0].occurrence_key == f"corlinman:catchup-test:{rows[0].scheduled_for_ms}"
 
     # A second catch-up must NOT re-fire — the last recorded run now
     # covers the most-recent due firing.

@@ -20,6 +20,8 @@ dependencies = [
     # runner.run_child accepts persona_store=None for callers that don't
     # need persona accounting (unit tests).
     "corlinman-persona",
+    "corlinman-content-policy",
+    "websockets>=13",
 ]
 
 [tool.uv.sources]
@@ -27,6 +29,7 @@ corlinman-grpc = { workspace = true }
 corlinman-providers = { workspace = true }
 corlinman-tagmemo = { workspace = true }
 corlinman-persona = { workspace = true }
+corlinman-content-policy = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

@@ -154,6 +154,8 @@ async def test_internal_chat_extra_is_not_forwarded_to_provider() -> None:
                     "sender": "7",
                 },
                 "provider_hint": "persona-provider",
+                "scheduler_execution_mode": "shadow",
+                "scheduler_context": {"occurrence_key": "external:job:123"},
                 "prompt_cache_key": "session-1",
                 "top_p": 0.8,
                 "reasoning_effort": "low",

@@ -83,6 +83,7 @@ from corlinman_server.scheduler.builtins.registry import (
     BUILTIN_ACTIONS,
     BuiltinAction,
     BuiltinContext,
+    load_private_builtin_modules,
     register_builtin,
     run_builtin,
 )
@@ -90,6 +91,8 @@ from corlinman_server.scheduler.builtins.system_update_check import (
     _resolve_update_checker,
     _system_update_check_action,
 )
+
+load_private_builtin_modules()
 
 __all__ = [
     "BUILTIN_ACTIONS",
@@ -115,6 +118,7 @@ __all__ = [
     "_qzone_reply_comments_action",
     "_resolve_update_checker",
     "_system_update_check_action",
+    "load_private_builtin_modules",
     "register_builtin",
     "run_builtin",
 ]

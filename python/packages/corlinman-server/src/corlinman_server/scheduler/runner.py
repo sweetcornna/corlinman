@@ -42,7 +42,7 @@ import time
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -217,6 +217,10 @@ class JobSpec:
     action: ActionSpec
     tz: ZoneInfo | None = None
     jitter_secs: int = 0
+    metadata: Mapping[str, object] = field(default_factory=dict)
+    execution_mode: str = "live"
+    source_system: str | None = None
+    source_job_id: str | None = None
 
     @classmethod
     def from_config(cls, job: SchedulerJob) -> JobSpec | None:
@@ -444,7 +448,25 @@ async def run_subprocess(
 # ---------------------------------------------------------------------------
 
 
-async def dispatch(spec: JobSpec, bus: HookBus, app_state: object | None = None) -> None:
+@dataclass(frozen=True)
+class DispatchResult:
+    run_id: str
+    ok: bool
+    action_kind: str
+    result: Mapping[str, object] = field(default_factory=dict)
+    error_kind: str | None = None
+    execution_mode: str = "live"
+    scheduled_for_ms: int | None = None
+    occurrence_key: str | None = None
+
+
+async def dispatch(
+    spec: JobSpec,
+    bus: HookBus,
+    app_state: object | None = None,
+    *,
+    scheduled_for_ms: int | None = None,
+) -> DispatchResult:
     """Run a single firing of ``spec`` and emit the matching hook event.
 
     Public so an admin "fire now" endpoint can reuse it later (the Rust
@@ -466,6 +488,11 @@ async def dispatch(spec: JobSpec, bus: HookBus, app_state: object | None = None)
     scheduler is owned by the gateway lifecycle.
     """
     run_id = uuid.uuid4().hex
+    occurrence_ms = scheduled_for_ms
+    occurrence_key = (
+        f"{spec.source_system or 'corlinman'}:"
+        f"{spec.source_job_id or spec.name}:{occurrence_ms or run_id}"
+    )
     if spec.action.kind == "subprocess":
         _logger.info(
             "scheduler: subprocess job firing",
@@ -496,8 +523,19 @@ async def dispatch(spec: JobSpec, bus: HookBus, app_state: object | None = None)
             error_kind=_err_kind,
             exit_code=outcome.exit_code,
             duration_ms=int(outcome.duration_secs * 1000),
+            execution_mode=spec.execution_mode,
+            scheduled_for_ms=occurrence_ms,
+            occurrence_key=occurrence_key,
         )
-        return
+        return DispatchResult(
+            run_id=run_id,
+            ok=outcome.kind is SubprocessOutcomeKind.SUCCESS,
+            action_kind="subprocess",
+            error_kind=_err_kind,
+            execution_mode=spec.execution_mode,
+            scheduled_for_ms=occurrence_ms,
+            occurrence_key=occurrence_key,
+        )
 
     if spec.action.kind == "run_tool":
         # Local import keeps the builtins package out of the scheduler
@@ -518,7 +556,15 @@ async def dispatch(spec: JobSpec, bus: HookBus, app_state: object | None = None)
                 extra={"job": spec.name, "run_id": run_id, "plugin": plugin, "tool": tool},
             )
             await _emit_failed(bus, run_id, "unsupported_action", None)
-            return
+            return DispatchResult(
+                run_id,
+                False,
+                "run_tool",
+                error_kind="unsupported_action",
+                execution_mode=spec.execution_mode,
+                scheduled_for_ms=occurrence_ms,
+                occurrence_key=occurrence_key,
+            )
 
         builtin_name = f"{plugin}.{tool}"
         if builtin_name not in BUILTIN_ACTIONS:
@@ -527,14 +573,32 @@ async def dispatch(spec: JobSpec, bus: HookBus, app_state: object | None = None)
                 extra={"job": spec.name, "run_id": run_id, "builtin_name": builtin_name},
             )
             await _emit_failed(bus, run_id, "unsupported_action", None)
-            return
+            return DispatchResult(
+                run_id,
+                False,
+                "run_tool",
+                error_kind="unsupported_action",
+                execution_mode=spec.execution_mode,
+                scheduled_for_ms=occurrence_ms,
+                occurrence_key=occurrence_key,
+            )
 
         _logger.info(
             "scheduler: run_tool job firing",
             extra={"job": spec.name, "run_id": run_id, "builtin_name": builtin_name},
         )
         started = time.monotonic()
-        ctx = BuiltinContext(app_state=app_state, run_id=run_id, name=spec.name)
+        ctx = BuiltinContext(
+            app_state=app_state,
+            run_id=run_id,
+            name=spec.name,
+            metadata=dict(spec.metadata),
+            execution_mode=spec.execution_mode,
+            scheduled_for_ms=occurrence_ms,
+            occurrence_key=occurrence_key,
+            source_system=spec.source_system,
+            source_job_id=spec.source_job_id,
+        )
         # ``run_builtin`` is documented as never-raising — it wraps any
         # exception into a ``{"ok": False, "reason": ...}`` envelope. Use
         # it (rather than calling the action directly) so the contract
@@ -576,8 +640,21 @@ async def dispatch(spec: JobSpec, bus: HookBus, app_state: object | None = None)
             error_kind=None if _ok else "builtin_not_ok",
             exit_code=None,
             duration_ms=duration_ms,
+            result=result,
+            execution_mode=spec.execution_mode,
+            scheduled_for_ms=occurrence_ms,
+            occurrence_key=occurrence_key,
         )
-        return
+        return DispatchResult(
+            run_id=run_id,
+            ok=_ok,
+            action_kind="run_tool",
+            result=result,
+            error_kind=None if _ok else "builtin_not_ok",
+            execution_mode=spec.execution_mode,
+            scheduled_for_ms=occurrence_ms,
+            occurrence_key=occurrence_key,
+        )
 
     if spec.action.kind == "run_agent":
         # WP15: run_agent dispatch — invoke the agent runner when one
@@ -600,7 +677,15 @@ async def dispatch(spec: JobSpec, bus: HookBus, app_state: object | None = None)
                 extra={"job": spec.name, "run_id": run_id},
             )
             await _emit_failed(bus, run_id, "run_agent_empty_prompt", None)
-            return
+            return DispatchResult(
+                run_id,
+                False,
+                "run_agent",
+                error_kind="run_agent_empty_prompt",
+                execution_mode=spec.execution_mode,
+                scheduled_for_ms=occurrence_ms,
+                occurrence_key=occurrence_key,
+            )
 
         runner_fn = None
         if app_state is not None:
@@ -615,7 +700,15 @@ async def dispatch(spec: JobSpec, bus: HookBus, app_state: object | None = None)
                 extra={"job": spec.name, "run_id": run_id},
             )
             await _emit_failed(bus, run_id, "runner_not_registered", None)
-            return
+            return DispatchResult(
+                run_id,
+                False,
+                "run_agent",
+                error_kind="runner_not_registered",
+                execution_mode=spec.execution_mode,
+                scheduled_for_ms=occurrence_ms,
+                occurrence_key=occurrence_key,
+            )
 
         _logger.info(
             "scheduler: run_agent job firing",
@@ -623,17 +716,18 @@ async def dispatch(spec: JobSpec, bus: HookBus, app_state: object | None = None)
         )
         started = time.monotonic()
         _agent_err: str | None = None
+        agent_result: object = {}
         try:
-            result = await runner_fn(prompt)
+            agent_result = await runner_fn(prompt)
             duration_ms = int((time.monotonic() - started) * 1000)
             # The wired ``agent_runner_fn`` returns a result dict carrying
             # an ``ok`` flag (chat_service_unavailable / chat_error fold
             # into ``ok: False``). Honour it so a soft failure surfaces as
             # EngineRunFailed rather than masquerading as a completed run.
             _ok = True
-            if isinstance(result, dict) and result.get("ok") is False:
+            if isinstance(agent_result, dict) and agent_result.get("ok") is False:
                 _ok = False
-                _agent_err = str(result.get("error") or "run_agent_failed")
+                _agent_err = str(agent_result.get("error") or "run_agent_failed")
             if _ok:
                 _logger.info(
                     "scheduler: run_agent job completed",
@@ -641,7 +735,7 @@ async def dispatch(spec: JobSpec, bus: HookBus, app_state: object | None = None)
                         "job": spec.name,
                         "run_id": run_id,
                         "duration_ms": duration_ms,
-                        "result_type": type(result).__name__,
+                        "result_type": type(agent_result).__name__,
                     },
                 )
                 agent_event: _HookEventBase = HookEvent.EngineRunCompleted(
@@ -652,7 +746,7 @@ async def dispatch(spec: JobSpec, bus: HookBus, app_state: object | None = None)
                 # restart-broadcast uses) so an operator sees scheduled-run
                 # output. A future outbound-handle wave routes through here.
                 _reply = (
-                    result.get("reply") if isinstance(result, dict) else None
+                    agent_result.get("reply") if isinstance(agent_result, dict) else None
                 )
                 if isinstance(_reply, str) and _reply.strip():
                     _logger.info(
@@ -702,6 +796,10 @@ async def dispatch(spec: JobSpec, bus: HookBus, app_state: object | None = None)
             error_kind=_agent_err,
             exit_code=None,
             duration_ms=duration_ms,
+            result=agent_result if isinstance(agent_result, dict) else {},
+            execution_mode=spec.execution_mode,
+            scheduled_for_ms=occurrence_ms,
+            occurrence_key=occurrence_key,
         )
         try:
             await bus.emit(agent_event)
@@ -710,7 +808,16 @@ async def dispatch(spec: JobSpec, bus: HookBus, app_state: object | None = None)
                 "scheduler: hook emit failed",
                 extra={"job": spec.name, "run_id": run_id, "error": str(exc)},
             )
-        return
+        return DispatchResult(
+            run_id=run_id,
+            ok=_agent_err is None,
+            action_kind="run_agent",
+            result=agent_result if isinstance(agent_result, dict) else {},
+            error_kind=_agent_err,
+            execution_mode=spec.execution_mode,
+            scheduled_for_ms=occurrence_ms,
+            occurrence_key=occurrence_key,
+        )
 
     # Unknown action kind — surface as unsupported_action on the bus so the
     # gateway's evolution observer sees the failure rather than a silent drop.
@@ -719,6 +826,15 @@ async def dispatch(spec: JobSpec, bus: HookBus, app_state: object | None = None)
         extra={"job": spec.name, "run_id": run_id, "kind": spec.action.kind},
     )
     await _emit_failed(bus, run_id, "unsupported_action", None)
+    return DispatchResult(
+        run_id,
+        False,
+        spec.action.kind,
+        error_kind="unsupported_action",
+        execution_mode=spec.execution_mode,
+        scheduled_for_ms=occurrence_ms,
+        occurrence_key=occurrence_key,
+    )
 
 
 async def _emit_outcome(bus: HookBus, job: str, run_id: str, outcome: SubprocessOutcome) -> None:
@@ -800,6 +916,10 @@ async def _maybe_record(
     error_kind: str | None,
     exit_code: int | None,
     duration_ms: int,
+    result: Mapping[str, object] | None = None,
+    execution_mode: str = "live",
+    scheduled_for_ms: int | None = None,
+    occurrence_key: str | None = None,
 ) -> None:
     """Persist a firing to the SchedulerStore parked on ``app_state``.
 
@@ -824,6 +944,10 @@ async def _maybe_record(
             error_kind=error_kind,
             exit_code=exit_code,
             duration_ms=duration_ms,
+            result_json=result,
+            execution_mode=execution_mode,
+            scheduled_for_ms=scheduled_for_ms,
+            occurrence_key=occurrence_key,
         )
     except Exception as exc:  # noqa: BLE001 — history is never load-bearing
         _logger.warning(
@@ -1134,7 +1258,12 @@ async def _maybe_catch_up(
             "missed_age_secs": int(missed_age),
         },
     )
-    await dispatch(spec, bus, app_state)
+    await dispatch(
+        spec,
+        bus,
+        app_state,
+        scheduled_for_ms=int(last_due.timestamp() * 1000),
+    )
 
 
 def _stop_requested(
@@ -1228,7 +1357,12 @@ async def _run_job_loop(
                 "scheduler: cancelled before fire; exiting", extra={"job": spec.name}
             )
             return
-        await dispatch(spec, bus, app_state)
+        await dispatch(
+            spec,
+            bus,
+            app_state,
+            scheduled_for_ms=int(nxt.timestamp() * 1000),
+        )
 
 
 def spawn(
@@ -1284,6 +1418,10 @@ def runtime_job_spec(
     action_type: str,
     timezone: str | None = None,
     jitter_secs: int = 0,
+    metadata: Mapping[str, object] | None = None,
+    execution_mode: str = "live",
+    source_system: str | None = None,
+    source_job_id: str | None = None,
 ) -> JobSpec | None:
     """Build a :class:`JobSpec` for a runtime (admin-created) job.
 
@@ -1323,11 +1461,16 @@ def runtime_job_spec(
         action=ActionSpec(kind="run_tool", plugin=plugin, tool=tool),
         tz=_resolve_job_tz(name, timezone),
         jitter_secs=max(0, jitter_secs),
+        metadata=dict(metadata or {}),
+        execution_mode="shadow" if execution_mode == "shadow" else "live",
+        source_system=source_system,
+        source_job_id=source_job_id,
     )
 
 
 __all__ = [
     "ActionSpec",
+    "DispatchResult",
     "JobAction",
     "JobSpec",
     "SchedulerConfig",

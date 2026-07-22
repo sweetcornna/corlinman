@@ -18,9 +18,14 @@ CREATE TABLE IF NOT EXISTS journal_turns (
     session_key   TEXT   NOT NULL,
     status        TEXT   NOT NULL,
     started_at_ms BIGINT NOT NULL,
-    ended_at_ms   BIGINT,
-    user_text     TEXT,
-    error         TEXT
+    ended_at_ms           BIGINT,
+    user_text             TEXT,
+    error                 TEXT,
+    elapsed_ms            BIGINT,
+    estimated_cost_usd    DOUBLE PRECISION,
+    cost_status           TEXT,
+    tool_call_count       INTEGER NOT NULL DEFAULT 0,
+    reasoning_token_count INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS journal_turns_session_status_idx

@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import re
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -143,6 +144,9 @@ class JobOut(BaseModel):
     # path stays metadata (``body.metadata.max_replies`` etc.).
     max_replies: int | None = None
     lookback_posts: int | None = None
+    execution_mode: str = "live"
+    source_system: str | None = None
+    source_job_id: str | None = None
     last_run_at_ms: int | None = None
     last_run_ok: bool | None = None
     last_qzone_url: str | None = None
@@ -182,6 +186,9 @@ class NewJobBody(BaseModel):
     image_ref_labels: list[str] | None = None
     jitter_minutes: int | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    execution_mode: str = "live"
+    source_system: str | None = None
+    source_job_id: str | None = None
 
 
 class EditJobBody(BaseModel):
@@ -205,6 +212,7 @@ class EditJobBody(BaseModel):
     image_ref_labels: list[str] | None = None
     jitter_minutes: int | None = None
     metadata: dict[str, Any] | None = None
+    execution_mode: str | None = None
 
 
 @dataclass
@@ -224,6 +232,9 @@ class _RuntimeJob:
     prompt_template: str | None = None
     qq_account: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    execution_mode: str = "live"
+    source_system: str | None = None
+    source_job_id: str | None = None
     last_run_at_ms: int | None = None
     last_run_ok: bool | None = None
     last_qzone_url: str | None = None
@@ -318,53 +329,66 @@ def _rehydrate_runtime_jobs(
     for entry in rows:
         if not isinstance(entry, dict):
             continue
-        name = entry.get("name")
-        if not isinstance(name, str) or not _JOB_NAME_RE.match(name):
+        try:
+            name = entry.get("name")
+            if not isinstance(name, str) or not _JOB_NAME_RE.match(name):
+                continue
+            metadata = entry.get("metadata") or {}
+            if not isinstance(metadata, dict):
+                continue
+            rj = _RuntimeJob(
+                name=name,
+                cron=str(entry.get("cron", "")),
+                action_type=str(entry.get("action_type", "")),
+                timezone=entry.get("timezone"),
+                enabled=bool(entry.get("enabled", True)),
+                persona_id=entry.get("persona_id"),
+                prompt_template=entry.get("prompt_template"),
+                qq_account=entry.get("qq_account"),
+                metadata=dict(metadata),
+                execution_mode=(
+                    "shadow" if entry.get("execution_mode") == "shadow" else "live"
+                ),
+                source_system=entry.get("source_system"),
+                source_job_id=entry.get("source_job_id"),
+                last_run_at_ms=entry.get("last_run_at_ms"),
+                last_run_ok=entry.get("last_run_ok"),
+                last_qzone_url=entry.get("last_qzone_url"),
+                last_error=entry.get("last_error"),
+                created_at_ms=int(entry.get("created_at_ms") or 0),
+                updated_at_ms=int(entry.get("updated_at_ms") or 0),
+            )
+        except (TypeError, ValueError):
             continue
-        rj = _RuntimeJob(
-            name=name,
-            cron=str(entry.get("cron", "")),
-            action_type=str(entry.get("action_type", "")),
-            timezone=entry.get("timezone"),
-            enabled=bool(entry.get("enabled", True)),
-            persona_id=entry.get("persona_id"),
-            prompt_template=entry.get("prompt_template"),
-            qq_account=entry.get("qq_account"),
-            metadata=dict(entry.get("metadata") or {}),
-            last_run_at_ms=entry.get("last_run_at_ms"),
-            last_run_ok=entry.get("last_run_ok"),
-            last_qzone_url=entry.get("last_qzone_url"),
-            last_error=entry.get("last_error"),
-            created_at_ms=int(entry.get("created_at_ms") or 0),
-            updated_at_ms=int(entry.get("updated_at_ms") or 0),
-        )
         table[name] = rj
         _sync_metadata(state, rj)
         if rj.enabled:
             _register_runtime_loop(state, rj)
 
 
-def _persist_runtime_jobs(state: AdminState) -> None:
-    """Write the runtime-job overlay to the on-disk sidecar.
-
-    Best-effort: a write failure logs nothing and never propagates —
-    persistence is durability insurance, not load-bearing for the
-    in-process overlay which already reflects the mutation. Uses the
-    same atomic ``write tmp + replace`` dance the config writer uses so
-    a crash mid-write can't truncate the sidecar.
-    """
+def _persist_runtime_job_rows(
+    state: AdminState,
+    rows: dict[str, _RuntimeJob],
+) -> None:
     path = _runtime_jobs_path(state)
     if path is None:
         return
-    rows = [_runtime_job_to_dict(rj) for rj in _runtime_jobs(state).values()]
-    payload = json.dumps({"version": 1, "jobs": rows}, ensure_ascii=False, indent=2)
+    payload = json.dumps(
+        {"version": 2, "jobs": [_runtime_job_to_dict(rj) for rj in rows.values()]},
+        ensure_ascii=False,
+        indent=2,
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".new")
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".new")
         tmp.write_text(payload, encoding="utf-8")
         tmp.replace(path)
     except OSError:
-        return
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 def _runtime_job_to_dict(rj: _RuntimeJob) -> dict[str, Any]:
@@ -379,6 +403,9 @@ def _runtime_job_to_dict(rj: _RuntimeJob) -> dict[str, Any]:
         "prompt_template": rj.prompt_template,
         "qq_account": rj.qq_account,
         "metadata": dict(rj.metadata),
+        "execution_mode": rj.execution_mode,
+        "source_system": rj.source_system,
+        "source_job_id": rj.source_job_id,
         "last_run_at_ms": rj.last_run_at_ms,
         "last_run_ok": rj.last_run_ok,
         "last_qzone_url": rj.last_qzone_url,
@@ -407,47 +434,48 @@ def _scheduler_handle(state: AdminState) -> Any | None:
 def _register_runtime_loop(state: AdminState, rj: _RuntimeJob) -> None:
     """Register (or re-register) a runtime job's live tick loop.
 
-    No-op when no scheduler handle is attached, when the handle lacks the
-    ``register`` method (older handle shape), or when the job's cron /
-    action_type can't be mapped to a runnable spec. Re-syncs metadata
-    first so the qzone builtin sees the current persona/prompt at the
-    next firing. Fully best-effort — a registration failure never blocks
-    the admin mutation that triggered it.
+    No-op when no scheduler handle is attached. Once a handle is attached,
+    an unsupported handle/spec or a registration failure is raised so the
+    caller never reports a durable mutation whose live loop disagrees.
     """
     handle = _scheduler_handle(state)
-    if handle is None or not hasattr(handle, "register"):
+    if handle is None:
         return
-    _sync_metadata(state, rj)
-    try:
-        from corlinman_server.scheduler import runtime_job_spec
-    except Exception:  # pragma: no cover — defensive
-        return
+    if not hasattr(handle, "register"):
+        raise RuntimeError("scheduler handle does not support runtime registration")
+    from corlinman_server.scheduler import runtime_job_spec
+
     spec = runtime_job_spec(
         rj.name,
         rj.cron,
         rj.action_type,
         timezone=rj.timezone,
         jitter_secs=_jitter_secs_from_metadata(rj.metadata),
+        metadata=rj.metadata,
+        execution_mode=rj.execution_mode,
+        source_system=rj.source_system,
+        source_job_id=rj.source_job_id,
     )
     if spec is None:
-        return
-    try:
-        handle.register(spec)
-    except Exception:  # noqa: BLE001 — best-effort; mutation already applied
-        return
+        raise ValueError(f"unsupported runtime scheduler action: {rj.action_type}")
+    registered = handle.register(spec)
+    if registered is False:
+        raise RuntimeError("scheduler runtime rejected registration")
 
 
 def _unregister_runtime_loop(state: AdminState, name: str) -> None:
     """Cancel a runtime job's live tick loop (pause / disable / delete).
 
-    No-op when no handle is attached or it lacks ``unregister``."""
+    No-op when no handle is attached. An attached handle must acknowledge the
+    operation; failures propagate so the caller cannot claim a paused/deleted
+    job while its old loop is still live.
+    """
     handle = _scheduler_handle(state)
-    if handle is None or not hasattr(handle, "unregister"):
+    if handle is None:
         return
-    try:
-        handle.unregister(name)
-    except Exception:  # noqa: BLE001 — best-effort
-        return
+    if not hasattr(handle, "unregister"):
+        raise RuntimeError("scheduler handle does not support runtime removal")
+    handle.unregister(name)
 
 
 def _job_metadata(state: AdminState) -> dict[str, dict[str, Any]]:
@@ -537,6 +565,9 @@ def _runtime_job_to_out(rj: _RuntimeJob) -> JobOut:
         # B6 — reply-job knobs, echoed the same way.
         max_replies=_read_metadata_int(rj.metadata, "max_replies"),
         lookback_posts=_read_metadata_int(rj.metadata, "lookback_posts"),
+        execution_mode=rj.execution_mode,
+        source_system=rj.source_system,
+        source_job_id=rj.source_job_id,
         last_run_at_ms=rj.last_run_at_ms,
         last_run_ok=rj.last_run_ok,
         last_qzone_url=rj.last_qzone_url,
@@ -706,6 +737,19 @@ def _validate_qzone_reply(body: NewJobBody) -> tuple[bool, str | None]:
     return True, None
 
 
+def _find_by_source_identity(
+    table: dict[str, _RuntimeJob],
+    source_system: str | None,
+    source_job_id: str | None,
+) -> _RuntimeJob | None:
+    if not source_system or not source_job_id:
+        return None
+    for row in table.values():
+        if row.source_system == source_system and row.source_job_id == source_job_id:
+            return row
+    return None
+
+
 def _store_job(state: AdminState, body: NewJobBody) -> _RuntimeJob:
     """Idempotent upsert into the runtime overlay.
 
@@ -714,9 +758,27 @@ def _store_job(state: AdminState, body: NewJobBody) -> _RuntimeJob:
     is the contract the qzone-template enable route relies on.
     """
     table = _runtime_jobs(state)
+    candidate = {
+        name: _RuntimeJob(**_runtime_job_to_dict(row))
+        for name, row in table.items()
+    }
+    table = candidate
     now = _now_ms()
-    existing = table.get(body.name)
+    by_name = table.get(body.name)
+    by_source = _find_by_source_identity(
+        table,
+        body.source_system,
+        body.source_job_id,
+    )
+    if by_name is not None and by_source is not None and by_name is not by_source:
+        raise ValueError("job name and source identity refer to different rows")
+    existing = by_name or by_source
     if existing is not None:
+        old_name = existing.name
+        if existing.name != body.name:
+            table.pop(existing.name, None)
+            existing.name = body.name
+            table[body.name] = existing
         existing.cron = body.cron
         existing.timezone = body.timezone
         existing.action_type = body.action_type
@@ -727,10 +789,30 @@ def _store_job(state: AdminState, body: NewJobBody) -> _RuntimeJob:
         # Merge metadata with the per-action_type fields so the
         # dispatcher's metadata resolver sees one consolidated dict.
         existing.metadata = _compose_metadata(body)
+        existing.execution_mode = (
+            "shadow" if body.execution_mode == "shadow" else "live"
+        )
+        existing.source_system = body.source_system
+        existing.source_job_id = body.source_job_id
         existing.updated_at_ms = now
+        _persist_runtime_job_rows(state, table)
+        live_table = _runtime_jobs(state)
+        try:
+            if old_name != existing.name:
+                _unregister_runtime_loop(state, old_name)
+            _apply_enabled_state(state, existing)
+        except Exception:
+            _persist_runtime_job_rows(state, live_table)
+            if old_name != existing.name:
+                old = live_table.get(old_name)
+                if old is not None:
+                    _apply_enabled_state(state, old)
+            raise
+        if old_name != existing.name:
+            live_table.pop(old_name, None)
+            _job_metadata(state).pop(old_name, None)
+        live_table[existing.name] = existing
         _sync_metadata(state, existing)
-        _apply_enabled_state(state, existing)
-        _persist_runtime_jobs(state)
         return existing
 
     job = _RuntimeJob(
@@ -743,13 +825,22 @@ def _store_job(state: AdminState, body: NewJobBody) -> _RuntimeJob:
         prompt_template=body.prompt_template,
         qq_account=body.qq_account,
         metadata=_compose_metadata(body),
+        execution_mode="shadow" if body.execution_mode == "shadow" else "live",
+        source_system=body.source_system,
+        source_job_id=body.source_job_id,
         created_at_ms=now,
         updated_at_ms=now,
     )
     table[body.name] = job
+    _persist_runtime_job_rows(state, table)
+    live_table = _runtime_jobs(state)
+    try:
+        _apply_enabled_state(state, job)
+    except Exception:
+        _persist_runtime_job_rows(state, live_table)
+        raise
+    live_table[body.name] = job
     _sync_metadata(state, job)
-    _apply_enabled_state(state, job)
-    _persist_runtime_jobs(state)
     return job
 
 
@@ -833,11 +924,21 @@ def _set_enabled_route(name: str, *, enabled: bool) -> Any:
                         "message": err or "",
                     },
                 )
-    rj.enabled = enabled
-    rj.updated_at_ms = _now_ms()
-    _apply_enabled_state(state, rj)
-    _persist_runtime_jobs(state)
-    return _runtime_job_to_out(rj)
+    updated = _RuntimeJob(**_runtime_job_to_dict(rj))
+    updated.enabled = enabled
+    updated.updated_at_ms = _now_ms()
+    candidate = dict(table)
+    candidate[name] = updated
+    _persist_runtime_job_rows(state, candidate)
+    try:
+        _apply_enabled_state(state, updated)
+    except Exception:
+        _persist_runtime_job_rows(state, table)
+        _apply_enabled_state(state, rj)
+        raise
+    table[name] = updated
+    _sync_metadata(state, updated)
+    return _runtime_job_to_out(updated)
 
 
 def _compose_metadata(body: NewJobBody) -> dict[str, Any]:
@@ -967,7 +1068,18 @@ async def _trigger_runtime_qzone_daily(
         except Exception:  # pragma: no cover — degraded boot tolerant
             pass
 
-    ctx = BuiltinContext(app_state=app_state, admin_state=state, name=rj.name)
+    run_id = uuid.uuid4().hex
+    ctx = BuiltinContext(
+        app_state=app_state,
+        admin_state=state,
+        run_id=run_id,
+        name=rj.name,
+        metadata=dict(rj.metadata),
+        execution_mode=rj.execution_mode,
+        occurrence_key=f"manual:{run_id}",
+        source_system=rj.source_system,
+        source_job_id=rj.source_job_id,
+    )
     result = await run_builtin(rj.action_type, ctx)
 
     now_iso = _now_iso()

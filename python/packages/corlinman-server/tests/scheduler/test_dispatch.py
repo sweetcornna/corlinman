@@ -214,6 +214,57 @@ async def test_dispatch_run_tool_routes_to_builtin_actions_registry() -> None:
     )
 
 
+async def test_dispatch_passes_immutable_execution_and_source_context() -> None:
+    from corlinman_server.scheduler.builtins import BUILTIN_ACTIONS, BuiltinContext
+    from corlinman_server.scheduler.cron import parse
+    from corlinman_server.scheduler.runner import ActionSpec
+
+    captured: list[BuiltinContext] = []
+
+    async def _stub_action(context: BuiltinContext) -> dict[str, object]:
+        captured.append(context)
+        return {"ok": True}
+
+    previous = BUILTIN_ACTIONS.get("external.private_job")
+    BUILTIN_ACTIONS["external.private_job"] = _stub_action
+    try:
+        spec = JobSpec(
+            name="private-job",
+            cron=parse("0 9 * * *"),
+            action=ActionSpec(
+                kind="run_tool",
+                plugin="external",
+                tool="private_job",
+            ),
+            metadata={"scope": "private"},
+            execution_mode="shadow",
+            source_system="external",
+            source_job_id="source-job-1",
+        )
+        result = await dispatch(
+            spec,
+            HookBus(16),
+            scheduled_for_ms=1234,
+        )
+    finally:
+        if previous is None:
+            BUILTIN_ACTIONS.pop("external.private_job", None)
+        else:
+            BUILTIN_ACTIONS["external.private_job"] = previous
+
+    assert result.ok is True
+    assert result.execution_mode == "shadow"
+    assert result.occurrence_key == "external:source-job-1:1234"
+    assert len(captured) == 1
+    context = captured[0]
+    assert context.metadata == {"scope": "private"}
+    assert context.execution_mode == "shadow"
+    assert context.scheduled_for_ms == 1234
+    assert context.occurrence_key == "external:source-job-1:1234"
+    assert context.source_system == "external"
+    assert context.source_job_id == "source-job-1"
+
+
 async def test_dispatch_run_tool_evolution_darwin_curate_routes_to_builtin() -> None:
     """Second R3-002 regression: the ``evolution.darwin_curate`` default
     job (entrypoint.py:590) must also reach the registry. Parametrising
