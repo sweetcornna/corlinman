@@ -215,13 +215,11 @@ class TestKeywordAndMention:
         assert req is not None
         assert req.mentioned is True
 
-    def test_dispatch_auto_detects_self_id_from_event(self) -> None:
-        """The bot's QQ id is learned from the event's ``self_id``, so a
-        stale/empty configured ``self_ids`` does not break @mention
-        detection — the router self-updates in real time."""
+    def test_dispatch_uses_event_self_id_without_mutating_fallback(self) -> None:
+        """A live event id is authoritative on its first event."""
         router = ChannelRouter(
             group_keywords={"123": ["never_matches"]},
-            self_ids=[],  # nothing configured
+            self_ids=[],
         )
         ev = _group_event(
             "[CQ:at,qq=999] help",
@@ -230,22 +228,47 @@ class TestKeywordAndMention:
             self_id=999,
         )
         req = router.dispatch(ev)
-        # Learned from the event...
-        assert 999 in router.self_ids
-        # ...and the @mention on that same event is recognized.
+        assert req is not None
+        assert req.mentioned is True
+        assert router.self_ids == []
+
+    def test_dispatch_event_self_id_replaces_stale_mention_seed(self) -> None:
+        router = ChannelRouter(
+            group_keywords={"9999": ["never_matches"]},
+            self_ids=[100],
+        )
+        old_mention = _group_event(
+            "[CQ:at,qq=100] help",
+            [AtSegment(qq="100"), TextSegment(text=" help")],
+            9999,
+            self_id=200,
+        )
+        assert router.dispatch(old_mention) is None
+
+        current_mention = _group_event(
+            "[CQ:at,qq=200] help",
+            [AtSegment(qq="200"), TextSegment(text=" help")],
+            9999,
+            self_id=200,
+        )
+        req = router.dispatch(current_mention)
         assert req is not None
         assert req.mentioned is True
 
-    def test_dispatch_tracks_self_id_change(self) -> None:
-        """A NapCat re-login under a different account is tracked live:
-        the new ``self_id`` is appended; previously-known ids stay."""
-        router = ChannelRouter(group_keywords={}, self_ids=[100], group_reply_policy="all")
-        ev = _group_event(
-            "hi", [TextSegment(text="hi")], 9999, self_id=2952532060
+    def test_dispatch_zero_self_id_uses_configured_fallback(self) -> None:
+        router = ChannelRouter(
+            group_keywords={"123": ["never_matches"]},
+            self_ids=[100],
         )
-        router.dispatch(ev)
-        assert 2952532060 in router.self_ids
-        assert 100 in router.self_ids
+        ev = _group_event(
+            "[CQ:at,qq=100] help",
+            [AtSegment(qq="100"), TextSegment(text=" help")],
+            123,
+            self_id=0,
+        )
+        req = router.dispatch(ev)
+        assert req is not None
+        assert req.mentioned is True
 
     def test_private_message_always_dispatches(self) -> None:
         router = ChannelRouter(group_keywords={}, self_ids=[100], group_reply_policy="all")

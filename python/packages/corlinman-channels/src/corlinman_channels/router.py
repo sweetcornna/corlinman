@@ -234,8 +234,8 @@ class ChannelRouter:
     """Per-group monotonic timestamp of the last accepted dispatch."""
 
     self_ids: list[int] = field(default_factory=list)
-    """``@mention`` targets that always trigger, independent of
-    keywords. In OneBot this is the bot's own ``self_id``."""
+    """Configured fallback ``@mention`` targets. A non-zero event
+    ``self_id`` is authoritative for that event and replaces this fallback."""
 
     group_limiter: TokenBucket | None = None
     """Optional per-group token bucket. ``None`` ⇒ dimension disabled.
@@ -319,19 +319,17 @@ class ChannelRouter:
             Set ``False`` to opt out (tests that exercise non-command
             flows lock in the byte-identical legacy behaviour).
         """
-        # Auto-detect the bot's own QQ id from the live event stream:
-        # every OneBot event carries ``self_id``. Learning it here keeps
-        # @mention detection correct even when the configured
-        # ``self_ids`` is stale or empty, and tracks a NapCat re-login
-        # under a different account in real time — no config edit needed.
-        if event.self_id and event.self_id not in self.self_ids:
-            self.self_ids.append(event.self_id)
+        # Every OneBot message identifies the account that received it.
+        # Prefer that live value for this event so a NapCat account switch
+        # cannot leave the old configured id acting as an @mention target.
+        # Malformed/legacy zero ids fall back to the configured seed list.
+        mention_targets = [event.self_id] if event.self_id > 0 else self.self_ids
 
         text = _flatten_and_trim(event.message, event.raw_message)
 
         # @mention short-circuits keyword filtering. Matches qqBot.js
         # line 298-336 / Rust router lines ~150.
-        mentioned = any(is_mentioned(event.message, sid) for sid in self.self_ids)
+        mentioned = any(is_mentioned(event.message, sid) for sid in mention_targets)
 
         if event.message_type == MessageType.PRIVATE:
             binding = ChannelBinding.qq_private(event.self_id, event.user_id)

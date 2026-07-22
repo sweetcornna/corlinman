@@ -1,10 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  cleanup,
-  render,
-  screen,
-  waitFor,
-} from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import * as React from "react";
 
@@ -35,6 +30,8 @@ const STATUS: QqStatus = {
   recent_messages: [],
   health_online: true,
   account_online: true,
+  account_qq: 20002,
+  config_keys: { self_ids: ["10001"] },
 };
 
 function renderWithClient(ui: React.ReactElement) {
@@ -65,5 +62,27 @@ describe("QqChannelPage", () => {
   it("renders the stats + account panels once status resolves", async () => {
     renderWithClient(<QqChannelPage />);
     expect(await screen.findByTestId("qq-account-panel")).toBeInTheDocument();
+  });
+
+  it("shows the detected bot QQ id as a managed read-only field", async () => {
+    renderWithClient(<QqChannelPage />);
+    const field = await screen.findByTestId("cc-list-self_ids");
+    expect(field).toHaveValue("20002");
+    expect(field).toHaveAttribute("readonly");
+    expect(screen.getByTestId("qq-account-panel")).toHaveTextContent("20002");
+  });
+
+  it("does not label a configured fallback as auto-detected", async () => {
+    mockedStatus.mockResolvedValueOnce({
+      ...STATUS,
+      account_qq: null,
+      account_online: null,
+      self_ids: [10001],
+    });
+    renderWithClient(<QqChannelPage />);
+    const field = await screen.findByTestId("cc-list-self_ids");
+    expect(field).toHaveValue("");
+    expect(field).toHaveAttribute("placeholder", "登录 QQ 后自动识别");
+    expect(screen.getByTestId("qq-account-panel")).not.toHaveTextContent("10001");
   });
 });

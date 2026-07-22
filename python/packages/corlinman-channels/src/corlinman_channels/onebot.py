@@ -714,11 +714,15 @@ class OneBotAdapter:
         config: OneBotConfig,
         *,
         tencent_policy_resolver: Callable[[], bool] | None = None,
+        on_self_id: Callable[[int], None] | None = None,
     ) -> None:
         if not config.url:
             raise ConfigError("OneBotConfig.url is empty")
         self._cfg = config
         self._tencent_policy_resolver = tencent_policy_resolver
+        self._on_self_id = on_self_id
+        self._last_self_id: int | None = None
+        self._last_notified_self_id: int | None = None
         self._ws: ClientConnection | None = None
         self._closed = False
         # Bounded queue so a stalled consumer doesn't grow without bound.
@@ -764,6 +768,28 @@ class OneBotAdapter:
         kicked in to keep the most recent user message visible.
         """
         return self._inbound_dropped
+
+    @property
+    def last_self_id(self) -> int | None:
+        """Most recent non-zero OneBot ``self_id`` seen on any event."""
+        return self._last_self_id
+
+    def _observe_self_id(self, event: Event) -> None:
+        self_id = getattr(event, "self_id", 0)
+        if not isinstance(self_id, int) or isinstance(self_id, bool) or self_id <= 0:
+            return
+        self._last_self_id = self_id
+        if self._on_self_id is None or self_id == self._last_notified_self_id:
+            return
+        try:
+            self._on_self_id(self_id)
+        except Exception as exc:  # noqa: BLE001 — observation must not break WS
+            _log.warning(
+                "qq.self_id_observer_failed error_type=%s",
+                type(exc).__name__,
+            )
+        else:
+            self._last_notified_self_id = self_id
 
     @property
     def last_event_at_ms(self) -> int | None:
@@ -1017,6 +1043,7 @@ class OneBotAdapter:
                 if not isinstance(raw, dict):
                     continue
                 event = parse_event(raw)
+                self._observe_self_id(event)
                 # Update the NapCat heartbeat timestamp on every event so
                 # the health watcher can flag a kicked-offline bot.
                 import time as _t

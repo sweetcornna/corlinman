@@ -89,6 +89,7 @@ describe("CHANNEL_CONFIG_SPEC", () => {
       qq.flags.find((f) => f.key === "freeze_risk_topic_blocking")?.defaultValue,
     ).toBe(true);
     expect(keys(qq.ids)).toEqual(["self_ids", "group_whitelist", "proactive_groups"]);
+    expect(qq.ids.find((f) => f.key === "self_ids")?.managed).toBe(true);
     expect(keys(qq.numbers)).toEqual([
       "group_reply_cooldown_secs",
       "proactive_min_gap_minutes",
@@ -110,6 +111,17 @@ describe("CHANNEL_CONFIG_SPEC", () => {
 });
 
 describe("buildChannelConfigBody", () => {
+  it("never emits the runtime-managed QQ self id", () => {
+    const initial = seedDraft("qq", { self_ids: ["10001"] });
+    const draft = {
+      ...initial,
+      ids: { ...initial.ids, self_ids: "20002", group_whitelist: "123" },
+    };
+    expect(buildChannelConfigBody("qq", draft, initial).ids).toEqual({
+      group_whitelist: ["123"],
+    });
+  });
+
   it("seeds the QQ freeze-risk protection on when absent", () => {
     const draft = seedDraft("qq", {});
     expect(draft.flags.freeze_risk_topic_blocking).toBe(true);

@@ -426,6 +426,112 @@ class TestOneBotIntegration:
                 assert ev.message_id == "42"
                 assert isinstance(ev.payload, MessageEvent)
 
+    async def test_heartbeat_detects_self_id_before_message(self, ws_server) -> None:
+        seen: list[int] = []
+
+        async def handler(ws: ServerConnection) -> None:
+            await ws.send(json.dumps({
+                "post_type": "meta_event",
+                "meta_event_type": "heartbeat",
+                "self_id": 123456,
+                "time": 1,
+                "status": {"online": True},
+            }))
+            await asyncio.sleep(0.1)
+
+        async with ws_server(handler) as url:
+            adapter = OneBotAdapter(OneBotConfig(url=url), on_self_id=seen.append)
+            async with adapter:
+                async def detected() -> None:
+                    while adapter.last_self_id is None:
+                        await asyncio.sleep(0.01)
+
+                await asyncio.wait_for(detected(), timeout=5.0)
+                assert adapter.last_self_id == 123456
+                assert seen == [123456]
+
+    async def test_self_id_observer_only_fires_on_change(self, ws_server) -> None:
+        seen: list[int] = []
+
+        async def handler(ws: ServerConnection) -> None:
+            for self_id in (0, 100, 100, 200):
+                await ws.send(json.dumps({
+                    "post_type": "meta_event",
+                    "meta_event_type": "heartbeat",
+                    "self_id": self_id,
+                    "time": 1,
+                    "status": {"online": True},
+                }))
+            await asyncio.sleep(0.1)
+
+        async with ws_server(handler) as url:
+            adapter = OneBotAdapter(OneBotConfig(url=url), on_self_id=seen.append)
+            async with adapter:
+                async def switched() -> None:
+                    while adapter.last_self_id != 200:
+                        await asyncio.sleep(0.01)
+
+                await asyncio.wait_for(switched(), timeout=5.0)
+                assert seen == [100, 200]
+
+    async def test_self_id_observer_failure_does_not_break_pump(self, ws_server) -> None:
+        def fail(_self_id: int) -> None:
+            raise RuntimeError("observer detail")
+
+        async def handler(ws: ServerConnection) -> None:
+            await ws.send(json.dumps({
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": 100,
+                "user_id": 200,
+                "message_id": 7,
+                "message": [{"type": "text", "data": {"text": "yo"}}],
+                "time": 2,
+            }))
+            await asyncio.sleep(0.1)
+
+        async with ws_server(handler) as url:
+            adapter = OneBotAdapter(OneBotConfig(url=url), on_self_id=fail)
+            async with adapter:
+                async def first() -> Any:
+                    async for ev in adapter.inbound():
+                        return ev
+                    return None
+
+                ev = await asyncio.wait_for(first(), timeout=5.0)
+                assert ev is not None
+                assert ev.text == "yo"
+                assert adapter.last_self_id == 100
+
+    async def test_self_id_observer_retries_after_failure(self, ws_server) -> None:
+        attempts: list[int] = []
+
+        def fail_once(self_id: int) -> None:
+            attempts.append(self_id)
+            if len(attempts) == 1:
+                raise RuntimeError("transient observer failure")
+
+        async def handler(ws: ServerConnection) -> None:
+            for _ in range(2):
+                await ws.send(json.dumps({
+                    "post_type": "meta_event",
+                    "meta_event_type": "heartbeat",
+                    "self_id": 100,
+                    "time": 1,
+                    "status": {"online": True},
+                }))
+            await asyncio.sleep(0.1)
+
+        async with ws_server(handler) as url:
+            adapter = OneBotAdapter(OneBotConfig(url=url), on_self_id=fail_once)
+            async with adapter:
+                async def recovered() -> None:
+                    while len(attempts) < 2:
+                        await asyncio.sleep(0.01)
+
+                await asyncio.wait_for(recovered(), timeout=5.0)
+                assert attempts == [100, 100]
+
     async def test_adapter_drops_non_message_events(self, ws_server) -> None:
         async def handler(ws: ServerConnection) -> None:
             # First a heartbeat (meta event — should be filtered),

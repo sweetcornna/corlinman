@@ -167,6 +167,11 @@ export default function QqChannelPage() {
         <ScanLoginDialog
           open={scanLoginOpen}
           onOpenChange={setScanLoginOpen}
+          onClosed={() =>
+            void qc.invalidateQueries({
+              queryKey: ["admin", "channels", "qq"],
+            })
+          }
         />
 
         {status.isPending ? (
@@ -248,6 +253,9 @@ export default function QqChannelPage() {
             <ChannelConfigEditor
               channel="qq"
               configKeys={status.data?.config_keys ?? {}}
+              managedValues={{
+                self_ids: String(status.data?.account_qq ?? ""),
+              }}
               onSaved={() =>
                 void qc.invalidateQueries({
                   queryKey: ["admin", "channels", "qq"],

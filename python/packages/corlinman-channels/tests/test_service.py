@@ -38,6 +38,7 @@ from corlinman_channels.service import (
     _build_internal_request,
     _build_reply_action,
     _event_kind,
+    _record_qq_self_id,
     _telegram_reset_state_for_tests,
     handle_one_discord,
     handle_one_feishu,
@@ -1934,6 +1935,20 @@ class TestHandleOneTelegram:
 
 
 class TestRunChannelConfig:
+    def test_record_qq_self_id_updates_runtime_without_config(self) -> None:
+        import corlinman_channels.service as svc
+
+        before = dict(svc.QQ_HEALTH)
+        try:
+            svc.QQ_HEALTH.update(account_qq=100, account_nickname="old")
+            _record_qq_self_id(200)
+            assert svc.QQ_HEALTH["account_qq"] == 200
+            assert svc.QQ_HEALTH["account_nickname"] is None
+            assert isinstance(svc.QQ_HEALTH["account_checked_at_ms"], int)
+        finally:
+            svc.QQ_HEALTH.clear()
+            svc.QQ_HEALTH.update(before)
+
     @pytest.mark.asyncio
     async def test_run_qq_channel_requires_ws_url(self) -> None:
         import asyncio
@@ -2797,6 +2812,52 @@ class TestQqHealthWatcher:
     """Heartbeat watcher message rendering — regression for the
     ``no NapCat event in Nones`` formatting bug when ``last_event_at_ms``
     is ``None`` (NapCat never sent an event yet)."""
+
+    @pytest.mark.asyncio
+    async def test_offline_heartbeat_clears_detected_account(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import asyncio
+        import time
+
+        import corlinman_channels.service as svc
+
+        now_ms = int(time.time() * 1000)
+        adapter = SimpleNamespace(
+            last_event_at_ms=now_ms,
+            last_status_online=False,
+            last_status_online_at_ms=now_ms,
+            url="ws://napcat.example:3001",
+        )
+        cancel = asyncio.Event()
+        before = dict(svc.QQ_HEALTH)
+        monkeypatch.setenv("CORLINMAN_QQ_HEALTH_PROBE_S", "1")
+        monkeypatch.setenv("CORLINMAN_QQ_HEALTH_LOST_S", "120")
+        monkeypatch.setenv("CORLINMAN_QQ_ACCOUNT_PROBE_S", "10")
+        svc.QQ_HEALTH.update(
+            account_qq=123456,
+            account_nickname="old",
+            account_online=True,
+        )
+
+        async def cancel_soon() -> None:
+            await asyncio.sleep(1.3)
+            cancel.set()
+
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(
+                    svc._qq_health_watcher(adapter, cancel),  # type: ignore[arg-type]
+                    cancel_soon(),
+                ),
+                timeout=3.0,
+            )
+            assert svc.QQ_HEALTH["account_online"] is False
+            assert svc.QQ_HEALTH["account_qq"] is None
+            assert svc.QQ_HEALTH["account_nickname"] is None
+        finally:
+            svc.QQ_HEALTH.clear()
+            svc.QQ_HEALTH.update(before)
 
     @pytest.mark.asyncio
     async def test_warns_with_ws_url_when_no_event_ever_received(

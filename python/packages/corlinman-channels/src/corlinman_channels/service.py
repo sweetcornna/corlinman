@@ -479,11 +479,10 @@ async def run_qq_channel(
     if not ws_url:
         raise ValueError("channels.qq.ws_url is empty")
     # ``self_ids`` is an optional seed list. The bot's real QQ id is
-    # auto-detected from the live OneBot event stream — every event
-    # carries ``self_id``, learned in :meth:`ChannelRouter.dispatch`.
-    # A stale or empty config value no longer breaks @mention
-    # detection, and a NapCat re-login under a different account is
-    # picked up at runtime with no config edit.
+    # auto-detected at the adapter boundary from every valid OneBot event.
+    # A stale or empty config value no longer breaks @mention detection,
+    # and a NapCat re-login under a different account is picked up at
+    # runtime with no config edit.
     self_ids = list(_attr(cfg, "self_ids", []) or [])
 
     # Token buckets — None on either dimension disables it.
@@ -533,6 +532,7 @@ async def run_qq_channel(
             self_ids=self_ids,
         ),
         tencent_policy_resolver=params.tencent_policy_resolver,
+        on_self_id=_record_qq_self_id,
     )
 
     try:
@@ -592,6 +592,18 @@ QQ_HEALTH: dict[str, Any] = {
     "account_checked_at_ms": None,
     "account_last_error": None,    # str — most recent probe failure reason
 }
+
+
+def _record_qq_self_id(self_id: int) -> None:
+    """Publish a newly observed OneBot account without persisting config."""
+    previous = QQ_HEALTH.get("account_qq")
+    QQ_HEALTH.update(
+        account_qq=self_id,
+        account_nickname=(
+            QQ_HEALTH.get("account_nickname") if previous == self_id else None
+        ),
+        account_checked_at_ms=int(time.time() * 1000),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -885,8 +897,13 @@ async def _qq_health_watcher(
                 status_ts is None
                 or (now_ms - status_ts) > (lost_s * 2 * 1000)
             )
+            account_online = None if stale else bool(status_online)
             QQ_HEALTH.update(
-                account_online=None if stale else bool(status_online),
+                account_online=account_online,
+                account_qq=(QQ_HEALTH.get("account_qq") if account_online else None),
+                account_nickname=(
+                    QQ_HEALTH.get("account_nickname") if account_online else None
+                ),
                 account_checked_at_ms=now_ms,
                 account_last_error=(
                     "no_heartbeat_yet" if status_ts is None

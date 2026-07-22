@@ -36,9 +36,11 @@ import {
 export function ScanLoginDialog({
   open,
   onOpenChange,
+  onClosed,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onClosed?: () => void;
 }) {
   const { t } = useTranslation();
   const [diagnostics, setDiagnostics] =
@@ -66,8 +68,16 @@ export function ScanLoginDialog({
     };
   }, [open]);
 
+  const handleOpenChange = React.useCallback(
+    (next: boolean) => {
+      onOpenChange(next);
+      if (!next) onClosed?.();
+    },
+    [onClosed, onOpenChange],
+  );
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="max-w-3xl">
         <DialogHeader>
           <DialogTitle>{t("channels.qq.scanLogin.title")}</DialogTitle>

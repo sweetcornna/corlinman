@@ -136,12 +136,22 @@ def router() -> APIRouter:
             runtime = "connected"
         else:
             runtime = "disconnected"
+        account_qq = health.get("account_qq")
+        account_online = health.get("account_online")
+        effective_self_ids = (
+            [account_qq]
+            if account_online is not False
+            and isinstance(account_qq, int)
+            and not isinstance(account_qq, bool)
+            and account_qq > 0
+            else list(qq.get("self_ids", []))
+        )
         return StatusOut(
             configured=True,
             enabled=enabled,
             ws_url=ws_url,
             runtime=runtime,
-            self_ids=list(qq.get("self_ids", [])),
+            self_ids=effective_self_ids,
             group_keywords=dict(qq.get("group_keywords", {})),
             config_keys=_non_secret_config_keys("qq", qq),
             health_online=health.get("online"),

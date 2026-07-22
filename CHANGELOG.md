@@ -4,6 +4,17 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.36.1] — 2026-07-21 — automatic QQ login identity
+
+### Fixed
+- QQ now derives the active Bot QQ ID from OneBot heartbeat, lifecycle, notice,
+  request, and message events, including live account switches without config edits.
+- Current-event mention routing no longer retains stale account IDs after a NapCat
+  account switch; legacy `self_ids` remains a server-only startup fallback.
+- The QQ admin page shows the detected account as a read-only managed value,
+  refreshes after scan login closes, and never writes the runtime ID while saving
+  unrelated settings.
+
 ## [1.36.0] — 2026-07-21 — durable scheduled agents + Tencent safety boundaries
 
 ### Added
