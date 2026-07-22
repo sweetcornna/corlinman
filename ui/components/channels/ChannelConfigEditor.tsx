@@ -49,6 +49,8 @@ import type { ChannelConfigKeys } from "@/lib/api/full-inbox-channel";
 export interface ChannelConfigEditorProps {
   channel: ConfigEditableChannel;
   configKeys: ChannelConfigKeys;
+  /** Runtime values for fields marked `managed`; these never enter saves. */
+  managedValues?: Record<string, string>;
   /** Called after a successful save so the parent can refetch status. */
   onSaved?: () => void;
 }
@@ -59,6 +61,7 @@ const advanced = (fields: ChannelFieldSpec[]) => fields.filter((f) => f.advanced
 export function ChannelConfigEditor({
   channel,
   configKeys,
+  managedValues = {},
   onSaved,
 }: ChannelConfigEditorProps) {
   const { t } = useTranslation();
@@ -180,23 +183,42 @@ export function ChannelConfigEditor({
     </div>
   );
 
-  const renderList = (f: ChannelFieldSpec, group: "ids" | "filters") => (
-    <div key={f.key} className="space-y-1">
-      <Label htmlFor={`cc-${channel}-${f.key}`} className="text-sm">
-        {fieldLabel(f.key)}
-      </Label>
-      <Input
-        id={`cc-${channel}-${f.key}`}
-        placeholder={t("channelConfig.listPlaceholder")}
-        value={(group === "ids" ? draft.ids[f.key] : draft.filters[f.key]) ?? ""}
-        onChange={(e) => setField(group, f.key, e.target.value)}
-        data-testid={`cc-list-${f.key}`}
-      />
-      {fieldHint(f.key) ?? (
-        <FieldHint>{t("channelConfig.listHint")}</FieldHint>
-      )}
-    </div>
-  );
+  const renderList = (f: ChannelFieldSpec, group: "ids" | "filters") => {
+    const managed = f.managed === true;
+    const value = managed
+      ? (managedValues[f.key] ?? "")
+      : ((group === "ids" ? draft.ids[f.key] : draft.filters[f.key]) ?? "");
+    return (
+      <div key={f.key} className="space-y-1">
+        <div className="flex items-center justify-between gap-2">
+          <Label htmlFor={`cc-${channel}-${f.key}`} className="text-sm">
+            {fieldLabel(f.key)}
+          </Label>
+          {managed ? (
+            <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-sg-ink-4">
+              {t("channelConfig.managed")}
+            </span>
+          ) : null}
+        </div>
+        <Input
+          id={`cc-${channel}-${f.key}`}
+          placeholder={
+            managed
+              ? t("channelConfig.managedPlaceholder")
+              : t("channelConfig.listPlaceholder")
+          }
+          value={value}
+          readOnly={managed}
+          aria-readonly={managed}
+          onChange={managed ? undefined : (e) => setField(group, f.key, e.target.value)}
+          data-testid={`cc-list-${f.key}`}
+        />
+        {fieldHint(f.key) ?? (
+          <FieldHint>{t("channelConfig.listHint")}</FieldHint>
+        )}
+      </div>
+    );
+  };
 
   const renderNumber = (f: ChannelFieldSpec) => (
     <div key={f.key} className="space-y-1">

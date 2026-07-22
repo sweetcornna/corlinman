@@ -1,5 +1,5 @@
 import { describe, expect, it, afterEach, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import { ScanLoginDialog } from "./ScanLoginDialog";
 
@@ -71,5 +71,22 @@ describe("ScanLoginDialog", () => {
   it("does not mount the iframe while closed", () => {
     render(<ScanLoginDialog open={false} onOpenChange={() => {}} />);
     expect(screen.queryByTestId("qq-napcat-webui")).toBeNull();
+  });
+
+  it("requests a status refresh when the dialog closes", async () => {
+    stubDiagnostics();
+    const onOpenChange = vi.fn();
+    const onClosed = vi.fn();
+    render(
+      <ScanLoginDialog
+        open
+        onOpenChange={onOpenChange}
+        onClosed={onClosed}
+      />,
+    );
+    await screen.findByTestId("qq-napcat-webui");
+    fireEvent.click(screen.getByText("Close"));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(onClosed).toHaveBeenCalledOnce();
   });
 });

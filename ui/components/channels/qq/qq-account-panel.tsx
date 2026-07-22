@@ -10,7 +10,7 @@ import type { QqStatus } from "@/lib/api";
 import type { QqConnection } from "./qq-util";
 
 /**
- * Left column of the QQ config grid — NapCat endpoint, configured self_ids,
+ * Left column of the QQ config grid — NapCat endpoint, detected account,
  * and a reconnect CTA mirroring the hero. All fields read-only; writes are
  * done via the admin config UI (config page) rather than here.
  */
@@ -70,12 +70,8 @@ export function QqAccountPanel({
       <dl className="flex flex-col gap-3 text-[12.5px]">
         <Row label="ws_url" value={status?.ws_url ?? "(none)"} mono />
         <Row
-          label="self_ids"
-          value={
-            status?.self_ids && status.self_ids.length > 0
-              ? `[${status.self_ids.join(", ")}]`
-              : "[]"
-          }
+          label={t("channels.qq.tp.botQqIdLabel")}
+          value={String(status?.account_qq ?? "—")}
           mono
         />
         <Row

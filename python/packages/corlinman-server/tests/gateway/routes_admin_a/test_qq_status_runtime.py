@@ -77,3 +77,36 @@ def test_qq_runtime_unknown_when_no_health_snapshot(
 ) -> None:
     body = _status_with_health(tmp_path, monkeypatch, {})
     assert body["runtime"] == "unknown"
+
+
+def test_qq_runtime_account_id_wins_over_configured_fallback(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    body = _status_with_health(
+        tmp_path,
+        monkeypatch,
+        {"online": True, "account_qq": 20002, "account_online": True},
+    )
+    assert body["account_qq"] == 20002
+    assert body["self_ids"] == [20002]
+    assert body["config_keys"]["self_ids"] == ["10001"]
+
+
+def test_qq_runtime_self_ids_fall_back_before_detection(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    body = _status_with_health(tmp_path, monkeypatch, {"online": True})
+    assert body["account_qq"] is None
+    assert body["self_ids"] == [10001]
+
+
+def test_qq_runtime_offline_account_does_not_surface_stale_detection(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    body = _status_with_health(
+        tmp_path,
+        monkeypatch,
+        {"online": True, "account_qq": 20002, "account_online": False},
+    )
+    assert body["account_online"] is False
+    assert body["self_ids"] == [10001]

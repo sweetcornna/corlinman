@@ -56,6 +56,8 @@ export interface ChannelFieldSpec {
   placeholder?: string;
   /** Effective default when a boolean key is absent on disk. */
   defaultValue?: boolean;
+  /** Runtime-managed display field; never emitted in a config PUT. */
+  managed?: boolean;
 }
 
 export interface ChannelConfigSpec {
@@ -90,7 +92,7 @@ export const CHANNEL_CONFIG_SPEC: Record<ConfigEditableChannel, ChannelConfigSpe
       { key: "proactive_prompt", input: "textarea", advanced: true },
     ],
     ids: [
-      { key: "self_ids" },
+      { key: "self_ids", managed: true },
       { key: "group_whitelist" },
       { key: "proactive_groups", advanced: true },
     ],
@@ -286,6 +288,7 @@ export function buildChannelConfigBody(
 
   const ids: Record<string, string[]> = {};
   for (const f of spec.ids) {
+    if (f.managed) continue;
     const next = parseList(draft.ids[f.key]);
     if (!listEq(next, parseList(initial.ids[f.key]))) ids[f.key] = next;
   }
