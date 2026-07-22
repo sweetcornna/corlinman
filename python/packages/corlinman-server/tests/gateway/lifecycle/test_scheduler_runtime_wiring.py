@@ -53,8 +53,11 @@ async def test_spawn_threads_app_state_into_dispatch(
     captured: dict[str, object] = {}
     cancel = asyncio.Event()
 
-    async def _fake_dispatch(spec, bus, app_state=None):  # type: ignore[no-untyped-def]
+    async def _fake_dispatch(  # type: ignore[no-untyped-def]
+        spec, bus, app_state=None, *, scheduled_for_ms=None
+    ):
         captured["app_state"] = app_state
+        captured["scheduled_for_ms"] = scheduled_for_ms
         cancel.set()  # exit the loop after one fire
 
     async def _no_sleep(deadline, cancel_evt, extra_cancel=None):  # type: ignore[no-untyped-def]
@@ -76,6 +79,7 @@ async def test_spawn_threads_app_state_into_dispatch(
     await asyncio.wait_for(handle.join_all(), timeout=5.0)
 
     assert captured.get("app_state") is sentinel
+    assert isinstance(captured.get("scheduled_for_ms"), int)
 
 
 def _monkey_loaded_config(monkeypatch: pytest.MonkeyPatch, cfg: dict | None) -> None:

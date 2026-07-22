@@ -80,7 +80,14 @@ describe("CHANNEL_CONFIG_SPEC", () => {
 
   it("surfaces the QQ group-behaviour keys with the right kinds", () => {
     const qq = CHANNEL_CONFIG_SPEC.qq;
-    expect(keys(qq.flags)).toEqual(["group_replies_enabled", "proactive_enabled"]);
+    expect(keys(qq.flags)).toEqual([
+      "group_replies_enabled",
+      "freeze_risk_topic_blocking",
+      "proactive_enabled",
+    ]);
+    expect(
+      qq.flags.find((f) => f.key === "freeze_risk_topic_blocking")?.defaultValue,
+    ).toBe(true);
     expect(keys(qq.ids)).toEqual(["self_ids", "group_whitelist", "proactive_groups"]);
     expect(keys(qq.numbers)).toEqual([
       "group_reply_cooldown_secs",
@@ -103,6 +110,14 @@ describe("CHANNEL_CONFIG_SPEC", () => {
 });
 
 describe("buildChannelConfigBody", () => {
+  it("seeds the QQ freeze-risk protection on when absent", () => {
+    const draft = seedDraft("qq", {});
+    expect(draft.flags.freeze_risk_topic_blocking).toBe(true);
+    const off = { ...draft, flags: { ...draft.flags, freeze_risk_topic_blocking: false } };
+    expect(buildChannelConfigBody("qq", off, draft).flags).toEqual({
+      freeze_risk_topic_blocking: false,
+    });
+  });
 
   it("emits an empty body when nothing was edited", () => {
     const initial = seedDraft("telegram", {

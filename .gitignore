@@ -26,6 +26,9 @@ dist/
 .claude/
 
 # Data (in-place, never commit user data)
+/private/
+/private_jobs/
+/scheduler_private/
 /config.env
 /Plugin/
 /Agent/

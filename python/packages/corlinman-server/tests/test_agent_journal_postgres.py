@@ -93,6 +93,93 @@ async def backend(postgresql):  # type: ignore[no-untyped-def]
 # ---------------------------------------------------------------------------
 
 
+async def test_same_ms_session_summary_uses_latest_turn_id(backend) -> None:  # type: ignore[no-untyped-def]
+    older = await backend.begin_turn("sess-tie", "older", tenant_id="tenant-a")
+    newer = await backend.begin_turn("sess-tie", "newer", tenant_id="tenant-a")
+    assert older is not None and newer is not None
+    await backend.complete_turn(older)
+    async with backend._p.acquire() as conn:
+        await conn.execute(
+            "UPDATE journal_turns SET started_at_ms = $1 WHERE turn_id IN ($2, $3)",
+            5000,
+            older,
+            newer,
+        )
+    rows = await backend.list_session_summaries(tenant_id="tenant-a")
+    assert len(rows) == 1
+    assert rows[0].last_user_text == "newer"
+    assert rows[0].last_status == TURN_IN_PROGRESS
+
+
+async def test_list_session_turns_tenant_cursor_and_metrics(backend) -> None:  # type: ignore[no-untyped-def]
+    first = await backend.begin_turn("sess-page", "first", tenant_id="tenant-a")
+    second = await backend.begin_turn("sess-page", "second", tenant_id="tenant-a")
+    third = await backend.begin_turn("sess-page", "third", tenant_id="tenant-a")
+    foreign = await backend.begin_turn("sess-page", "foreign", tenant_id="tenant-b")
+    assert None not in (first, second, third, foreign)
+    async with backend._p.acquire() as conn:
+        await conn.execute(
+            "UPDATE journal_turns SET started_at_ms = $1, elapsed_ms = $2, "
+            "estimated_cost_usd = $3, cost_status = $4, tool_call_count = $5, "
+            "reasoning_token_count = $6 WHERE turn_id = $7",
+            1000,
+            12,
+            0.25,
+            "estimated",
+            2,
+            3,
+            first,
+        )
+        await conn.execute(
+            "UPDATE journal_turns SET started_at_ms = $1 WHERE turn_id = $2",
+            2000,
+            second,
+        )
+        await conn.execute(
+            "UPDATE journal_turns SET started_at_ms = $1 WHERE turn_id = $2",
+            2000,
+            third,
+        )
+        await conn.execute(
+            "UPDATE journal_turns SET started_at_ms = $1 WHERE turn_id = $2",
+            3000,
+            foreign,
+        )
+
+    page = await backend.list_session_turns(
+        "sess-page", limit=2, tenant_id="tenant-a"
+    )
+    assert [row["turn_id"] for row in page] == [str(third), str(second)]
+    tail = await backend.list_session_turns(
+        "sess-page",
+        limit=2,
+        before_turn_id=str(second),
+        tenant_id="tenant-a",
+    )
+    assert [row["turn_id"] for row in tail] == [str(first)]
+    assert tail[0]["elapsed_ms"] == 12
+    assert tail[0]["estimated_cost_usd"] == 0.25
+    assert tail[0]["cost_status"] == "estimated"
+    assert tail[0]["tool_call_count"] == 2
+    assert tail[0]["reasoning_token_count"] == 3
+    assert await backend.list_session_turns(
+        "sess-page", tenant_id="tenant-c"
+    ) == []
+
+
+async def test_update_turn_cost_round_trip(backend) -> None:  # type: ignore[no-untyped-def]
+    turn_id = await backend.begin_turn("sess-cost", "cost")
+    assert turn_id is not None
+    await backend.update_turn_cost(
+        turn_id,
+        estimated_cost_usd=0.75,
+        cost_status="estimated",
+    )
+    rows = await backend.list_session_turns("sess-cost")
+    assert rows[0]["estimated_cost_usd"] == 0.75
+    assert rows[0]["cost_status"] == "estimated"
+
+
 async def test_begin_turn_returns_distinct_serial_ids(backend) -> None:  # type: ignore[no-untyped-def]
     a = await backend.begin_turn("sess-1", "first")
     b = await backend.begin_turn("sess-1", "second")
@@ -105,6 +192,23 @@ async def test_complete_turn_makes_it_non_resumable(backend) -> None:  # type: i
     tid = await backend.begin_turn("sess-c", "do thing")
     await backend.complete_turn(tid)
     assert await backend.find_resumable_turn("sess-c", "do thing") is None
+
+
+async def test_complete_turn_populates_elapsed_and_tool_count(backend) -> None:  # type: ignore[no-untyped-def]
+    tid = await backend.begin_turn("sess-metrics", "do thing")
+    assert tid is not None
+    await backend.append_message(tid, "tool", '{"ok":true}')
+    async with backend._p.acquire() as conn:
+        await conn.execute(
+            "UPDATE journal_turns SET started_at_ms = $1 WHERE turn_id = $2",
+            int(time.time() * 1000) - 25,
+            tid,
+        )
+    await backend.complete_turn(tid)
+    rows = await backend.list_session_turns("sess-metrics")
+    assert rows[0]["elapsed_ms"] is not None
+    assert rows[0]["elapsed_ms"] >= 0
+    assert rows[0]["tool_call_count"] == 1
 
 
 async def test_error_turn_appears_in_recent_errored(backend) -> None:  # type: ignore[no-untyped-def]
@@ -136,6 +240,65 @@ async def test_append_and_load_messages_round_trip(backend) -> None:  # type: ig
     assert [m["role"] for m in msgs] == ["user", "assistant", "tool"]
     assert msgs[1]["tool_calls"][0]["id"] == "c1"
     assert msgs[2]["tool_call_id"] == "c1"
+
+
+async def test_query_messages_matches_sqlite_scope_contract(backend) -> None:  # type: ignore[no-untyped-def]
+    first = await backend.begin_turn(
+        "telegram:topic-alpha",
+        "first",
+        user_id="owner",
+        channel="telegram",
+        tenant_id="tenant-a",
+    )
+    second = await backend.begin_turn(
+        "qq:group-1",
+        "second",
+        user_id="owner",
+        channel="qq",
+        tenant_id="tenant-a",
+    )
+    other = await backend.begin_turn(
+        "telegram:topic-alpha",
+        "other",
+        user_id="other",
+        channel="telegram",
+        tenant_id="tenant-a",
+    )
+    assert first is not None and second is not None and other is not None
+    await backend.append_message(first, "user", "first-user")
+    await backend.append_message(first, "assistant", "first-assistant")
+    await backend.append_message(second, "user", "second-user")
+    await backend.append_message(other, "user", "other-user")
+    async with backend._p.acquire() as conn:
+        await conn.execute(
+            "UPDATE journal_turns SET started_at_ms = $1 WHERE turn_id = $2",
+            1000,
+            first,
+        )
+        await conn.execute(
+            "UPDATE journal_turns SET started_at_ms = $1 WHERE turn_id = $2",
+            2000,
+            second,
+        )
+        await conn.execute(
+            "UPDATE journal_turns SET started_at_ms = $1 WHERE turn_id = $2",
+            1500,
+            other,
+        )
+
+    rows = await backend.query_messages(
+        start_ms=900,
+        end_ms=2100,
+        roles=["user", "assistant"],
+        channels=["telegram", "qq"],
+        tenant_id="tenant-a",
+        user_id="owner",
+    )
+    assert [(row["started_at_ms"], row["seq"], row["content"]) for row in rows] == [
+        (1000, 0, "first-user"),
+        (1000, 1, "first-assistant"),
+        (2000, 0, "second-user"),
+    ]
 
 
 async def test_find_resumable_picks_most_recent(backend) -> None:  # type: ignore[no-untyped-def]

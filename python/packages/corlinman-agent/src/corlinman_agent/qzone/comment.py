@@ -44,6 +44,7 @@ surfaced so the break is diagnosable from the logs.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import html as _html
 import json
 import re
@@ -51,14 +52,21 @@ from typing import Any
 
 import httpx
 import structlog
+from corlinman_content_policy import (
+    TencentPolicyConfig,
+    classifier_failure_decision,
+    moderate_text,
+)
 
 from corlinman_agent.onebot import OneBotClient, OneBotError
 from corlinman_agent.qzone.publish import (
     _DESKTOP_UA,
     _QZONE_COOKIE_DOMAIN,
     _QZONE_TIMEOUT,
+    _complete_effect,
     _compute_gtk,
     _extract_cookie_value,
+    _prepare_effect,
 )
 
 logger = structlog.get_logger(__name__)
@@ -137,6 +145,26 @@ def _decode(args_json: bytes | str) -> dict[str, Any]:
     except (ValueError, json.JSONDecodeError):
         return {}
     return obj if isinstance(obj, dict) else {}
+
+
+def _policy_config(resolver: Any | None) -> TencentPolicyConfig:
+    try:
+        # Every agent entrypoint is protected by default. Only an injected
+        # resolver returning the literal boolean false may opt out.
+        enabled = True if resolver is None else resolver()
+    except Exception:
+        enabled = True
+    return TencentPolicyConfig(enabled=enabled is not False)
+
+
+def _policy_error(decision: Any) -> str:
+    return _err(
+        "content_policy_blocked",
+        "Tencent content policy blocked this QZone operation.",
+        category_codes=list(decision.category_codes),
+        rule_ids=list(decision.rule_ids),
+        ruleset_version=decision.ruleset_version,
+    )
 
 
 def _err(error: str, message: str, **extra: Any) -> str:
@@ -221,7 +249,7 @@ async def _qzone_get(
     except httpx.HTTPError as exc:
         raise RuntimeError(f"Cannot reach QZone: {exc}") from exc
     if resp.status_code >= 400:
-        raise RuntimeError(f"QZone HTTP {resp.status_code}. {resp.text[:200]}".strip())
+        raise RuntimeError(f"QZone HTTP {resp.status_code}")
     return resp.text
 
 
@@ -248,7 +276,7 @@ async def _qzone_post(
     except httpx.HTTPError as exc:
         raise RuntimeError(f"Cannot reach QZone: {exc}") from exc
     if resp.status_code >= 400:
-        raise RuntimeError(f"QZone HTTP {resp.status_code}. {resp.text[:200]}".strip())
+        raise RuntimeError(f"QZone HTTP {resp.status_code}")
     return resp.text
 
 
@@ -364,6 +392,41 @@ def _feed_comments(block: str) -> list[dict[str, str]]:
     return out
 
 
+def _redact_feeds(
+    feeds: list[dict[str, Any]],
+    policy_resolver: Any | None,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Remove blocked source text before it can enter a model prompt."""
+    cfg = _policy_config(policy_resolver)
+    counts: dict[str, int] = {}
+    clean: list[dict[str, Any]] = []
+
+    def _redact_field(row: dict[str, Any], key: str) -> None:
+        value = str(row.get(key) or "")
+        try:
+            decision = moderate_text(value, cfg).decision
+        except Exception:
+            decision = classifier_failure_decision(value)
+        if decision.allowed:
+            return
+        row[key] = "[内容已按 QQ 风控策略隐藏]"
+        for category in decision.category_codes:
+            counts[category] = counts.get(category, 0) + 1
+    for source in feeds:
+        feed = dict(source)
+        _redact_field(feed, "name")
+        _redact_field(feed, "content")
+        comments: list[dict[str, Any]] = []
+        for source_comment in feed.get("comments") or []:
+            comment = dict(source_comment)
+            _redact_field(comment, "name")
+            _redact_field(comment, "content")
+            comments.append(comment)
+        feed["comments"] = comments
+        clean.append(feed)
+    return clean, counts
+
+
 def _parse_feeds3(body: str) -> list[dict[str, Any]]:
     """Parse a feeds3_html_more response into a list of feed dicts."""
     text = _unescape_hex(body)
@@ -415,14 +478,10 @@ async def _fetch_timeline(
     }
     body = await _qzone_get(http_client, _QZONE_FEEDS3_URL, params, cookie, my_uin)
     if '"code":0' not in body and '"code": 0' not in body:
-        m = re.search(
-            r'"code"\s*:\s*(-?\d+).*?"message"\s*:\s*"([^"]*)"', body, re.DOTALL
-        )
+        m = re.search(r'"code"\s*:\s*(-?\d+)', body)
         if m:
-            raise RuntimeError(
-                f"feeds3 returned code={m.group(1)} message={m.group(2)!r}"
-            )
-        raise RuntimeError(f"feeds3 unexpected response: {body[:200]}")
+            raise RuntimeError(f"feeds3 returned code={m.group(1)}")
+        raise RuntimeError("feeds3 returned an unexpected response")
     return _parse_feeds3(body)
 
 
@@ -437,6 +496,7 @@ async def dispatch_qzone_list_feed(
     onebot_client: OneBotClient | None = None,
     onebot_client_factory: Any | None = None,
     http_transport: httpx.BaseTransport | None = None,
+    policy_resolver: Any | None = None,
 ) -> str:
     """``qzone_list_feed`` — read the 好友动态 timeline."""
     args = _decode(args_json)
@@ -478,6 +538,7 @@ async def dispatch_qzone_list_feed(
     if owner_uin:
         feeds = [f for f in feeds if f["uin"] == owner_uin]
     feeds = feeds[:num]
+    feeds, policy_redactions = _redact_feeds(feeds, policy_resolver)
     return json.dumps(
         {
             "ok": True,
@@ -485,6 +546,7 @@ async def dispatch_qzone_list_feed(
             "filter_owner_uin": owner_uin or None,
             "returned": len(feeds),
             "feed": feeds,
+            "policy_redactions": policy_redactions,
             "note": (
                 "feed = 好友动态时间线 (你和好友的最近说说). 每条有 uin/name/"
                 "content/comments. uin==my_uin 的是你自己的说说(可回评论), "
@@ -501,6 +563,7 @@ async def dispatch_qzone_get_post(
     onebot_client: OneBotClient | None = None,
     onebot_client_factory: Any | None = None,
     http_transport: httpx.BaseTransport | None = None,
+    policy_resolver: Any | None = None,
 ) -> str:
     """``qzone_get_post`` — find one post (by tid) in the timeline."""
     args = _decode(args_json)
@@ -534,7 +597,16 @@ async def dispatch_qzone_get_post(
 
     for f in feeds:
         if f["tid"] == tid:
-            return json.dumps({"ok": True, "found": True, "post": f}, ensure_ascii=False)
+            clean, policy_redactions = _redact_feeds([f], policy_resolver)
+            return json.dumps(
+                {
+                    "ok": True,
+                    "found": True,
+                    "post": clean[0],
+                    "policy_redactions": policy_redactions,
+                },
+                ensure_ascii=False,
+            )
     return json.dumps(
         {
             "ok": True,
@@ -554,6 +626,10 @@ async def dispatch_qzone_post_comment(
     onebot_client: OneBotClient | None = None,
     onebot_client_factory: Any | None = None,
     http_transport: httpx.BaseTransport | None = None,
+    policy_resolver: Any | None = None,
+    execution_mode: str = "live",
+    scheduler_store: Any | None = None,
+    effect_context: dict[str, str] | None = None,
 ) -> str:
     """``qzone_post_comment`` — comment on a 说说 (top-level or @reply)."""
     args = _decode(args_json)
@@ -573,19 +649,102 @@ async def dispatch_qzone_post_comment(
 
     reply_to_uin = (args.get("reply_to_uin") or "").strip()
     reply_to_name = (args.get("reply_to_name") or "").strip()
+    reply_to_comment_id = (args.get("reply_to_comment_id") or "").strip()
+    reply_to_comment_content = (args.get("reply_to_comment_content") or "").strip()
     if reply_to_uin and not reply_to_uin.isdigit():
         return _err("invalid_args", "'reply_to_uin' must be a numeric QQ if provided.")
+    if len(reply_to_comment_id) > 256 or len(reply_to_comment_content) > 2000:
+        return _err("invalid_args", "reply identity fields are too long.")
+    comment_identity = ""
+    if reply_to_comment_id:
+        comment_identity = f"id:{reply_to_comment_id}"
+    elif reply_to_comment_content:
+        digest = hashlib.sha256(reply_to_comment_content.encode("utf-8")).hexdigest()
+        comment_identity = f"sha256:{digest}"
+
+    final_content = content
+    if reply_to_uin and reply_to_name:
+        mention = f"@{{uin:{reply_to_uin},nick:{reply_to_name},who:1}} "
+        if not content.startswith(mention.strip()):
+            final_content = mention + content
+    try:
+        decision = moderate_text(
+            final_content, _policy_config(policy_resolver)
+        ).decision
+    except Exception:
+        decision = classifier_failure_decision(final_content)
+    if not decision.allowed:
+        return _policy_error(decision)
+    if execution_mode == "shadow":
+        return json.dumps(
+            {
+                "ok": True,
+                "shadow": True,
+                "effect": "qzone_post_comment",
+                "owner_uin": owner_uin,
+                "tid": tid,
+                "is_reply": bool(reply_to_uin),
+                "comment_identity": comment_identity,
+                "content_chars": len(final_content),
+            },
+            ensure_ascii=False,
+        )
+
+    if scheduler_store is not None and reply_to_uin and not comment_identity:
+        return _err(
+            "scheduler_comment_identity_required",
+            "Scheduled QZone replies require reply_to_comment_id or "
+            "reply_to_comment_content.",
+        )
+    if comment_identity.startswith("sha256:") and reply_to_uin:
+        effect_identity = f"uin:{reply_to_uin}:{comment_identity}"
+    elif comment_identity:
+        effect_identity = comment_identity
+    else:
+        # Top-level scheduled comments deduplicate by source post. The target
+        # already includes owner_uin + tid, so no generated prose enters the
+        # identity and a retry cannot create another comment with new wording.
+        effect_identity = "top-level"
+    effect, effect_error = await _prepare_effect(
+        scheduler_store,
+        effect_context,
+        effect_kind="qzone.comment",
+        effect_target=f"post:{owner_uin}:{tid}:{effect_identity}",
+    )
+    if effect_error is not None:
+        return _err(effect_error, "QZone comment effect could not be reserved.")
 
     client, own = _onebot_from(onebot_client, onebot_client_factory)
     try:
         try:
             my_uin, cookie, gtk = await _qzone_auth(client)
         except OneBotError as exc:
+            if effect is not None:
+                await _complete_effect(
+                    scheduler_store,
+                    effect,
+                    state="failed",
+                    error_code="onebot_failed",
+                )
             return _err("onebot_failed", str(exc))
         except RuntimeError as exc:
+            if effect is not None:
+                await _complete_effect(
+                    scheduler_store,
+                    effect,
+                    state="failed",
+                    error_code="qzone_cookie_stale",
+                )
             return _err("qzone_cookie_stale", str(exc))
         except Exception as exc:  # noqa: BLE001
             logger.exception("qzone_post_comment.auth_unexpected")
+            if effect is not None:
+                await _complete_effect(
+                    scheduler_store,
+                    effect,
+                    state="failed",
+                    error_code="onebot_failed",
+                )
             return _err("onebot_failed", f"could not borrow QQ login state: {exc}")
 
         form = {
@@ -594,7 +753,7 @@ async def dispatch_qzone_post_comment(
             "inCharset": "utf-8",
             "outCharset": "utf-8",
             "ref": "feeds",
-            "content": content,
+            "content": final_content,
             "hostUin": owner_uin,
             "uin": my_uin,
             "format": "fs",
@@ -604,13 +763,8 @@ async def dispatch_qzone_post_comment(
             "qzreferrer": f"https://user.qzone.qq.com/{owner_uin}",
         }
         if reply_to_uin:
-            # Reply-to-commenter: the QZone web UI prepends an @nick token
-            # and carries the target uin. Best-effort — top-level comments
-            # are the primary, verified path.
-            if reply_to_name:
-                mention = f"@{{uin:{reply_to_uin},nick:{reply_to_name},who:1}} "
-                if not content.startswith(mention.strip()):
-                    form["content"] = mention + content
+            # Reply-to-commenter: the QZone web UI carries the target uin.
+            # The mention-prefixed final content was already policy-checked.
             form["targetUin"] = reply_to_uin
 
         url = f"{_QZONE_COMMENT_URL}?g_tk={gtk}"
@@ -619,6 +773,13 @@ async def dispatch_qzone_post_comment(
                 body = await _qzone_post(http_client, url, form, cookie, owner_uin)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("qzone_post_comment.request_failed", error=str(exc))
+                if effect is not None:
+                    await _complete_effect(
+                        scheduler_store,
+                        effect,
+                        state="unknown",
+                        error_code="qzone_request_failed",
+                    )
                 return _err("qzone_request_failed", f"QZone comment request failed: {exc}")
     finally:
         if own:
@@ -627,15 +788,45 @@ async def dispatch_qzone_post_comment(
 
     obj = _parse_callback_json(body)
     if obj is None:
-        return _err("qzone_unparseable", f"unparseable comment response: {body[:200]!r}")
+        if effect is not None:
+            await _complete_effect(
+                scheduler_store,
+                effect,
+                state="unknown",
+                error_code="qzone_unparseable",
+            )
+        return _err("qzone_unparseable", "QZone comment response was unparseable.")
     code = obj.get("code") if obj.get("code") is not None else obj.get("ret")
     subcode = obj.get("subcode", 0)
     if code not in (0, None) or subcode not in (0, None):
+        if effect is not None:
+            await _complete_effect(
+                scheduler_store,
+                effect,
+                state="failed",
+                error_code="qzone_rejected",
+            )
         return _err(
             "qzone_rejected",
-            f"QZone rejected the comment: code={code}, subcode={subcode}, "
-            f"message={obj.get('message') or obj.get('msg')!r}",
+            f"QZone rejected the comment: code={code}, subcode={subcode}",
             code=code,
+        )
+    if effect is not None and not await _complete_effect(
+        scheduler_store,
+        effect,
+        state="sent",
+        receipt={
+            "owner_uin": owner_uin,
+            "tid": tid,
+            "is_reply": bool(reply_to_uin),
+            "comment_identity": comment_identity,
+        },
+    ):
+        return _err(
+            "scheduler_effect_receipt_unknown",
+            "QZone comment may be public but its durable receipt was not confirmed.",
+            owner_uin=owner_uin,
+            tid=tid,
         )
     return json.dumps(
         {
@@ -643,6 +834,7 @@ async def dispatch_qzone_post_comment(
             "owner_uin": owner_uin,
             "tid": tid,
             "is_reply": bool(reply_to_uin),
+            "comment_identity": comment_identity,
             "content_sent": form["content"],
         },
         ensure_ascii=False,
@@ -654,6 +846,7 @@ async def dispatch_qzone_list_friends(
     args_json: bytes | str,
     onebot_client: OneBotClient | None = None,
     onebot_client_factory: Any | None = None,
+    policy_resolver: Any | None = None,
 ) -> str:
     """``qzone_list_friends`` — the QQ friend list via OneBot."""
     args = _decode(args_json)
@@ -679,6 +872,16 @@ async def dispatch_qzone_list_friends(
         }
         for f in friends_raw
     ]
+    cfg = _policy_config(policy_resolver)
+    for friend in out:
+        for key in ("nickname", "remark"):
+            value = str(friend.get(key) or "")
+            try:
+                decision = moderate_text(value, cfg).decision
+            except Exception:
+                decision = classifier_failure_decision(value)
+            if not decision.allowed:
+                friend[key] = "[内容已按 QQ 风控策略隐藏]"
     name_filter = (args.get("filter") or "").strip().lower()
     if name_filter:
         out = [
@@ -804,6 +1007,14 @@ def qzone_post_comment_tool_schema() -> dict[str, Any]:
                     "reply_to_name": {
                         "type": "string",
                         "description": "Display name of the commenter being replied to, used for the @ mention.",
+                    },
+                    "reply_to_comment_id": {
+                        "type": "string",
+                        "description": "Stable comment id from list_feed; pass it so scheduled dedup can distinguish later comments by the same person.",
+                    },
+                    "reply_to_comment_content": {
+                        "type": "string",
+                        "description": "Original comment text fallback when no stable id is present; used only to derive a dedup digest.",
                     },
                 },
                 "required": ["owner_uin", "tid", "content"],

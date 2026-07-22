@@ -2,7 +2,7 @@
 
 Drives a one-turn agent chat under a persona's voice that scans the
 persona's *own* recent QZone 说说 for fresh comments and replies to them
-in-character. Net-new capability (hermes never had it). The job
+in-character. The job
 metadata carries:
 
 * ``persona_id`` — required, resolves the persona row.
@@ -39,7 +39,10 @@ Dedup sidecar
 ``<DATA_DIR>/qzone_seen_comments/<persona_id>.json`` (persona slug
 guarded against traversal), shape::
 
-    {"version": 1, "seen": {"<tid>": ["<uin>:<unix_ts>", ...]}}
+    {"version": 2, "seen": {"<tid>": ["<identity>:<unix_ts>", ...]}}
+
+``identity`` prefers the stable comment id; a SHA-256 of the source comment
+content is the fallback. Legacy commenter markers remain readable.
 
 Entries are capped at :data:`_SEEN_PER_TID_MAX` per tid and
 :data:`_SEEN_TIDS_MAX` tids total (least-recently-updated tids roll
@@ -70,13 +73,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import time
 from pathlib import Path
 from typing import Any
 
-from corlinman_server.scheduler.builtins._qzone_chat import (
+from corlinman_server.scheduler.builtins.chat_driver import (
     ChatDriveOutcome,
     ToolCallRecord,
     build_internal_chat_request,
@@ -89,6 +93,7 @@ from corlinman_server.scheduler.builtins._qzone_chat import (
     resolve_default_model,
     resolve_metadata,
     resolve_or_open_persona_stores,
+    scheduler_context,
     valid_persona_slug,
 )
 from corlinman_server.scheduler.builtins.registry import (
@@ -143,12 +148,12 @@ _LOOKBACK_MAX: int = 20
 
 #: Sidecar layout: one JSON file per persona under
 #: ``<DATA_DIR>/qzone_seen_comments/<persona_id>.json`` holding, per 说说
-#: tid, the ``"<uin>:<unix_ts>"`` records of commenters already replied to.
+#: tid, the ``"<comment_identity>:<unix_ts>"`` records already replied to.
 #: A tiny owned sidecar (mirrors the B4 post-log rationale): it is the only
 #: place that always knows which comments this scheduler already answered,
 #: with zero network / auth dependency.
 _SEEN_DIR: str = "qzone_seen_comments"
-_SEEN_VERSION: int = 1
+_SEEN_VERSION: int = 2
 _SEEN_PER_TID_MAX: int = 200
 _SEEN_TIDS_MAX: int = 100
 
@@ -212,15 +217,15 @@ def _record_seen(
     seen = _read_seen(path)
     now_ts = int(time.time())
     changed = False
-    for tid, uin in replies:
-        if not tid or not uin:
+    for tid, identity in replies:
+        if not tid or not identity:
             continue
         entries = seen.pop(tid, [])
-        if any(e.split(":", 1)[0] == uin for e in entries):
+        if any(_seen_identity(entry) == identity for entry in entries):
             # Already recorded — keep the tid's recency bump anyway.
             seen[tid] = entries
             continue
-        entries.append(f"{uin}:{now_ts}")
+        entries.append(f"{identity}:{now_ts}")
         seen[tid] = entries[-_SEEN_PER_TID_MAX:]
         changed = True
     if not changed:
@@ -242,6 +247,13 @@ def _record_seen(
         return
 
 
+def _seen_identity(entry: str) -> str:
+    identity = entry.rsplit(":", 1)[0]
+    if identity.startswith(("id:", "sha256:", "uin:")):
+        return identity
+    return f"uin:{identity}"
+
+
 def _seen_block(seen: dict[str, list[str]]) -> str | None:
     """Render the pre-turn seen-map into the "已回复过" prompt block.
 
@@ -252,13 +264,14 @@ def _seen_block(seen: dict[str, list[str]]) -> str | None:
         return None
     lines: list[str] = []
     for tid, entries in seen.items():
-        uins: list[str] = []
+        identities: list[str] = []
         for entry in entries:
-            uin = entry.split(":", 1)[0]
-            if uin and uin not in uins:
-                uins.append(uin)
-        if uins:
-            lines.append(f"- 说说 {tid}：已回复过 QQ {'、'.join(uins)}")
+            identity = _seen_identity(entry)
+            if identity and identity not in identities:
+                identities.append(identity)
+        if identities:
+            rendered = [value[4:] if value.startswith("uin:") else value for value in identities]
+            lines.append(f"- 说说 {tid}：已回复评论 {'、'.join(rendered)}")
     if not lines:
         return None
     return (
@@ -298,10 +311,11 @@ def _reply_tail(
         f"2. 只看你自己发的说说，取最近 {lookback_posts} 条；每条的评论就在"
         "返回的 `comments` 字段里（需要单独确认某条时可用 `qzone_get_post`）。\n"
         "3. 跳过这些评论：你自己发的（uin 是你自己）、以及上面"
-        "「已回复过的评论」里列出的。\n"
+        "「已回复过的评论」里列出的 comment id / 内容指纹。不同评论即使来自同一个人也可以回复。\n"
         "4. 对剩下的新评论，用你自己的口吻自然地回复：调用 "
         "`qzone_post_comment`（owner_uin=你自己的 QQ，tid=那条说说，"
-        "content=回复内容，reply_to_uin/reply_to_name=评论者的 QQ 和昵称）。"
+        "content=回复内容，reply_to_uin/reply_to_name=评论者的 QQ 和昵称，"
+        "并传 reply_to_comment_id；没有 id 时传 reply_to_comment_content）。"
         f"本轮最多回复 {max_replies} 条，挑最新的先回。\n"
         "5. 回复完（或者根本没有新评论）就直接结束本轮：不要发表新说说，"
         "不要调用 `qzone_publish`，禁止向用户提问。"
@@ -436,6 +450,8 @@ async def _qzone_reply_comments_action(context: BuiltinContext) -> dict[str, Any
             system_prompt=system_prompt,
             user_turn=_USER_TURN,
             persona_id=persona_id,
+            execution_mode=context.execution_mode,
+            scheduler_context=scheduler_context(context),
         )
         if request is None:
             return {**base, "ok": False,
@@ -454,7 +470,11 @@ async def _qzone_reply_comments_action(context: BuiltinContext) -> dict[str, Any
             qq_account=qq_account,
             lookback_posts=lookback_posts,
         )
-        if result.get("ok") and result.get("_replies"):
+        if (
+            context.execution_mode != "shadow"
+            and result.get("ok")
+            and result.get("_replies")
+        ):
             _record_seen(
                 data_dir=data_dir,
                 persona_id=persona_id,
@@ -537,12 +557,32 @@ def _shape_audit(
         call = calls_by_id.get(res.call_id)
         args = (call.args if call else None) or {}
         tid = str(res.envelope.get("tid") or args.get("tid") or "")
-        uin = str(args.get("reply_to_uin") or "")
-        replies.append((tid, uin))
+        identity = str(res.envelope.get("comment_identity") or "")
+        if not identity:
+            comment_id = str(args.get("reply_to_comment_id") or "")
+            if comment_id:
+                identity = f"id:{comment_id}"
+            else:
+                content = str(args.get("reply_to_comment_content") or "")
+                if content:
+                    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                    identity = f"sha256:{digest}"
+        if not identity:
+            # Legacy tool calls lacked the comment identity. Keep their old
+            # commenter-level marker readable without using it for new calls.
+            identity = f"uin:{args.get('reply_to_uin') or ''}"
+        replies.append((tid, identity))
 
+    shadow = any(
+        result.tool == _QZONE_POST_COMMENT_TOOL
+        and bool(result.envelope.get("shadow"))
+        for result in outcome.results
+    )
     return {
         **base,
         "ok": True,
+        "shadow": shadow,
+        "delivery_suppressed": shadow,
         "replies_posted": len(replies),
         "tids_scanned": _count_scanned(
             outcome, qq_account=qq_account, lookback_posts=lookback_posts

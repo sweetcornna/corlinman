@@ -249,6 +249,30 @@ class AgentJournal:
         """
         return await self._backend.load_messages(turn_id)
 
+    async def query_messages(
+        self,
+        *,
+        start_ms: int,
+        end_ms: int,
+        roles: Sequence[str] | None = None,
+        channels: Sequence[str] | None = None,
+        tenant_id: str | None = None,
+        user_id: str | None = None,
+        session_key: str | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """Read scoped messages for scheduled diary/digest jobs."""
+        return await self._backend.query_messages(
+            start_ms=start_ms,
+            end_ms=end_ms,
+            roles=roles,
+            channels=channels,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            session_key=session_key,
+            limit=limit,
+        )
+
     # ------------------------------------------------------------------
     # T4.4 — Error breadcrumbs
     # ------------------------------------------------------------------

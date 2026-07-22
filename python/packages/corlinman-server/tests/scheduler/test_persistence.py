@@ -11,10 +11,13 @@ integration code wires a hook subscription that drives
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
+import pytest
 from corlinman_server.scheduler import (
     RunRecord,
+    SchedulerEffectConflict,
     SchedulerStore,
     SubprocessOutcome,
     SubprocessOutcomeKind,
@@ -29,6 +32,49 @@ async def test_open_creates_file_and_applies_schema(tmp_path: Path) -> None:
     try:
         assert p.exists(), "SQLite file should exist after open"
         assert await store.count() == 0
+    finally:
+        await store.close()
+
+
+async def test_open_migrates_legacy_scheduler_runs_before_occurrence_index(
+    tmp_path: Path,
+) -> None:
+    """Opening a pre-extension DB must add columns before indexing them."""
+    path = tmp_path / "legacy.sqlite"
+    with sqlite3.connect(path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE scheduler_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_name TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                action_kind TEXT NOT NULL,
+                outcome_kind TEXT NOT NULL,
+                error_kind TEXT,
+                exit_code INTEGER,
+                duration_ms INTEGER NOT NULL,
+                fired_at_ms INTEGER NOT NULL
+            );
+            """
+        )
+
+    store = await SchedulerStore.open(path)
+    try:
+        async with store.connection().execute(
+            "PRAGMA table_info(scheduler_runs)"
+        ) as cursor:
+            columns = {str(row[1]) async for row in cursor}
+        assert {
+            "result_json",
+            "execution_mode",
+            "scheduled_for_ms",
+            "occurrence_key",
+        } <= columns
+        async with store.connection().execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='index' AND name='idx_scheduler_runs_occurrence'"
+        ) as cursor:
+            assert await cursor.fetchone() is not None
     finally:
         await store.close()
 
@@ -181,6 +227,137 @@ async def test_get_by_run_id_returns_none_for_missing(tmp_path: Path) -> None:
         assert got.run_id == "present"
     finally:
         await store.close()
+
+
+async def test_extended_run_fields_round_trip_and_deduplicate_occurrence(tmp_path: Path) -> None:
+    store = await SchedulerStore.open(tmp_path / "s.sqlite")
+    try:
+        await store.record_raw(
+            job_name="imported",
+            run_id="r1",
+            action_kind="run_tool",
+            outcome_kind="success",
+            error_kind=None,
+            exit_code=None,
+            duration_ms=3,
+            result_json={"ok": True, "message_id": 42},
+            execution_mode="shadow",
+            scheduled_for_ms=1234,
+            occurrence_key="external:job:1234",
+        )
+        row = await store.get_by_run_id("r1")
+        assert row is not None
+        assert row.result_json == {"ok": True, "message_id": 42}
+        assert row.execution_mode == "shadow"
+        assert row.scheduled_for_ms == 1234
+        assert row.occurrence_key == "external:job:1234"
+        with pytest.raises(Exception):
+            await store.record_raw(
+                job_name="imported",
+                run_id="r2",
+                action_kind="run_tool",
+                outcome_kind="success",
+                error_kind=None,
+                exit_code=None,
+                duration_ms=3,
+                occurrence_key="external:job:1234",
+            )
+    finally:
+        await store.close()
+
+
+async def test_effect_reservation_receipt_and_duplicate_block(tmp_path: Path) -> None:
+    store = await SchedulerStore.open(tmp_path / "s.sqlite")
+    try:
+        prepared = await store.prepare_effect(
+            source_system="external",
+            source_job_id="abc",
+            occurrence_key="external:abc:1234",
+            effect_kind="telegram.message",
+            effect_target="configured-topic",
+        )
+        assert prepared.state == "prepared"
+        with pytest.raises(SchedulerEffectConflict):
+            await store.prepare_effect(
+                source_system="external",
+                source_job_id="abc",
+                occurrence_key="external:abc:1234",
+                effect_kind="telegram.message",
+                effect_target="configured-topic",
+            )
+        sent = await store.complete_effect(
+            prepared.id,
+            state="sent",
+            receipt={"message_id": 77},
+        )
+        assert sent.state == "sent"
+        assert sent.receipt_json == {"message_id": 77}
+        with pytest.raises(SchedulerEffectConflict):
+            await store.complete_effect(prepared.id, state="failed")
+        with pytest.raises(SchedulerEffectConflict):
+            await store.prepare_effect(
+                source_system="external",
+                source_job_id="abc",
+                occurrence_key="external:abc:1234",
+                effect_kind="telegram.message",
+                effect_target="configured-topic",
+            )
+    finally:
+        await store.close()
+
+
+async def test_open_reconciles_prepared_effects_to_unknown(tmp_path: Path) -> None:
+    path = tmp_path / "s.sqlite"
+    store = await SchedulerStore.open(path)
+    prepared = await store.prepare_effect(
+        source_system="external",
+        source_job_id="job-1",
+        occurrence_key="external:job-1:1234",
+        effect_kind="qzone.publish",
+        effect_target="account:1",
+    )
+    await store.close()
+
+    reopened = await SchedulerStore.open(path, reconcile_prepared=True)
+    try:
+        effect = await reopened.get_effect_by_id(prepared.id)
+        assert effect is not None
+        assert effect.state == "unknown"
+        assert effect.error_code == "process_restart"
+        with pytest.raises(SchedulerEffectConflict):
+            await reopened.prepare_effect(
+                source_system="external",
+                source_job_id="job-1",
+                occurrence_key="external:job-1:1234",
+                effect_kind="qzone.publish",
+                effect_target="account:1",
+            )
+    finally:
+        await reopened.close()
+
+
+async def test_regular_open_does_not_reconcile_another_process_effect(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "s.sqlite"
+    owner = await SchedulerStore.open(path)
+    prepared = await owner.prepare_effect(
+        source_system="external",
+        source_job_id="job-1",
+        occurrence_key="external:job-1:1234",
+        effect_kind="qzone.publish",
+        effect_target="account:1",
+    )
+    peer = await SchedulerStore.open(path)
+    try:
+        effect = await peer.get_effect_by_id(prepared.id)
+        assert effect is not None
+        assert effect.state == "prepared"
+        sent = await owner.complete_effect(prepared.id, state="sent")
+        assert sent.state == "sent"
+    finally:
+        await peer.close()
+        await owner.close()
 
 
 async def test_close_is_idempotent(tmp_path: Path) -> None:

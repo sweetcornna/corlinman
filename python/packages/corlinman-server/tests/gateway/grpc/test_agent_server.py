@@ -416,6 +416,11 @@ async def test_serve_agent_uses_py_config_reloading_resolver(
     assert captured["path"] == str(py_config)
     assert servicer._resolve is captured["resolver"]  # type: ignore[attr-defined]
     assert "gpt-5.5" in servicer._aliases  # type: ignore[attr-defined]
+    assert servicer._tencent_policy_resolver() is True  # type: ignore[attr-defined]
+    py_config.write_text(
+        '{"tencent_safety":{"enabled":false}}', encoding="utf-8"
+    )
+    assert servicer._tencent_policy_resolver() is False  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio

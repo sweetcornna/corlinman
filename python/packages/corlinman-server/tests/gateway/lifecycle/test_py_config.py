@@ -148,6 +148,11 @@ def test_empty_config_renders_empty_sections() -> None:
     assert v["providers"] == []
     assert v["aliases"] == {}
     assert v["embedding"] is None
+    assert v["tencent_safety"] == {
+        "enabled": True,
+        "unclassified_media": "deny",
+    }
+    assert v["qq_onebot"] is None
 
 
 def test_dict_shaped_config_also_works() -> None:
@@ -177,6 +182,29 @@ def test_dict_shaped_config_also_works() -> None:
     v = render_py_config(cfg)
     assert v["providers"][0]["api_key"] == "sk-from-dict"
     assert v["aliases"]["fast"]["model"] == "gpt-4o-mini"
+
+
+def test_render_includes_secret_bearing_agent_onebot_transport() -> None:
+    cfg = {
+        "providers": {},
+        "models": {"aliases": {}},
+        "embedding": None,
+        "channels": {
+            "qq": {
+                "ws_url": "ws://127.0.0.1:3001",
+                "napcat_access_token": "test-token",
+                "freeze_risk_topic_blocking": False,
+            }
+        },
+    }
+
+    v = render_py_config(cfg)
+
+    assert v["qq_onebot"] == {
+        "ws_url": "ws://127.0.0.1:3001",
+        "access_token": "test-token",
+    }
+    assert v["tencent_safety"]["enabled"] is False
 
 
 def test_render_includes_subagent_section() -> None:

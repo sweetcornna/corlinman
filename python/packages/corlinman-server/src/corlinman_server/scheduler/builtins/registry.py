@@ -19,8 +19,12 @@ register_builtin`` without touching the other entries.
 
 from __future__ import annotations
 
+import importlib
 import logging
+import os
+import sys
 from collections.abc import Awaitable, Callable
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -32,6 +36,7 @@ __all__ = [
     "BUILTIN_ACTIONS",
     "BuiltinAction",
     "BuiltinContext",
+    "load_private_builtin_modules",
     "register_builtin",
     "resolve_data_dir",
     "run_builtin",
@@ -54,6 +59,12 @@ class BuiltinContext:
     admin_state: Any | None = None
     run_id: str | None = None
     name: str | None = None
+    metadata: dict[str, Any] | None = None
+    execution_mode: str = "live"
+    scheduled_for_ms: int | None = None
+    occurrence_key: str | None = None
+    source_system: str | None = None
+    source_job_id: str | None = None
 
 
 # Builtin signature — ``BUILTIN_ACTIONS`` is the registry the scheduler
@@ -69,6 +80,79 @@ BuiltinAction = Callable[[BuiltinContext], Awaitable[dict[str, Any]]]
 # the "register at module load" pattern used elsewhere in the codebase
 # (corlinman_hooks' Python port of the Rust ``inventory!`` registry).
 BUILTIN_ACTIONS: dict[str, BuiltinAction] = {}
+_PRIVATE_MODULES_ENV = "CORLINMAN_SCHEDULER_PRIVATE_MODULES"
+_PRIVATE_PATH_ENV = "CORLINMAN_SCHEDULER_PRIVATE_PATH"
+
+
+@contextmanager
+def _private_import_path(path: Path | None):  # type: ignore[no-untyped-def]
+    if path is None:
+        yield
+        return
+    value = str(path)
+    sys.path.insert(0, value)
+    try:
+        yield
+    finally:
+        with suppress(ValueError):
+            sys.path.remove(value)
+
+
+def _module_is_under(module: object, root: Path) -> bool:
+    raw = getattr(module, "__file__", None)
+    if not isinstance(raw, str) or not raw:
+        return False
+    try:
+        Path(raw).resolve().relative_to(root)
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def load_private_builtin_modules() -> list[str]:
+    """Import operator-owned builtin modules from an out-of-repo path.
+
+    Both settings are opt-in. ``CORLINMAN_SCHEDULER_PRIVATE_PATH`` is added to
+    ``sys.path`` only while these imports execute; ``CORLINMAN_SCHEDULER_PRIVATE_MODULES``
+    is a comma-separated module list. Importing each module is expected to call
+    :func:`register_builtin`. No private file contents enter scheduler logs.
+    """
+    raw_modules = os.environ.get(_PRIVATE_MODULES_ENV, "")
+    modules = [value.strip() for value in raw_modules.split(",") if value.strip()]
+    if not modules:
+        return []
+    raw_path = os.environ.get(_PRIVATE_PATH_ENV, "").strip()
+    private_root = Path(raw_path).expanduser().resolve() if raw_path else None
+    loaded: list[str] = []
+    with _private_import_path(private_root):
+        for module in modules:
+            before = dict(BUILTIN_ACTIONS)
+            try:
+                existing = sys.modules.get(module)
+                if (
+                    existing is not None
+                    and private_root is not None
+                    and not _module_is_under(existing, private_root)
+                ):
+                    raise ImportError("configured private module name is already loaded")
+                imported = importlib.import_module(module)
+                if private_root is not None and not _module_is_under(
+                    imported, private_root
+                ):
+                    raise ImportError("configured module is outside private root")
+            except Exception as exc:  # noqa: BLE001 - one plugin must not break boot
+                BUILTIN_ACTIONS.clear()
+                BUILTIN_ACTIONS.update(before)
+                _logger.warning(
+                    "scheduler.private_builtin.load_failed",
+                    extra={
+                        "private_module_name": module,
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                continue
+            loaded.append(module)
+    return loaded
 
 
 def register_builtin(name: str, action: BuiltinAction) -> None:
@@ -122,7 +206,13 @@ def resolve_data_dir(context: BuiltinContext) -> Path | None:
     copy-pasted across six builtin modules before landing here; new
     builtins must use this instead of a seventh copy.
     """
-    for owner in (context.app_state, context.admin_state):
+    app_state = context.app_state
+    for owner in (
+        app_state,
+        getattr(app_state, "corlinman_state", None),
+        getattr(app_state, "corlinman", None),
+        context.admin_state,
+    ):
         raw = getattr(owner, "data_dir", None)
         if raw:
             try:

@@ -1,8 +1,8 @@
-"""Shared chat-drive skeleton for the QZone scheduler builtins.
+"""Channel-neutral internal-chat driver for scheduler builtins.
 
-Extracted from :mod:`.qzone_daily` (PR-B6) so ``qzone.daily_publish``
-and ``qzone.reply_comments`` share one copy of the plumbing that turns a
-scheduler firing into a single internal agent-chat turn:
+Provides the shared plumbing that turns a scheduler firing into one bounded
+internal agent-chat turn. QZone builtins and out-of-repository private job
+plugins consume the same implementation:
 
 * metadata / handle resolution off the :class:`BuiltinContext`
   (:func:`resolve_metadata`, :func:`resolve_chat_service`,
@@ -40,7 +40,7 @@ from typing import Any
 
 from corlinman_server.scheduler.builtins.registry import BuiltinContext
 
-_logger = logging.getLogger("corlinman_server.scheduler.builtins._qzone_chat")
+_logger = logging.getLogger("corlinman_server.scheduler.builtins.chat_driver")
 
 
 __all__ = [
@@ -63,6 +63,7 @@ __all__ = [
     "resolve_drive_timeout",
     "resolve_metadata",
     "resolve_or_open_persona_stores",
+    "scheduler_context",
     "valid_persona_slug",
 ]
 
@@ -88,11 +89,15 @@ def resolve_metadata(
     Returns an empty dict when nothing is found — the action then
     surfaces a clean ``missing_*`` operator error.
     """
+    if isinstance(context.metadata, dict):
+        return dict(context.metadata)
+
     app_state = context.app_state
     if app_state is None:
         return {}
 
-    # Production seam — a per-job map keyed by name. Checked first so a
+    # Backward-compatible production seam for config-derived jobs that do not
+    # yet carry metadata on JobSpec. Runtime jobs use the immutable snapshot.
     # gateway boot wiring per-job metadata wins over the simpler test
     # seam below (the test seam is meant for "one qzone job in this
     # process" environments, not for cohabiting with the per-job map).
@@ -131,12 +136,19 @@ def resolve_chat_service(context: BuiltinContext) -> Any | None:
     app_state = context.app_state
     if app_state is None:
         return None
-    chat = getattr(app_state, "chat", None)
-    if chat is not None:
-        return chat
-    extras = getattr(app_state, "extras", None)
-    if isinstance(extras, dict):
-        return extras.get("chat")
+    for owner in (
+        app_state,
+        getattr(app_state, "corlinman_state", None),
+        getattr(app_state, "corlinman", None),
+    ):
+        if owner is None:
+            continue
+        chat = getattr(owner, "chat", None)
+        if chat is not None:
+            return chat
+        extras = getattr(owner, "extras", None)
+        if isinstance(extras, dict) and extras.get("chat") is not None:
+            return extras["chat"]
     return None
 
 
@@ -176,7 +188,7 @@ async def resolve_or_open_persona_stores(
         from corlinman_server.persona import PersonaAssetStore, PersonaStore
     except Exception as exc:  # noqa: BLE001
         _logger.warning(
-            "scheduler.builtin.qzone_chat.persona_import_failed",
+            "scheduler.builtin.chat_driver.persona_import_failed",
             extra={"error": repr(exc)},
         )
         return None
@@ -185,7 +197,7 @@ async def resolve_or_open_persona_stores(
         owned.append(ps)
     except Exception as exc:  # noqa: BLE001
         _logger.warning(
-            "scheduler.builtin.qzone_chat.persona_open_failed",
+            "scheduler.builtin.chat_driver.persona_open_failed",
             extra={"error": repr(exc)},
         )
         return None
@@ -198,7 +210,7 @@ async def resolve_or_open_persona_stores(
             owned.append(asset_store)
         except Exception as exc:  # noqa: BLE001 — asset store is optional
             _logger.warning(
-                "scheduler.builtin.qzone_chat.asset_open_failed",
+                "scheduler.builtin.chat_driver.asset_open_failed",
                 extra={"error": repr(exc)},
             )
             asset_store = None
@@ -250,6 +262,16 @@ def resolve_data_dir(app_state: Any | None) -> Path | None:
     return None
 
 
+def scheduler_context(context: BuiltinContext) -> dict[str, str]:
+    """Return the trusted source/occurrence identity for an internal turn."""
+    return {
+        "source_system": context.source_system or "corlinman",
+        "source_job_id": context.source_job_id or context.name or "scheduled-job",
+        "occurrence_key": context.occurrence_key
+        or f"manual:{context.run_id or 'unknown'}",
+    }
+
+
 def resolve_default_model(context: BuiltinContext) -> str:
     """Pick the model to drive the scheduled chat with.
 
@@ -264,11 +286,17 @@ def resolve_default_model(context: BuiltinContext) -> str:
        the rest of the pipeline tolerates the empty value.
     """
     app_state = context.app_state
-    if app_state is not None:
-        explicit = getattr(app_state, "scheduler_default_model", None)
+    for owner in (
+        app_state,
+        getattr(app_state, "corlinman_state", None),
+        getattr(app_state, "corlinman", None),
+    ):
+        if owner is None:
+            continue
+        explicit = getattr(owner, "scheduler_default_model", None)
         if isinstance(explicit, str) and explicit:
             return explicit
-        cfg = getattr(app_state, "config", None)
+        cfg = getattr(owner, "config", None)
         if isinstance(cfg, dict):
             models_cfg = cfg.get("models")
             if isinstance(models_cfg, dict):
@@ -299,6 +327,8 @@ def build_internal_chat_request(
     system_prompt: str,
     user_turn: str,
     persona_id: str | None = None,
+    execution_mode: str = "live",
+    scheduler_context: dict[str, str] | None = None,
 ) -> Any | None:
     """Construct an :class:`InternalChatRequest` for the scheduler turn.
 
@@ -319,7 +349,7 @@ def build_internal_chat_request(
         )
     except Exception as exc:  # noqa: BLE001 — best-effort
         _logger.warning(
-            "scheduler.builtin.qzone_chat.gateway_api_import_failed",
+            "scheduler.builtin.chat_driver.gateway_api_import_failed",
             extra={"error": repr(exc)},
         )
         return None
@@ -337,6 +367,10 @@ def build_internal_chat_request(
         attachments=[],
         binding=None,
         persona_id=persona_id,
+        scheduler_context={
+            **(scheduler_context or {}),
+            "execution_mode": execution_mode,
+        },
     )
 
 
@@ -398,6 +432,8 @@ class ChatDriveOutcome:
 
     ``calls`` / ``results`` record every tool interaction in stream
     order so callers can harvest whichever tool(s) they care about.
+    ``final_text`` concatenates user-visible token deltas while excluding
+    reasoning chunks.
     """
 
     error: str | None = None
@@ -407,6 +443,7 @@ class ChatDriveOutcome:
     tools_called: list[str] = field(default_factory=list)
     calls: list[ToolCallRecord] = field(default_factory=list)
     results: list[ToolResultRecord] = field(default_factory=list)
+    final_text: str = ""
     finish_reason: str | None = None
     duration_ms: int = 0
 
@@ -439,7 +476,7 @@ async def drive_chat_turn(
     try:
         stream = chat_service.run(request, cancel)
     except Exception as exc:  # noqa: BLE001 — surface via the outcome
-        _logger.exception("scheduler.builtin.qzone_chat.run_failed")
+        _logger.exception("scheduler.builtin.chat_driver.run_failed")
         outcome.error = "run_failed"
         outcome.message = str(exc)
         outcome.duration_ms = elapsed_ms(started_at)
@@ -450,7 +487,12 @@ async def drive_chat_turn(
     async def _consume() -> None:
         async for event in stream:
             kind = event_kind(event)
-            if kind == "tool_call":
+            if kind == "token_delta":
+                if not bool(event_field(event, "is_reasoning", default=False)):
+                    outcome.final_text += str(
+                        event_field(event, "text", default="") or ""
+                    )
+            elif kind == "tool_call":
                 plugin = str(event_field(event, "plugin", default="") or "")
                 tool = str(event_field(event, "tool", default="") or "")
                 call_id = str(event_field(event, "call_id", default="") or "")
@@ -506,7 +548,7 @@ async def drive_chat_turn(
         cancel.set()
         outcome.error = "timeout"
     except Exception as exc:  # noqa: BLE001 — defensive
-        _logger.exception("scheduler.builtin.qzone_chat.consume_failed")
+        _logger.exception("scheduler.builtin.chat_driver.consume_failed")
         outcome.error = "consume_failed"
         outcome.message = str(exc)
     outcome.duration_ms = elapsed_ms(started_at)

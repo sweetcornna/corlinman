@@ -51,6 +51,15 @@ from websockets.asyncio.client import ClientConnection
 
 _log = logging.getLogger(__name__)
 
+from corlinman_content_policy import (
+    QQ_SAFE_REFUSAL_TEXT,
+    PolicyDecision,
+    TencentPolicyConfig,
+    classifier_failure_decision,
+    moderate_media,
+    moderate_text,
+)
+
 from corlinman_channels.common import (
     Attachment,
     AttachmentKind,
@@ -700,10 +709,16 @@ class OneBotAdapter:
     header) raise :class:`ConfigError` from :meth:`connect` instead.
     """
 
-    def __init__(self, config: OneBotConfig) -> None:
+    def __init__(
+        self,
+        config: OneBotConfig,
+        *,
+        tencent_policy_resolver: Callable[[], bool] | None = None,
+    ) -> None:
         if not config.url:
             raise ConfigError("OneBotConfig.url is empty")
         self._cfg = config
+        self._tencent_policy_resolver = tencent_policy_resolver
         self._ws: ClientConnection | None = None
         self._closed = False
         # Bounded queue so a stalled consumer doesn't grow without bound.
@@ -861,15 +876,76 @@ class OneBotAdapter:
                 continue
             yield _normalize_message_event(ev)
 
-    async def send_action(self, action: Action) -> None:
-        """Enqueue an outbound :data:`Action` for the reader loop to flush.
+    def _policy_config(self) -> TencentPolicyConfig:
+        try:
+            enabled = (
+                True
+                if self._tencent_policy_resolver is None
+                else self._tencent_policy_resolver()
+            )
+        except Exception:
+            enabled = True
+        return TencentPolicyConfig(enabled=enabled is not False)
 
-        Returns once the action is queued — actual transmission happens
-        on the writer side of the WS. Raises :class:`TransportError` if
-        the adapter has been closed.
-        """
+    def inspect_action(self, action: Action) -> PolicyDecision:
+        """Inspect every content-bearing OneBot action before queueing it."""
+        cfg = self._policy_config()
+        try:
+            text_parts: list[str] = []
+            has_media = False
+            if isinstance(action, (UploadPrivateFile, UploadGroupFile)):
+                has_media = True
+            elif isinstance(action, (SendPrivateMsg, SendGroupMsg)):
+                for segment in action.message:
+                    if isinstance(segment, TextSegment):
+                        text_parts.append(segment.text)
+                    elif isinstance(segment, (ImageSegment, RecordSegment, VideoSegment, FileSegment)):
+                        has_media = True
+            elif isinstance(action, SendGroupForwardMsg):
+                for node in action.messages:
+                    for segment in node.content:
+                        if isinstance(segment, TextSegment):
+                            text_parts.append(segment.text)
+                        elif isinstance(segment, (ImageSegment, RecordSegment, VideoSegment, FileSegment)):
+                            has_media = True
+            if has_media:
+                media_decision = moderate_media(config=cfg)
+                if not media_decision.allowed:
+                    return media_decision
+            return moderate_text("\n".join(text_parts), cfg).decision
+        except Exception:
+            return classifier_failure_decision()
+
+    async def send_safe_refusal(self, action: Action) -> None:
+        """Queue the application-owned refusal without reclassifying it."""
+        if isinstance(action, SendPrivateMsg):
+            safe: Action = SendPrivateMsg(
+                user_id=action.user_id,
+                message=[TextSegment(text=QQ_SAFE_REFUSAL_TEXT)],
+            )
+        elif isinstance(action, (SendGroupMsg, SendGroupForwardMsg)):
+            safe = SendGroupMsg(
+                group_id=action.group_id,
+                message=[TextSegment(text=QQ_SAFE_REFUSAL_TEXT)],
+            )
+        else:
+            raise TransportError("cannot replace this OneBot action with a refusal")
         if self._closed:
             raise TransportError("OneBotAdapter is closed")
+        await self._outbound_q.put(safe)
+
+    async def send_action(self, action: Action) -> None:
+        """Policy-check and enqueue an outbound action for the writer loop."""
+        if self._closed:
+            raise TransportError("OneBotAdapter is closed")
+        decision = self.inspect_action(action)
+        if not decision.allowed:
+            _log.warning(
+                "qq.policy.blocked_outbound categories=%s rules=%s",
+                list(decision.category_codes),
+                list(decision.rule_ids),
+            )
+            raise TransportError("tencent_content_policy_blocked")
         await self._outbound_q.put(action)
 
     # ------------------------------------------------------------------

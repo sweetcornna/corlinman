@@ -246,7 +246,11 @@ _CHANNEL_EDITABLE: dict[str, dict[str, list[str]]] = {
         "int_list_keys": ["self_ids", "group_whitelist", "proactive_groups"],
         "str_list_keys": [],
         "filter_keys": [],
-        "bool_keys": ["group_replies_enabled", "proactive_enabled"],
+        "bool_keys": [
+            "group_replies_enabled",
+            "freeze_risk_topic_blocking",
+            "proactive_enabled",
+        ],
         "number_keys": [
             "group_reply_cooldown_secs",
             "proactive_min_gap_minutes",
@@ -371,7 +375,11 @@ _CHANNEL_CONFIG_KEYS: dict[str, dict[str, list[str]]] = {
     "qq": {
         "id_keys": [],
         "list_keys": ["self_ids", "group_whitelist", "proactive_groups"],
-        "bool_keys": ["group_replies_enabled", "proactive_enabled"],
+        "bool_keys": [
+            "group_replies_enabled",
+            "freeze_risk_topic_blocking",
+            "proactive_enabled",
+        ],
     },
     "discord": {
         "id_keys": [],
@@ -419,6 +427,10 @@ def _non_secret_config_keys(
     for key in spec.get("bool_keys", []):
         if key in section:
             out[key] = str(bool(section.get(key)))
+        elif name == "qq" and key == "freeze_risk_topic_blocking":
+            # Safety is default-on. Project the effective default so an older
+            # config with no key does not render an unchecked opt-out in the UI.
+            out[key] = str(True)
     # Surface the non-secret endpoint overrides (base_url / api_base /
     # gateway_url / rest_base) so a PUT round-trips visibly in the status
     # payload. These come from the editable-field spec, never include a

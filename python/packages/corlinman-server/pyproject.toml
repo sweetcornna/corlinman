@@ -59,6 +59,7 @@ dependencies = [
     "corlinman-hooks",
     "corlinman-replay",
     "corlinman-channels",
+    "corlinman-content-policy",
     # corlinman-channels imports ``corlinman_identity`` unconditionally
     # (``corlinman_channels.common`` -> ``from corlinman_identity import
     # UserId``) but deliberately does not declare it (see that package's
@@ -118,6 +119,7 @@ corlinman-grpc = { workspace = true }
 corlinman-hooks = { workspace = true }
 corlinman-replay = { workspace = true }
 corlinman-channels = { workspace = true }
+corlinman-content-policy = { workspace = true }
 corlinman-identity = { workspace = true }
 corlinman-memory-host = { workspace = true }
 corlinman-memory-kernel = { workspace = true }

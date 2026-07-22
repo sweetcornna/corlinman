@@ -16,6 +16,7 @@ members = [
     "corlinman-auto-rollback",
     "corlinman-canvas",
     "corlinman-channels",
+    "corlinman-content-policy",
     "corlinman-episodes",
     "corlinman-evolution-engine",
     "corlinman-evolution-store",
@@ -383,11 +384,12 @@ wheels = [
 
 [[package]]
 name = "corlinman"
-version = "1.35.0"
+version = "1.36.0"
 source = { virtual = "." }
 dependencies = [
     { name = "corlinman-agent" },
     { name = "corlinman-agent-brain" },
+    { name = "corlinman-content-policy" },
     { name = "corlinman-episodes" },
     { name = "corlinman-evolution-engine" },
     { name = "corlinman-goals" },
@@ -420,6 +422,7 @@ dev = [
 requires-dist = [
     { name = "corlinman-agent", editable = "python/packages/corlinman-agent" },
     { name = "corlinman-agent-brain", editable = "python/packages/corlinman-agent-brain" },
+    { name = "corlinman-content-policy", editable = "python/packages/corlinman-content-policy" },
     { name = "corlinman-episodes", editable = "python/packages/corlinman-episodes" },
     { name = "corlinman-evolution-engine", editable = "python/packages/corlinman-evolution-engine" },
     { name = "corlinman-goals", editable = "python/packages/corlinman-goals" },
@@ -453,6 +456,7 @@ name = "corlinman-agent"
 version = "0.1.0"
 source = { editable = "python/packages/corlinman-agent" }
 dependencies = [
+    { name = "corlinman-content-policy" },
     { name = "corlinman-grpc" },
     { name = "corlinman-persona" },
     { name = "corlinman-providers" },
@@ -461,10 +465,12 @@ dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "structlog" },
+    { name = "websockets" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "corlinman-content-policy", editable = "python/packages/corlinman-content-policy" },
     { name = "corlinman-grpc", editable = "python/packages/corlinman-grpc" },
     { name = "corlinman-persona", editable = "python/packages/corlinman-persona" },
     { name = "corlinman-providers", editable = "python/packages/corlinman-providers" },
@@ -473,6 +479,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.10" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "structlog", specifier = ">=25.1" },
+    { name = "websockets", specifier = ">=13" },
 ]
 
 [[package]]
@@ -533,6 +540,7 @@ name = "corlinman-channels"
 version = "0.1.0"
 source = { editable = "python/packages/corlinman-channels" }
 dependencies = [
+    { name = "corlinman-content-policy" },
     { name = "defusedxml" },
     { name = "httpx" },
     { name = "pydantic" },
@@ -541,11 +549,17 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "corlinman-content-policy", editable = "python/packages/corlinman-content-policy" },
     { name = "defusedxml", specifier = ">=0.7.1" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "websockets", specifier = ">=13.0" },
 ]
+
+[[package]]
+name = "corlinman-content-policy"
+version = "0.1.0"
+source = { editable = "python/packages/corlinman-content-policy" }
 
 [[package]]
 name = "corlinman-episodes"
@@ -767,6 +781,7 @@ dependencies = [
     { name = "corlinman-auto-rollback" },
     { name = "corlinman-canvas" },
     { name = "corlinman-channels" },
+    { name = "corlinman-content-policy" },
     { name = "corlinman-evolution-engine" },
     { name = "corlinman-evolution-store" },
     { name = "corlinman-grpc" },
@@ -823,6 +838,7 @@ requires-dist = [
     { name = "corlinman-auto-rollback", editable = "python/packages/corlinman-auto-rollback" },
     { name = "corlinman-canvas", editable = "python/packages/corlinman-canvas" },
     { name = "corlinman-channels", editable = "python/packages/corlinman-channels" },
+    { name = "corlinman-content-policy", editable = "python/packages/corlinman-content-policy" },
     { name = "corlinman-evolution-engine", editable = "python/packages/corlinman-evolution-engine" },
     { name = "corlinman-evolution-store", editable = "python/packages/corlinman-evolution-store" },
     { name = "corlinman-grpc", editable = "python/packages/corlinman-grpc" },

@@ -314,7 +314,18 @@ async def test_trigger_runtime_qzone_job_invokes_builtin(
         assert any(h["job"] == "grantley.daily_qzone" for h in hist)
         # The builtin saw the per-job metadata via the production path
         # (per-job metadata map keyed by job name).
-        assert len(captured) == 1
+        # A second manual trigger is a distinct occurrence rather than a
+        # permanent ``manual:unknown`` duplicate.
+        second = client.post(
+            "/admin/scheduler/jobs/grantley.daily_qzone/trigger"
+        )
+        assert second.status_code == 200, second.text
+        assert len(captured) == 2
+        assert captured[0].run_id
+        assert captured[1].run_id
+        assert captured[0].run_id != captured[1].run_id
+        assert captured[0].occurrence_key == f"manual:{captured[0].run_id}"
+        assert captured[1].occurrence_key == f"manual:{captured[1].run_id}"
         ctx = captured[0]
         assert ctx.name == "grantley.daily_qzone"
         meta_table = getattr(ctx.app_state, "scheduler_job_metadata", None) if ctx.app_state else None

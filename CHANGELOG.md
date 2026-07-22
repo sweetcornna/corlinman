@@ -4,6 +4,66 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.36.0] — 2026-07-21 — durable scheduled agents + Tencent safety boundaries
+
+### Added
+- **Durable runtime scheduler jobs** — operator-created jobs now persist with
+  atomic sidecar updates, immutable source identity, explicit timezone,
+  `shadow`/`live` execution modes, stable scheduled-occurrence keys, structured
+  results, and restart rehydration. Manual runs receive unique occurrence IDs;
+  malformed rows are isolated; failed registration rolls durable state back.
+- **Effect-safe delivery ledger** — Telegram and QZone publication paths reserve
+  a unique effect before transport and durably record `sent`, `failed`, or
+  `unknown` receipts afterward. A crash in the ambiguous window blocks automatic
+  resend until an operator reconciles it, preventing duplicate public effects.
+- **Private scheduler extension seam** — deployments may load operator-owned
+  builtins from an explicit out-of-repository path. Imports are opt-in,
+  path-confined, rollback partial registrations on failure, and never log private
+  exception text.
+- **Shared scheduled-agent driver and delivery layer** — scheduled model turns use
+  the production chat service with bounded stream consumption, tool-result
+  harvesting, shadow transport suppression, and topic-aware Telegram text/photo
+  delivery.
+- **Scoped journal queries** — SQLite and Postgres can query user/assistant
+  messages by time range, channel, tenant, user, and session with deterministic
+  composite cursors and aggregate/cost projections.
+- **Tencent freeze-risk content policy** — a dependency-leaf package provides a
+  deterministic, versioned local classifier with Unicode/obfuscation
+  normalization, digest-only audit metadata, a fixed QQ-safe refusal, and
+  fail-closed handling for unclassified media.
+- **QQ safety control** — the existing QQ editor now exposes one default-on,
+  immediately hot-reloadable switch covering OneBot QQ, QQ Official, and QZone.
+  Only a literal boolean `false` opts out.
+
+### Changed
+- **Tencent boundaries are enforced end-to-end** — inbound text/media is checked
+  before commands, journal, model, or tools; final composed output and proactive
+  messages are checked before send; OneBot's adapter remains the authoritative
+  last guard for text, forwards, and media. QQ Official applies the same checks
+  before file reads/uploads and sends.
+- **QZone tools are policy- and shadow-aware** — publish/comment requests are
+  classified before authentication, file I/O, generation, or HTTP; protected
+  publication is text-only; feed, comment, friend-name, and remark fields are
+  redacted before model exposure. Shadow calls return planned-effect envelopes
+  without touching external transports or continuity state.
+- **QZone comment identity is occurrence-safe** — replies prefer comment IDs and
+  include commenter identity with digest fallback, while top-level comments
+  deduplicate per source post.
+- **OneBot action transport works with WS-only NapCat deployments** — action calls
+  prefer HTTP and fall back to authenticated forward WebSocket requests using
+  matching `echo` responses. Gateway sidecar configuration supplies the active
+  endpoint without putting credentials in source.
+
+### Fixed / Hardening
+- Scheduler builtins now follow the production Starlette state bridge to resolve
+  chat, journal, model, and data-directory handles in gateway and embedded modes.
+- Private extension import failures cannot leave partially registered actions or
+  expose private prompts/credentials in logs.
+- QZone HTTP/parser failures no longer retain upstream bodies or textual response
+  snippets in errors or durable effect receipts.
+- Runtime store initialization is single-flight; shutdown is bounded and cancels
+  jobs that outlive the grace period.
+
 ## [1.35.0] — 2026-07-20 — gap-close backlog lands: 7 PRs + ordering fix
 
 ### fix: deterministic turn ordering on same-ms ties (#161)

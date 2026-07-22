@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import urllib.parse
 from pathlib import Path
+from typing import Any
 
 import httpx
 from corlinman_agent.onebot import OneBotClient, OneBotError
@@ -178,6 +179,30 @@ def _client(transport: httpx.MockTransport, base_url: str = "http://onebot.local
     return OneBotClient(base_url=base_url, transport=transport)
 
 
+class _EffectStore:
+    def __init__(self, *, fail_complete: bool = False) -> None:
+        self.prepared: list[dict[str, Any]] = []
+        self.completed: list[tuple[int, dict[str, Any]]] = []
+        self.fail_complete = fail_complete
+
+    async def prepare_effect(self, **kwargs: Any) -> Any:
+        self.prepared.append(kwargs)
+        return type("Effect", (), {"id": 1})()
+
+    async def complete_effect(self, effect_id: int, **kwargs: Any) -> Any:
+        if self.fail_complete:
+            raise RuntimeError("receipt write failed")
+        self.completed.append((effect_id, kwargs))
+        return type("Effect", (), {"id": effect_id})()
+
+
+_EFFECT_CONTEXT = {
+    "source_system": "external",
+    "source_job_id": "job-1",
+    "occurrence_key": "external:job-1:1234",
+}
+
+
 # ---------------------------------------------------------------------------
 # Schema / wire stability
 # ---------------------------------------------------------------------------
@@ -242,7 +267,7 @@ def test_parse_publish_response_accepts_both_code_and_ret() -> None:
     failure = _parse_publish_response(json.dumps({"ret": 4001, "msg": "no"}))
     assert failure["ok"] is False
     assert failure["code"] == 4001
-    assert "no" in failure["error"]
+    assert failure["error"] == "ret=4001, code=None, subcode=0"
 
 
 def test_parse_upload_response_handles_jsonp_wrapper() -> None:
@@ -293,6 +318,123 @@ def test_onebot_missing_config_raises(monkeypatch) -> None:
         assert "not configured" in str(exc).lower()
     else:
         raise AssertionError("expected OneBotError")
+
+
+async def test_onebot_websocket_fallback_matches_echo(monkeypatch) -> None:
+    class _WebSocket:
+        async def send(self, raw: str) -> None:
+            request = json.loads(raw)
+            self.response = json.dumps(
+                {
+                    "status": "ok",
+                    "retcode": 0,
+                    "data": {"user_id": 42, "nickname": "bot"},
+                    "echo": request["echo"],
+                }
+            )
+
+        def __aiter__(self):
+            async def _items():
+                yield json.dumps({"post_type": "meta_event"})
+                yield self.response
+
+            return _items()
+
+    class _Connect:
+        async def __aenter__(self) -> _WebSocket:
+            self.ws = _WebSocket()
+            return self.ws
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "corlinman_agent.onebot.client.ws_connect",
+        lambda *args, **kwargs: _Connect(),
+    )
+    client = OneBotClient(
+        ws_url="ws://napcat.test:3001",
+        transport=httpx.MockTransport(lambda _: httpx.Response(426)),
+    )
+    try:
+        info = await client.fetch_login_info()
+    finally:
+        await client.aclose()
+    assert info["qq"] == "42"
+
+
+async def test_onebot_websocket_fallback_uses_unique_echoes(monkeypatch) -> None:
+    echoes: list[str] = []
+
+    class _WebSocket:
+        async def send(self, raw: str) -> None:
+            request = json.loads(raw)
+            echoes.append(request["echo"])
+            self.response = json.dumps(
+                {
+                    "status": "ok",
+                    "retcode": 0,
+                    "data": {"user_id": 42, "nickname": "bot"},
+                    "echo": request["echo"],
+                }
+            )
+
+        def __aiter__(self):
+            async def _items():
+                yield self.response
+
+            return _items()
+
+    class _Connect:
+        async def __aenter__(self) -> _WebSocket:
+            return _WebSocket()
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "corlinman_agent.onebot.client.ws_connect",
+        lambda *args, **kwargs: _Connect(),
+    )
+    client = OneBotClient(
+        ws_url="ws://napcat.test:3001",
+        transport=httpx.MockTransport(lambda _: httpx.Response(426)),
+    )
+    try:
+        await client.fetch_login_info()
+        await client.fetch_login_info()
+    finally:
+        await client.aclose()
+    assert len(echoes) == 2
+    assert len(set(echoes)) == 2
+
+
+async def test_onebot_sidecar_supplies_ws_and_token(
+    tmp_path: Path, monkeypatch
+) -> None:
+    sidecar = tmp_path / "py-config.json"
+    sidecar.write_text(
+        json.dumps(
+            {
+                "qq_onebot": {
+                    "ws_url": "ws://sidecar.test:3001",
+                    "access_token": "sidecar-token",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CORLINMAN_PY_CONFIG", str(sidecar))
+    monkeypatch.delenv("CORLINMAN_NAPCAT_HTTP_URL", raising=False)
+    client = OneBotClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(200))
+    )
+    try:
+        assert client.base_url == "http://sidecar.test:3001"
+        assert client._ws_url == "ws://sidecar.test:3001"
+        assert client._token == "sidecar-token"
+    finally:
+        await client.aclose()
 
 
 async def test_onebot_fetch_login_info_happy(monkeypatch) -> None:
@@ -367,6 +509,7 @@ async def test_dispatch_requires_text_or_image() -> None:
 async def test_dispatch_invalid_images_type() -> None:
     out = json.loads(
         await dispatch_qzone_publish(
+            policy_resolver=lambda: False,
             args_json=json.dumps(
                 {"text": "hi", "images": 42}
             ).encode()
@@ -384,6 +527,7 @@ async def test_dispatch_too_many_images(monkeypatch, tmp_path) -> None:
         paths.append(str(p))
     out = json.loads(
         await dispatch_qzone_publish(
+            policy_resolver=lambda: False,
             args_json=json.dumps({"text": "hi", "images": paths}).encode()
         )
     )
@@ -395,6 +539,7 @@ async def test_dispatch_image_not_found(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
     out = json.loads(
         await dispatch_qzone_publish(
+            policy_resolver=lambda: False,
             args_json=json.dumps(
                 {"text": "hi", "images": ["nope.png"]}
             ).encode()
@@ -416,6 +561,7 @@ async def test_dispatch_happy_path_text_plus_one_image(monkeypatch, tmp_path) ->
     try:
         out = json.loads(
             await dispatch_qzone_publish(
+            policy_resolver=lambda: False,
                 args_json=json.dumps(
                     {
                         "text": "今天的猫猫",
@@ -450,6 +596,73 @@ async def test_dispatch_happy_path_text_plus_one_image(monkeypatch, tmp_path) ->
     assert publish_form["richtype"][0] == "1"
 
 
+async def test_dispatch_live_scheduler_publish_records_effect_receipt(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    onebot = _client(_onebot_transport())
+    store = _EffectStore()
+    try:
+        out = json.loads(
+            await dispatch_qzone_publish(
+            policy_resolver=lambda: False,
+                args_json=json.dumps({"text": "今天很好"}).encode(),
+                onebot_client=onebot,
+                http_transport=_qzone_transport(),
+                scheduler_store=store,
+                effect_context=_EFFECT_CONTEXT,
+            )
+        )
+    finally:
+        await onebot.aclose()
+    assert out["ok"] is True
+    assert store.prepared == [
+        {
+            **_EFFECT_CONTEXT,
+            "effect_kind": "qzone.publish",
+            "effect_target": f"account:{_QQ_UIN}",
+        }
+    ]
+    assert store.completed == [
+        (
+            1,
+            {
+                "state": "sent",
+                "receipt": {
+                    "tid": "FEED_TID_42",
+                    "qzone_url": (
+                        f"https://user.qzone.qq.com/{_QQ_UIN}/mood/FEED_TID_42"
+                    ),
+                    "uin": _QQ_UIN,
+                },
+                "error_code": None,
+            },
+        )
+    ]
+
+
+async def test_dispatch_publish_receipt_failure_blocks_resend(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    onebot = _client(_onebot_transport())
+    store = _EffectStore(fail_complete=True)
+    try:
+        out = json.loads(
+            await dispatch_qzone_publish(
+            policy_resolver=lambda: False,
+                args_json=json.dumps({"text": "今天很好"}).encode(),
+                onebot_client=onebot,
+                http_transport=_qzone_transport(),
+                scheduler_store=store,
+                effect_context=_EFFECT_CONTEXT,
+            )
+        )
+    finally:
+        await onebot.aclose()
+    assert out["ok"] is False
+    assert out["error"] == "scheduler_effect_receipt_unknown"
+    assert out["tid"] == "FEED_TID_42"
+
+
 async def test_dispatch_onebot_failure_returns_envelope(monkeypatch, tmp_path) -> None:
     _seed_workspace_image(monkeypatch, tmp_path, "x.png")
     onebot = _client(_onebot_transport(fail_login=True))
@@ -457,6 +670,7 @@ async def test_dispatch_onebot_failure_returns_envelope(monkeypatch, tmp_path) -
     try:
         out = json.loads(
             await dispatch_qzone_publish(
+            policy_resolver=lambda: False,
                 args_json=json.dumps(
                     {"text": "hi", "images": ["x.png"]}
                 ).encode(),
@@ -481,6 +695,7 @@ async def test_dispatch_image_upload_rejected_skips_publish(monkeypatch, tmp_pat
     try:
         out = json.loads(
             await dispatch_qzone_publish(
+            policy_resolver=lambda: False,
                 args_json=json.dumps(
                     {"text": "hi", "images": ["x.png"]}
                 ).encode(),
@@ -492,7 +707,8 @@ async def test_dispatch_image_upload_rejected_skips_publish(monkeypatch, tmp_pat
         await onebot.aclose()
     assert out["ok"] is False
     assert out["error"] == "image_upload_failed"
-    assert "upload broke" in out["message"]
+    assert "upload broke" not in out["message"]
+    assert "ret=8001" in out["message"]
     # Publish endpoint must NOT have been touched after the upload fail.
     assert publish_calls == []
 
@@ -506,6 +722,7 @@ async def test_dispatch_qzone_nonzero_retcode_propagates(monkeypatch, tmp_path) 
     try:
         out = json.loads(
             await dispatch_qzone_publish(
+            policy_resolver=lambda: False,
                 args_json=json.dumps(
                     {"text": "hi", "images": ["x.png"]}
                 ).encode(),
@@ -518,7 +735,37 @@ async def test_dispatch_qzone_nonzero_retcode_propagates(monkeypatch, tmp_path) 
     assert out["ok"] is False
     assert out["error"] == "qzone_rejected"
     assert out.get("code") == 4002
-    assert "blocked by rc" in out["message"]
+    assert "blocked by rc" not in out["message"]
+    assert "code=4002" in out["message"]
+
+
+async def test_dispatch_http_error_does_not_echo_response_body(
+    monkeypatch, tmp_path
+) -> None:
+    _seed_workspace_image(monkeypatch, tmp_path, "x.png")
+    onebot = _client(_onebot_transport())
+    marker = "PRIVATE_QZONE_RESPONSE"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/cgi_upload_image"):
+            body = "frameElement.callback(" + json.dumps({"ret": 0, "data": {}}) + ");"
+            return httpx.Response(200, text=body)
+        return httpx.Response(502, text=marker)
+
+    try:
+        out = json.loads(
+            await dispatch_qzone_publish(
+                policy_resolver=lambda: False,
+                args_json=json.dumps({"text": "hi", "images": ["x.png"]}).encode(),
+                onebot_client=onebot,
+                http_transport=httpx.MockTransport(handler),
+            )
+        )
+    finally:
+        await onebot.aclose()
+    assert out["error"] == "qzone_publish_failed"
+    assert marker not in out["message"]
+    assert "HTTP 502" in out["message"]
 
 
 async def test_dispatch_stale_login_missing_p_skey(monkeypatch, tmp_path) -> None:
@@ -552,6 +799,7 @@ async def test_dispatch_stale_login_missing_p_skey(monkeypatch, tmp_path) -> Non
     try:
         out = json.loads(
             await dispatch_qzone_publish(
+            policy_resolver=lambda: False,
                 args_json=json.dumps(
                     {"text": "hi", "images": ["x.png"]}
                 ).encode(),
@@ -606,6 +854,7 @@ async def test_dispatch_generate_prepends_image(monkeypatch, tmp_path) -> None:
     try:
         out = json.loads(
             await dispatch_qzone_publish(
+            policy_resolver=lambda: False,
                 args_json=json.dumps(
                     {
                         "text": "猫猫合照",
@@ -664,6 +913,7 @@ async def test_dispatch_generate_failure_returns_envelope(monkeypatch, tmp_path)
 
     out = json.loads(
         await dispatch_qzone_publish(
+            policy_resolver=lambda: False,
             args_json=json.dumps(
                 {
                     "text": "hi",
@@ -686,6 +936,7 @@ async def test_dispatch_generate_without_dispatcher_errors(monkeypatch, tmp_path
     monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
     out = json.loads(
         await dispatch_qzone_publish(
+            policy_resolver=lambda: False,
             args_json=json.dumps(
                 {
                     "text": "hi",

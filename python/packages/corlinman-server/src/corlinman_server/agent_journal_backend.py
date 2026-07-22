@@ -322,11 +322,22 @@ class JournalBackend(Protocol):
         ...
 
     async def load_messages(self, turn_id: int) -> list[dict[str, Any]]:
-        """Load every message under ``turn_id`` in seq order.
+        """Load every message under ``turn_id`` in seq order."""
+        ...
 
-        Public on the backend so it can be tested in isolation; callers
-        normally read ``ResumeData.messages``.
-        """
+    async def query_messages(
+        self,
+        *,
+        start_ms: int,
+        end_ms: int,
+        roles: Sequence[str] | None = None,
+        channels: Sequence[str] | None = None,
+        tenant_id: str | None = None,
+        user_id: str | None = None,
+        session_key: str | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """Read scoped journal messages in chronological order."""
         ...
 
     async def list_session_summaries(
@@ -1512,6 +1523,67 @@ class SqliteJournalBackend:
                     pass
             out.append(msg)
         return out
+
+    async def query_messages(
+        self,
+        *,
+        start_ms: int,
+        end_ms: int,
+        roles: Sequence[str] | None = None,
+        channels: Sequence[str] | None = None,
+        tenant_id: str | None = None,
+        user_id: str | None = None,
+        session_key: str | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        clauses = ["t.started_at_ms >= ?", "t.started_at_ms <= ?"]
+        params: list[Any] = [int(start_ms), int(end_ms)]
+        role_values = [str(v) for v in (roles or []) if str(v)]
+        if role_values:
+            clauses.append(f"m.role IN ({','.join('?' for _ in role_values)})")
+            params.extend(role_values)
+        channel_values = [str(v) for v in (channels or []) if str(v)]
+        if channel_values:
+            clauses.append(f"t.channel IN ({','.join('?' for _ in channel_values)})")
+            params.extend(channel_values)
+        if tenant_id is not None:
+            clauses.append(_tenant_guard_sql("t.tenant_id"))
+            params.extend(_tenant_guard_params(tenant_id))
+        if user_id is not None:
+            clauses.append("t.user_id = ?")
+            params.append(user_id)
+        if session_key is not None:
+            clauses.append("t.session_key = ?")
+            params.append(session_key)
+        params.append(max(1, min(int(limit), 10000)))
+        try:
+            cur = await self._c.execute(
+                "SELECT t.turn_id, t.session_key, t.started_at_ms, t.channel, "
+                "t.tenant_id, t.user_id, m.seq, m.role, m.content "
+                "FROM turns t JOIN turn_messages m ON m.turn_id=t.turn_id WHERE "
+                + " AND ".join(clauses)
+                + " ORDER BY t.started_at_ms ASC, t.turn_id ASC, m.seq ASC LIMIT ?",
+                tuple(params),
+            )
+            rows = await cur.fetchall()
+            await cur.close()
+        except aiosqlite.Error as exc:
+            logger.warning("agent.journal.query_messages_failed", error=str(exc))
+            return []
+        return [
+            {
+                "turn_id": int(r[0]),
+                "session_key": r[1],
+                "started_at_ms": int(r[2]),
+                "channel": r[3],
+                "tenant_id": r[4],
+                "user_id": r[5],
+                "seq": int(r[6]),
+                "role": r[7],
+                "content": r[8] or "",
+            }
+            for r in rows
+        ]
 
     # ------------------------------------------------------------------
     # T4.4 — Error breadcrumbs

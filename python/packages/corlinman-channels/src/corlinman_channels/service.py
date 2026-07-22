@@ -52,6 +52,14 @@ from pathlib import Path
 from typing import Any, Protocol
 
 import httpx
+from corlinman_content_policy import (
+    QQ_SAFE_REFUSAL_TEXT,
+    PolicyDecision,
+    TencentPolicyConfig,
+    classifier_failure_decision,
+    moderate_media,
+    moderate_text,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -334,6 +342,50 @@ class ChatServiceLike(Protocol):
 # ---------------------------------------------------------------------------
 
 
+def _tencent_policy_config(resolver: Any) -> TencentPolicyConfig:
+    try:
+        enabled = True if not callable(resolver) else resolver()
+    except Exception:
+        enabled = True
+    return TencentPolicyConfig(enabled=enabled is not False)
+
+
+def _tencent_text_decision(text: str, resolver: Any) -> PolicyDecision:
+    try:
+        return moderate_text(text, _tencent_policy_config(resolver)).decision
+    except Exception:
+        return classifier_failure_decision(text)
+
+
+def _tencent_inbound_decision(
+    text: str,
+    attachments: list[Any],
+    resolver: Any,
+) -> PolicyDecision:
+    cfg = _tencent_policy_config(resolver)
+    try:
+        if attachments:
+            media = moderate_media(config=cfg)
+            if not media.allowed:
+                return media
+        return moderate_text(text, cfg).decision
+    except Exception:
+        return classifier_failure_decision(text)
+
+
+def _log_tencent_block(decision: PolicyDecision, *, channel: str, direction: str) -> None:
+    fields = decision.audit_fields(channel=channel, direction=direction)
+    _log.warning(
+        "tencent.policy.blocked channel=%s direction=%s categories=%s rules=%s len=%s digest=%s",
+        channel,
+        direction,
+        fields["category_codes"],
+        fields["rule_ids"],
+        fields["message_length"],
+        fields["content_digest"],
+    )
+
+
 @dataclass(slots=True)
 class QqChannelParams:
     """Parameters for :func:`run_qq_channel`. Mirrors Rust
@@ -401,6 +453,9 @@ class QqChannelParams:
     emoji extension — the system prompt body still goes in, but no
     emoji block is rendered. Typed as ``Any`` to avoid a hard dep on
     corlinman-server at import time."""
+
+    tencent_policy_resolver: Any = None
+    """Live callable returning whether Tencent freeze-risk protection is on."""
 
     event_emitter: Any = None
     """W4.1 — see :class:`TelegramChannelParams.event_emitter`. QQ uses
@@ -476,7 +531,8 @@ async def run_qq_channel(
             url=ws_url,
             access_token=_attr(cfg, "access_token", None),
             self_ids=self_ids,
-        )
+        ),
+        tencent_policy_resolver=params.tencent_policy_resolver,
     )
 
     try:
@@ -725,6 +781,10 @@ async def _qq_proactive_loop(
             _log.warning("qq proactive generate failed group=%s: %s", group, exc)
             continue
         if not text:
+            continue
+        policy = _tencent_text_decision(text, params.tencent_policy_resolver)
+        if not policy.allowed:
+            _log_tencent_block(policy, channel="qq", direction="proactive")
             continue
         try:
             await adapter.send_action(
@@ -1015,9 +1075,32 @@ async def _qq_dispatch_loop(
                 continue
             req = router.dispatch(payload, slash_policy=slash_policy)
             if req is None:
-                _log.debug("qq message filtered by router user=%s text=%r", payload.user_id, payload.raw_message[:80])
+                _log.debug(
+                    "qq message filtered by router user=%s len=%d",
+                    payload.user_id,
+                    len(payload.raw_message),
+                )
                 continue
-            _log.info("qq message accepted user=%s text=%r model=%s", payload.user_id, payload.raw_message[:80], params.model)
+            policy = _tencent_inbound_decision(
+                req.content,
+                ev.attachments,
+                params.tencent_policy_resolver,
+            )
+            if not policy.allowed:
+                _log_tencent_block(policy, channel="qq", direction="inbound")
+                try:
+                    await adapter.send_safe_refusal(
+                        _build_reply_action(payload, QQ_SAFE_REFUSAL_TEXT)
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning("qq policy refusal send failed: %s", exc)
+                continue
+            _log.info(
+                "qq message accepted user=%s len=%d model=%s",
+                payload.user_id,
+                len(req.content),
+                params.model,
+            )
             # CMP-06 — a matched command denied by the slash-access policy.
             # The router already replaced ``content`` with the refusal text
             # and cleared ``command_spec``; send the refusal back and skip
@@ -1521,6 +1604,7 @@ async def handle_one_qq(
         )
 
     text_parts: list[str] = []
+    policy_blocked_output = False
     error_message: str | None = None
     supplemented = False
     # Per-turn tool-activity log. Each entry: (kind, label, duration_ms,
@@ -1588,20 +1672,27 @@ async def handle_one_qq(
                 if tool_name == _SEND_ATTACHMENT_TOOL:
                     # Real upload; the agent-side dispatch is a no-op
                     # stub so the loop continues — we do the work here.
-                    # The attachment line stands in for the call/result
-                    # pair in the summary block.
-                    await _qq_send_attachment(adapter, event, chat_ev)
-                    _path, _caption, _filename = _parse_send_attachment_args(
-                        chat_ev
-                    )
-                    display = (_filename or "").strip()
-                    if not display and _path:
-                        from pathlib import Path as _P
+                    status = await _qq_send_attachment(adapter, event, chat_ev)
+                    if "tencent_content_policy_blocked" in status:
+                        policy_blocked_output = True
+                    else:
+                        _path, _caption, _filename = _parse_send_attachment_args(
+                            chat_ev
+                        )
+                        display = (_filename or "").strip()
+                        if not display and _path:
+                            from pathlib import Path as _P
 
-                        display = _P(_path).name
-                    activity.append(
-                        ("attachment", display or "(file)", None, False, "")
-                    )
+                            display = _P(_path).name
+                        activity.append(
+                            (
+                                "attachment",
+                                display or "(file)",
+                                None,
+                                status.startswith("⚠️"),
+                                status if status.startswith("⚠️") else "",
+                            )
+                        )
                 elif tool_name == _TODO_WRITE_TOOL:
                     # Drop ``todo_write`` calls from the QQ summary
                     # entirely — pending ``☐`` rows are forward-looking
@@ -1675,7 +1766,10 @@ async def handle_one_qq(
         else ""
     )
 
-    if error_message is not None:
+    if policy_blocked_output:
+        body = QQ_SAFE_REFUSAL_TEXT
+        summary = ""
+    elif error_message is not None:
         body = f"[corlinman error] {error_message}"
         if summary:
             body = summary + "\n" + body
@@ -1712,6 +1806,14 @@ async def handle_one_qq(
                 len(body),
                 len(activity),
             )
+
+    policy = _tencent_text_decision(
+        body,
+        params.tencent_policy_resolver if params is not None else None,
+    )
+    if not policy.allowed:
+        _log_tencent_block(policy, channel="qq", direction="outbound")
+        body = QQ_SAFE_REFUSAL_TEXT
 
     # NapCat / OneBot don't expose an exact per-message char limit
     # in the protocol, but in practice 4000-5000 chars per QQ message
@@ -4785,6 +4887,8 @@ class QqOfficialChannelParams:
     persona_store: Any = None
     humanlike_resolver: Any = None
     asset_store: Any = None
+    tencent_policy_resolver: Any = None
+    """Shared root QQ safety resolver; missing or broken resolves enabled."""
 
 
 async def run_qq_official_channel(
@@ -4839,6 +4943,25 @@ async def run_qq_official_channel(
                 ev = await _race_iter_or_cancel(iterator, cancel)
                 if ev is None:
                     break
+                policy = _tencent_inbound_decision(
+                    ev.text,
+                    ev.attachments,
+                    params.tencent_policy_resolver,
+                )
+                if not policy.allowed:
+                    _log_tencent_block(
+                        policy, channel="qq_official", direction="inbound"
+                    )
+                    try:
+                        await _qq_official_send_text(
+                            sender,
+                            ev,
+                            QQ_SAFE_REFUSAL_TEXT,
+                            application_safe=True,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        _log.warning("qq_official policy refusal failed: %s", exc)
+                    continue
                 chat_service = params.chat_service
                 if chat_service is None:
                     continue
@@ -4879,6 +5002,9 @@ async def _qq_official_send_text(
     sender: QqOfficialSender,
     inbound: InboundEvent[Any],
     text: str,
+    *,
+    tencent_policy_resolver: Any = None,
+    application_safe: bool = False,
 ) -> str:
     """Dispatch ``text`` to the right send endpoint for ``inbound``.
 
@@ -4892,6 +5018,13 @@ async def _qq_official_send_text(
     ``inbound.message_id`` (the original ``msg_id``) so the reply
     lands inside the window.
     """
+    if not application_safe:
+        decision = _tencent_text_decision(text, tencent_policy_resolver)
+        if not decision.allowed:
+            _log_tencent_block(
+                decision, channel="qq_official", direction="outbound_final"
+            )
+            raise TransportError("tencent_content_policy_blocked")
     msg_id = inbound.message_id
     event_type = _qq_official_event_type(inbound)
     thread = inbound.binding.thread
@@ -4910,6 +5043,7 @@ async def _qq_official_send_image(
     url: str | None = None,
     file_data: bytes | None = None,
     caption: str = "",
+    tencent_policy_resolver: Any = None,
 ) -> str:
     """Upload (if needed) + send an image for ``inbound``.
 
@@ -4919,6 +5053,16 @@ async def _qq_official_send_image(
     the file is an image — non-image attachments are not supported
     by the platform (we render a status text upstream).
     """
+    decision = _tencent_inbound_decision(
+        caption,
+        [object()],
+        tencent_policy_resolver,
+    )
+    if not decision.allowed:
+        _log_tencent_block(
+            decision, channel="qq_official", direction="outbound_media"
+        )
+        raise TransportError("tencent_content_policy_blocked")
     event_type = _qq_official_event_type(inbound)
     thread = inbound.binding.thread
     msg_id = inbound.message_id
@@ -4952,6 +5096,8 @@ async def _qq_official_send_attachment(
     sender: QqOfficialSender,
     inbound: InboundEvent[Any],
     ev: Any,
+    *,
+    tencent_policy_resolver: Any = None,
 ) -> str:
     """Handle a ``send_attachment`` tool call for QQ Official.
 
@@ -4975,9 +5121,25 @@ async def _qq_official_send_attachment(
         # silently dropping the file.
         return f"📎 [文件] {display} (QQ官方机器人暂不支持文件直发)"
     try:
+        decision = _tencent_inbound_decision(
+            caption or "",
+            [object()],
+            tencent_policy_resolver,
+        )
+        if not decision.allowed:
+            _log_tencent_block(
+                decision,
+                channel="qq_official",
+                direction="outbound_media_pre_read",
+            )
+            raise TransportError("tencent_content_policy_blocked")
         data = p.read_bytes()
         await _qq_official_send_image(
-            sender, inbound, file_data=data, caption=caption or ""
+            sender,
+            inbound,
+            file_data=data,
+            caption=caption or "",
+            tencent_policy_resolver=tencent_policy_resolver,
         )
     except Exception as exc:  # noqa: BLE001
         _log.warning("qq_official send_attachment failed: %s", exc)
@@ -5089,6 +5251,7 @@ async def handle_one_qq_official(
     text_parts: list[str] = []
     tool_lines: list[str] = []
     status_lines: list[str] = []
+    policy_blocked_output = False
     # Push the live status link only when a sub-agent spawns. If the
     # standalone send fails, the final reply may append one fallback link.
     _qqo_status_link_requested = False
@@ -5120,7 +5283,14 @@ async def handle_one_qq_official(
                         _qqo_status_link_requested = True
                         try:
                             await _qq_official_send_text(
-                                sender, inbound, _qqo_link
+                                sender,
+                                inbound,
+                                _qqo_link,
+                                tencent_policy_resolver=(
+                                    params.tencent_policy_resolver
+                                    if params is not None
+                                    else None
+                                ),
                             )
                             _qqo_status_link_sent = True
                         except Exception as exc:  # noqa: BLE001
@@ -5130,9 +5300,19 @@ async def handle_one_qq_official(
                             )
                 if tool_name == _SEND_ATTACHMENT_TOOL:
                     status = await _qq_official_send_attachment(
-                        sender, inbound, chat_ev
+                        sender,
+                        inbound,
+                        chat_ev,
+                        tencent_policy_resolver=(
+                            params.tencent_policy_resolver
+                            if params is not None
+                            else None
+                        ),
                     )
-                    status_lines.append(status)
+                    if "tencent_content_policy_blocked" in status:
+                        policy_blocked_output = True
+                    else:
+                        status_lines.append(status)
                 elif tool_name == _TODO_WRITE_TOOL:
                     # Drop ``todo_write`` calls from the QQ-official
                     # summary — pending ``☐`` rows are forward-looking
@@ -5174,7 +5354,11 @@ async def handle_one_qq_official(
                 _log.warning("qq_official inbox mark_done failed: %s", exc)
         return
 
-    if error_message is not None:
+    if policy_blocked_output:
+        body = QQ_SAFE_REFUSAL_TEXT
+        tool_lines = []
+        status_lines = []
+    elif error_message is not None:
         body = f"[corlinman error] {error_message}"
     else:
         body = _normalize_for_channel("".join(text_parts), "qq_official")
@@ -5194,6 +5378,13 @@ async def handle_one_qq_official(
     final = (summary + body) if summary else body
     if not final.strip():
         return
+    policy = _tencent_text_decision(
+        final,
+        params.tencent_policy_resolver if params is not None else None,
+    )
+    if not policy.allowed:
+        _log_tencent_block(policy, channel="qq_official", direction="outbound")
+        final = QQ_SAFE_REFUSAL_TEXT
     # Append a fallback status link only for actual sub-agent fan-out turns
     # whose standalone early send failed.
     _qqo_status_line = (
@@ -5212,7 +5403,14 @@ async def handle_one_qq_official(
             bubble_text = bubble
             if _qqo_status_line and is_last_bubble:
                 bubble_text = try_append_footer(bubble_text, _qqo_status_line)
-            await _qq_official_send_text(sender, inbound, bubble_text)
+            await _qq_official_send_text(
+                sender,
+                inbound,
+                bubble_text,
+                tencent_policy_resolver=(
+                    params.tencent_policy_resolver if params is not None else None
+                ),
+            )
             if not is_last_bubble:
                 await asyncio.sleep(0.3)
     except Exception as exc:  # noqa: BLE001

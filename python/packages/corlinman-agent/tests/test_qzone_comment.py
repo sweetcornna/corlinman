@@ -9,6 +9,7 @@ unit-tested directly against a JS-escaped sample blob.
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import httpx
 from corlinman_agent.onebot import OneBotClient
@@ -118,6 +119,27 @@ def _onebot(**kw) -> OneBotClient:
 
 def _args(**kw) -> str:
     return json.dumps(kw)
+
+
+class _EffectStore:
+    def __init__(self) -> None:
+        self.prepared: list[dict[str, Any]] = []
+        self.completed: list[tuple[int, dict[str, Any]]] = []
+
+    async def prepare_effect(self, **kwargs: Any) -> Any:
+        self.prepared.append(kwargs)
+        return type("Effect", (), {"id": 1})()
+
+    async def complete_effect(self, effect_id: int, **kwargs: Any) -> Any:
+        self.completed.append((effect_id, kwargs))
+        return type("Effect", (), {"id": effect_id})()
+
+
+_EFFECT_CONTEXT = {
+    "source_system": "external",
+    "source_job_id": "job-1",
+    "occurrence_key": "external:job-1:1234",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -263,6 +285,30 @@ async def test_list_feed_qzone_error_code() -> None:
         await client.aclose()
     assert out["ok"] is False
     assert out["error"] == "qzone_read_failed"
+    assert "使用人数过多" not in out["message"]
+    assert "code=-10000" in out["message"]
+
+
+async def test_list_feed_http_error_does_not_echo_response_body() -> None:
+    marker = "PRIVATE_QZONE_RESPONSE"
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(502, text=marker)
+
+    client = _onebot()
+    try:
+        out = json.loads(
+            await dispatch_qzone_list_feed(
+                args_json=_args(),
+                onebot_client=client,
+                http_transport=httpx.MockTransport(handler),
+            )
+        )
+    finally:
+        await client.aclose()
+    assert out["error"] == "qzone_read_failed"
+    assert marker not in out["message"]
+    assert "HTTP 502" in out["message"]
 
 
 # ---------------------------------------------------------------------------
@@ -321,6 +367,118 @@ async def test_post_comment_top_level() -> None:
     assert out["ok"] is True
     assert out["is_reply"] is False
     assert out["content_sent"] == "不错"
+
+
+async def test_post_comment_live_scheduler_records_effect_receipt() -> None:
+    client = _onebot()
+    store = _EffectStore()
+    try:
+        out = json.loads(
+            await dispatch_qzone_post_comment(
+                args_json=_args(
+                    owner_uin=_MY_UIN,
+                    tid="deadbeef",
+                    content="不错",
+                    reply_to_comment_id="comment-7",
+                ),
+                onebot_client=client,
+                http_transport=_qzone_transport(),
+                scheduler_store=store,
+                effect_context=_EFFECT_CONTEXT,
+            )
+        )
+    finally:
+        await client.aclose()
+    assert out["ok"] is True
+    assert store.prepared == [
+        {
+            **_EFFECT_CONTEXT,
+            "effect_kind": "qzone.comment",
+            "effect_target": f"post:{_MY_UIN}:deadbeef:id:comment-7",
+        }
+    ]
+    assert store.completed == [
+        (
+            1,
+            {
+                "state": "sent",
+                "receipt": {
+                    "owner_uin": _MY_UIN,
+                    "tid": "deadbeef",
+                    "is_reply": False,
+                    "comment_identity": "id:comment-7",
+                },
+                "error_code": None,
+            },
+        )
+    ]
+
+
+async def test_scheduled_reply_requires_source_comment_identity() -> None:
+    out = json.loads(
+        await dispatch_qzone_post_comment(
+            args_json=_args(
+                owner_uin=_MY_UIN,
+                tid="deadbeef",
+                content="不错",
+                reply_to_uin=_FRIEND_UIN,
+            ),
+            scheduler_store=_EffectStore(),
+            effect_context=_EFFECT_CONTEXT,
+        )
+    )
+    assert out["error"] == "scheduler_comment_identity_required"
+
+
+async def test_scheduled_top_level_comment_deduplicates_by_source_post() -> None:
+    client = _onebot()
+    store = _EffectStore()
+    try:
+        out = json.loads(
+            await dispatch_qzone_post_comment(
+                args_json=_args(
+                    owner_uin=_FRIEND_UIN,
+                    tid="deadbeef",
+                    content="不错",
+                ),
+                onebot_client=client,
+                http_transport=_qzone_transport(),
+                scheduler_store=store,
+                effect_context=_EFFECT_CONTEXT,
+            )
+        )
+    finally:
+        await client.aclose()
+    assert out["ok"] is True
+    assert store.prepared[0]["effect_target"] == (
+        f"post:{_FRIEND_UIN}:deadbeef:top-level"
+    )
+
+
+async def test_content_fallback_identity_includes_commenter_uin() -> None:
+    client = _onebot()
+    store = _EffectStore()
+    try:
+        out = json.loads(
+            await dispatch_qzone_post_comment(
+                args_json=_args(
+                    owner_uin=_MY_UIN,
+                    tid="deadbeef",
+                    content="不错",
+                    reply_to_uin=_FRIEND_UIN,
+                    reply_to_comment_content="same source text",
+                ),
+                onebot_client=client,
+                http_transport=_qzone_transport(),
+                scheduler_store=store,
+                effect_context=_EFFECT_CONTEXT,
+            )
+        )
+    finally:
+        await client.aclose()
+    assert out["ok"] is True
+    target = store.prepared[0]["effect_target"]
+    assert f"uin:{_FRIEND_UIN}:sha256:" in target
 
 
 async def test_post_comment_reply_prepends_mention() -> None:

@@ -11,6 +11,7 @@ dependencies = [
     "httpx>=0.27",
     "websockets>=13.0",
     "pydantic>=2.7",
+    "corlinman-content-policy",
     # Hardened XML parser for the WeChat Official webhook (#R2-004). The
     # stdlib ``xml.etree`` is documented vulnerable to billion-laughs /
     # quadratic-blowup DoS, and WeChat tokens are low-entropy shared
@@ -32,6 +33,9 @@ dependencies = [
     # import — useful when this package is consumed outside the
     # corlinman workspace.
 ]
+
+[tool.uv.sources]
+corlinman-content-policy = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

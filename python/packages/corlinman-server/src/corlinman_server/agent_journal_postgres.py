@@ -92,12 +92,22 @@ CREATE TABLE IF NOT EXISTS journal_turns (
     channel               TEXT   NOT NULL DEFAULT '',
     tenant_id             TEXT   NOT NULL DEFAULT '',
     pending_question_json TEXT,
-    error                 TEXT
+    error                 TEXT,
+    elapsed_ms            BIGINT,
+    estimated_cost_usd    DOUBLE PRECISION,
+    cost_status           TEXT,
+    tool_call_count       INTEGER NOT NULL DEFAULT 0,
+    reasoning_token_count INTEGER NOT NULL DEFAULT 0
 );
 
 ALTER TABLE journal_turns ADD COLUMN IF NOT EXISTS user_id TEXT;
 ALTER TABLE journal_turns ADD COLUMN IF NOT EXISTS channel TEXT NOT NULL DEFAULT '';
 ALTER TABLE journal_turns ADD COLUMN IF NOT EXISTS pending_question_json TEXT;
+ALTER TABLE journal_turns ADD COLUMN IF NOT EXISTS elapsed_ms BIGINT;
+ALTER TABLE journal_turns ADD COLUMN IF NOT EXISTS estimated_cost_usd DOUBLE PRECISION;
+ALTER TABLE journal_turns ADD COLUMN IF NOT EXISTS cost_status TEXT;
+ALTER TABLE journal_turns ADD COLUMN IF NOT EXISTS tool_call_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE journal_turns ADD COLUMN IF NOT EXISTS reasoning_token_count INTEGER NOT NULL DEFAULT 0;
 -- W8 (tenant isolation) — additive tenant stamp; '' rows are legacy and
 -- belong to the default tenant on the read side.
 ALTER TABLE journal_turns ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT '';
@@ -305,12 +315,17 @@ class PostgresJournalBackend:
 
     async def complete_turn(self, turn_id: int) -> None:
         try:
-            async with self._p.acquire() as conn:
+            async with self._p.acquire() as conn, conn.transaction():
+                ended_at_ms = _now_ms()
                 await conn.execute(
-                    "UPDATE journal_turns SET status = $1, ended_at_ms = $2 "
-                    "WHERE turn_id = $3 AND status = $4",
+                    "UPDATE journal_turns SET status = $1, ended_at_ms = $2, "
+                    "elapsed_ms = GREATEST(0, $2 - started_at_ms), "
+                    "tool_call_count = ("
+                    "  SELECT COUNT(*) FROM journal_turn_messages "
+                    "  WHERE turn_id = $3 AND role = 'tool'"
+                    ") WHERE turn_id = $3 AND status = $4",
                     TURN_COMPLETED,
-                    _now_ms(),
+                    ended_at_ms,
                     int(turn_id),
                     TURN_IN_PROGRESS,
                 )
@@ -601,6 +616,70 @@ class PostgresJournalBackend:
             out.append(msg)
         return out
 
+    async def query_messages(
+        self,
+        *,
+        start_ms: int,
+        end_ms: int,
+        roles: Sequence[str] | None = None,
+        channels: Sequence[str] | None = None,
+        tenant_id: str | None = None,
+        user_id: str | None = None,
+        session_key: str | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        clauses = ["t.started_at_ms >= $1", "t.started_at_ms <= $2"]
+        params: list[Any] = [int(start_ms), int(end_ms)]
+
+        def bind(value: Any) -> str:
+            params.append(value)
+            return f"${len(params)}"
+
+        role_values = [str(v) for v in (roles or []) if str(v)]
+        if role_values:
+            clauses.append("m.role = ANY(" + bind(role_values) + ")")
+        channel_values = [str(v) for v in (channels or []) if str(v)]
+        if channel_values:
+            clauses.append("t.channel = ANY(" + bind(channel_values) + ")")
+        if tenant_id is not None:
+            tenant_ref = bind(tenant_id)
+            clauses.append(
+                f"(t.tenant_id = {tenant_ref} OR "
+                f"(t.tenant_id = '' AND {tenant_ref} = '{DEFAULT_TENANT_ID}'))"
+            )
+        if user_id is not None:
+            clauses.append("t.user_id = " + bind(user_id))
+        if session_key is not None:
+            clauses.append("t.session_key = " + bind(session_key))
+        limit_ref = bind(max(1, min(int(limit), 10000)))
+        sql = (
+            "SELECT t.turn_id, t.session_key, t.started_at_ms, t.channel, "
+            "t.tenant_id, t.user_id, m.seq, m.role, m.content "
+            "FROM journal_turns t JOIN journal_turn_messages m ON m.turn_id=t.turn_id "
+            "WHERE " + " AND ".join(clauses) +
+            " ORDER BY t.started_at_ms ASC, t.turn_id ASC, m.seq ASC LIMIT " + limit_ref
+        )
+        try:
+            async with self._p.acquire() as conn:
+                rows = await conn.fetch(sql, *params)
+        except Exception as exc:
+            logger.warning("agent.journal.query_messages_failed", error=str(exc))
+            return []
+        return [
+            {
+                "turn_id": int(r["turn_id"]),
+                "session_key": r["session_key"],
+                "started_at_ms": int(r["started_at_ms"]),
+                "channel": r["channel"],
+                "tenant_id": r["tenant_id"],
+                "user_id": r["user_id"],
+                "seq": int(r["seq"]),
+                "role": r["role"],
+                "content": r["content"] or "",
+            }
+            for r in rows
+        ]
+
     # ------------------------------------------------------------------
     # T4.4 — Error breadcrumbs
     # ------------------------------------------------------------------
@@ -683,7 +762,7 @@ class PostgresJournalBackend:
                     "           session_key, user_text, status "
                     "    FROM journal_turns "
                     + guard
-                    + "    ORDER BY session_key, started_at_ms DESC "
+                    + "    ORDER BY session_key, started_at_ms DESC, turn_id DESC "
                     "), agg AS ( "
                     "    SELECT session_key, "
                     "           MIN(started_at_ms) AS first_seen, "
@@ -1045,12 +1124,92 @@ class PostgresJournalBackend:
         limit: int = 50,
         before_turn_id: str | None = None,
         tenant_id: str | None = None,
-    ) -> list[dict[str, Any]]:  # pragma: no cover
-        # Postgres deployment doesn't yet wire the W1.2 UI surface; the
-        # SQLite backend is the source of truth for the past-turns
-        # navigator. Empty list keeps the admin route degrading
-        # gracefully rather than 500-ing on a non-SQLite gateway.
-        return []
+    ) -> list[dict[str, Any]]:
+        if not session_key or limit <= 0:
+            return []
+        where = ["session_key = $1"]
+        params: list[Any] = [session_key]
+        next_param = 2
+        if tenant_id is not None:
+            where.append(
+                f"(tenant_id = ${next_param} OR "
+                f"(tenant_id = '' AND ${next_param} = ${next_param + 1}))"
+            )
+            params.extend([tenant_id, DEFAULT_TENANT_ID])
+            next_param += 2
+        if before_turn_id is not None:
+            try:
+                cursor_id = int(before_turn_id)
+            except (TypeError, ValueError):
+                cursor_id = -1
+            where.append(
+                f"(started_at_ms, turn_id) < ("
+                f"SELECT started_at_ms, turn_id FROM journal_turns "
+                f"WHERE turn_id = ${next_param})"
+            )
+            params.append(cursor_id)
+            next_param += 1
+        params.append(int(limit))
+        try:
+            async with self._p.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT turn_id, started_at_ms, ended_at_ms, status, "
+                    "elapsed_ms, estimated_cost_usd, cost_status, "
+                    "tool_call_count, reasoning_token_count, user_text "
+                    "FROM journal_turns WHERE "
+                    + " AND ".join(where)
+                    + f" ORDER BY started_at_ms DESC, turn_id DESC LIMIT ${next_param}",
+                    *params,
+                )
+        except Exception as exc:
+            logger.warning("agent.journal.list_session_turns_failed", error=str(exc))
+            return []
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            user_text = row["user_text"]
+            preview = None
+            if isinstance(user_text, str):
+                preview = (
+                    user_text[:200] + "…" if len(user_text) > 200 else user_text
+                )
+            out.append(
+                {
+                    "turn_id": str(row["turn_id"]),
+                    "started_at_ms": (
+                        int(row["started_at_ms"])
+                        if row["started_at_ms"] is not None
+                        else None
+                    ),
+                    "ended_at_ms": (
+                        int(row["ended_at_ms"])
+                        if row["ended_at_ms"] is not None
+                        else None
+                    ),
+                    "status": str(row["status"]) if row["status"] is not None else None,
+                    "finish_reason": None,
+                    "elapsed_ms": (
+                        int(row["elapsed_ms"])
+                        if row["elapsed_ms"] is not None
+                        else None
+                    ),
+                    "estimated_cost_usd": (
+                        float(row["estimated_cost_usd"])
+                        if row["estimated_cost_usd"] is not None
+                        else None
+                    ),
+                    "cost_status": (
+                        str(row["cost_status"])
+                        if row["cost_status"] is not None
+                        else None
+                    ),
+                    "tool_call_count": int(row["tool_call_count"] or 0),
+                    "reasoning_token_count": int(
+                        row["reasoning_token_count"] or 0
+                    ),
+                    "user_text_preview": preview,
+                }
+            )
+        return out
 
     async def update_turn_cost(
         self,
@@ -1058,8 +1217,27 @@ class PostgresJournalBackend:
         *,
         estimated_cost_usd: float | None,
         cost_status: str | None,
-    ) -> None:  # pragma: no cover
-        return None
+    ) -> None:
+        if estimated_cost_usd is None and cost_status is None:
+            return
+        sets: list[str] = []
+        params: list[Any] = []
+        if estimated_cost_usd is not None:
+            params.append(float(estimated_cost_usd))
+            sets.append(f"estimated_cost_usd = ${len(params)}")
+        if cost_status is not None:
+            params.append(str(cost_status))
+            sets.append(f"cost_status = ${len(params)}")
+        params.append(int(turn_id))
+        try:
+            async with self._p.acquire() as conn:
+                await conn.execute(
+                    f"UPDATE journal_turns SET {', '.join(sets)} "
+                    f"WHERE turn_id = ${len(params)}",
+                    *params,
+                )
+        except Exception as exc:
+            logger.warning("agent.journal.update_turn_cost_failed", error=str(exc))
 
 
 __all__ = ["PostgresJournalBackend"]

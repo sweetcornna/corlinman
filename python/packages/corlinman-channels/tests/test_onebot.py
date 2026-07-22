@@ -47,6 +47,55 @@ from websockets.asyncio.server import ServerConnection
 # ---------------------------------------------------------------------------
 
 
+class TestTencentPolicyGuard:
+    async def test_blocks_prohibited_text_before_queue(self) -> None:
+        adapter = OneBotAdapter(
+            OneBotConfig(url="ws://example.invalid"),
+            tencent_policy_resolver=lambda: True,
+        )
+        with pytest.raises(TransportError, match="tencent_content_policy_blocked"):
+            await adapter.send_action(
+                SendPrivateMsg(
+                    user_id=1,
+                    message=[TextSegment(text="QQ 解冻教程")],
+                )
+            )
+        assert adapter.outbound_queue_depth == 0
+
+    async def test_blocks_unclassified_media_but_allows_control_actions(self) -> None:
+        adapter = OneBotAdapter(
+            OneBotConfig(url="ws://example.invalid"),
+            tencent_policy_resolver=lambda: True,
+        )
+        with pytest.raises(TransportError, match="tencent_content_policy_blocked"):
+            await adapter.send_action(
+                SendGroupMsg(group_id=1, message=[ImageSegment(file="x.png")])
+            )
+        assert adapter.outbound_queue_depth == 0
+
+    async def test_explicit_opt_out_restores_original_action(self) -> None:
+        adapter = OneBotAdapter(
+            OneBotConfig(url="ws://example.invalid"),
+            tencent_policy_resolver=lambda: False,
+        )
+        await adapter.send_action(
+            SendPrivateMsg(user_id=1, message=[TextSegment(text="QQ 解冻教程")])
+        )
+        assert adapter.outbound_queue_depth == 1
+
+    async def test_safe_refusal_bypasses_policy_without_source_text(self) -> None:
+        adapter = OneBotAdapter(
+            OneBotConfig(url="ws://example.invalid"),
+            tencent_policy_resolver=lambda: True,
+        )
+        await adapter.send_safe_refusal(
+            SendPrivateMsg(user_id=1, message=[TextSegment(text="blocked source")])
+        )
+        queued = await adapter._outbound_q.get()
+        assert isinstance(queued, SendPrivateMsg)
+        assert queued.message == [TextSegment(text="这个话题不适合在 QQ 上讨论，我们换个安全的话题吧。")]
+
+
 class TestParseEvent:
     """``parse_event`` recognises the four documented post types and falls
     through to :class:`UnknownEvent` for anything else."""

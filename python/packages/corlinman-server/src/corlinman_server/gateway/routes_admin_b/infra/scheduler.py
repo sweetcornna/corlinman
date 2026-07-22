@@ -74,7 +74,7 @@ from ._scheduler_lib import (
     _list_runtime_jobs,
     _load_template_body,
     _now_iso,
-    _persist_runtime_jobs,
+    _persist_runtime_job_rows,
     _runtime_job_to_out,
     _runtime_jobs,
     _set_enabled_route,
@@ -136,6 +136,22 @@ def router() -> APIRouter:
                 status_code=422,
                 content={"error": "invalid_cron", "message": err or ""},
             )
+        if body.execution_mode not in {"live", "shadow"}:
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "error": "invalid_execution_mode",
+                    "message": "execution_mode must be live or shadow",
+                },
+            )
+        if (body.source_system is None) != (body.source_job_id is None):
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "error": "invalid_source_identity",
+                    "message": "source_system and source_job_id must be set together",
+                },
+            )
         if body.action_type == QZONE_DAILY_BUILTIN_NAME:
             ok, err = _validate_qzone_daily(body)
             if not ok:
@@ -156,7 +172,13 @@ def router() -> APIRouter:
                         "message": err or "",
                     },
                 )
-        rj = _store_job(state, body)
+        try:
+            rj = _store_job(state, body)
+        except ValueError as exc:
+            return JSONResponse(
+                status_code=409,
+                content={"error": "source_identity_conflict", "message": str(exc)},
+            )
         return _runtime_job_to_out(rj)
 
     @r.patch("/admin/scheduler/jobs/{name}", response_model=JobOut)
@@ -211,12 +233,27 @@ def router() -> APIRouter:
             metadata=(
                 body.metadata if body.metadata is not None else dict(rj.metadata)
             ),
+            execution_mode=(
+                body.execution_mode
+                if body.execution_mode is not None
+                else rj.execution_mode
+            ),
+            source_system=rj.source_system,
+            source_job_id=rj.source_job_id,
         )
         ok, err = _validate_cron(merged.cron or "")
         if not ok:
             return JSONResponse(
                 status_code=422,
                 content={"error": "invalid_cron", "message": err or ""},
+            )
+        if merged.execution_mode not in {"live", "shadow"}:
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "error": "invalid_execution_mode",
+                    "message": "execution_mode must be live or shadow",
+                },
             )
         if merged.action_type == QZONE_DAILY_BUILTIN_NAME:
             ok, err = _validate_qzone_daily(merged)
@@ -270,10 +307,16 @@ def router() -> APIRouter:
                     "id": name,
                 },
             )
-        _unregister_runtime_loop(state, name)
+        candidate = dict(table)
+        candidate.pop(name, None)
+        _persist_runtime_job_rows(state, candidate)
+        try:
+            _unregister_runtime_loop(state, name)
+        except Exception:
+            _persist_runtime_job_rows(state, table)
+            raise
         table.pop(name, None)
         _job_metadata(state).pop(name, None)
-        _persist_runtime_jobs(state)
         return {"ok": True, "deleted": name}
 
     @r.post(

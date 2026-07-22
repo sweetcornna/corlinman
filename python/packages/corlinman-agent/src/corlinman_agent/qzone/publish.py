@@ -42,6 +42,12 @@ from typing import Any
 
 import httpx
 import structlog
+from corlinman_content_policy import (
+    TencentPolicyConfig,
+    classifier_failure_decision,
+    moderate_media,
+    moderate_text,
+)
 
 from corlinman_agent.onebot import OneBotClient, OneBotError
 
@@ -434,12 +440,10 @@ def _parse_upload_response(raw: bytes | str) -> dict[str, Any]:
     """
     obj = _extract_json_object(raw)
     if obj is None:
-        text = _as_text(raw)
-        return {"ok": False, "error": f"unparseable upload response: {text[:200]}"}
+        return {"ok": False, "error": "unparseable upload response"}
     ret = obj.get("ret")
     if ret != 0:
-        err = obj.get("msg") or obj.get("message") or f"ret={ret}"
-        return {"ok": False, "code": ret, "error": err}
+        return {"ok": False, "code": ret, "error": f"ret={ret}"}
     data = obj.get("data") or {}
     return {"ok": True, "pic": _extract_pic_info(data)}
 
@@ -458,8 +462,7 @@ def _parse_publish_response(raw: bytes | str) -> dict[str, Any]:
     """
     obj = _extract_json_object(raw)
     if obj is None:
-        text = _as_text(raw)
-        return {"ok": False, "error": f"unparseable QZone response: {text[:200]}"}
+        return {"ok": False, "error": "unparseable QZone response"}
 
     ret = obj.get("ret")
     code = obj.get("code")
@@ -471,12 +474,8 @@ def _parse_publish_response(raw: bytes | str) -> dict[str, Any]:
             "tid": obj.get("tid") or obj.get("t1_tid"),
             "raw": obj,
         }
-    err = (
-        obj.get("msg")
-        or obj.get("message")
-        or f"ret={ret}, code={code}, subcode={subcode}"
-    )
-    return {"ok": False, "code": status, "error": err, "raw": obj}
+    err = f"ret={ret}, code={code}, subcode={subcode}"
+    return {"ok": False, "code": status, "error": err}
 
 
 # ---------------------------------------------------------------------------
@@ -508,10 +507,7 @@ async def _qzone_post(
     except httpx.HTTPError as exc:
         raise QZoneError(f"QZone request transport error: {exc}") from exc
     if response.status_code >= 400:
-        body_snippet = response.text[:200] if response.text else ""
-        raise QZoneError(
-            f"QZone HTTP {response.status_code}. {body_snippet}".strip()
-        )
+        raise QZoneError(f"QZone HTTP {response.status_code}")
     return response.content
 
 
@@ -559,6 +555,75 @@ async def _qzone_publish_post(
 # ---------------------------------------------------------------------------
 
 
+def _policy_config(resolver: Any | None) -> TencentPolicyConfig:
+    try:
+        # Every agent entrypoint is protected by default. Only an injected
+        # resolver returning the literal boolean false may opt out.
+        enabled = True if resolver is None else resolver()
+    except Exception:
+        enabled = True
+    return TencentPolicyConfig(enabled=enabled is not False)
+
+
+def _policy_error(decision: Any) -> str:
+    return _err(
+        "content_policy_blocked",
+        "Tencent content policy blocked this QZone operation.",
+        category_codes=list(decision.category_codes),
+        rule_ids=list(decision.rule_ids),
+        ruleset_version=decision.ruleset_version,
+    )
+
+
+async def _prepare_effect(
+    store: Any | None,
+    context: dict[str, str] | None,
+    *,
+    effect_kind: str,
+    effect_target: str,
+) -> tuple[Any | None, str | None]:
+    if store is None and not context:
+        return None, None
+    if store is None or not context:
+        return None, "scheduler_effect_store_unavailable"
+    required = ("source_system", "source_job_id", "occurrence_key")
+    if any(not context.get(key) for key in required):
+        return None, "scheduler_effect_context_invalid"
+    try:
+        return (
+            await store.prepare_effect(
+                source_system=context["source_system"],
+                source_job_id=context["source_job_id"],
+                occurrence_key=context["occurrence_key"],
+                effect_kind=effect_kind,
+                effect_target=effect_target,
+            ),
+            None,
+        )
+    except Exception:
+        return None, "scheduler_effect_reservation_blocked"
+
+
+async def _complete_effect(
+    store: Any,
+    effect: Any,
+    *,
+    state: str,
+    receipt: object = None,
+    error_code: str | None = None,
+) -> bool:
+    try:
+        await store.complete_effect(
+            effect.id,
+            state=state,
+            receipt=receipt,
+            error_code=error_code,
+        )
+    except Exception:
+        return False
+    return True
+
+
 def _qzone_url(uin: str, tid: str | None) -> str | None:
     """Build the user-facing 说说 permalink. Returns ``None`` when the
     tid is missing — the JSON envelope keeps the field but null so the
@@ -576,6 +641,10 @@ async def dispatch_qzone_publish(
     image_with_refs_dispatcher: Any | None = None,
     image_with_refs_kwargs: dict[str, Any] | None = None,
     http_transport: httpx.BaseTransport | None = None,
+    policy_resolver: Any | None = None,
+    execution_mode: str = "live",
+    scheduler_store: Any | None = None,
+    effect_context: dict[str, str] | None = None,
 ) -> str:
     """Dispatch one ``qzone_publish`` tool call into a JSON envelope.
 
@@ -644,6 +713,41 @@ async def dispatch_qzone_publish(
         return _err(
             "invalid_args",
             "qzone_publish requires 'text', 'images', or 'generate'",
+        )
+
+    cfg = _policy_config(policy_resolver)
+    try:
+        text_decision = moderate_text(text, cfg).decision
+        if not text_decision.allowed:
+            return _policy_error(text_decision)
+        prompt = generate.get("prompt") if isinstance(generate, dict) else ""
+        prompt_decision = moderate_text(str(prompt or ""), cfg).decision
+        if not prompt_decision.allowed:
+            return _policy_error(prompt_decision)
+        media_requested = bool(images_list or generate)
+        if media_requested:
+            media_decision = moderate_media(config=cfg)
+            if not media_decision.allowed:
+                if text:
+                    # Protection keeps the scheduled post useful while refusing
+                    # to generate, read, authenticate, or upload unclassified media.
+                    images_list = []
+                    generate = None
+                else:
+                    return _policy_error(media_decision)
+    except Exception:
+        return _policy_error(classifier_failure_decision(text))
+
+    if execution_mode == "shadow":
+        return json.dumps(
+            {
+                "ok": True,
+                "shadow": True,
+                "effect": "qzone_publish",
+                "text_chars": len(text),
+                "media_suppressed": bool(images_raw or args.get("generate")),
+            },
+            ensure_ascii=False,
         )
 
     # Step 1: optionally call image_with_refs and prepend its output.
@@ -774,6 +878,15 @@ async def dispatch_qzone_publish(
     skey = _extract_cookie_value(cookie, "skey") or ""
     gtk = _compute_gtk(p_skey)
 
+    effect, effect_error = await _prepare_effect(
+        scheduler_store,
+        effect_context,
+        effect_kind="qzone.publish",
+        effect_target=f"account:{uin}",
+    )
+    if effect_error is not None:
+        return _err(effect_error, "QZone publish effect could not be reserved.")
+
     # Step 4: upload images + publish 说说.
     client_kwargs: dict[str, Any] = {
         "timeout": _QZONE_UPLOAD_TIMEOUT,
@@ -796,6 +909,13 @@ async def dispatch_qzone_publish(
                     cookie,
                 )
             except QZoneError as exc:
+                if effect is not None:
+                    await _complete_effect(
+                        scheduler_store,
+                        effect,
+                        state="failed",
+                        error_code="image_upload_failed",
+                    )
                 return _err(
                     "image_upload_failed",
                     f"upload failed for {filename!r}: {exc}",
@@ -804,6 +924,13 @@ async def dispatch_qzone_publish(
                 logger.exception(
                     "qzone_publish.upload_unexpected", filename=filename
                 )
+                if effect is not None:
+                    await _complete_effect(
+                        scheduler_store,
+                        effect,
+                        state="failed",
+                        error_code="image_upload_failed",
+                    )
                 return _err(
                     "image_upload_failed",
                     f"upload failed for {filename!r}: {exc}",
@@ -814,13 +941,34 @@ async def dispatch_qzone_publish(
         try:
             raw = await _qzone_publish_post(client, form, gtk, cookie, uin)
         except QZoneError as exc:
+            if effect is not None:
+                await _complete_effect(
+                    scheduler_store,
+                    effect,
+                    state="unknown",
+                    error_code="qzone_publish_transport_failed",
+                )
             return _err("qzone_publish_failed", str(exc))
         except Exception as exc:
             logger.exception("qzone_publish.publish_unexpected")
+            if effect is not None:
+                await _complete_effect(
+                    scheduler_store,
+                    effect,
+                    state="unknown",
+                    error_code="qzone_publish_transport_failed",
+                )
             return _err("qzone_publish_failed", str(exc))
 
     parsed = _parse_publish_response(raw)
     if not parsed.get("ok"):
+        if effect is not None:
+            await _complete_effect(
+                scheduler_store,
+                effect,
+                state="failed",
+                error_code="qzone_rejected",
+            )
         return _err(
             "qzone_rejected",
             f"QZone rejected the post: {parsed.get('error')}",
@@ -829,11 +977,24 @@ async def dispatch_qzone_publish(
 
     tid = parsed.get("tid")
     tid_str = str(tid) if tid is not None else None
+    qzone_url = _qzone_url(uin, tid_str)
+    if effect is not None and not await _complete_effect(
+        scheduler_store,
+        effect,
+        state="sent",
+        receipt={"tid": tid_str, "qzone_url": qzone_url, "uin": uin},
+    ):
+        return _err(
+            "scheduler_effect_receipt_unknown",
+            "QZone publish may be public but its durable receipt was not confirmed.",
+            tid=tid_str,
+            qzone_url=qzone_url,
+        )
     return json.dumps(
         {
             "ok": True,
             "tid": tid_str,
-            "qzone_url": _qzone_url(uin, tid_str),
+            "qzone_url": qzone_url,
             "uin": uin,
             "images": len(pic_infos),
             "generated": bool(generated_path),

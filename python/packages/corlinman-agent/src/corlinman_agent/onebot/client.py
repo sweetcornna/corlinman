@@ -36,11 +36,16 @@ Failures
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
+from itertools import count
+from pathlib import Path
 from typing import Any
 
 import httpx
 import structlog
+from websockets.asyncio.client import connect as ws_connect
 
 logger = structlog.get_logger(__name__)
 
@@ -56,6 +61,7 @@ __all__ = [
 #: is almost certainly NapCat itself being unreachable rather than a
 #: slow QQ login lookup.
 _DEFAULT_TIMEOUT_SECS: float = 10.0
+_ECHO_COUNTER = count()
 
 
 class OneBotError(RuntimeError):
@@ -145,6 +151,26 @@ def _resolve_token(*, explicit: str | None) -> str:
     return os.environ.get("CORLINMAN_NAPCAT_ACCESS_TOKEN", "").strip()
 
 
+def _sidecar_onebot_config() -> tuple[str, str]:
+    """Read the gateway-emitted QQ action transport from py-config.json."""
+    raw_path = os.environ.get("CORLINMAN_PY_CONFIG", "").strip()
+    if not raw_path:
+        return "", ""
+    try:
+        raw = json.loads(Path(raw_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return "", ""
+    section = raw.get("qq_onebot") if isinstance(raw, dict) else None
+    if not isinstance(section, dict):
+        return "", ""
+    ws_url = section.get("ws_url")
+    access_token = section.get("access_token")
+    return (
+        ws_url.strip() if isinstance(ws_url, str) else "",
+        access_token.strip() if isinstance(access_token, str) else "",
+    )
+
+
 class OneBotClient:
     """Async HTTP client for the OneBot v11 action API.
 
@@ -190,18 +216,22 @@ class OneBotClient:
         timeout: float | None = None,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
+        sidecar_ws_url, sidecar_token = _sidecar_onebot_config()
+        resolved_ws_url = (ws_url or "").strip() or sidecar_ws_url
+        self._ws_url = resolved_ws_url
         resolved_base = _resolve_base_url(
-            explicit=base_url, ws_url=ws_url
+            explicit=base_url, ws_url=resolved_ws_url
         )
         if not resolved_base:
             raise OneBotError(
-                "OneBot HTTP URL not configured — set "
-                "CORLINMAN_NAPCAT_HTTP_URL, pass base_url explicitly, "
-                "or supply ws_url so the client can derive the HTTP "
-                "endpoint from the QQ channel config"
+                "OneBot transport not configured — set "
+                "CORLINMAN_NAPCAT_HTTP_URL, pass base_url/ws_url explicitly, "
+                "or emit qq_onebot.ws_url in CORLINMAN_PY_CONFIG"
             )
         self._base_url: str = resolved_base
-        self._token: str = _resolve_token(explicit=access_token)
+        self._token: str = _resolve_token(
+            explicit=access_token or sidecar_token
+        )
         self._timeout: float = (
             timeout if timeout is not None and timeout > 0 else _env_timeout()
         )
@@ -236,39 +266,29 @@ class OneBotClient:
     # ------------------------------------------------------------------
 
     async def _call(self, action: str, params: dict[str, Any] | None = None) -> Any:
-        """POST one OneBot action and return the ``data`` field.
+        """Call one OneBot action and return the ``data`` field.
 
-        Raises :class:`OneBotError` on transport failure, non-2xx HTTP
-        status, malformed JSON, or a ``status:"failed"`` envelope.
+        Prefer HTTP when configured. If a deployment exposes only NapCat's
+        forward WebSocket action API, an HTTP 404/426 or transport failure
+        falls back to a short-lived WS request carrying a unique ``echo``.
         """
-        url = f"{self._base_url}/{action}"
         body = params or {}
+        payload: Any
+        url = f"{self._base_url}/{action}"
         try:
             response = await self._client.post(url, json=body)
-        except httpx.TimeoutException as exc:
-            raise OneBotError(
-                f"OneBot action {action!r} timed out after "
-                f"{self._timeout:.1f}s — is NapCat reachable at "
-                f"{self._base_url}?"
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise OneBotError(
-                f"OneBot action {action!r} transport error: {exc} "
-                f"(base={self._base_url})"
-            ) from exc
-
-        if response.status_code >= 400:
-            raise OneBotError(
-                f"OneBot action {action!r} returned HTTP "
-                f"{response.status_code}: {response.text[:200]}"
-            )
-        try:
+            if response.status_code >= 400:
+                raise OneBotError(
+                    f"OneBot action {action!r} returned HTTP "
+                    f"{response.status_code}"
+                )
             payload = response.json()
-        except ValueError as exc:
-            raise OneBotError(
-                f"OneBot action {action!r} returned non-JSON body: "
-                f"{response.text[:200]}"
-            ) from exc
+        except (httpx.HTTPError, ValueError, OneBotError) as exc:
+            if not self._ws_url:
+                raise OneBotError(
+                    f"OneBot action {action!r} HTTP transport failed"
+                ) from exc
+            payload = await self._call_ws(action, body, http_error=exc)
 
         if not isinstance(payload, dict):
             raise OneBotError(
@@ -293,6 +313,52 @@ class OneBotClient:
                 f"OneBot action {action!r} returned no data field."
             )
         return data
+
+    async def _call_ws(
+        self,
+        action: str,
+        params: dict[str, Any],
+        *,
+        http_error: Exception,
+    ) -> Any:
+        echo = f"corlinman-agent:{id(self)}:{next(_ECHO_COUNTER)}:{action}"
+        headers = (
+            [("Authorization", f"Bearer {self._token}")]
+            if self._token
+            else None
+        )
+        frame = json.dumps(
+            {"action": action, "params": params, "echo": echo},
+            ensure_ascii=False,
+        )
+        try:
+            async with ws_connect(
+                self._ws_url,
+                additional_headers=headers,
+                open_timeout=self._timeout,
+                close_timeout=2,
+                ping_interval=None,
+            ) as websocket:
+                await websocket.send(frame)
+                async with asyncio.timeout(self._timeout):
+                    async for raw in websocket:
+                        if not isinstance(raw, str):
+                            continue
+                        try:
+                            payload = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue
+                        if isinstance(payload, dict) and payload.get("echo") == echo:
+                            return payload
+        except Exception as exc:  # noqa: BLE001 — transport boundary
+            # Preserve no upstream body/snippet; callers log only the stable
+            # action-level error while retaining the HTTP cause for debugging.
+            raise OneBotError(
+                f"OneBot action {action!r} WebSocket transport failed"
+            ) from exc
+        raise OneBotError(
+            f"OneBot action {action!r} returned no matching WebSocket response"
+        ) from http_error
 
     # ------------------------------------------------------------------
     # High-level QZone helpers

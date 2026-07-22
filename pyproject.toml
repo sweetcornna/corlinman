@@ -1,6 +1,6 @@
 [project]
 name = "corlinman"
-version = "1.35.0"
+version = "1.36.0"
 description = "Python AI plane for corlinman (LLM providers, agent reasoning)"
 requires-python = ">=3.12"
 readme = "README.md"
@@ -23,6 +23,7 @@ dependencies = [
     "corlinman-goals",
     "corlinman-agent-brain",
     "corlinman-memory-kernel",
+    "corlinman-content-policy",
 ]
 
 [tool.uv.sources]
@@ -38,6 +39,7 @@ corlinman-episodes = { workspace = true }
 corlinman-goals = { workspace = true }
 corlinman-agent-brain = { workspace = true }
 corlinman-memory-kernel = { workspace = true }
+corlinman-content-policy = { workspace = true }
 
 [tool.uv.workspace]
 members = ["python/packages/*"]

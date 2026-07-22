@@ -533,6 +533,9 @@ def _provider_config_json(req: InternalChatRequest) -> bytes:
     provider_hint = getattr(req, "provider_hint", None)
     if isinstance(provider_hint, str) and provider_hint.strip():
         payload["provider_hint"] = provider_hint.strip()
+    scheduler_context = getattr(req, "scheduler_context", None)
+    if isinstance(scheduler_context, dict) and scheduler_context:
+        payload["scheduler_context"] = scheduler_context
     provider_params = getattr(req, "provider_params", None)
     if isinstance(provider_params, dict) and provider_params:
         payload["params"] = provider_params

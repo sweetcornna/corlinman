@@ -144,6 +144,7 @@ def _comment_events(
     call_id: str = "c1",
     tid: str = "t1",
     reply_to_uin: str = "5555",
+    comment_id: str | None = None,
     ok: bool = True,
     is_error: bool = False,
 ) -> list[Any]:
@@ -155,6 +156,8 @@ def _comment_events(
         "reply_to_uin": reply_to_uin,
         "reply_to_name": "友人",
     }
+    if comment_id is not None:
+        args["reply_to_comment_id"] = comment_id
     payload: dict[str, Any]
     if ok:
         payload = {
@@ -162,6 +165,7 @@ def _comment_events(
             "owner_uin": "1234",
             "tid": tid,
             "is_reply": True,
+            "comment_identity": f"id:{comment_id}" if comment_id else "",
             "content_sent": f"@{{uin:{reply_to_uin},nick:友人,who:1}} 谢谢你来看我～",
         }
     else:
@@ -252,15 +256,15 @@ async def test_happy_path_counts_replies_and_backfills_seen(
     assert "_replies" not in out
     assert any("qzone_post_comment" in name for name in out["tools_called"])
 
-    # Sidecar backfill — {version: 1, seen: {tid: ["uin:ts"]}}.
+    # Sidecar backfill — v2 stores a stable identity plus timestamp.
     path = tmp_path / "qzone_seen_comments" / "grantley.json"
     assert path.is_file()
     raw = json.loads(path.read_text(encoding="utf-8"))
-    assert raw["version"] == 1
+    assert raw["version"] == 2
     assert list(raw["seen"].keys()) == ["t1"]
     (entry,) = raw["seen"]["t1"]
-    uin, _, ts = entry.partition(":")
-    assert uin == "5555" and ts.isdigit()
+    assert entry.startswith("uin:5555:")
+    assert entry.rsplit(":", 1)[1].isdigit()
 
     # Prompt contract: persona body + the reply tail with the pinned
     # qq_account, the clamped knobs, and the wind-down rules.
@@ -302,6 +306,56 @@ async def test_no_new_comments_is_success_with_zero_replies(
     assert out["replies_posted"] == 0
     assert out["tids_scanned"] == 1
     assert not (tmp_path / "qzone_seen_comments").exists()
+
+
+async def test_shadow_comment_plans_are_not_recorded_as_seen(
+    tmp_path: Path,
+) -> None:
+    store = _FakePersonaStore(
+        {"grantley": _FakePersona(id="grantley", system_prompt="x")}
+    )
+    chat = _ScriptedChatService(
+        events=[
+            *_comment_events(
+                tid="t1",
+                reply_to_uin="5555",
+                comment_id="comment-1",
+            ),
+            DoneEvent(finish_reason="stop"),
+        ]
+    )
+    # Mark the tool envelope as a shadow-planned effect.
+    shadow_result = chat._events[1]
+    payload = json.loads(shadow_result.payload_json)
+    payload["shadow"] = True
+    shadow_result = ToolResultEvent(
+        plugin=shadow_result.plugin,
+        tool=shadow_result.tool,
+        call_id=shadow_result.call_id,
+        duration_ms=shadow_result.duration_ms,
+        is_error=shadow_result.is_error,
+        error_summary=shadow_result.error_summary,
+        payload_json=json.dumps(payload),
+    )
+    chat._events[1] = shadow_result
+    app_state = _make_app_state(
+        chat=chat,
+        persona_store=store,
+        metadata={"persona_id": "grantley"},
+    )
+    app_state.data_dir = tmp_path
+    out = await _qzone_reply_comments_action(
+        BuiltinContext(
+            app_state=app_state,
+            name="grantley.qzone_reply",
+            execution_mode="shadow",
+        )
+    )
+    assert out["ok"] is True
+    assert out["shadow"] is True
+    assert out["delivery_suppressed"] is True
+    assert not (tmp_path / "qzone_seen_comments").exists()
+    assert chat.requests[0].scheduler_context["execution_mode"] == "shadow"
 
 
 async def test_failed_comment_result_not_counted_or_recorded(
@@ -360,15 +414,15 @@ async def test_seen_entries_surface_in_prompt_and_skipped_count(
 
     prompt = chat.requests[0].messages[0].content
     assert "已回复过的评论" in prompt
-    assert "说说 t1：已回复过 QQ 5555、7777" in prompt
-    assert "说说 t2：已回复过 QQ 8888" in prompt
+    assert "说说 t1：已回复评论 5555、7777" in prompt
+    assert "说说 t2：已回复评论 8888" in prompt
     # The seen block sits between the persona body and the tail.
     assert prompt.index("已回复过的评论") < prompt.index(
         "scheduler·qzone.reply_comments"
     )
 
 
-async def test_seen_backfill_does_not_duplicate_uin(tmp_path: Path) -> None:
+async def test_seen_backfill_does_not_duplicate_legacy_uin(tmp_path: Path) -> None:
     """Replying again to a commenter already in the sidecar must not
     append a duplicate ``uin:ts`` entry."""
     _record_seen(
@@ -392,6 +446,42 @@ async def test_seen_backfill_does_not_duplicate_uin(tmp_path: Path) -> None:
     assert out["ok"] is True
     seen = _read_seen(_seen_path(tmp_path, "grantley"))
     assert len(seen["t1"]) == 1
+
+
+async def test_later_comment_by_same_person_uses_comment_id(tmp_path: Path) -> None:
+    _record_seen(
+        data_dir=tmp_path,
+        persona_id="grantley",
+        replies=[("t1", "id:first")],
+    )
+    store = _FakePersonaStore(
+        {"grantley": _FakePersona(id="grantley", system_prompt="x")}
+    )
+    chat = _ScriptedChatService(
+        events=[
+            *_comment_events(
+                tid="t1",
+                reply_to_uin="5555",
+                comment_id="second",
+            ),
+            DoneEvent(finish_reason="stop"),
+        ],
+    )
+    app_state = _make_app_state(
+        chat=chat,
+        persona_store=store,
+        metadata={"persona_id": "grantley"},
+    )
+    app_state.data_dir = tmp_path
+    out = await _qzone_reply_comments_action(
+        BuiltinContext(app_state=app_state, name="grantley.qzone_reply")
+    )
+    assert out["ok"] is True
+    seen = _read_seen(_seen_path(tmp_path, "grantley"))
+    assert {_seen.rsplit(":", 1)[0] for _seen in seen["t1"]} == {
+        "id:first",
+        "id:second",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -650,6 +740,6 @@ def test_read_seen_tolerates_corrupt_sidecar(tmp_path: Path) -> None:
 def test_seen_block_renders_uins_once() -> None:
     block = _seen_block({"t1": ["5555:1", "5555:2", "7777:3"], "t2": []})
     assert block is not None
-    assert "说说 t1：已回复过 QQ 5555、7777" in block
+    assert "说说 t1：已回复评论 5555、7777" in block
     assert "t2" not in block
     assert _seen_block({}) is None

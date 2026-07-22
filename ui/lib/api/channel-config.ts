@@ -54,6 +54,8 @@ export interface ChannelFieldSpec {
   options?: readonly string[];
   /** Adapter default, shown as the input placeholder (number fields). */
   placeholder?: string;
+  /** Effective default when a boolean key is absent on disk. */
+  defaultValue?: boolean;
 }
 
 export interface ChannelConfigSpec {
@@ -93,7 +95,11 @@ export const CHANNEL_CONFIG_SPEC: Record<ConfigEditableChannel, ChannelConfigSpe
       { key: "proactive_groups", advanced: true },
     ],
     filters: [],
-    flags: [{ key: "group_replies_enabled" }, { key: "proactive_enabled" }],
+    flags: [
+      { key: "group_replies_enabled" },
+      { key: "freeze_risk_topic_blocking", defaultValue: true },
+      { key: "proactive_enabled" },
+    ],
     numbers: [
       { key: "group_reply_cooldown_secs", advanced: true, placeholder: "20" },
       { key: "proactive_min_gap_minutes", advanced: true, placeholder: "45" },
@@ -243,7 +249,8 @@ export function seedDraft(
     // The status route emits bool keys as the string "true"/"false"
     // (str(bool) on the backend), so compare against the string forms.
     const v = configKeys[f.key];
-    draft.flags[f.key] = v === "true" || v === "True";
+    draft.flags[f.key] =
+      v == null ? (f.defaultValue ?? false) : v === "true" || v === "True";
   }
   for (const f of spec.numbers) draft.numbers[f.key] = asStr(configKeys[f.key]);
   return draft;

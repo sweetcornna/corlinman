@@ -26,6 +26,7 @@ file and the store without a tick loop.
 from __future__ import annotations
 
 import contextlib
+import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,7 +37,9 @@ from corlinman_server.scheduler.runner import SubprocessOutcome, SubprocessOutco
 
 __all__ = [
     "SCHEDULER_SCHEMA_SQL",
+    "EffectRecord",
     "RunRecord",
+    "SchedulerEffectConflict",
     "SchedulerStore",
     "SchedulerStoreConnectError",
     "SchedulerStoreError",
@@ -56,12 +59,31 @@ CREATE TABLE IF NOT EXISTS scheduler_runs (
     error_kind     TEXT,
     exit_code      INTEGER,
     duration_ms    INTEGER NOT NULL,
-    fired_at_ms    INTEGER NOT NULL
+    fired_at_ms    INTEGER NOT NULL,
+    result_json     TEXT,
+    execution_mode TEXT NOT NULL DEFAULT 'live',
+    scheduled_for_ms INTEGER,
+    occurrence_key TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_scheduler_runs_job
     ON scheduler_runs(job_name, fired_at_ms DESC);
 CREATE INDEX IF NOT EXISTS idx_scheduler_runs_run_id
     ON scheduler_runs(run_id);
+
+CREATE TABLE IF NOT EXISTS scheduler_effects (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_system   TEXT NOT NULL,
+    source_job_id   TEXT NOT NULL,
+    occurrence_key  TEXT NOT NULL,
+    effect_kind     TEXT NOT NULL,
+    effect_target   TEXT NOT NULL,
+    state           TEXT NOT NULL CHECK (state IN ('prepared','sent','failed','unknown')),
+    receipt_json    TEXT,
+    error_code      TEXT,
+    created_at_ms   INTEGER NOT NULL,
+    updated_at_ms   INTEGER NOT NULL,
+    UNIQUE(source_system, source_job_id, occurrence_key, effect_kind, effect_target)
+);
 """
 
 
@@ -87,10 +109,33 @@ class RunRecord:
     exit_code: int | None
     duration_ms: int
     fired_at_ms: int
+    result_json: dict[str, object] | None = None
+    execution_mode: str = "live"
+    scheduled_for_ms: int | None = None
+    occurrence_key: str | None = None
+
+
+@dataclass(frozen=True)
+class EffectRecord:
+    id: int
+    source_system: str
+    source_job_id: str
+    occurrence_key: str
+    effect_kind: str
+    effect_target: str
+    state: str
+    receipt_json: dict[str, object] | None
+    error_code: str | None
+    created_at_ms: int
+    updated_at_ms: int
 
 
 class SchedulerStoreError(RuntimeError):
     """Base class for scheduler-store failures."""
+
+
+class SchedulerEffectConflict(SchedulerStoreError):
+    """The same occurrence/effect already has a prepared or terminal row."""
 
 
 class SchedulerStoreConnectError(SchedulerStoreError):
@@ -139,7 +184,12 @@ class SchedulerStore:
     # ---- lifecycle ---------------------------------------------------------
 
     @classmethod
-    async def open(cls, path: Path | str) -> SchedulerStore:
+    async def open(
+        cls,
+        path: Path | str,
+        *,
+        reconcile_prepared: bool = False,
+    ) -> SchedulerStore:
         """Open (or create) the scheduler DB at ``path``. Applies
         :data:`SCHEDULER_SCHEMA_SQL` idempotently. WAL +
         ``synchronous=NORMAL`` + ``foreign_keys=ON`` matches the rest
@@ -156,6 +206,35 @@ class SchedulerStore:
             await conn.execute("PRAGMA synchronous=NORMAL")
             await conn.execute("PRAGMA foreign_keys=ON")
             await conn.executescript(SCHEDULER_SCHEMA_SQL)
+            # Existing deployments predate the extended run columns. SQLite
+            # has no IF NOT EXISTS for ADD COLUMN, so inspect first.
+            async with conn.execute("PRAGMA table_info(scheduler_runs)") as cursor:
+                columns = {str(row[1]) async for row in cursor}
+            migrations = {
+                "result_json": "TEXT",
+                "execution_mode": "TEXT NOT NULL DEFAULT 'live'",
+                "scheduled_for_ms": "INTEGER",
+                "occurrence_key": "TEXT",
+            }
+            for name, ddl in migrations.items():
+                if name not in columns:
+                    await conn.execute(
+                        f"ALTER TABLE scheduler_runs ADD COLUMN {name} {ddl}"
+                    )
+            await conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_scheduler_runs_occurrence "
+                "ON scheduler_runs(occurrence_key) WHERE occurrence_key IS NOT NULL"
+            )
+            if reconcile_prepared:
+                # Only the gateway lifecycle owns boot reconciliation. A second
+                # process may open the same WAL database while a send is active;
+                # ordinary opens must not terminalize that in-flight reservation.
+                await conn.execute(
+                    "UPDATE scheduler_effects SET state='unknown', "
+                    "error_code=COALESCE(error_code, 'process_restart'), "
+                    "updated_at_ms=? WHERE state='prepared'",
+                    (_unix_now_ms(),),
+                )
             await conn.commit()
         except BaseException as exc:
             raise SchedulerStoreConnectError(db_path, exc) from exc
@@ -229,17 +308,27 @@ class SchedulerStore:
         exit_code: int | None,
         duration_ms: int,
         fired_at_ms: int | None = None,
+        result_json: object = None,
+        execution_mode: str = "live",
+        scheduled_for_ms: int | None = None,
+        occurrence_key: str | None = None,
     ) -> int:
         """Lower-level insert used by the "unsupported_action" branch
         of the dispatcher (no :class:`SubprocessOutcome` to wrap).
         Public so callers can shape arbitrary outcomes."""
         if fired_at_ms is None:
             fired_at_ms = _unix_now_ms()
+        encoded_result = (
+            json.dumps(result_json, ensure_ascii=False, sort_keys=True)
+            if result_json is not None
+            else None
+        )
         cursor = await self._conn.execute(
             "INSERT INTO scheduler_runs "
             "(job_name, run_id, action_kind, outcome_kind, error_kind, "
-            " exit_code, duration_ms, fired_at_ms) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            " exit_code, duration_ms, fired_at_ms, result_json, execution_mode, "
+            " scheduled_for_ms, occurrence_key) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 job_name,
                 run_id,
@@ -249,12 +338,127 @@ class SchedulerStore:
                 exit_code,
                 duration_ms,
                 fired_at_ms,
+                encoded_result,
+                execution_mode,
+                scheduled_for_ms,
+                occurrence_key,
             ),
         )
         row_id = cursor.lastrowid or 0
         await cursor.close()
         await self._conn.commit()
         return int(row_id)
+
+    async def prepare_effect(
+        self,
+        *,
+        source_system: str,
+        source_job_id: str,
+        occurrence_key: str,
+        effect_kind: str,
+        effect_target: str,
+    ) -> EffectRecord:
+        """Reserve one public effect; duplicates are never auto-replayed."""
+        now = _unix_now_ms()
+        cursor = await self._conn.execute(
+            "INSERT OR IGNORE INTO scheduler_effects "
+            "(source_system, source_job_id, occurrence_key, effect_kind, "
+            " effect_target, state, created_at_ms, updated_at_ms) "
+            "VALUES (?, ?, ?, ?, ?, 'prepared', ?, ?)",
+            (
+                source_system,
+                source_job_id,
+                occurrence_key,
+                effect_kind,
+                effect_target,
+                now,
+                now,
+            ),
+        )
+        inserted = cursor.rowcount == 1
+        await cursor.close()
+        await self._conn.commit()
+        record = await self.get_effect(
+            source_system=source_system,
+            source_job_id=source_job_id,
+            occurrence_key=occurrence_key,
+            effect_kind=effect_kind,
+            effect_target=effect_target,
+        )
+        if record is None:  # pragma: no cover - insert/read invariant
+            raise SchedulerStoreError("effect reservation disappeared")
+        if not inserted:
+            raise SchedulerEffectConflict(
+                f"effect already {record.state}: {occurrence_key}/{effect_kind}/{effect_target}"
+            )
+        return record
+
+    async def complete_effect(
+        self,
+        effect_id: int,
+        *,
+        state: str,
+        receipt: object = None,
+        error_code: str | None = None,
+    ) -> EffectRecord:
+        if state not in {"sent", "failed", "unknown"}:
+            raise ValueError(f"invalid terminal effect state: {state}")
+        encoded = (
+            json.dumps(receipt, ensure_ascii=False, sort_keys=True)
+            if receipt is not None
+            else None
+        )
+        cursor = await self._conn.execute(
+            "UPDATE scheduler_effects SET state=?, receipt_json=?, error_code=?, "
+            "updated_at_ms=? WHERE id=? AND state='prepared'",
+            (state, encoded, error_code, _unix_now_ms(), effect_id),
+        )
+        updated = cursor.rowcount == 1
+        await cursor.close()
+        await self._conn.commit()
+        record = await self.get_effect_by_id(effect_id)
+        if record is None:
+            raise SchedulerStoreError(f"effect not found: {effect_id}")
+        if not updated:
+            raise SchedulerEffectConflict(
+                f"effect already terminal: {effect_id}/{record.state}"
+            )
+        return record
+
+    async def get_effect(
+        self,
+        *,
+        source_system: str,
+        source_job_id: str,
+        occurrence_key: str,
+        effect_kind: str,
+        effect_target: str,
+    ) -> EffectRecord | None:
+        async with self._conn.execute(
+            "SELECT id, source_system, source_job_id, occurrence_key, effect_kind, "
+            "effect_target, state, receipt_json, error_code, created_at_ms, updated_at_ms "
+            "FROM scheduler_effects WHERE source_system=? AND source_job_id=? "
+            "AND occurrence_key=? AND effect_kind=? AND effect_target=?",
+            (
+                source_system,
+                source_job_id,
+                occurrence_key,
+                effect_kind,
+                effect_target,
+            ),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return _row_to_effect(row) if row is not None else None
+
+    async def get_effect_by_id(self, effect_id: int) -> EffectRecord | None:
+        async with self._conn.execute(
+            "SELECT id, source_system, source_job_id, occurrence_key, effect_kind, "
+            "effect_target, state, receipt_json, error_code, created_at_ms, updated_at_ms "
+            "FROM scheduler_effects WHERE id=?",
+            (effect_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return _row_to_effect(row) if row is not None else None
 
     # ---- readers -----------------------------------------------------------
 
@@ -268,7 +472,8 @@ class SchedulerStore:
         rows: list[RunRecord] = []
         async with self._conn.execute(
             "SELECT id, job_name, run_id, action_kind, outcome_kind, "
-            "       error_kind, exit_code, duration_ms, fired_at_ms "
+            "       error_kind, exit_code, duration_ms, fired_at_ms, "
+            "       result_json, execution_mode, scheduled_for_ms, occurrence_key "
             "FROM scheduler_runs "
             "ORDER BY fired_at_ms DESC, id DESC "
             "LIMIT ?",
@@ -288,7 +493,8 @@ class SchedulerStore:
         rows: list[RunRecord] = []
         async with self._conn.execute(
             "SELECT id, job_name, run_id, action_kind, outcome_kind, "
-            "       error_kind, exit_code, duration_ms, fired_at_ms "
+            "       error_kind, exit_code, duration_ms, fired_at_ms, "
+            "       result_json, execution_mode, scheduled_for_ms, occurrence_key "
             "FROM scheduler_runs "
             "WHERE job_name = ? "
             "ORDER BY fired_at_ms DESC, id DESC "
@@ -306,7 +512,8 @@ class SchedulerStore:
         return without parsing exception strings."""
         async with self._conn.execute(
             "SELECT id, job_name, run_id, action_kind, outcome_kind, "
-            "       error_kind, exit_code, duration_ms, fired_at_ms "
+            "       error_kind, exit_code, duration_ms, fired_at_ms, "
+            "       result_json, execution_mode, scheduled_for_ms, occurrence_key "
             "FROM scheduler_runs WHERE run_id = ?",
             (run_id,),
         ) as cursor:
@@ -322,6 +529,24 @@ class SchedulerStore:
         ) as cursor:
             r = await cursor.fetchone()
         return int(r[0]) if r is not None else 0
+
+
+def _row_to_effect(r: object) -> EffectRecord:
+    return EffectRecord(
+        id=int(r[0]),  # type: ignore[index]
+        source_system=str(r[1]),  # type: ignore[index]
+        source_job_id=str(r[2]),  # type: ignore[index]
+        occurrence_key=str(r[3]),  # type: ignore[index]
+        effect_kind=str(r[4]),  # type: ignore[index]
+        effect_target=str(r[5]),  # type: ignore[index]
+        state=str(r[6]),  # type: ignore[index]
+        receipt_json=(
+            json.loads(str(r[7])) if r[7] is not None else None  # type: ignore[index]
+        ),
+        error_code=(str(r[8]) if r[8] is not None else None),  # type: ignore[index]
+        created_at_ms=int(r[9]),  # type: ignore[index]
+        updated_at_ms=int(r[10]),  # type: ignore[index]
+    )
 
 
 def _row_to_record(r: object) -> RunRecord:
@@ -340,4 +565,14 @@ def _row_to_record(r: object) -> RunRecord:
         exit_code=(int(r[6]) if r[6] is not None else None),  # type: ignore[index]
         duration_ms=int(r[7]),  # type: ignore[index]
         fired_at_ms=int(r[8]),  # type: ignore[index]
+        result_json=(
+            json.loads(str(r[9])) if r[9] is not None else None  # type: ignore[index]
+        ),
+        execution_mode=str(r[10] or "live"),  # type: ignore[index]
+        scheduled_for_ms=(
+            int(r[11]) if r[11] is not None else None  # type: ignore[index]
+        ),
+        occurrence_key=(
+            str(r[12]) if r[12] is not None else None  # type: ignore[index]
+        ),
     )

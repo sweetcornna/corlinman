@@ -448,9 +448,16 @@ class EmbeddedBrain:
         # catalog the admin UI manages. ``_ensure_py_config_env`` (run in
         # ``start`` before this) has already pointed CORLINMAN_PY_CONFIG at the
         # drop; ``None`` path keeps the legacy fallback (no worse than before).
+        from corlinman_server.tencent_policy import (  # noqa: PLC0415
+            ReloadingTencentPolicyResolver,
+        )
+
         servicer_kwargs: dict[str, Any] = {
             "hook_runner": hook_runner,
             "subagent_config": _load_subagent_config(),
+            "tencent_policy_resolver": ReloadingTencentPolicyResolver(
+                os.environ.get("CORLINMAN_PY_CONFIG")
+            ),
         }
         try:
             from corlinman_server.main import (  # noqa: PLC0415

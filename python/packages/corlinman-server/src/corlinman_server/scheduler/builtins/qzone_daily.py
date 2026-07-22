@@ -76,40 +76,43 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
-from corlinman_server.scheduler.builtins._qzone_chat import (
+from corlinman_server.scheduler.builtins.chat_driver import (
     ChatDriveOutcome,
 )
-from corlinman_server.scheduler.builtins._qzone_chat import (
+from corlinman_server.scheduler.builtins.chat_driver import (
     build_internal_chat_request as _build_internal_chat_request,
 )
-from corlinman_server.scheduler.builtins._qzone_chat import (
+from corlinman_server.scheduler.builtins.chat_driver import (
     build_session_key as _build_session_key,
 )
-from corlinman_server.scheduler.builtins._qzone_chat import (
+from corlinman_server.scheduler.builtins.chat_driver import (
     coerce_optional_str as _coerce_optional_str,
 )
-from corlinman_server.scheduler.builtins._qzone_chat import (
+from corlinman_server.scheduler.builtins.chat_driver import (
     coerce_str as _coerce_str,
 )
-from corlinman_server.scheduler.builtins._qzone_chat import (
+from corlinman_server.scheduler.builtins.chat_driver import (
     drive_chat_turn as _drive_chat_stream,
 )
-from corlinman_server.scheduler.builtins._qzone_chat import (
+from corlinman_server.scheduler.builtins.chat_driver import (
     resolve_chat_service as _resolve_chat_service,
 )
-from corlinman_server.scheduler.builtins._qzone_chat import (
+from corlinman_server.scheduler.builtins.chat_driver import (
     resolve_data_dir as _resolve_data_dir,
 )
-from corlinman_server.scheduler.builtins._qzone_chat import (
+from corlinman_server.scheduler.builtins.chat_driver import (
     resolve_default_model as _resolve_default_model,
 )
-from corlinman_server.scheduler.builtins._qzone_chat import (
+from corlinman_server.scheduler.builtins.chat_driver import (
     resolve_metadata as _resolve_shared_metadata,
 )
-from corlinman_server.scheduler.builtins._qzone_chat import (
+from corlinman_server.scheduler.builtins.chat_driver import (
     resolve_or_open_persona_stores as _resolve_or_open_persona_stores,
 )
-from corlinman_server.scheduler.builtins._qzone_chat import (
+from corlinman_server.scheduler.builtins.chat_driver import (
+    scheduler_context as _scheduler_context,
+)
+from corlinman_server.scheduler.builtins.chat_driver import (
     valid_persona_slug as _valid_persona_slug,
 )
 from corlinman_server.scheduler.builtins.registry import (
@@ -276,6 +279,8 @@ async def _qzone_daily_publish_action(context: BuiltinContext) -> dict[str, Any]
             system_prompt=system_prompt,
             user_turn=prompt_template,
             persona_id=persona_id,
+            execution_mode=context.execution_mode,
+            scheduler_context=_scheduler_context(context),
         )
         if request is None:
             return {**base, "ok": False,
@@ -292,7 +297,12 @@ async def _qzone_daily_publish_action(context: BuiltinContext) -> dict[str, Any]
         # next firing can steer away from it. Diversity-gated + best-effort:
         # ``diversity=False`` keeps no post-log, and a write failure is
         # swallowed (the post already landed — the log is only steering fuel).
-        if diversity and isinstance(result, dict) and result.get("ok"):
+        if (
+            diversity
+            and context.execution_mode != "shadow"
+            and isinstance(result, dict)
+            and result.get("ok")
+        ):
             _record_post_log(
                 data_dir=data_dir,
                 persona_id=persona_id,
@@ -324,7 +334,7 @@ async def _drive_chat_turn(
     ``qzone_publish`` envelope into the daily-publish audit dict.
 
     The consume loop itself lives in
-    :func:`corlinman_server.scheduler.builtins._qzone_chat.drive_chat_turn`
+    :func:`corlinman_server.scheduler.builtins.chat_driver.drive_chat_turn`
     (PR-B6 extraction — shared with ``qzone.reply_comments``); this
     wrapper translates the generic :class:`ChatDriveOutcome` into the
     exact audit-dict vocabulary this builtin has always produced:
@@ -432,6 +442,8 @@ async def _drive_chat_turn(
     return {
         **base,
         "ok": True,
+        "shadow": bool(envelope.get("shadow")),
+        "delivery_suppressed": bool(envelope.get("shadow")),
         "tid": envelope.get("tid"),
         "qzone_url": envelope.get("qzone_url"),
         "uin": envelope.get("uin"),
@@ -455,7 +467,7 @@ def _resolve_metadata(context: BuiltinContext) -> dict[str, Any]:
     """Pull the job's metadata dict off the context.
 
     Delegates to the shared resolver (see
-    :func:`.._qzone_chat.resolve_metadata`) with this builtin's direct
+    :func:`..chat_driver.resolve_metadata`) with this builtin's direct
     test seam (``app_state.qzone_daily_metadata``).
     """
     return _resolve_shared_metadata(context, direct_attr="qzone_daily_metadata")

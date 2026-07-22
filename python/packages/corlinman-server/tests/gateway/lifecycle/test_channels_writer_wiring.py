@@ -10,6 +10,7 @@ the live ``app.state.config`` in sync.
 
 from __future__ import annotations
 
+import json
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
@@ -55,6 +56,63 @@ async def test_writer_persists_channels_and_preserves_other_sections(
     assert on_disk["server"]["port"] == 6005
     # live config kept in sync
     assert app.state.config["channels"]["telegram"]["humanlike"]["enabled"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_writer_updates_tencent_sidecar_immediately(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        "[channels.qq]\nfreeze_risk_topic_blocking = true\n",
+        encoding="utf-8",
+    )
+    sidecar = tmp_path / "py-config.json"
+    monkeypatch.setenv("CORLINMAN_PY_CONFIG", str(sidecar))
+    live = {
+        "channels": {"qq": {"freeze_risk_topic_blocking": True}}
+    }
+    app = _fake_app(live)
+    writer = _make_channels_writer(
+        app,
+        SimpleNamespace(config_path=cfg_path),
+    )
+
+    await writer(
+        {"qq": {"freeze_risk_topic_blocking": False}}
+    )
+
+    assert app.state.config["channels"]["qq"][
+        "freeze_risk_topic_blocking"
+    ] is False
+    assert json.loads(sidecar.read_text(encoding="utf-8"))[
+        "tencent_safety"
+    ]["enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_writer_sidecar_failure_is_not_reported_as_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from corlinman_server.gateway.lifecycle import app_factory
+
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text("[channels.qq]\n", encoding="utf-8")
+    app = _fake_app({"channels": {"qq": {}}})
+    writer = _make_channels_writer(
+        app,
+        SimpleNamespace(config_path=cfg_path),
+    )
+
+    def _fail(*_args: object, **_kwargs: object) -> None:
+        raise OSError("sidecar unavailable")
+
+    monkeypatch.setattr(app_factory, "write_py_config_sync", _fail)
+    with pytest.raises(OSError, match="sidecar unavailable"):
+        await writer({"qq": {"freeze_risk_topic_blocking": False}})
 
 
 @pytest.mark.asyncio

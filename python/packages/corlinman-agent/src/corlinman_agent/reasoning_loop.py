@@ -88,6 +88,8 @@ _INTERNAL_CHAT_EXTRA_KEYS: frozenset[str] = frozenset(
         "persona_id",
         "binding",
         "provider_hint",
+        "scheduler_context",
+        "scheduler_execution_mode",
     }
 )
 _CODEX_ONLY_CHAT_EXTRA_KEYS: frozenset[str] = frozenset(
