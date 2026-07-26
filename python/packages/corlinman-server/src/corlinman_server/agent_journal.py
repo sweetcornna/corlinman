@@ -138,6 +138,7 @@ class AgentJournal:
         *,
         user_id: str | None = None,
         channel: str = "",
+        runtime_instance_id: str = "",
         tenant_id: str = "",
         pending_question_json: str | None = None,
     ) -> int | None:
@@ -169,6 +170,7 @@ class AgentJournal:
             user_text,
             user_id=user_id,
             channel=channel,
+            runtime_instance_id=runtime_instance_id,
             tenant_id=tenant_id,
             pending_question_json=pending_question_json,
         )
@@ -228,15 +230,21 @@ class AgentJournal:
         user_text: str,
         *,
         user_id: str | None = None,
+        channel: str | None = None,
+        runtime_instance_id: str | None = None,
     ) -> ResumeData | None:
-        """Find a resumable turn, optionally scoped to ``user_id`` (S4).
+        """Find a resumable turn, optionally scoped to its exact origin.
 
         See :meth:`JournalBackend.find_resumable_turn`. The default
         ``user_id=None`` preserves the legacy user_text-only match for
         callers that don't carry a channel sender (HTTP turns).
         """
         return await self._backend.find_resumable_turn(
-            session_key, user_text, user_id=user_id
+            session_key,
+            user_text,
+            user_id=user_id,
+            channel=channel,
+            runtime_instance_id=runtime_instance_id,
         )
 
     async def _load_messages(self, turn_id: int) -> list[dict[str, Any]]:
@@ -277,14 +285,10 @@ class AgentJournal:
     # T4.4 — Error breadcrumbs
     # ------------------------------------------------------------------
 
-    async def recent_errored_turns(
-        self, session_key: str, limit: int = 5
-    ) -> list[dict[str, Any]]:
+    async def recent_errored_turns(self, session_key: str, limit: int = 5) -> list[dict[str, Any]]:
         return await self._backend.recent_errored_turns(session_key, limit)
 
-    async def mark_stale_in_progress_as_errored(
-        self, older_than_seconds: int | None = None
-    ) -> int:
+    async def mark_stale_in_progress_as_errored(self, older_than_seconds: int | None = None) -> int:
         """Sweep abandoned in-progress turns; flip them to ``errored``.
 
         ``older_than_seconds=None`` keeps the legacy
@@ -294,9 +298,7 @@ class AgentJournal:
         rows without disturbing the fresh window the same scan plans to
         re-deliver.
         """
-        return await self._backend.mark_stale_in_progress_as_errored(
-            older_than_seconds
-        )
+        return await self._backend.mark_stale_in_progress_as_errored(older_than_seconds)
 
     async def list_resumable_in_progress(
         self, *, window_ms: int = RESUME_MAX_AGE_MS
@@ -307,9 +309,7 @@ class AgentJournal:
         :class:`~corlinman_server.auto_resume.AgentResumeService` for
         the consumer.
         """
-        return await self._backend.list_resumable_in_progress(
-            window_ms=window_ms
-        )
+        return await self._backend.list_resumable_in_progress(window_ms=window_ms)
 
     # ------------------------------------------------------------------
     # /admin/sessions surface — projected straight from the journal so
@@ -326,13 +326,9 @@ class AgentJournal:
         ``tenant_id`` (W8) scopes the listing to one tenant; ``None``
         keeps the single-tenant fast path.
         """
-        return await self._backend.list_session_summaries(
-            limit=limit, tenant_id=tenant_id
-        )
+        return await self._backend.list_session_summaries(limit=limit, tenant_id=tenant_id)
 
-    async def delete_session(
-        self, session_key: str, *, tenant_id: str | None = None
-    ) -> int:
+    async def delete_session(self, session_key: str, *, tenant_id: str | None = None) -> int:
         """Wipe every turn (and its cascading messages) for
         ``session_key``. Returns the count of ``turns`` rows deleted —
         the route maps ``0`` to ``404 not_found``.
@@ -340,18 +336,12 @@ class AgentJournal:
         ``tenant_id`` (W8): a cross-tenant delete matches nothing and
         returns ``0``.
         """
-        return await self._backend.delete_session(
-            session_key, tenant_id=tenant_id
-        )
+        return await self._backend.delete_session(session_key, tenant_id=tenant_id)
 
-    async def session_exists(
-        self, session_key: str, *, tenant_id: str | None = None
-    ) -> bool:
+    async def session_exists(self, session_key: str, *, tenant_id: str | None = None) -> bool:
         """Cheap existence probe powering the ``PATCH /admin/sessions/{key}``
         404 branch — see :meth:`JournalBackend.session_exists`."""
-        return await self._backend.session_exists(
-            session_key, tenant_id=tenant_id
-        )
+        return await self._backend.session_exists(session_key, tenant_id=tenant_id)
 
     async def update_session_meta(
         self,
@@ -452,13 +442,9 @@ class AgentJournal:
         :meth:`load_events` dict shape. See
         :meth:`JournalBackend.load_subagent_events_since`.
         """
-        return await self._backend.load_subagent_events_since(
-            after_rowid, limit=limit
-        )
+        return await self._backend.load_subagent_events_since(after_rowid, limit=limit)
 
-    async def get_session_turn_ids(
-        self, session_key: str, limit: int = 50
-    ) -> list[int]:
+    async def get_session_turn_ids(self, session_key: str, limit: int = 50) -> list[int]:
         """Most-recent turn ids for ``session_key`` (admin SSE bootstrap).
 
         Ordered by ``started_at_ms DESC``; the SSE bridge picks the head
@@ -498,9 +484,7 @@ class AgentJournal:
             tenant_id=tenant_id,
         )
 
-    async def fork_session(
-        self, source_key: str, new_key: str, *, limit: int = 500
-    ) -> int:
+    async def fork_session(self, source_key: str, new_key: str, *, limit: int = 500) -> int:
         """Copy ``source_key``'s completed history onto ``new_key``.
 
         claude-code ``--fork-session`` parity: branch a conversation
@@ -566,9 +550,7 @@ class AgentJournal:
                             break
                 if not user_text:
                     user_text = str(row.get("user_text_preview") or "")
-                new_turn = await self.begin_turn(
-                    new_key, user_text, channel="fork"
-                )
+                new_turn = await self.begin_turn(new_key, user_text, channel="fork")
                 if new_turn is None:
                     continue
                 await self.append_messages(new_turn, msgs)

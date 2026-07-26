@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import pytest
 from corlinman_agent.onebot import OneBotClient, OneBotError
 from corlinman_agent.qzone import (
     QZONE_PUBLISH_TOOL,
@@ -34,10 +35,7 @@ from corlinman_agent.qzone.publish import (
 
 
 _QQ_UIN = "10001"
-_QZONE_COOKIE = (
-    f"uin=o{_QQ_UIN}; skey=@AbCdEf123; "
-    "p_skey=PKEY_ABCDEFGHIJK; pt4_token=TOK"
-)
+_QZONE_COOKIE = f"uin=o{_QQ_UIN}; skey=@AbCdEf123; p_skey=PKEY_ABCDEFGHIJK; pt4_token=TOK"
 # ``_compute_gtk("PKEY_ABCDEFGHIJK")`` — verified once locally, frozen
 # here so a regression in the algo trips a clear assertion rather than
 # producing nondescript "csrf mismatch" failures.
@@ -145,9 +143,7 @@ def _qzone_transport(
             "url": "https://qpic.cn/" + upload_photo,
         },
     }
-    upload_body_text = (
-        "frameElement.callback(" + json.dumps(upload_body) + ");"
-    )
+    upload_body_text = "frameElement.callback(" + json.dumps(upload_body) + ");"
     publish_body_text = "_Callback(" + json.dumps(publish_payload) + ");"
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -184,6 +180,9 @@ class _EffectStore:
         self.prepared: list[dict[str, Any]] = []
         self.completed: list[tuple[int, dict[str, Any]]] = []
         self.fail_complete = fail_complete
+
+    async def get_effect(self, **_kwargs: Any) -> Any:
+        return None
 
     async def prepare_effect(self, **kwargs: Any) -> Any:
         self.prepared.append(kwargs)
@@ -271,7 +270,7 @@ def test_parse_publish_response_accepts_both_code_and_ret() -> None:
 
 
 def test_parse_upload_response_handles_jsonp_wrapper() -> None:
-    body = "frameElement.callback({\"ret\":0,\"data\":{\"albumid\":\"X\",\"photoid\":\"Y\",\"width\":1,\"height\":1}});"
+    body = 'frameElement.callback({"ret":0,"data":{"albumid":"X","photoid":"Y","width":1,"height":1}});'
     parsed = _parse_upload_response(body)
     assert parsed["ok"] is True
     assert parsed["pic"]["albumid"] == "X"
@@ -409,9 +408,7 @@ async def test_onebot_websocket_fallback_uses_unique_echoes(monkeypatch) -> None
     assert len(set(echoes)) == 2
 
 
-async def test_onebot_sidecar_supplies_ws_and_token(
-    tmp_path: Path, monkeypatch
-) -> None:
+async def test_onebot_sidecar_supplies_ws_and_token(tmp_path: Path, monkeypatch) -> None:
     sidecar = tmp_path / "py-config.json"
     sidecar.write_text(
         json.dumps(
@@ -426,13 +423,117 @@ async def test_onebot_sidecar_supplies_ws_and_token(
     )
     monkeypatch.setenv("CORLINMAN_PY_CONFIG", str(sidecar))
     monkeypatch.delenv("CORLINMAN_NAPCAT_HTTP_URL", raising=False)
-    client = OneBotClient(
-        transport=httpx.MockTransport(lambda _: httpx.Response(200))
-    )
+    client = OneBotClient(transport=httpx.MockTransport(lambda _: httpx.Response(200)))
     try:
         assert client.base_url == "http://sidecar.test:3001"
         assert client._ws_url == "ws://sidecar.test:3001"
         assert client._token == "sidecar-token"
+    finally:
+        await client.aclose()
+
+
+async def test_onebot_sidecar_selects_exact_instance_and_validates_uin(
+    tmp_path: Path, monkeypatch
+) -> None:
+    sidecar = tmp_path / "py-config.json"
+    sidecar.write_text(
+        json.dumps(
+            {
+                "qq_onebot": {
+                    "ws_url": "ws://default.test:3001",
+                    "access_token": "default-token",
+                },
+                "qq_onebot_instances": {
+                    "bot-a": {
+                        "ws_url": "ws://bot-a.test:3001",
+                        "access_token": "token-a",
+                        "expected_uin": _QQ_UIN,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CORLINMAN_PY_CONFIG", str(sidecar))
+    monkeypatch.delenv("CORLINMAN_NAPCAT_HTTP_URL", raising=False)
+    client = OneBotClient(
+        instance_id="bot-a",
+        transport=_onebot_transport(),
+    )
+    try:
+        assert client.base_url == "http://bot-a.test:3001"
+        assert client._token == "token-a"
+        assert (await client.verify_identity())["qq"] == _QQ_UIN
+    finally:
+        await client.aclose()
+
+    with pytest.raises(OneBotError, match="not configured"):
+        OneBotClient(instance_id="bot-b")
+
+
+async def test_onebot_explicit_instance_never_falls_back_to_singleton_env(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("CORLINMAN_NAPCAT_HTTP_URL", "http://wrong-default.test")
+    monkeypatch.setenv("CORLINMAN_NAPCAT_ACCESS_TOKEN", "wrong-default-token")
+    monkeypatch.delenv("CORLINMAN_PY_CONFIG", raising=False)
+    with pytest.raises(OneBotError, match="requires CORLINMAN_PY_CONFIG"):
+        OneBotClient(instance_id="bot-b")
+
+    malformed = tmp_path / "py-config.json"
+    malformed.write_text("{not-json", encoding="utf-8")
+    monkeypatch.setenv("CORLINMAN_PY_CONFIG", str(malformed))
+    with pytest.raises(OneBotError, match="transport config is unavailable"):
+        OneBotClient(instance_id="bot-b")
+
+
+async def test_legacy_env_http_override_precedes_derived_ws(monkeypatch) -> None:
+    monkeypatch.setenv("CORLINMAN_NAPCAT_HTTP_URL", "http://legacy-http.test:6099")
+    monkeypatch.setenv("CORLINMAN_NAPCAT_ACCESS_TOKEN", "legacy-token")
+    monkeypatch.delenv("CORLINMAN_PY_CONFIG", raising=False)
+    client = OneBotClient(
+        ws_url="ws://napcat-ws.test:3001",
+        transport=httpx.MockTransport(lambda _: httpx.Response(200)),
+    )
+    try:
+        assert client.base_url == "http://legacy-http.test:6099"
+    finally:
+        await client.aclose()
+
+
+async def test_onebot_sidecar_default_precedes_legacy_env(tmp_path: Path, monkeypatch) -> None:
+    sidecar = tmp_path / "py-config.json"
+    sidecar.write_text(
+        json.dumps(
+            {
+                "qq_onebot": {
+                    "ws_url": "ws://canonical-default.test:3001",
+                    "access_token": "canonical-token",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CORLINMAN_PY_CONFIG", str(sidecar))
+    monkeypatch.setenv("CORLINMAN_NAPCAT_HTTP_URL", "http://legacy-env.test")
+    monkeypatch.setenv("CORLINMAN_NAPCAT_ACCESS_TOKEN", "legacy-token")
+    client = OneBotClient(transport=httpx.MockTransport(lambda _: httpx.Response(200)))
+    try:
+        assert client.base_url == "http://canonical-default.test:3001"
+        assert client._token == "canonical-token"
+    finally:
+        await client.aclose()
+
+
+async def test_onebot_identity_mismatch_fails_closed() -> None:
+    client = OneBotClient(
+        base_url="http://napcat.test",
+        expected_uin="999999",
+        transport=_onebot_transport(),
+    )
+    try:
+        with pytest.raises(OneBotError, match="identity mismatch"):
+            await client.verify_identity()
     finally:
         await client.aclose()
 
@@ -499,9 +600,7 @@ def _seed_workspace_image(monkeypatch, tmp_path: Path, name: str = "hello.png") 
 
 
 async def test_dispatch_requires_text_or_image() -> None:
-    out = json.loads(
-        await dispatch_qzone_publish(args_json=json.dumps({}).encode())
-    )
+    out = json.loads(await dispatch_qzone_publish(args_json=json.dumps({}).encode()))
     assert out["ok"] is False
     assert out["error"] == "invalid_args"
 
@@ -510,9 +609,7 @@ async def test_dispatch_invalid_images_type() -> None:
     out = json.loads(
         await dispatch_qzone_publish(
             policy_resolver=lambda: False,
-            args_json=json.dumps(
-                {"text": "hi", "images": 42}
-            ).encode()
+            args_json=json.dumps({"text": "hi", "images": 42}).encode(),
         )
     )
     assert out["ok"] is False
@@ -528,7 +625,7 @@ async def test_dispatch_too_many_images(monkeypatch, tmp_path) -> None:
     out = json.loads(
         await dispatch_qzone_publish(
             policy_resolver=lambda: False,
-            args_json=json.dumps({"text": "hi", "images": paths}).encode()
+            args_json=json.dumps({"text": "hi", "images": paths}).encode(),
         )
     )
     assert out["ok"] is False
@@ -540,9 +637,7 @@ async def test_dispatch_image_not_found(monkeypatch, tmp_path) -> None:
     out = json.loads(
         await dispatch_qzone_publish(
             policy_resolver=lambda: False,
-            args_json=json.dumps(
-                {"text": "hi", "images": ["nope.png"]}
-            ).encode()
+            args_json=json.dumps({"text": "hi", "images": ["nope.png"]}).encode(),
         )
     )
     assert out["ok"] is False
@@ -555,13 +650,11 @@ async def test_dispatch_happy_path_text_plus_one_image(monkeypatch, tmp_path) ->
     onebot = _client(_onebot_transport())
     upload_calls: list[httpx.Request] = []
     publish_calls: list[httpx.Request] = []
-    qz_transport = _qzone_transport(
-        upload_calls=upload_calls, publish_calls=publish_calls
-    )
+    qz_transport = _qzone_transport(upload_calls=upload_calls, publish_calls=publish_calls)
     try:
         out = json.loads(
             await dispatch_qzone_publish(
-            policy_resolver=lambda: False,
+                policy_resolver=lambda: False,
                 args_json=json.dumps(
                     {
                         "text": "今天的猫猫",
@@ -605,7 +698,7 @@ async def test_dispatch_live_scheduler_publish_records_effect_receipt(
     try:
         out = json.loads(
             await dispatch_qzone_publish(
-            policy_resolver=lambda: False,
+                policy_resolver=lambda: False,
                 args_json=json.dumps({"text": "今天很好"}).encode(),
                 onebot_client=onebot,
                 http_transport=_qzone_transport(),
@@ -630,15 +723,75 @@ async def test_dispatch_live_scheduler_publish_records_effect_receipt(
                 "state": "sent",
                 "receipt": {
                     "tid": "FEED_TID_42",
-                    "qzone_url": (
-                        f"https://user.qzone.qq.com/{_QQ_UIN}/mood/FEED_TID_42"
-                    ),
+                    "qzone_url": (f"https://user.qzone.qq.com/{_QQ_UIN}/mood/FEED_TID_42"),
                     "uin": _QQ_UIN,
+                    "qq_instance_id": None,
                 },
                 "error_code": None,
             },
         )
     ]
+
+
+async def test_scheduler_effect_target_is_qualified_by_instance(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    onebot = OneBotClient(
+        base_url="http://napcat.test",
+        instance_id="bot-a",
+        expected_uin=_QQ_UIN,
+        transport=_onebot_transport(),
+    )
+    store = _EffectStore()
+    try:
+        out = json.loads(
+            await dispatch_qzone_publish(
+                policy_resolver=lambda: False,
+                args_json=json.dumps({"text": "今天很好"}).encode(),
+                onebot_client=onebot,
+                http_transport=_qzone_transport(),
+                scheduler_store=store,
+                effect_context={**_EFFECT_CONTEXT, "qq_instance_id": "bot-a"},
+            )
+        )
+    finally:
+        await onebot.aclose()
+
+    assert out["qq_instance_id"] == "bot-a"
+    assert store.prepared[0]["effect_target"] == (f"instance:bot-a:account:{_QQ_UIN}")
+
+
+async def test_default_instance_honors_legacy_effect_reservation(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    onebot = OneBotClient(
+        base_url="http://napcat.test",
+        instance_id="default",
+        expected_uin=_QQ_UIN,
+        transport=_onebot_transport(),
+    )
+    store = _EffectStore()
+
+    async def get_legacy(**kwargs: Any) -> Any:
+        if kwargs["effect_target"] == f"account:{_QQ_UIN}":
+            return type("Effect", (), {"id": 9, "state": "sent"})()
+        return None
+
+    store.get_effect = get_legacy  # type: ignore[method-assign]
+    try:
+        out = json.loads(
+            await dispatch_qzone_publish(
+                policy_resolver=lambda: False,
+                args_json=json.dumps({"text": "今天很好"}).encode(),
+                onebot_client=onebot,
+                http_transport=_qzone_transport(),
+                scheduler_store=store,
+                effect_context={**_EFFECT_CONTEXT, "qq_instance_id": "default"},
+            )
+        )
+    finally:
+        await onebot.aclose()
+
+    assert out["error"] == "scheduler_effect_reservation_blocked"
+    assert store.prepared == []
 
 
 async def test_dispatch_publish_receipt_failure_blocks_resend(monkeypatch, tmp_path) -> None:
@@ -648,7 +801,7 @@ async def test_dispatch_publish_receipt_failure_blocks_resend(monkeypatch, tmp_p
     try:
         out = json.loads(
             await dispatch_qzone_publish(
-            policy_resolver=lambda: False,
+                policy_resolver=lambda: False,
                 args_json=json.dumps({"text": "今天很好"}).encode(),
                 onebot_client=onebot,
                 http_transport=_qzone_transport(),
@@ -670,10 +823,8 @@ async def test_dispatch_onebot_failure_returns_envelope(monkeypatch, tmp_path) -
     try:
         out = json.loads(
             await dispatch_qzone_publish(
-            policy_resolver=lambda: False,
-                args_json=json.dumps(
-                    {"text": "hi", "images": ["x.png"]}
-                ).encode(),
+                policy_resolver=lambda: False,
+                args_json=json.dumps({"text": "hi", "images": ["x.png"]}).encode(),
                 onebot_client=onebot,
                 http_transport=qz_transport,
             )
@@ -689,16 +840,12 @@ async def test_dispatch_image_upload_rejected_skips_publish(monkeypatch, tmp_pat
     _seed_workspace_image(monkeypatch, tmp_path, "x.png")
     onebot = _client(_onebot_transport())
     publish_calls: list[httpx.Request] = []
-    qz_transport = _qzone_transport(
-        upload_ret=8001, publish_calls=publish_calls
-    )
+    qz_transport = _qzone_transport(upload_ret=8001, publish_calls=publish_calls)
     try:
         out = json.loads(
             await dispatch_qzone_publish(
-            policy_resolver=lambda: False,
-                args_json=json.dumps(
-                    {"text": "hi", "images": ["x.png"]}
-                ).encode(),
+                policy_resolver=lambda: False,
+                args_json=json.dumps({"text": "hi", "images": ["x.png"]}).encode(),
                 onebot_client=onebot,
                 http_transport=qz_transport,
             )
@@ -722,10 +869,8 @@ async def test_dispatch_qzone_nonzero_retcode_propagates(monkeypatch, tmp_path) 
     try:
         out = json.loads(
             await dispatch_qzone_publish(
-            policy_resolver=lambda: False,
-                args_json=json.dumps(
-                    {"text": "hi", "images": ["x.png"]}
-                ).encode(),
+                policy_resolver=lambda: False,
+                args_json=json.dumps({"text": "hi", "images": ["x.png"]}).encode(),
                 onebot_client=onebot,
                 http_transport=qz_transport,
             )
@@ -739,9 +884,7 @@ async def test_dispatch_qzone_nonzero_retcode_propagates(monkeypatch, tmp_path) 
     assert "code=4002" in out["message"]
 
 
-async def test_dispatch_http_error_does_not_echo_response_body(
-    monkeypatch, tmp_path
-) -> None:
+async def test_dispatch_http_error_does_not_echo_response_body(monkeypatch, tmp_path) -> None:
     _seed_workspace_image(monkeypatch, tmp_path, "x.png")
     onebot = _client(_onebot_transport())
     marker = "PRIVATE_QZONE_RESPONSE"
@@ -799,10 +942,8 @@ async def test_dispatch_stale_login_missing_p_skey(monkeypatch, tmp_path) -> Non
     try:
         out = json.loads(
             await dispatch_qzone_publish(
-            policy_resolver=lambda: False,
-                args_json=json.dumps(
-                    {"text": "hi", "images": ["x.png"]}
-                ).encode(),
+                policy_resolver=lambda: False,
+                args_json=json.dumps({"text": "hi", "images": ["x.png"]}).encode(),
                 onebot_client=onebot,
                 http_transport=_qzone_transport(),
             )
@@ -854,7 +995,7 @@ async def test_dispatch_generate_prepends_image(monkeypatch, tmp_path) -> None:
     try:
         out = json.loads(
             await dispatch_qzone_publish(
-            policy_resolver=lambda: False,
+                policy_resolver=lambda: False,
                 args_json=json.dumps(
                     {
                         "text": "猫猫合照",

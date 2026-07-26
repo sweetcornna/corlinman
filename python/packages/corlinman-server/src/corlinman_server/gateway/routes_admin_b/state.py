@@ -129,8 +129,17 @@ class AdminState:
     # Python-side py-config.json drop, re-emitted after admin writes.
     py_config_path: Path | None = None
 
-    # Data dir (per-tenant SQLite roots live under here).
+    # Shared QQ multi-instance control-plane handles. ``qq_instance_admin``
+    # owns config/runtime mutations through the admin-A state; the attempt store
+    # is process-local and contains only hashed login-attempt identifiers.
+    qq_instance_admin: Any | None = None
+    qq_login_attempts: Any | None = None
+
+    # Gateway-private control-plane root and the deliberately shared
+    # gateway/Agent execution-state root. They point to the same directory
+    # unless split deployment is explicitly configured.
     data_dir: Path | None = None
+    execution_state_dir: Path | None = None
 
     # Admin credentials/session state. Kept in the same shape as
     # routes_admin_a.AdminState so both bundles can share one auth guard.

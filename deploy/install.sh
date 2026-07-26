@@ -78,7 +78,10 @@
 #
 # Environment overrides:
 #   CORLINMAN_PREFIX     install root for --mode native (default: /opt/corlinman)
-#   CORLINMAN_DATA_DIR   data dir (default: $CORLINMAN_PREFIX/data or ~/.corlinman)
+#   CORLINMAN_DATA_DIR   private control-plane dir (default: $CORLINMAN_PREFIX/data)
+#   CORLINMAN_EXECUTION_STATE_DIR
+#                       gateway/Agent shared execution-state dir (default:
+#                       $CORLINMAN_PREFIX/execution-state for managed installs)
 #   CORLINMAN_PORT       gateway port (default: 6005)
 #   CORLINMAN_ENABLE_DOCKER_SANDBOX=1
 #                       Same effect as --enable-docker-sandbox.
@@ -99,6 +102,7 @@ MODE="docker"
 REF="${CORLINMAN_VERSION:-main}"
 PREFIX="${CORLINMAN_PREFIX:-/opt/corlinman}"
 DATA_DIR="${CORLINMAN_DATA_DIR:-${PREFIX}/data}"
+EXECUTION_STATE_DIR="${CORLINMAN_EXECUTION_STATE_DIR:-${PREFIX}/execution-state}"
 PORT="${CORLINMAN_PORT:-6005}"
 REPO="sweetcornna/corlinman"
 USE_CHINA=""
@@ -166,6 +170,9 @@ require() { command -v "$1" >/dev/null 2>&1 || die "required tool '$1' not on PA
 # drops to it with `USER corlinman`). The native systemd unit MUST do the same
 # so the internet-facing gateway (BIND=0.0.0.0) never runs as root.
 SERVICE_USER="corlinman"
+AGENT_USER="corlinman-agent"
+EXECUTION_GROUP="corlinman-execution"
+NAPCAT_CLIENT_GROUP="corlinman-napcat-client"
 
 # ----- Unprivileged service user --------------------------------------------
 # Create a system user/group `corlinman` (no home, nologin shell) for the
@@ -174,19 +181,40 @@ SERVICE_USER="corlinman"
 # foreground as the invoking user).
 ensure_service_user() {
     [[ "$(uname -s)" == "Linux" ]] || return 0
-    if getent passwd "$SERVICE_USER" >/dev/null 2>&1; then
-        return 0
+    if ! getent passwd "$SERVICE_USER" >/dev/null 2>&1; then
+        log "creating unprivileged system user '$SERVICE_USER'"
+        sudo useradd --system --no-create-home --shell /usr/sbin/nologin \
+            --user-group "$SERVICE_USER" 2>/dev/null \
+            || { getent group "$SERVICE_USER" >/dev/null 2>&1 \
+                    || sudo groupadd --system "$SERVICE_USER"; \
+                 sudo useradd --system --no-create-home --shell /usr/sbin/nologin \
+                    --gid "$SERVICE_USER" "$SERVICE_USER"; } \
+            || die "could not create '$SERVICE_USER' gateway user"
     fi
-    log "creating unprivileged system user '$SERVICE_USER'"
-    # --user-group makes a matching system group; fall back to an explicit
-    # groupadd + useradd pair on toolchains where --user-group is unavailable.
-    sudo useradd --system --no-create-home --shell /usr/sbin/nologin \
-        --user-group "$SERVICE_USER" 2>/dev/null \
-        || { getent group "$SERVICE_USER" >/dev/null 2>&1 \
-                || sudo groupadd --system "$SERVICE_USER"; \
-             sudo useradd --system --no-create-home --shell /usr/sbin/nologin \
-                --gid "$SERVICE_USER" "$SERVICE_USER"; } \
-        || warn "could not create '$SERVICE_USER' user — gateway may fall back to root"
+    if ! getent passwd "$AGENT_USER" >/dev/null 2>&1; then
+        log "creating isolated agent user '$AGENT_USER'"
+        sudo useradd --system --no-create-home --shell /usr/sbin/nologin \
+            --user-group "$AGENT_USER" 2>/dev/null \
+            || { getent group "$AGENT_USER" >/dev/null 2>&1 \
+                    || sudo groupadd --system "$AGENT_USER"; \
+                 sudo useradd --system --no-create-home --shell /usr/sbin/nologin \
+                    --gid "$AGENT_USER" "$AGENT_USER"; } \
+            || die "could not create '$AGENT_USER' execution-plane user"
+    fi
+    getent group "$EXECUTION_GROUP" >/dev/null 2>&1 \
+        || sudo groupadd --system "$EXECUTION_GROUP" \
+        || die "could not create '$EXECUTION_GROUP' shared-state group"
+    getent group "$NAPCAT_CLIENT_GROUP" >/dev/null 2>&1 \
+        || sudo groupadd --system "$NAPCAT_CLIENT_GROUP" \
+        || die "could not create '$NAPCAT_CLIENT_GROUP' manager-client group"
+    sudo usermod -a -G "$EXECUTION_GROUP" "$SERVICE_USER" \
+        || die "could not authorize gateway for shared execution state"
+    sudo usermod -a -G "$EXECUTION_GROUP" "$AGENT_USER" \
+        || die "could not authorize Agent for shared execution state"
+    sudo usermod -a -G "$NAPCAT_CLIENT_GROUP" "$SERVICE_USER" \
+        || die "could not authorize gateway for the NapCat manager"
+    sudo usermod -a -G "$AGENT_USER" "$SERVICE_USER" \
+        || die "could not authorize gateway for the agent socket"
 }
 
 # ----- Lock down root-executed upgrade scripts -------------------------------
@@ -234,8 +262,19 @@ secure_root_executed_scripts() {
 chown_runtime_paths() {
     [[ "$(uname -s)" == "Linux" ]] || return 0
     log "chowning runtime paths (data+ui → $SERVICE_USER; .venv → root:$SERVICE_USER)"
+    # The data root is gateway-only. The credential-bearing py-config drop is
+    # exchanged through /run/corlinman-agent instead, so granting the execution
+    # plane access to it never opens traversal into config.toml, admin state, or
+    # plugin control data under this directory.
     sudo chown -R "$SERVICE_USER:$SERVICE_USER" "$DATA_DIR" \
-        || warn "could not chown $DATA_DIR to $SERVICE_USER"
+        || warn "could not chown $DATA_DIR to gateway"
+    sudo chmod 0750 "$DATA_DIR" \
+        || warn "could not restrict $DATA_DIR to gateway"
+    sudo mkdir -p "$EXECUTION_STATE_DIR"
+    sudo chown -R "$SERVICE_USER:$EXECUTION_GROUP" "$EXECUTION_STATE_DIR" \
+        || warn "could not chown $EXECUTION_STATE_DIR for shared execution"
+    sudo chmod 2770 "$EXECUTION_STATE_DIR" \
+        || warn "could not restrict $EXECUTION_STATE_DIR to execution group"
     if [[ -d "$PREFIX/ui-static" ]]; then
         sudo chown -R "$SERVICE_USER:$SERVICE_USER" "$PREFIX/ui-static" \
             || warn "could not chown $PREFIX/ui-static to $SERVICE_USER"
@@ -247,7 +286,7 @@ chown_runtime_paths() {
     if [[ -d "$PREFIX/repo/.venv" ]]; then
         sudo chown -R "root:$SERVICE_USER" "$PREFIX/repo/.venv" \
             || warn "could not chown $PREFIX/repo/.venv to root:$SERVICE_USER"
-        sudo chmod -R g-w,o-w "$PREFIX/repo/.venv" \
+        sudo chmod -R a+rX,g-w,o-w "$PREFIX/repo/.venv" \
             || warn "could not strip group/other write from $PREFIX/repo/.venv"
     fi
     # The uv-managed interpreter the venv symlinks to must be traversable
@@ -434,7 +473,7 @@ preflight() {
 
     # --- Tools (always) ---------------------------------------------------
     local tool
-    for tool in curl git tar; do
+    for tool in curl git tar openssl; do
         if command -v "$tool" >/dev/null 2>&1; then
             printf "  [%s] tool: %s\n" "$ok" "$tool"
         else
@@ -689,15 +728,23 @@ install_docker() {
 
         # Materialise .env if missing so napcat (QQ_*) + corlinman
         # (OPENAI_API_KEY / GEMINI_API_KEY) have something to read at boot.
+        # The legacy default NapCat credential is installation-owned: generate it
+        # here rather than shipping an operational repository-known fallback.
         local env_path="$PREFIX/repo/.env"
         local env_template="$PREFIX/repo/deploy/.env.template"
         local env_created=""
         if [[ ! -f "$env_path" ]]; then
             if [[ -f "$env_template" ]]; then
                 cp "$env_template" "$env_path"
+                local napcat_webui_token
+                napcat_webui_token="$(openssl rand -hex 32)"
+                sed -i \
+                    -e "s|^NAPCAT_WEBUI_TOKEN=.*$|NAPCAT_WEBUI_TOKEN=${napcat_webui_token}|" \
+                    -e "s|^WEBUI_TOKEN=.*$|WEBUI_TOKEN=${napcat_webui_token}|" \
+                    "$env_path"
                 chmod 600 "$env_path" 2>/dev/null || true
                 env_created="1"
-                log "materialised .env from deploy/.env.template"
+                log "materialised .env with a random NapCat credential"
             else
                 warn ".env.template not found at $env_template — skipping .env bootstrap"
             fi
@@ -705,9 +752,9 @@ install_docker() {
         if [[ -n "$env_created" ]]; then
             cat <<EOF
 
-⚠️  edit $env_path with QQ_* / OPENAI_API_KEY then re-run:
+⚠️  edit $env_path with provider credentials then re-run:
       cd $PREFIX/repo/docker/compose && \\
-        CORLINMAN_TAG=local NAPCAT_VERSION=${NAPCAT_VERSION} docker compose -f docker-compose.yml -f docker-compose.qq.yml --profile qq up -d
+        CORLINMAN_TAG=local NAPCAT_VERSION=${NAPCAT_VERSION} docker compose --env-file ../../.env -f docker-compose.yml -f docker-compose.qq.yml --profile qq up -d
 
 EOF
             return 0
@@ -721,6 +768,7 @@ EOF
         log "starting (with-qq overlay, napcat=${NAPCAT_VERSION})"
         (cd "$PREFIX/repo/docker/compose" && \
             CORLINMAN_TAG=local NAPCAT_VERSION="$NAPCAT_VERSION" docker compose \
+                --env-file ../../.env \
                 -f docker-compose.yml \
                 -f docker-compose.qq.yml \
                 --profile qq up -d)
@@ -731,7 +779,7 @@ EOF
         cat <<EOF
    napcat WebUI:   http://127.0.0.1:6099 (SSH tunnel from your laptop if remote)
    config ref:     https://github.com/${REPO}/blob/main/docs/config.example.toml
-   stop:           cd $PREFIX/repo/docker/compose && docker compose -f docker-compose.yml -f docker-compose.qq.yml --profile qq down
+   stop:           cd $PREFIX/repo/docker/compose && docker compose --env-file ../../.env -f docker-compose.yml -f docker-compose.qq.yml --profile qq down
 EOF
         return 0
     fi
@@ -799,6 +847,23 @@ EOF
 }
 
 # ----- Native path ------------------------------------------------------------
+ensure_legacy_napcat_secret() {
+    [[ -n "$WITH_QQ" ]] || return 0
+    local secret_dir="$DATA_DIR/.napcat"
+    local secret_file="$secret_dir/legacy-secrets.env"
+    sudo install -d -m 0700 -o "$SERVICE_USER" -g "$SERVICE_USER" "$secret_dir"
+    if [[ ! -s "$secret_file" ]]; then
+        local token
+        token="$(openssl rand -hex 32)"
+        sudo tee "$secret_file" >/dev/null <<EOF
+WEBUI_TOKEN=${token}
+NAPCAT_WEBUI_TOKEN=${token}
+EOF
+    fi
+    sudo chown "$SERVICE_USER:$SERVICE_USER" "$secret_file"
+    sudo chmod 0600 "$secret_file"
+}
+
 # Write the gateway systemd unit. Factored out of install_native so
 # upgrade_native can MIGRATE an older unit to the current hardened form on
 # every upgrade — pre-1.10 installs shipped a root-running unit with an
@@ -807,23 +872,25 @@ EOF
 # reach existing operators. Operator customizations belong in a drop-in
 # (/etc/systemd/system/corlinman.service.d/*.conf), which this never touches.
 write_gateway_unit() {
-    log "writing systemd unit (corlinman.service)"
+    log "writing systemd units (corlinman.service + corlinman-agent.service)"
     # When QQ is on, point the gateway at the loopback NapCat the
     # corlinman-napcat.service unit provisions: CORLINMAN_NAPCAT_URL for the
     # admin scan-login REST flow + QQ_WS_URL for the OneBot v11 message bus.
     # Emitted as explicit Environment= defaults so a fresh native install
     # resolves NapCat with zero manual config. EnvironmentFile=-$PREFIX/.env is
-    # listed LAST below, and systemd lets a later directive override an earlier
-    # one for the same key — so an operator's .env QQ_WS_URL/CORLINMAN_NAPCAT_URL
-    # still wins over these defaults.
+    # loaded below so operator QQ endpoint overrides still win. Installation-owned
+    # legacy NapCat credentials are loaded after it and therefore cannot be erased
+    # by empty or stale values copied from deploy/.env.template.
     local qq_env=""
     if [[ -n "$WITH_QQ" ]]; then
-        qq_env=$'Environment=CORLINMAN_NAPCAT_URL=http://127.0.0.1:6099\nEnvironment=QQ_WS_URL=ws://127.0.0.1:3001\nEnvironment=NAPCAT_WEBUI_TOKEN=corlinman-local-napcat\nEnvironment=WEBUI_TOKEN=corlinman-local-napcat'
+        qq_env=$'Environment=CORLINMAN_NAPCAT_URL=http://127.0.0.1:6099\nEnvironment=QQ_WS_URL=ws://127.0.0.1:3001\nEnvironment=CORLINMAN_CHAT_BACKEND=grpc_agent\nEnvironment=CORLINMAN_PY_SOCKET=/run/corlinman-agent/agent.sock\nEnvironment=CORLINMAN_PY_CONFIG=/run/corlinman-agent/py-config.json'
+        qq_env+=$'\nEnvironment=CORLINMAN_PY_CONFIG_GID='"$(id -g "$AGENT_USER")"
     fi
     sudo tee /etc/systemd/system/corlinman.service >/dev/null <<EOF
 [Unit]
-Description=corlinman gateway (Python)
-After=network.target
+Description=corlinman gateway control plane (Python)
+After=network.target corlinman-agent.service
+Requires=corlinman-agent.service
 
 [Service]
 Type=simple
@@ -833,14 +900,55 @@ WorkingDirectory=${PREFIX}/repo
 ExecStart=${PREFIX}/repo/.venv/bin/corlinman-gateway --config ${DATA_DIR}/config.toml --port ${PORT}
 Environment=HOME=${DATA_DIR}
 Environment=CORLINMAN_DATA_DIR=${DATA_DIR}
+Environment=CORLINMAN_EXECUTION_STATE_DIR=${EXECUTION_STATE_DIR}
 Environment=CORLINMAN_UI_DIR=${PREFIX}/ui-static
 Environment=BIND=0.0.0.0
 Environment=PORT=${PORT}
 Environment=CORLINMAN_RUNTIME_MODE=native
+Environment=CORLINMAN_NAPCAT_MANAGER_SOCKET=/run/corlinman-napcat/manager.sock
 ${qq_env}
+SupplementaryGroups=${NAPCAT_CLIENT_GROUP} ${AGENT_USER} ${EXECUTION_GROUP}
 EnvironmentFile=-${PREFIX}/.env
+EnvironmentFile=-${DATA_DIR}/.napcat/legacy-secrets.env
 Restart=on-failure
 RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # Model-controlled tools run only in this separate process. Its dedicated
+    # uid is deliberately not authorized for the NapCat manager socket. The
+    # gateway talks to it over a private Unix socket and retains admin-only
+    # manager authority without sharing that authority with run_shell. The
+    # gateway renders a minimal py-config.json, so the agent never needs the
+    # operator .env (which may also carry legacy NapCat credentials).
+    sudo tee /etc/systemd/system/corlinman-agent.service >/dev/null <<EOF
+[Unit]
+Description=corlinman agent execution plane
+After=network.target
+Before=corlinman.service
+
+[Service]
+Type=simple
+User=${AGENT_USER}
+Group=${AGENT_USER}
+SupplementaryGroups=${EXECUTION_GROUP}
+WorkingDirectory=${EXECUTION_STATE_DIR}
+ExecStart=${PREFIX}/repo/.venv/bin/corlinman-python-server
+Environment=HOME=${EXECUTION_STATE_DIR}
+Environment=CORLINMAN_EXECUTION_STATE_DIR=${EXECUTION_STATE_DIR}
+Environment=CORLINMAN_PY_CONFIG=/run/corlinman-agent/py-config.json
+Environment=CORLINMAN_PY_SOCKET=/run/corlinman-agent/agent.sock
+RuntimeDirectory=corlinman-agent
+RuntimeDirectoryMode=0770
+UMask=0007
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=${EXECUTION_STATE_DIR} /run/corlinman-agent
 
 [Install]
 WantedBy=multi-user.target
@@ -1023,6 +1131,7 @@ write_napcat_unit() {
     sudo mkdir -p "$napcat_state/app" "$napcat_state/ntqq"
     sudo chown -R "$SERVICE_USER:$SERVICE_USER" "$napcat_state" \
         || warn "could not chown $napcat_state to $SERVICE_USER"
+    ensure_legacy_napcat_secret
     sudo tee /etc/systemd/system/corlinman-napcat.service >/dev/null <<EOF
 [Unit]
 Description=corlinman NapCat (QQ / OneBot v11)
@@ -1038,10 +1147,72 @@ ExecStart=${appimage}
 Environment=HOME=${DATA_DIR}
 Environment=NAPCAT_UID=
 Environment=NAPCAT_GID=
-Environment=WEBUI_TOKEN=corlinman-local-napcat
 EnvironmentFile=-${PREFIX}/.env
+EnvironmentFile=-${DATA_DIR}/.napcat/legacy-secrets.env
 Restart=on-failure
 RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # Multi-account template. Each managed instance owns an independent HOME,
+    # QQ login tree, WebUI secret, and preferred WebUI/OneBot port inventory.
+    # The legacy singleton above remains untouched so upgrades do not force a
+    # re-login; the manager adopts it as instance "default" first.
+    sudo tee /etc/systemd/system/corlinman-napcat@.service >/dev/null <<EOF
+[Unit]
+Description=corlinman managed NapCat instance %i
+After=network.target
+
+[Service]
+Type=simple
+User=${SERVICE_USER}
+Group=${SERVICE_USER}
+WorkingDirectory=${DATA_DIR}/.napcat/managed/instances/%i/runtime
+ExecStart=${appimage}
+Environment=HOME=${DATA_DIR}/.napcat/managed/instances/%i/runtime
+Environment=NAPCAT_UID=
+Environment=NAPCAT_GID=
+EnvironmentFile=${DATA_DIR}/.napcat/managed/instances/%i/manager-secrets.env
+EnvironmentFile=${DATA_DIR}/.napcat/managed/instances/%i/runtime.env
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=${DATA_DIR}/.napcat/managed/instances/%i/runtime
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    local service_uid service_gid manager_socket_gid appimage_dir
+    service_uid="$(id -u "$SERVICE_USER")"
+    service_gid="$(id -g "$SERVICE_USER")"
+    manager_socket_gid="$(getent group "$NAPCAT_CLIENT_GROUP" | cut -d: -f3)"
+    appimage_dir="$(dirname "$appimage")"
+    sudo tee /etc/systemd/system/corlinman-napcat-manager.service >/dev/null <<EOF
+[Unit]
+Description=corlinman managed NapCat lifecycle helper
+After=docker.service network.target
+
+[Service]
+Type=simple
+User=root
+Group=${NAPCAT_CLIENT_GROUP}
+ExecStart=${PREFIX}/repo/.venv/bin/corlinman-napcat-manager --socket /run/corlinman-napcat/manager.sock --data-dir ${DATA_DIR} --mode native --allowed-uid ${service_uid} --socket-gid ${manager_socket_gid}
+Environment=CORLINMAN_NAPCAT_APPIMAGE=${appimage}
+Environment=CORLINMAN_NAPCAT_RUNTIME_UID=${service_uid}
+Environment=CORLINMAN_NAPCAT_RUNTIME_GID=${service_gid}
+RuntimeDirectory=corlinman-napcat
+RuntimeDirectoryMode=0750
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=${DATA_DIR}/.napcat/managed /run/corlinman-napcat /run/systemd ${appimage_dir}
 
 [Install]
 WantedBy=multi-user.target
@@ -1061,6 +1232,8 @@ install_native_qq() {
     sudo systemctl daemon-reload
     sudo systemctl enable corlinman-napcat.service >/dev/null 2>&1 \
         || warn "could not enable corlinman-napcat.service"
+    sudo systemctl enable --now corlinman-napcat-manager.service >/dev/null 2>&1 \
+        || warn "could not start corlinman-napcat-manager.service"
     sudo systemctl restart corlinman-napcat.service \
         || warn "could not start corlinman-napcat.service — check 'systemctl status corlinman-napcat'"
     log "NapCat: corlinman-napcat.service $(systemctl is-active corlinman-napcat 2>/dev/null || echo '?')"
@@ -1075,7 +1248,10 @@ teardown_native_qq() {
     if [[ -f /etc/systemd/system/corlinman-napcat.service ]]; then
         log "QQ off (--without-qq): stopping + removing corlinman-napcat.service (state preserved)"
         sudo systemctl disable --now corlinman-napcat.service 2>/dev/null || true
+        sudo systemctl disable --now corlinman-napcat-manager.service 2>/dev/null || true
         sudo rm -f /etc/systemd/system/corlinman-napcat.service
+        sudo rm -f /etc/systemd/system/corlinman-napcat@.service
+        sudo rm -f /etc/systemd/system/corlinman-napcat-manager.service
         sudo systemctl daemon-reload
     fi
 }
@@ -1088,6 +1264,7 @@ teardown_native_qq() {
 # shipped with originally.
 write_systemd_units() {
     [[ "$(uname -s)" == "Linux" ]] || return 0
+    ensure_legacy_napcat_secret
     write_gateway_unit
     write_upgrader_units
     # Migrate the legacy unit name (≤ early builds used corlinman-gateway.service).
@@ -1098,6 +1275,7 @@ write_systemd_units() {
     fi
     sudo systemctl daemon-reload
     # Ensure boot-persistence (idempotent — no-op if already enabled).
+    sudo systemctl enable corlinman-agent.service >/dev/null 2>&1 || true
     sudo systemctl enable corlinman.service >/dev/null 2>&1 || true
     sudo systemctl enable corlinman-upgrader.path >/dev/null 2>&1 \
         || warn "could not enable corlinman-upgrader.path — one-click upgrade falls back to copy-paste"

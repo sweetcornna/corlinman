@@ -51,19 +51,21 @@ class _StaticResolver:
             raise RuntimeError("unknown alias") from exc
 
 
-def _servicer(
-    host: Any, resolver: Any | None = None, **state_extra: Any
-) -> CorlinmanAgentServicer:
+def _servicer(host: Any, resolver: Any | None = None, **state_extra: Any) -> CorlinmanAgentServicer:
     servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: _FakeProvider())
     servicer.set_app_state(
-        SimpleNamespace(
-            memory_host=host, identity_resolver=resolver, **state_extra
-        )
+        SimpleNamespace(memory_host=host, identity_resolver=resolver, **state_extra)
     )
     return servicer
 
 
-def _start(channel: str, sender: str, persona: str = "") -> Any:
+def _start(
+    channel: str,
+    sender: str,
+    persona: str = "",
+    *,
+    runtime_instance_id: str = "",
+) -> Any:
     from corlinman_agent.reasoning_loop import ChatStart
 
     start = ChatStart(
@@ -74,6 +76,8 @@ def _start(channel: str, sender: str, persona: str = "") -> Any:
     extra: dict[str, Any] = {"binding": {"channel": channel, "sender": sender}}
     if persona:
         extra["persona_id"] = persona
+    if runtime_instance_id:
+        extra["runtime_instance_id"] = runtime_instance_id
     start.extra = extra
     return start
 
@@ -99,9 +103,48 @@ async def test_memory_scope_uses_canonical_identity(host: Any) -> None:
         assert scope_qq is not None and scope_tg is not None
         # Same human on two channels → one namespace.
         assert scope_qq["namespace"] == scope_tg["namespace"] == "facts/default/U1/_"
-        # Successful resolves are cached — second call hits the LRU.
+        # Resolve every turn so an operator identity merge takes effect
+        # immediately and no new writes land in the losing scope.
         await servicer._memory_scope(_start("qq", "10086"))
-        assert resolver.calls.count(("qq", "10086")) == 1
+        assert resolver.calls.count(("qq", "10086")) == 2
+    finally:
+        await servicer.aclose()
+
+
+async def test_qq_runtime_instances_have_distinct_memory_scopes(host: Any) -> None:
+    resolver = _StaticResolver({("qq", "10086"): "U1"})
+    servicer = _servicer(host, resolver)
+    try:
+        default_scope = await servicer._memory_scope(_start("qq", "10086"))
+        explicit_default_scope = await servicer._memory_scope(
+            _start("qq", "10086", runtime_instance_id="default")
+        )
+        second_scope = await servicer._memory_scope(
+            _start("qq", "10086", runtime_instance_id="second-bot")
+        )
+        assert default_scope is not None
+        assert explicit_default_scope is not None
+        assert second_scope is not None
+        assert default_scope["user_id"] == "U1"
+        assert explicit_default_scope["user_id"] == "U1"
+        assert second_scope["user_id"] == "qq-instance:second-bot:U1"
+        assert second_scope["namespace"] == ("facts/default/qq-instance:second-bot:U1/_")
+        assert servicer._identity_cache == {}
+        assert resolver.calls.count(("qq", "10086")) == 3
+    finally:
+        await servicer.aclose()
+
+
+async def test_non_default_qq_scope_fallback_remains_instance_qualified(
+    host: Any,
+) -> None:
+    servicer = _servicer(host, None)
+    try:
+        scope = await servicer._memory_scope(
+            _start("qq", "10086", runtime_instance_id="second-bot")
+        )
+        assert scope is not None
+        assert scope["user_id"] == "qq-instance:second-bot:qq:10086"
     finally:
         await servicer.aclose()
 
@@ -164,9 +207,7 @@ async def test_notes_are_isolated_per_user_and_jailed(host: Any) -> None:
     # Explicit namespace arg cannot escape the jail — including an
     # attempt to name another user's scope outright.
     out = await dispatch_memory_write(
-        json.dumps(
-            {"content": "malicious note", "namespace": ns_bob}
-        ).encode(),
+        json.dumps({"content": "malicious note", "namespace": ns_bob}).encode(),
         memory_host=host,
         default_namespace=ns_alice,
     )
@@ -207,9 +248,7 @@ async def test_unscoped_callers_keep_legacy_behaviour(host: Any) -> None:
 async def test_scoped_read_falls_back_to_legacy_notes(host: Any) -> None:
     from corlinman_memory_host import MemoryDoc
 
-    await host.upsert(
-        MemoryDoc(content="pre-scoping preference", namespace="agent_notes")
-    )
+    await host.upsert(MemoryDoc(content="pre-scoping preference", namespace="agent_notes"))
     out = await dispatch_memory_read(
         json.dumps({"query": "pre-scoping preference"}).encode(),
         memory_host=host,
@@ -230,9 +269,7 @@ async def test_legacy_fallback_off_by_default_no_shared_pool_leak(
     user must NOT read it (that would re-open the cross-user leak)."""
     from corlinman_memory_host import MemoryDoc
 
-    await host.upsert(
-        MemoryDoc(content="someone elses secret address", namespace="agent_notes")
-    )
+    await host.upsert(MemoryDoc(content="someone elses secret address", namespace="agent_notes"))
     resolver = _StaticResolver({("qq", "10086"): "U1"})
     servicer = _servicer(host, resolver)
     try:
@@ -245,21 +282,14 @@ async def test_legacy_fallback_off_by_default_no_shared_pool_leak(
         await servicer.aclose()
 
 
-async def test_identity_cache_ttl_expires(host: Any) -> None:
-    """Cache entries expire so a post-merge remap is picked up without a
-    restart (the merge route cannot reach in-process caches)."""
+async def test_identity_merge_remap_is_visible_without_stale_cache(host: Any) -> None:
     resolver = _StaticResolver({("qq", "10086"): "U1"})
     servicer = _servicer(host, resolver)
     try:
         assert await servicer._resolve_scope_user("qq", "10086") == "U1"
         resolver.mapping[("qq", "10086")] = "U-MERGED"
-        # Not expired yet → cached value.
-        assert await servicer._resolve_scope_user("qq", "10086") == "U1"
-        # Force expiry.
-        key = ("qq", "10086")
-        user_id, _ = servicer._identity_cache[key]
-        servicer._identity_cache[key] = (user_id, 0.0)
         assert await servicer._resolve_scope_user("qq", "10086") == "U-MERGED"
+        assert servicer._identity_cache == {}
     finally:
         await servicer.aclose()
 
@@ -307,6 +337,40 @@ async def test_recall_relevant_notes_scoped_with_fallback(host: Any) -> None:
 # ---- merge re-homing ------------------------------------------------------
 
 
+async def test_memory_stores_enumerate_historical_instance_scopes(
+    tmp_path: Path,
+) -> None:
+    from corlinman_memory_host import MemoryDoc
+    from corlinman_memory_kernel import KernelScope, MemoryKernel
+
+    path = tmp_path / "memory.sqlite"
+    host = await LocalSqliteHost.open("local", path)
+    kernel = await MemoryKernel.open(path)
+    try:
+        await kernel.add_item(
+            KernelScope(scope_user_id="qq-instance:deleted-bot:LOSER"),
+            text="historical fact",
+            kind="fact",
+            source="turn",
+        )
+        await host.upsert(
+            MemoryDoc(
+                content="historical note",
+                namespace="facts/default/qq-instance:host-only:LOSER/_",
+            )
+        )
+
+        assert await kernel.list_instance_scopes_for_user("LOSER") == [
+            "qq-instance:deleted-bot:LOSER"
+        ]
+        assert await host.list_instance_namespace_prefixes_for_user("LOSER") == [
+            "facts/default/qq-instance:host-only:LOSER"
+        ]
+    finally:
+        await kernel.close()
+        await host.close()
+
+
 async def test_merge_rehomes_kernel_rows_and_note_namespaces(
     tmp_path: Path,
 ) -> None:
@@ -344,15 +408,12 @@ async def test_merge_rehomes_kernel_rows_and_note_namespaces(
                 (user, block, content),
             )
         await kernel._conn.commit()  # noqa: SLF001
-        await host.upsert(
-            MemoryDoc(content="old note", namespace="facts/default/LOSER/_")
-        )
+        await host.upsert(MemoryDoc(content="old note", namespace="facts/default/LOSER/_"))
 
         moved = await kernel.merge_scope_user("LOSER", "WINNER")
         assert moved == 3  # item + observation + the movable core block
         async with kernel._conn.execute(  # noqa: SLF001
-            "SELECT block, content FROM mk_core WHERE scope_user_id = 'WINNER'"
-            " ORDER BY block"
+            "SELECT block, content FROM mk_core WHERE scope_user_id = 'WINNER' ORDER BY block"
         ) as cur:
             core_rows = [(r["block"], r["content"]) for r in await cur.fetchall()]
         assert core_rows == [
@@ -364,26 +425,18 @@ async def test_merge_rehomes_kernel_rows_and_note_namespaces(
         ) as cur:
             row = await cur.fetchone()
         assert row is not None and row[0] == 0
-        renamed = await host.rename_namespace_prefix(
-            "facts/default/LOSER", "facts/default/WINNER"
-        )
+        renamed = await host.rename_namespace_prefix("facts/default/LOSER", "facts/default/WINNER")
         assert renamed == 1
 
-        hits = await kernel.recall(
-            KernelScope(scope_user_id="WINNER"), "losing identity fact"
-        )
+        hits = await kernel.recall(KernelScope(scope_user_id="WINNER"), "losing identity fact")
         assert len(hits) == 1
         note_hits = await host.query(
-            MemoryQuery(
-                text="old note", top_k=5, namespace="facts/default/WINNER/_"
-            )
+            MemoryQuery(text="old note", top_k=5, namespace="facts/default/WINNER/_")
         )
         assert len(note_hits) == 1
         assert (
             await host.query(
-                MemoryQuery(
-                    text="old note", top_k=5, namespace="facts/default/LOSER/_"
-                )
+                MemoryQuery(text="old note", top_k=5, namespace="facts/default/LOSER/_")
             )
             == []
         )

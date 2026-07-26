@@ -31,6 +31,7 @@ members = [
     "corlinman-persona",
     "corlinman-providers",
     "corlinman-replay",
+    "corlinman-runtime",
     "corlinman-server",
     "corlinman-shadow-tester",
     "corlinman-skills-registry",
@@ -397,6 +398,7 @@ dependencies = [
     { name = "corlinman-memory-kernel" },
     { name = "corlinman-persona" },
     { name = "corlinman-providers" },
+    { name = "corlinman-runtime" },
     { name = "corlinman-server" },
     { name = "corlinman-tagmemo" },
     { name = "corlinman-user-model" },
@@ -430,6 +432,7 @@ requires-dist = [
     { name = "corlinman-memory-kernel", editable = "python/packages/corlinman-memory-kernel" },
     { name = "corlinman-persona", editable = "python/packages/corlinman-persona" },
     { name = "corlinman-providers", editable = "python/packages/corlinman-providers" },
+    { name = "corlinman-runtime", editable = "python/packages/corlinman-runtime" },
     { name = "corlinman-server", editable = "python/packages/corlinman-server" },
     { name = "corlinman-tagmemo", editable = "python/packages/corlinman-tagmemo" },
     { name = "corlinman-user-model", editable = "python/packages/corlinman-user-model" },
@@ -460,6 +463,7 @@ dependencies = [
     { name = "corlinman-grpc" },
     { name = "corlinman-persona" },
     { name = "corlinman-providers" },
+    { name = "corlinman-runtime" },
     { name = "corlinman-tagmemo" },
     { name = "numpy" },
     { name = "pydantic" },
@@ -474,6 +478,7 @@ requires-dist = [
     { name = "corlinman-grpc", editable = "python/packages/corlinman-grpc" },
     { name = "corlinman-persona", editable = "python/packages/corlinman-persona" },
     { name = "corlinman-providers", editable = "python/packages/corlinman-providers" },
+    { name = "corlinman-runtime", editable = "python/packages/corlinman-runtime" },
     { name = "corlinman-tagmemo", editable = "python/packages/corlinman-tagmemo" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "pydantic", specifier = ">=2.10" },
@@ -541,6 +546,7 @@ version = "0.1.0"
 source = { editable = "python/packages/corlinman-channels" }
 dependencies = [
     { name = "corlinman-content-policy" },
+    { name = "corlinman-runtime" },
     { name = "defusedxml" },
     { name = "httpx" },
     { name = "pydantic" },
@@ -550,6 +556,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "corlinman-content-policy", editable = "python/packages/corlinman-content-policy" },
+    { name = "corlinman-runtime", editable = "python/packages/corlinman-runtime" },
     { name = "defusedxml", specifier = ">=0.7.1" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "pydantic", specifier = ">=2.7" },
@@ -769,6 +776,11 @@ dependencies = [
 requires-dist = [{ name = "aiosqlite", specifier = ">=0.20" }]
 
 [[package]]
+name = "corlinman-runtime"
+version = "0.1.0"
+source = { editable = "python/packages/corlinman-runtime" }
+
+[[package]]
 name = "corlinman-server"
 version = "1.21.8"
 source = { editable = "python/packages/corlinman-server" }
@@ -792,6 +804,7 @@ dependencies = [
     { name = "corlinman-memory-kernel" },
     { name = "corlinman-providers" },
     { name = "corlinman-replay" },
+    { name = "corlinman-runtime" },
     { name = "corlinman-shadow-tester" },
     { name = "corlinman-skills-registry" },
     { name = "corlinman-subagent" },
@@ -849,6 +862,7 @@ requires-dist = [
     { name = "corlinman-memory-kernel", editable = "python/packages/corlinman-memory-kernel" },
     { name = "corlinman-providers", editable = "python/packages/corlinman-providers" },
     { name = "corlinman-replay", editable = "python/packages/corlinman-replay" },
+    { name = "corlinman-runtime", editable = "python/packages/corlinman-runtime" },
     { name = "corlinman-shadow-tester", editable = "python/packages/corlinman-shadow-tester" },
     { name = "corlinman-skills-registry", editable = "python/packages/corlinman-skills-registry" },
     { name = "corlinman-subagent", editable = "python/packages/corlinman-subagent" },

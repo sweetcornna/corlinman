@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 import structlog
+from corlinman_runtime import resolve_data_dir
 
 from corlinman_server.gateway.lifecycle.bootstrap_constants import (
     DEFAULT_HOST,
@@ -87,18 +88,13 @@ def _resolve_data_dir(cli_value: str | None, cfg: Any | None = None) -> Path:
     rather than being silently ignored. CLI / env still win so a launch
     flag can override a stale config.
     """
-    if cli_value:
-        return Path(cli_value)
-    env = os.environ.get("CORLINMAN_DATA_DIR")
-    if env:
-        return Path(env)
     config_data_dir = _extract_section(_extract_section(cfg, "server"), "data_dir")
-    if isinstance(config_data_dir, str) and config_data_dir.strip():
-        return Path(config_data_dir.strip()).expanduser()
-    try:
-        return Path.home() / ".corlinman"
-    except (RuntimeError, OSError):
-        return Path(".corlinman")
+    configured = (
+        config_data_dir.strip()
+        if isinstance(config_data_dir, str) and config_data_dir.strip()
+        else None
+    )
+    return resolve_data_dir(cli_value, configured=configured)
 
 
 def _should_run_legacy_migration(cfg: Any | None) -> bool:

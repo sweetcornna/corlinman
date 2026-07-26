@@ -74,8 +74,19 @@ def test_target_default(monkeypatch: pytest.MonkeyPatch) -> None:
     assert grpc_backend.resolve_agent_target(None) == "127.0.0.1:50051"
 
 
-def test_target_config_endpoint_wins(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_target_env_addr_beats_config_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Deployment env targets outrank mutable config: an execution plane
+    with config-write access must not be able to redirect the privileged
+    gateway after boot."""
+    monkeypatch.delenv("CORLINMAN_PY_SOCKET", raising=False)
     monkeypatch.setenv("CORLINMAN_PY_ADDR", "1.2.3.4:9999")
+    state = _State({"agent": {"endpoint": "10.0.0.1:7000"}})
+    assert grpc_backend.resolve_agent_target(state) == "1.2.3.4:9999"
+
+
+def test_target_config_endpoint_is_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    for var in ("CORLINMAN_PY_SOCKET", "CORLINMAN_PY_ADDR", "CORLINMAN_PY_PORT"):
+        monkeypatch.delenv(var, raising=False)
     state = _State({"agent": {"endpoint": "10.0.0.1:7000"}})
     assert grpc_backend.resolve_agent_target(state) == "10.0.0.1:7000"
 
@@ -310,6 +321,7 @@ async def test_serve_in_background_threads_subagent_config(
         data_dir: Path | None = None,
         py_config_path: Path | str | None = None,
         hook_runner: object | None = None,
+        app_state: object | None = None,
     ) -> None:
         seen["bind"] = bind
         seen["event_emitter"] = event_emitter
@@ -317,6 +329,7 @@ async def test_serve_in_background_threads_subagent_config(
         seen["subagent_config"] = subagent_config
         seen["data_dir"] = data_dir
         seen["py_config_path"] = py_config_path
+        seen["app_state"] = app_state
 
     monkeypatch.setattr(agent_server, "serve_agent", _fake_serve_agent)
     cancel = asyncio.Event()
@@ -347,6 +360,7 @@ async def test_serve_in_background_threads_subagent_config(
     }
     assert seen["data_dir"] == tmp_path
     assert seen["py_config_path"] == tmp_path / "custom-py-config.json"
+    assert seen["app_state"] is state
 
 
 @pytest.mark.asyncio
@@ -363,9 +377,7 @@ async def test_serve_agent_uses_py_config_reloading_resolver(
 
     class _FakeResolver:
         def __init__(self, path: str | None, *, data_dir: Path | None = None) -> None:
-            self.aliases = {
-                "gpt-5.5": AliasEntry(provider="codex", model="gpt-5.5")
-            }
+            self.aliases = {"gpt-5.5": AliasEntry(provider="codex", model="gpt-5.5")}
             self.subagent_config = {"max_depth": 2}
             captured["resolver"] = self
             captured["path"] = path
@@ -389,9 +401,7 @@ async def test_serve_agent_uses_py_config_reloading_resolver(
     py_config.write_text("{}", encoding="utf-8")
     monkeypatch.setenv("CORLINMAN_PY_CONFIG", str(py_config))
     monkeypatch.delenv("CORLINMAN_TEST_MOCK_PROVIDER", raising=False)
-    monkeypatch.setattr(
-        server_main, "_ReloadingProviderResolver", _FakeResolver
-    )
+    monkeypatch.setattr(server_main, "_ReloadingProviderResolver", _FakeResolver)
     monkeypatch.setattr(server_main, "_build_hook_runner", lambda: object())
 
     async def _noop_resume() -> None:
@@ -404,9 +414,7 @@ async def test_serve_agent_uses_py_config_reloading_resolver(
         captured["servicer"] = servicer
         captured["server"] = server
 
-    monkeypatch.setattr(
-        agent_pb2_grpc, "add_AgentServicer_to_server", _capture_servicer
-    )
+    monkeypatch.setattr(agent_pb2_grpc, "add_AgentServicer_to_server", _capture_servicer)
 
     shutdown = asyncio.Event()
     shutdown.set()
@@ -417,9 +425,7 @@ async def test_serve_agent_uses_py_config_reloading_resolver(
     assert servicer._resolve is captured["resolver"]  # type: ignore[attr-defined]
     assert "gpt-5.5" in servicer._aliases  # type: ignore[attr-defined]
     assert servicer._tencent_policy_resolver() is True  # type: ignore[attr-defined]
-    py_config.write_text(
-        '{"tencent_safety":{"enabled":false}}', encoding="utf-8"
-    )
+    py_config.write_text('{"tencent_safety":{"enabled":false}}', encoding="utf-8")
     assert servicer._tencent_policy_resolver() is False  # type: ignore[attr-defined]
 
 
@@ -489,15 +495,11 @@ async def test_inproc_agent_serves_chat_turn(
 ) -> None:
     """Boot the real Agent servicer over a UDS, dial it through
     ``GrpcAgentChatBackend`` + ``ChatService``, and assert a full turn."""
-    monkeypatch.setenv(
-        "CORLINMAN_TEST_MOCK_PROVIDER", "co-hosted agent reply"
-    )
+    monkeypatch.setenv("CORLINMAN_TEST_MOCK_PROVIDER", "co-hosted agent reply")
     sock = os.path.join(tempfile.mkdtemp(), "p4-agent.sock")
     cancel = asyncio.Event()
 
-    server_task = asyncio.create_task(
-        agent_server.serve_agent(f"unix://{sock}", cancel)
-    )
+    server_task = asyncio.create_task(agent_server.serve_agent(f"unix://{sock}", cancel))
     # Wait for the socket file to appear (server bound).
     for _ in range(100):
         if Path(sock).exists():
@@ -525,10 +527,7 @@ async def test_inproc_agent_serves_chat_turn(
         session_key="p4-test::1",
         stream=True,
     )
-    events = [
-        type(ev).__name__
-        async for ev in service.run(req, asyncio.Event())
-    ]
+    events = [type(ev).__name__ async for ev in service.run(req, asyncio.Event())]
 
     await client.close()
     cancel.set()

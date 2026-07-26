@@ -61,6 +61,14 @@ class AppState:
     config_path: Path | None = None
     config_watcher: ConfigWatcher | None = None
 
+    # Runtime storage roots. ``data_dir`` remains the gateway-private
+    # control-plane root. ``execution_state_dir`` is the deliberately shared
+    # gateway/Agent root for journals, inboxes, memory, personas, files, and
+    # other execution artifacts. They are identical unless the operator sets
+    # ``CORLINMAN_EXECUTION_STATE_DIR``.
+    data_dir: Path | None = None
+    execution_state_dir: Path | None = None
+
     # ---- gap-fill v1.15 wiring spine (CONTRACT C2) ------------------------
     #
     # wire-B (the boot lifespan) SETS these on the AppState; wire-A (the

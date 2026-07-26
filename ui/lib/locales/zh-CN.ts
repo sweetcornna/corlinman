@@ -850,6 +850,7 @@ export const zhCN = {
     saving: "保存中...",
     saveSuccess: "关键词已保存",
     saveFailed: "保存失败: {{msg}}",
+    noChanges: "没有需要保存的更改",
     noOverrides: "尚未设置分群覆盖。添加一个以将机器人绑定到某群组关键词。",
     addKeywordPlaceholder: "添加关键词...",
     removeKeywordAria: "移除 {{kw}}",
@@ -3404,10 +3405,21 @@ export const zhCN = {
       self_ids: "从当前 OneBot / NapCat 登录事件自动识别并随换号更新；尚未收到事件时保持为空，旧配置仅供服务端兼容回退。",
       group_replies_enabled: "关闭后机器人在所有群保持沉默，私聊不受影响。",
       freeze_risk_topic_blocking: "默认开启并立即生效：拦截色情、暴力、自伤、违法与其他可能触发腾讯风控的话题，同时保护 QQ 官方机器人和 QQ 空间。开启时未分类的图片、语音、视频及定时 QQ 空间配图不会发送。",
-      group_whitelist: "只有列出的群会被回复；留空表示所有群静音。",
+      group_whitelist:
+        "只有列出的群会被回复。注意：从未保存过该项时不启用白名单（所有群都可回复）；显式保存空列表则所有群静音。",
       group_reply_policy: "默认仅回应 @提及、命令与已配置的关键词。",
       proactive_enabled: "按拟人节奏在群里主动发消息，默认关闭。",
-      proactive_groups: "留空则使用群组白名单。",
+      proactive_groups: "留空则使用群组白名单；填写时只有同时在白名单内的群生效。",
+      group_rate_limit_window_minutes:
+        "群发言硬上限的时间窗（分钟）。与“窗口内最多发言次数”配合，0 表示不限制。",
+      group_rate_limit_max_messages:
+        "时间窗内每个群最多发言次数（被动回复与主动发言合并计数，@提及不豁免；命令除外）。0 表示不限制。",
+      proactive_probability:
+        "每次到点后真正发言的概率（0-1）。小于 1 时机器人会随机保持沉默，更像人。",
+      proactive_timezone:
+        "活跃时段使用的 IANA 时区（如 Asia/Shanghai）。留空使用服务器本地时区——容器常为 UTC，会导致半夜发言。",
+      proactive_context_messages:
+        "主动发言前注入的最近群聊消息条数（0 关闭）。有上下文时机器人能接住话题，也可能选择不插话。",
       access_token: "OneBot WebSocket（ws_url）的鉴权令牌。内置 NapCat 无需填写，仅外接 NapCat 时使用。",
       napcat_access_token: "NapCat WebUI（napcat_url）的鉴权令牌，用于扫码登录与诊断。内置 NapCat 无需填写。",
       ws_url: "OneBot WebSocket 端点。使用内置 NapCat 时留空即可。",
@@ -3423,6 +3435,8 @@ export const zhCN = {
     saving: "保存中…",
     saved: "通道配置已保存（{{count}} 项）",
     saveFailed: "保存失败：{{msg}}",
+    noChanges: "没有需要保存的更改",
+    invalidNumber: "数字无效：{{field}}。留空不会被保存，请填入数字后再保存。",
     field: {
       access_token: "OneBot WS 令牌",
       bot_token: "Bot 令牌",
@@ -3461,6 +3475,11 @@ export const zhCN = {
       proactive_daily_max: "每群每日上限",
       proactive_active_start_hour: "活跃开始（时）",
       proactive_active_end_hour: "活跃结束（时）",
+      group_rate_limit_window_minutes: "群发言频率窗口（分钟）",
+      group_rate_limit_max_messages: "窗口内最多发言次数",
+      proactive_probability: "主动发言概率",
+      proactive_timezone: "主动发言时区",
+      proactive_context_messages: "上下文消息条数",
     },
   },
 

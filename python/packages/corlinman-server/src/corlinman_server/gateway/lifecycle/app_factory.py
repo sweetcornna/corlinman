@@ -60,19 +60,21 @@ logger = structlog.get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _build_state(cfg: Any | None, data_dir: Path) -> Any:
+def _build_state(
+    cfg: Any | None,
+    data_dir: Path,
+    execution_state_dir: Path | None = None,
+) -> Any:
     """Construct the shared ``AppState`` bundle.
 
     Delegates to ``gateway.core.AppState`` when available; falls back to
     a minimal :class:`_DegradedAppState` so degraded-mode boots still
     have *some* object to pass into route handlers / tests.
     """
+    shared_dir = execution_state_dir or data_dir
     core = _lazy_import("corlinman_server.gateway.core")
     if core is not None:
-        builder: Any = (
-            getattr(core, "build_app_state", None)
-            or getattr(core, "AppState", None)
-        )
+        builder: Any = getattr(core, "build_app_state", None) or getattr(core, "AppState", None)
         if builder is not None:
             built: Any = None
             try:
@@ -107,12 +109,13 @@ def _build_state(cfg: Any | None, data_dir: Path) -> Any:
                     error=str(exc),
                 )
             if built is not None:
-                # AppState is a dataclass without __slots__ — safe to
-                # set attributes dynamically. This is the contract
-                # ``_mount_routes`` reads via ``getattr(state,
-                # "data_dir", None)`` to wire the profile store.
+                # Stamp both storage roots after construction so older custom
+                # state builders that do not accept the new keyword remain
+                # compatible. ``data_dir`` is private control-plane state;
+                # ``execution_state_dir`` is shared with the Agent process.
                 with suppress(AttributeError, TypeError):
                     built.data_dir = data_dir
+                    built.execution_state_dir = shared_dir
                 if getattr(built, "config", None) is None and cfg is not None:
                     with suppress(AttributeError, TypeError):
                         built.config = cfg
@@ -153,10 +156,7 @@ def _build_state(cfg: Any | None, data_dir: Path) -> Any:
                                 # the SSE feed. Idempotent: re-runs skip
                                 # loggers that already carry the handler.
                                 root = _logging.getLogger()
-                                if not any(
-                                    isinstance(h, BroadcastHandler)
-                                    for h in root.handlers
-                                ):
+                                if not any(isinstance(h, BroadcastHandler) for h in root.handlers):
                                     root.addHandler(handler)
                                 if root.level > _logging.INFO or root.level == 0:
                                     root.setLevel(_logging.INFO)
@@ -167,16 +167,11 @@ def _build_state(cfg: Any | None, data_dir: Path) -> Any:
                                 # custom named loggers already alive at
                                 # boot. ``Logger.manager.loggerDict`` is
                                 # the documented introspection hook.
-                                logger_dict = getattr(
-                                    _logging.Logger.manager, "loggerDict", {}
-                                )
+                                logger_dict = getattr(_logging.Logger.manager, "loggerDict", {})
                                 for _name, lg in list(logger_dict.items()):
                                     if not isinstance(lg, _logging.Logger):
                                         continue
-                                    if any(
-                                        isinstance(h, BroadcastHandler)
-                                        for h in lg.handlers
-                                    ):
+                                    if any(isinstance(h, BroadcastHandler) for h in lg.handlers):
                                         continue
                                     # Only attach to loggers that
                                     # actively block propagation —
@@ -191,13 +186,15 @@ def _build_state(cfg: Any | None, data_dir: Path) -> Any:
                                 # registered AFTER our walk (e.g. on the
                                 # first request).
                                 for name in (
-                                    "uvicorn", "uvicorn.access", "uvicorn.error",
-                                    "fastapi", "httpx",
+                                    "uvicorn",
+                                    "uvicorn.access",
+                                    "uvicorn.error",
+                                    "fastapi",
+                                    "httpx",
                                 ):
                                     lg = _logging.getLogger(name)
                                     if not any(
-                                        isinstance(h, BroadcastHandler)
-                                        for h in lg.handlers
+                                        isinstance(h, BroadcastHandler) for h in lg.handlers
                                     ):
                                         lg.addHandler(handler)
                                     if lg.level > _logging.INFO or lg.level == 0:
@@ -231,7 +228,11 @@ def _build_state(cfg: Any | None, data_dir: Path) -> Any:
                         error=str(exc),
                     )
                 return built
-    return _DegradedAppState(config=cfg, data_dir=data_dir)
+    return _DegradedAppState(
+        config=cfg,
+        data_dir=data_dir,
+        execution_state_dir=shared_dir,
+    )
 
 
 class _DegradedAppState:
@@ -242,11 +243,18 @@ class _DegradedAppState:
     the real ``AppState`` bundle.
     """
 
-    __slots__ = ("config", "data_dir")
+    __slots__ = ("config", "data_dir", "execution_state_dir")
 
-    def __init__(self, *, config: Any | None, data_dir: Path) -> None:
+    def __init__(
+        self,
+        *,
+        config: Any | None,
+        data_dir: Path,
+        execution_state_dir: Path | None = None,
+    ) -> None:
         self.config = config
         self.data_dir = data_dir
+        self.execution_state_dir = execution_state_dir or data_dir
 
     def __repr__(self) -> str:  # pragma: no cover — debug only
         return f"_DegradedAppState(data_dir={self.data_dir!r})"
@@ -278,64 +286,134 @@ def _repo_agents_dir() -> Path:
 
 
 def _make_channels_writer(app: Any, admin_a_state: Any) -> Any:
-    """Build the ``channels_writer`` callback the ``/admin/channels`` routes
-    invoke to persist live channel-config edits (per-group keywords + the
-    per-channel humanlike toggle).
+    """Persist channel edits without serialising resolved secrets.
 
-    In prod this slot was never wired — only a test set it — so every
-    ``PUT /admin/channels/{channel}/humanlike`` (and the keywords PUT)
-    503'd ``channels_writer_missing``. The routes mutate
-    ``admin_a_state.channels_config`` in place and the live humanlike
-    resolver reads the same nested tables, so the edit already takes effect
-    immediately; this writer makes it durable across restarts by patching
-    the ``[channels]`` table in ``config.toml`` atomically. Scoped to the
-    channels section so unrelated sections on disk are left untouched.
+    The admin surface edits a resolved runtime copy.  Re-read the raw TOML
+    under the process-wide admin lock, merge only ``[channels]``, and preserve
+    unchanged ``{env = ...}`` leaves before atomically replacing the file.
     """
+
+    async def _write_locked(channels_cfg: dict[str, Any], cfg_path: Path) -> None:
+        import tomllib
+
+        from corlinman_server.gateway.core.config import resolve_env_refs
+        from corlinman_server.gateway.core.config_mutation import (
+            merge_resolved_section_into_raw,
+            write_config_atomic,
+        )
+
+        try:
+            original_text = cfg_path.read_text(encoding="utf-8")
+            on_disk = tomllib.loads(original_text)
+        except FileNotFoundError:
+            original_text = None
+            live = getattr(app.state, "corlinman_config", None)
+            if not isinstance(live, dict):
+                live = getattr(app.state, "config", None)
+            on_disk = dict(live) if isinstance(live, dict) else {}
+
+        old_app_config = getattr(app.state, "config", None)
+        old_corlinman_config = getattr(app.state, "corlinman_config", None)
+        old_channels_config = getattr(admin_a_state, "channels_config", None)
+        runtime_state = getattr(app.state, "corlinman_state", None)
+        old_runtime_config = (
+            getattr(runtime_state, "config", None) if runtime_state is not None else None
+        )
+
+        raw_channels = on_disk.get("channels")
+        on_disk["channels"] = merge_resolved_section_into_raw(
+            raw_channels if isinstance(raw_channels, dict) else {},
+            channels_cfg,
+        )
+        error = write_config_atomic(cfg_path, on_disk)
+        if error is not None:
+            payload = getattr(error, "body", b"")
+            message = payload.decode("utf-8", errors="replace") if payload else ""
+            raise RuntimeError(message or "failed to persist channels config")
+
+        resolved = resolve_env_refs(on_disk)
+        resolved_channels = dict(resolved.get("channels") or {})
+        registry = getattr(runtime_state, "qq_runtime_registry", None)
+        py_config_path = Path(
+            os.environ.get("CORLINMAN_PY_CONFIG") or str(default_py_config_path())
+        )
+        try:
+            if registry is not None:
+                await registry.reconcile_and_write_sidecar(
+                    resolved_channels,
+                    config=resolved,
+                    path=py_config_path,
+                )
+            else:
+                write_py_config_sync(resolved, py_config_path)
+            if runtime_state is not None:
+                _make_config_swap_fn(app, runtime_state)(resolved)
+            else:
+                app.state.corlinman_config = resolved
+            app.state.config = resolved
+            admin_a_state.channels_config = resolved_channels
+        except Exception:
+            if original_text is None:
+                cfg_path.unlink(missing_ok=True)
+            else:
+                cfg_path.write_text(original_text, encoding="utf-8")
+            if runtime_state is not None:
+                runtime_state.config = old_runtime_config
+            app.state.config = old_app_config
+            app.state.corlinman_config = old_corlinman_config
+            admin_a_state.channels_config = old_channels_config
+            raise
 
     async def _writer(channels_cfg: dict[str, Any]) -> None:
         cfg_path = getattr(admin_a_state, "config_path", None)
         if cfg_path is None:
             raise RuntimeError("config_path unset; cannot persist channels config")
-        cfg_path = Path(cfg_path)
+        lock = getattr(admin_a_state, "admin_write_lock", None)
+        if lock is None:
+            await _write_locked(channels_cfg, Path(cfg_path))
+            return
+        async with lock:
+            await _write_locked(channels_cfg, Path(cfg_path))
+
+    async def _mutate(mutator: Any) -> Any:
+        """Apply a read-modify-write callback under the shared admin lock."""
         import tomllib
+        from copy import deepcopy
 
-        try:
-            on_disk = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            live = getattr(app.state, "config", None)
-            on_disk = dict(live) if isinstance(live, dict) else {}
-        on_disk["channels"] = channels_cfg
+        from corlinman_server.gateway.core.config import resolve_env_refs
 
-        try:
-            import tomli_w
+        cfg_path_raw = getattr(admin_a_state, "config_path", None)
+        if cfg_path_raw is None:
+            raise RuntimeError("config_path unset; cannot persist channels config")
+        cfg_path = Path(cfg_path_raw)
 
-            serialised = tomli_w.dumps(on_disk)
-        except ImportError:  # pragma: no cover — tomli_w is a hard dep
-            import toml
+        async def _mutate_locked() -> Any:
+            try:
+                on_disk = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                live = getattr(app.state, "corlinman_config", None)
+                if not isinstance(live, dict):
+                    live = getattr(app.state, "config", None)
+                on_disk = dict(live) if isinstance(live, dict) else {}
+            resolved = resolve_env_refs(on_disk)
+            raw_channels = on_disk.get("channels")
+            channels = resolved.get("channels")
+            candidate, result = mutator(
+                deepcopy(channels if isinstance(channels, dict) else {}),
+                deepcopy(raw_channels if isinstance(raw_channels, dict) else {}),
+            )
+            if not isinstance(candidate, dict):
+                raise TypeError("channels mutator must return a dict candidate")
+            await _write_locked(candidate, cfg_path)
+            return result
 
-            serialised = toml.dumps(on_disk)
+        lock = getattr(admin_a_state, "admin_write_lock", None)
+        if lock is None:
+            return await _mutate_locked()
+        async with lock:
+            return await _mutate_locked()
 
-        cfg_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = cfg_path.with_suffix(cfg_path.suffix + ".new")
-        tmp.write_text(serialised, encoding="utf-8")
-        tmp.replace(cfg_path)
-
-        # Keep the live full config in sync so a later full-config read /
-        # snapshot reflects the channel edit too.
-        live = getattr(app.state, "config", None)
-        if isinstance(live, dict):
-            live["channels"] = channels_cfg
-        else:
-            live = dict(on_disk)
-
-        # The agent process reads QZone safety from this mtime-watched sidecar.
-        # Propagate failures: the admin API must not claim an opt-out/opt-in
-        # succeeded while the separate process still holds the prior state.
-        py_config_path = Path(
-            os.environ.get("CORLINMAN_PY_CONFIG") or str(default_py_config_path())
-        )
-        write_py_config_sync(live, py_config_path)
-
+    _writer.mutate = _mutate  # type: ignore[attr-defined]
     return _writer
 
 
@@ -360,11 +438,7 @@ def _make_config_swap_fn(app: Any, state: Any) -> Any:
         old = getattr(state, "config", None)
         changed: list[str] = []
         if isinstance(old, dict) and isinstance(new_cfg, dict):
-            changed = [
-                k
-                for k in (set(old) | set(new_cfg))
-                if old.get(k) != new_cfg.get(k)
-            ]
+            changed = [k for k in (set(old) | set(new_cfg)) if old.get(k) != new_cfg.get(k)]
         with suppress(AttributeError, TypeError):
             state.config = new_cfg
         with suppress(AttributeError, TypeError):
@@ -469,9 +543,7 @@ def _build_agent_registry_stack(
         try:
             return AgentCardRegistry.load_from_dir_stack(_stack())
         except Exception as exc:  # pragma: no cover — defensive
-            logger.warning(
-                "gateway.agent_registry.reload_failed", error=str(exc)
-            )
+            logger.warning("gateway.agent_registry.reload_failed", error=str(exc))
             return None
 
     return registry, _reload
@@ -482,9 +554,7 @@ def _build_agent_registry_stack(
 # ---------------------------------------------------------------------------
 
 
-def _mount_routes(
-    app: Any, state: Any, *, admin_config_path: Path | None = None
-) -> Any:
+def _mount_routes(app: Any, state: Any, *, admin_config_path: Path | None = None) -> Any:
     """Mount every gateway routes submodule onto ``app``.
 
     Each W4 submodule exposes a different composition surface; this
@@ -546,15 +616,14 @@ def _mount_routes(
                 # must_change_password are populated by the lifespan once
                 # ``ensure_admin_credentials`` resolves the disk state.
                 data_dir = getattr(state, "data_dir", None)
+                execution_state_dir = getattr(
+                    state, "execution_state_dir", None
+                ) or data_dir
                 config_snapshot = getattr(state, "config", None)
-                session_cookie_secure = _admin_session_cookie_secure_from_config(
+                session_cookie_secure = _admin_session_cookie_secure_from_config(config_snapshot)
+                trust_forwarded_proto = _trust_forwarded_proto_from_config(config_snapshot)
+                trusted_forwarded_proto_proxies = _trusted_forwarded_proto_proxies_from_config(
                     config_snapshot
-                )
-                trust_forwarded_proto = _trust_forwarded_proto_from_config(
-                    config_snapshot
-                )
-                trusted_forwarded_proto_proxies = (
-                    _trusted_forwarded_proto_proxies_from_config(config_snapshot)
                 )
                 # Wave 3.1: wire the profile registry. Best-effort —
                 # if the profiles submodule fails to import we leave
@@ -566,9 +635,7 @@ def _mount_routes(
                     try:
                         from corlinman_server.profiles import ProfileStore
 
-                        profile_store = ProfileStore(
-                            Path(data_dir) / "profiles"
-                        )
+                        profile_store = ProfileStore(Path(data_dir) / "profiles")
                         # Bootstrap a "default" profile on first run so
                         # the UI's profile-switcher always has at least
                         # one selectable entry.
@@ -594,11 +661,7 @@ def _mount_routes(
                                 profile_skills_dir,
                             )
 
-                            seed_starter_skills(
-                                profile_skills_dir(
-                                    Path(data_dir), "default"
-                                )
-                            )
+                            seed_starter_skills(profile_skills_dir(Path(data_dir), "default"))
                         except Exception as seed_exc:  # pragma: no cover
                             logger.warning(
                                 "gateway.starter_skills.seed_failed",
@@ -619,9 +682,7 @@ def _mount_routes(
                                 seed_bundled_personas,
                             )
 
-                            seed_bundled_personas(
-                                Path(data_dir) / "bundled_personas"
-                            )
+                            seed_bundled_personas(Path(data_dir) / "bundled_personas")
                         except Exception as seed_exc:  # pragma: no cover
                             logger.warning(
                                 "gateway.bundled_personas.seed_failed",
@@ -642,11 +703,10 @@ def _mount_routes(
                 # expose an async reload helper. Best-effort — the
                 # registry is optional surface (the routes degrade to
                 # the legacy filesystem scan when it's absent).
-                _agent_registry, _agent_registry_reload = (
-                    _build_agent_registry_stack(data_dir)
-                )
+                _agent_registry, _agent_registry_reload = _build_agent_registry_stack(data_dir)
                 admin_a_state = admin_a_state_cls(
                     data_dir=data_dir,
+                    execution_state_dir=execution_state_dir,
                     config_path=admin_config_path,
                     admin_write_lock=asyncio.Lock(),
                     session_cookie_secure=session_cookie_secure,
@@ -664,9 +724,7 @@ def _mount_routes(
                 # a test). The live resolver already reads the in-place
                 # edit, so this just makes it durable across restarts.
                 with suppress(Exception):
-                    admin_a_state.channels_writer = _make_channels_writer(
-                        app, admin_a_state
-                    )
+                    admin_a_state.channels_writer = _make_channels_writer(app, admin_a_state)
             app.include_router(admin_a.build_router())
         except Exception as exc:  # pragma: no cover — sibling-owned
             logger.warning("gateway.routes_admin_a.mount_failed", error=str(exc))
@@ -703,19 +761,18 @@ def _mount_routes(
                     """
                     import tomllib
 
-                    if (
-                        _admin_a_config_path is None
-                        or not _admin_a_config_path.exists()
-                    ):
+                    if _admin_a_config_path is None or not _admin_a_config_path.exists():
                         return {}
                     try:
-                        return tomllib.loads(
-                            _admin_a_config_path.read_text(encoding="utf-8")
-                        )
+                        return tomllib.loads(_admin_a_config_path.read_text(encoding="utf-8"))
                     except (OSError, ValueError):
                         return {}
 
                 _admin_b_state_kwargs: dict[str, Any] = {
+                    "data_dir": getattr(state, "data_dir", None),
+                    "execution_state_dir": getattr(
+                        state, "execution_state_dir", None
+                    ),
                     "profile_store": (
                         getattr(admin_a_state, "profile_store", None)
                         if admin_a_state is not None
@@ -742,8 +799,7 @@ def _mount_routes(
                         else None
                     ),
                     "py_config_path": Path(
-                        os.environ.get("CORLINMAN_PY_CONFIG")
-                        or str(default_py_config_path())
+                        os.environ.get("CORLINMAN_PY_CONFIG") or str(default_py_config_path())
                     ),
                 }
                 # Per-profile registry factory: reads
@@ -757,17 +813,10 @@ def _mount_routes(
                         )
 
                         def _skill_registry_factory(slug: str) -> Any:
-                            skills_dir = (
-                                Path(data_dir_for_skills)
-                                / "profiles"
-                                / slug
-                                / "skills"
-                            )
+                            skills_dir = Path(data_dir_for_skills) / "profiles" / slug / "skills"
                             return SkillRegistry.load_from_dir(skills_dir)
 
-                        _admin_b_state_kwargs["skill_registry_factory"] = (
-                            _skill_registry_factory
-                        )
+                        _admin_b_state_kwargs["skill_registry_factory"] = _skill_registry_factory
                     except ImportError as exc:  # pragma: no cover
                         logger.warning(
                             "gateway.routes_admin_b.skill_registry_factory_missing",
@@ -822,9 +871,7 @@ def _install_cors_middleware(app: Any) -> None:
             logger.warning("gateway.cors.middleware_missing", error=str(exc))
 
 
-def _install_origin_learning_middleware(
-    app: Any, cfg: Any | None, resolved_data_dir: Path
-) -> None:
+def _install_origin_learning_middleware(app: Any, cfg: Any | None, resolved_data_dir: Path) -> None:
     """Install the zero-config public-origin learning middleware.
 
     Side-effect-only extraction of build_app's inline block, including the
@@ -886,9 +933,7 @@ def _install_security_middleware(app: Any, cfg: Any | None) -> None:
     # the lifespan even though the admin DB open itself must be async.
     middleware_mod = _lazy_import("corlinman_server.gateway.middleware")
     if middleware_mod is not None:
-        install_api_key = getattr(
-            middleware_mod, "install_api_key_middleware", None
-        )
+        install_api_key = getattr(middleware_mod, "install_api_key_middleware", None)
         if install_api_key is not None:
             # R2-001 security fix: extend the protected-prefix list to
             # cover the legacy bare aliases that ``gateway/routes/*`` mount
@@ -928,9 +973,7 @@ def _install_security_middleware(app: Any, cfg: Any | None) -> None:
                     ),
                 )
             except Exception as exc:  # pragma: no cover — sibling-owned
-                logger.warning(
-                    "gateway.middleware.install_failed", error=str(exc)
-                )
+                logger.warning("gateway.middleware.install_failed", error=str(exc))
 
             # Wire the admin-session bridge so the in-app chat UI (which
             # authenticates with the ``corlinman_session`` cookie, not an API
@@ -965,9 +1008,7 @@ def _install_security_middleware(app: Any, cfg: Any | None) -> None:
         # gate doesn't cover (notably ``/admin/api_keys*``). Single-tenant
         # default: ``enabled=False`` → every request transparently resolves
         # to the ``"default"`` tenant and nothing is ever rejected.
-        install_tenant_scope = getattr(
-            middleware_mod, "install_tenant_scope_middleware", None
-        )
+        install_tenant_scope = getattr(middleware_mod, "install_tenant_scope_middleware", None)
         if install_tenant_scope is not None:
             try:
                 ts_enabled, ts_allowed, ts_fallback = _tenant_scope_params(cfg)
@@ -984,9 +1025,7 @@ def _install_security_middleware(app: Any, cfg: Any | None) -> None:
                     fallback=ts_fallback.as_str(),
                 )
             except Exception as exc:  # pragma: no cover — sibling-owned
-                logger.warning(
-                    "gateway.tenant_scope.install_failed", error=str(exc)
-                )
+                logger.warning("gateway.tenant_scope.install_failed", error=str(exc))
 
 
 # ---------------------------------------------------------------------------
@@ -1097,9 +1136,7 @@ def _mount_ui_static(app: Any) -> None:
                     _NextStaticFiles(directory=str(ui_path), html=True),
                     name="ui",
                 )
-                logger.info(
-                    "gateway.ui.static_mounted", path=str(ui_path)
-                )
+                logger.info("gateway.ui.static_mounted", path=str(ui_path))
             except Exception as exc:  # pragma: no cover — best effort
                 logger.warning(
                     "gateway.ui.static_mount_failed",
@@ -1107,6 +1144,4 @@ def _mount_ui_static(app: Any) -> None:
                     error=str(exc),
                 )
         else:
-            logger.warning(
-                "gateway.ui.static_dir_missing", path=str(ui_path)
-            )
+            logger.warning("gateway.ui.static_dir_missing", path=str(ui_path))

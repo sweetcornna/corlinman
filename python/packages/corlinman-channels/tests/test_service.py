@@ -11,6 +11,7 @@ behaviour of ``QqChannelParams`` / ``TelegramChannelParams``.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
@@ -88,9 +89,11 @@ class _ScriptedChatService:
 
     def run(self, request: Any, cancel: Any) -> Any:
         self.calls.append(request)
+
         async def _gen():
             for ev in self.events:
                 yield ev
+
         return _gen()
 
 
@@ -172,9 +175,7 @@ class _FakeTelegramSender:
         # single-chunk path can decide whether to fall back to a send.
         return not self.edit_message_text_returns_false
 
-    async def send_chat_action(
-        self, chat_id: int, action: str = "typing"
-    ) -> None:
+    async def send_chat_action(self, chat_id: int, action: str = "typing") -> None:
         self.chat_actions.append((chat_id, action))
 
     async def send_document(
@@ -341,10 +342,12 @@ class TestQqPersonaInjection:
 
         from corlinman_channels.service import QqChannelParams, handle_one_qq
 
-        svc = _ScriptedChatService([
-            _Ev(kind="token_delta", text="ok"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="token_delta", text="ok"),
+                _Ev(kind="done"),
+            ]
+        )
         ev = _sample_group_event()
         binding = ChannelBinding.qq_group(ev.self_id, ev.group_id or 0, ev.user_id)
         req = RoutedRequest(binding=binding, content="hi")
@@ -360,7 +363,13 @@ class TestQqPersonaInjection:
         )
 
         await handle_one_qq(
-            svc, req, ev, "m", adapter, asyncio.Event(), params=params,  # type: ignore[arg-type]
+            svc,
+            req,
+            ev,
+            "m",
+            adapter,
+            asyncio.Event(),
+            params=params,  # type: ignore[arg-type]
         )
         assert svc.calls, "chat_service.run was never invoked"
         request = svc.calls[0]
@@ -376,10 +385,12 @@ class TestQqPersonaInjection:
 
         from corlinman_channels.service import QqChannelParams, handle_one_qq
 
-        svc = _ScriptedChatService([
-            _Ev(kind="token_delta", text="ok"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="token_delta", text="ok"),
+                _Ev(kind="done"),
+            ]
+        )
         ev = _sample_group_event()
         binding = ChannelBinding.qq_group(ev.self_id, ev.group_id or 0, ev.user_id)
         req = RoutedRequest(binding=binding, content="hi")
@@ -389,13 +400,19 @@ class TestQqPersonaInjection:
             config={},
             model="m",
             chat_service=svc,
-            humanlike_enabled=False,   # off
+            humanlike_enabled=False,  # off
             persona_id="grantley",
             persona_store=store,
         )
 
         await handle_one_qq(
-            svc, req, ev, "m", adapter, asyncio.Event(), params=params,  # type: ignore[arg-type]
+            svc,
+            req,
+            ev,
+            "m",
+            adapter,
+            asyncio.Event(),
+            params=params,  # type: ignore[arg-type]
         )
         request = svc.calls[0]
         # No system message when humanlike is off.
@@ -410,10 +427,12 @@ class TestQqPersonaInjection:
 
         from corlinman_channels.service import QqChannelParams, handle_one_qq
 
-        svc = _ScriptedChatService([
-            _Ev(kind="token_delta", text="ok"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="token_delta", text="ok"),
+                _Ev(kind="done"),
+            ]
+        )
         ev = _sample_group_event()
         binding = ChannelBinding.qq_group(ev.self_id, ev.group_id or 0, ev.user_id)
         req = RoutedRequest(binding=binding, content="hi")
@@ -423,14 +442,20 @@ class TestQqPersonaInjection:
             config={},
             model="m",
             chat_service=svc,
-            humanlike_enabled=False,      # static says off
+            humanlike_enabled=False,  # static says off
             persona_id=None,
             persona_store=store,
             humanlike_resolver=lambda: (True, "kitty"),  # live says on
         )
 
         await handle_one_qq(
-            svc, req, ev, "m", adapter, asyncio.Event(), params=params,  # type: ignore[arg-type]
+            svc,
+            req,
+            ev,
+            "m",
+            adapter,
+            asyncio.Event(),
+            params=params,  # type: ignore[arg-type]
         )
         request = svc.calls[0]
         sys_msg = request.messages[0]
@@ -441,11 +466,13 @@ class TestQqPersonaInjection:
 class TestHandleOneQq:
     @pytest.mark.asyncio
     async def test_concatenates_token_deltas_and_sends_action(self) -> None:
-        svc = _ScriptedChatService([
-            _Ev(kind="token_delta", text="hel"),
-            _Ev(kind="token_delta", text="lo"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="token_delta", text="hel"),
+                _Ev(kind="token_delta", text="lo"),
+                _Ev(kind="done"),
+            ]
+        )
         ev = _sample_group_event()
         binding = ChannelBinding.qq_group(ev.self_id, ev.group_id or 0, ev.user_id)
         req = RoutedRequest(binding=binding, content="hi")
@@ -483,10 +510,12 @@ class TestHandleOneQq:
 
     @pytest.mark.asyncio
     async def test_empty_response_is_silently_dropped(self) -> None:
-        svc = _ScriptedChatService([
-            _Ev(kind="token_delta", text="   "),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="token_delta", text="   "),
+                _Ev(kind="done"),
+            ]
+        )
         ev = _sample_group_event()
         binding = ChannelBinding.qq_group(ev.self_id, ev.group_id or 0, ev.user_id)
         req = RoutedRequest(binding=binding, content="hi")
@@ -509,10 +538,12 @@ class TestHandleOneQq:
         # blank line so chunking lands on a paragraph boundary.
         big = "A" * 2500
         body = big + "\n\n" + big
-        svc = _ScriptedChatService([
-            _Ev(kind="token_delta", text=body),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="token_delta", text=body),
+                _Ev(kind="done"),
+            ]
+        )
         ev = _sample_group_event()
         binding = ChannelBinding.qq_group(ev.self_id, ev.group_id or 0, ev.user_id)
         req = RoutedRequest(binding=binding, content="long please")
@@ -532,23 +563,17 @@ class TestHandleOneQq:
 
         # Chunks[1:]: no AtSegment, only a single TextSegment.
         for follow in sends[1:]:
-            assert not any(
-                isinstance(seg, AtSegment) for seg in follow.message
-            ), (
+            assert not any(isinstance(seg, AtSegment) for seg in follow.message), (
                 "follow-up chunk must NOT @-mention again — Tencent "
                 "anti-spam treats repeat pings as abuse"
             )
             # And the text payload is non-empty.
-            text_segs = [
-                seg for seg in follow.message if isinstance(seg, TextSegment)
-            ]
+            text_segs = [seg for seg in follow.message if isinstance(seg, TextSegment)]
             assert text_segs
             assert text_segs[0].text.strip()
 
     @pytest.mark.asyncio
-    async def test_send_attachment_private_uploads_via_napcat(
-        self, tmp_path: Any
-    ) -> None:
+    async def test_send_attachment_private_uploads_via_napcat(self, tmp_path: Any) -> None:
         """send_attachment tool_call must dispatch an UploadPrivateFile
         action for QQ private chats."""
         import json
@@ -558,16 +583,18 @@ class TestHandleOneQq:
         f = tmp_path / "doc.pdf"
         f.write_bytes(b"%PDF-fake")
         args = json.dumps({"path": str(f), "filename": "doc.pdf"})
-        svc = _ScriptedChatService([
-            _Ev(
-                kind="tool_call",
-                plugin="send_attachment",
-                tool="send_attachment",
-                args_json=args.encode("utf-8"),
-            ),
-            _Ev(kind="token_delta", text="ok"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(
+                    kind="tool_call",
+                    plugin="send_attachment",
+                    tool="send_attachment",
+                    args_json=args.encode("utf-8"),
+                ),
+                _Ev(kind="token_delta", text="ok"),
+                _Ev(kind="done"),
+            ]
+        )
         ev = _qq_private_event(user_id=10001)
         binding = ChannelBinding.qq_private(999, 10001)
         req = RoutedRequest(binding=binding, content="give me the pdf")
@@ -577,15 +604,15 @@ class TestHandleOneQq:
 
         await handle_one_qq(svc, req, ev, "m", adapter, asyncio.Event())  # type: ignore[arg-type]
         uploads = [a for a in adapter.sent if isinstance(a, UploadPrivateFile)]
-        assert uploads, f"expected UploadPrivateFile; got {[type(a).__name__ for a in adapter.sent]}"
+        assert uploads, (
+            f"expected UploadPrivateFile; got {[type(a).__name__ for a in adapter.sent]}"
+        )
         assert uploads[0].user_id == 10001
         assert uploads[0].name == "doc.pdf"
         assert uploads[0].file.endswith("doc.pdf")
 
     @pytest.mark.asyncio
-    async def test_send_attachment_image_sends_inline_segment(
-        self, tmp_path: Any
-    ) -> None:
+    async def test_send_attachment_image_sends_inline_segment(self, tmp_path: Any) -> None:
         """WS-1 task 1 — an ``image/*`` send_attachment must ship an inline
         ImageSegment (SendPrivateMsg with an image), NOT an UploadPrivateFile,
         so the picture lands in the chat instead of the file panel. The
@@ -603,16 +630,18 @@ class TestHandleOneQq:
         f = tmp_path / "sticker.png"
         f.write_bytes(b"\x89PNG\r\n\x1a\nfake")
         args = json.dumps({"path": str(f), "filename": "sticker.png"})
-        svc = _ScriptedChatService([
-            _Ev(
-                kind="tool_call",
-                plugin="send_attachment",
-                tool="send_attachment",
-                args_json=args.encode("utf-8"),
-            ),
-            _Ev(kind="token_delta", text="here you go"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(
+                    kind="tool_call",
+                    plugin="send_attachment",
+                    tool="send_attachment",
+                    args_json=args.encode("utf-8"),
+                ),
+                _Ev(kind="token_delta", text="here you go"),
+                _Ev(kind="done"),
+            ]
+        )
         ev = _qq_private_event(user_id=20002)
         binding = ChannelBinding.qq_private(999, 20002)
         req = RoutedRequest(binding=binding, content="send the sticker")
@@ -627,8 +656,7 @@ class TestHandleOneQq:
         image_msgs = [
             a
             for a in adapter.sent
-            if isinstance(a, SendPrivateMsg)
-            and any(isinstance(s, ImageSegment) for s in a.message)
+            if isinstance(a, SendPrivateMsg) and any(isinstance(s, ImageSegment) for s in a.message)
         ]
         assert image_msgs, (
             "expected a SendPrivateMsg carrying an ImageSegment; got "
@@ -641,23 +669,23 @@ class TestHandleOneQq:
         )
 
     @pytest.mark.asyncio
-    async def test_policy_blocked_attachment_returns_fixed_refusal(
-        self, tmp_path: Any
-    ) -> None:
+    async def test_policy_blocked_attachment_returns_fixed_refusal(self, tmp_path: Any) -> None:
         import asyncio
         import json
 
         f = tmp_path / "blocked.png"
         f.write_bytes(b"\x89PNG\r\n\x1a\nblocked")
-        svc = _ScriptedChatService([
-            _Ev(
-                kind="tool_call",
-                plugin="send_attachment",
-                tool="send_attachment",
-                args_json=json.dumps({"path": str(f)}).encode(),
-            ),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(
+                    kind="tool_call",
+                    plugin="send_attachment",
+                    tool="send_attachment",
+                    args_json=json.dumps({"path": str(f)}).encode(),
+                ),
+                _Ev(kind="done"),
+            ]
+        )
         ev = _qq_private_event(user_id=20003)
         req = RoutedRequest(
             binding=ChannelBinding.qq_private(999, 20003),
@@ -666,27 +694,24 @@ class TestHandleOneQq:
         adapter = _MediaBlockingOneBotAdapter()
 
         await handle_one_qq(
-            svc, req, ev, "m", adapter, asyncio.Event()  # type: ignore[arg-type]
+            svc,
+            req,
+            ev,
+            "m",
+            adapter,
+            asyncio.Event(),  # type: ignore[arg-type]
         )
 
-        text_sends = [
-            action
-            for action in adapter.sent
-            if isinstance(action, SendPrivateMsg)
-        ]
+        text_sends = [action for action in adapter.sent if isinstance(action, SendPrivateMsg)]
         assert len(text_sends) == 1
         text = "".join(
-            segment.text
-            for segment in text_sends[0].message
-            if isinstance(segment, TextSegment)
+            segment.text for segment in text_sends[0].message if isinstance(segment, TextSegment)
         )
         assert text == QQ_SAFE_REFUSAL_TEXT
         assert "blocked.png" not in text
 
     @pytest.mark.asyncio
-    async def test_send_attachment_image_group_inline_segment(
-        self, tmp_path: Any
-    ) -> None:
+    async def test_send_attachment_image_group_inline_segment(self, tmp_path: Any) -> None:
         """Group path mirrors private: image → inline ImageSegment in a
         SendGroupMsg, no UploadGroupFile."""
         import asyncio
@@ -700,15 +725,17 @@ class TestHandleOneQq:
         f = tmp_path / "pic.jpg"
         f.write_bytes(b"\xff\xd8\xff\xe0fake-jpeg")
         args = json.dumps({"path": str(f)})
-        svc = _ScriptedChatService([
-            _Ev(
-                kind="tool_call",
-                plugin="send_attachment",
-                tool="send_attachment",
-                args_json=args.encode("utf-8"),
-            ),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(
+                    kind="tool_call",
+                    plugin="send_attachment",
+                    tool="send_attachment",
+                    args_json=args.encode("utf-8"),
+                ),
+                _Ev(kind="done"),
+            ]
+        )
         ev = _sample_group_event()
         binding = ChannelBinding.qq_group(ev.self_id, ev.group_id or 0, ev.user_id)
         req = RoutedRequest(binding=binding, content="show the pic")
@@ -720,8 +747,7 @@ class TestHandleOneQq:
         image_msgs = [
             a
             for a in adapter.sent
-            if isinstance(a, SendGroupMsg)
-            and any(isinstance(s, ImageSegment) for s in a.message)
+            if isinstance(a, SendGroupMsg) and any(isinstance(s, ImageSegment) for s in a.message)
         ]
         assert image_msgs, (
             "expected a SendGroupMsg carrying an ImageSegment; got "
@@ -733,9 +759,7 @@ class TestHandleOneQq:
         assert seg.file.startswith("base64://")
 
     @pytest.mark.asyncio
-    async def test_send_attachment_audio_sends_private_record_segment(
-        self, tmp_path: Any
-    ) -> None:
+    async def test_send_attachment_audio_sends_private_record_segment(self, tmp_path: Any) -> None:
         """QQ audio must be sent as an inline record segment, not a file upload.
 
         NapCat runs outside the corlinman container in Docker, so it cannot
@@ -755,15 +779,17 @@ class TestHandleOneQq:
         f = tmp_path / "voice.mp3"
         f.write_bytes(b"fake-mp3")
         args = json.dumps({"path": str(f), "filename": "voice.mp3"})
-        svc = _ScriptedChatService([
-            _Ev(
-                kind="tool_call",
-                plugin="send_attachment",
-                tool="send_attachment",
-                args_json=args.encode("utf-8"),
-            ),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(
+                    kind="tool_call",
+                    plugin="send_attachment",
+                    tool="send_attachment",
+                    args_json=args.encode("utf-8"),
+                ),
+                _Ev(kind="done"),
+            ]
+        )
         ev = _qq_private_event(user_id=20003)
         binding = ChannelBinding.qq_private(999, 20003)
         req = RoutedRequest(binding=binding, content="send voice")
@@ -784,14 +810,10 @@ class TestHandleOneQq:
         )
         seg = next(s for s in record_msgs[0].message if isinstance(s, RecordSegment))
         assert seg.url == ""
-        assert seg.file == (
-            "base64://" + base64.b64encode(b"fake-mp3").decode("ascii")
-        )
+        assert seg.file == ("base64://" + base64.b64encode(b"fake-mp3").decode("ascii"))
 
     @pytest.mark.asyncio
-    async def test_send_attachment_audio_sends_group_record_segment(
-        self, tmp_path: Any
-    ) -> None:
+    async def test_send_attachment_audio_sends_group_record_segment(self, tmp_path: Any) -> None:
         """Group audio mirrors private: record segment, no UploadGroupFile."""
         import asyncio
         import json
@@ -801,15 +823,17 @@ class TestHandleOneQq:
         f = tmp_path / "voice.ogg"
         f.write_bytes(b"fake-ogg")
         args = json.dumps({"path": str(f)})
-        svc = _ScriptedChatService([
-            _Ev(
-                kind="tool_call",
-                plugin="send_attachment",
-                tool="send_attachment",
-                args_json=args.encode("utf-8"),
-            ),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(
+                    kind="tool_call",
+                    plugin="send_attachment",
+                    tool="send_attachment",
+                    args_json=args.encode("utf-8"),
+                ),
+                _Ev(kind="done"),
+            ]
+        )
         ev = _sample_group_event()
         binding = ChannelBinding.qq_group(ev.self_id, ev.group_id or 0, ev.user_id)
         req = RoutedRequest(binding=binding, content="send voice")
@@ -821,8 +845,7 @@ class TestHandleOneQq:
         record_msgs = [
             a
             for a in adapter.sent
-            if isinstance(a, SendGroupMsg)
-            and any(isinstance(s, RecordSegment) for s in a.message)
+            if isinstance(a, SendGroupMsg) and any(isinstance(s, RecordSegment) for s in a.message)
         ]
         assert record_msgs, (
             "expected a SendGroupMsg carrying a RecordSegment; got "
@@ -876,23 +899,25 @@ class TestHandleOneQq:
         with one resolved tool line before the assistant body."""
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(
-                kind="tool_call",
-                plugin="web_search",
-                tool="web_search",
-                args_json=b'{"query":"gpt-5.5 news"}',
-            ),
-            _Ev(
-                kind="tool_result",
-                plugin="web_search",
-                tool="web_search",
-                duration_ms=302,
-                is_error=False,
-            ),
-            _Ev(kind="token_delta", text="answer"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(
+                    kind="tool_call",
+                    plugin="web_search",
+                    tool="web_search",
+                    args_json=b'{"query":"gpt-5.5 news"}',
+                ),
+                _Ev(
+                    kind="tool_result",
+                    plugin="web_search",
+                    tool="web_search",
+                    duration_ms=302,
+                    is_error=False,
+                ),
+                _Ev(kind="token_delta", text="answer"),
+                _Ev(kind="done"),
+            ]
+        )
         ev = _sample_group_event()
         binding = ChannelBinding.qq_group(ev.self_id, ev.group_id or 0, ev.user_id)
         req = RoutedRequest(binding=binding, content="hi")
@@ -923,10 +948,12 @@ class TestHandleOneQq:
         summary prefix. Preserves the legacy single-line reply shape."""
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(kind="token_delta", text="just talk"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="token_delta", text="just talk"),
+                _Ev(kind="done"),
+            ]
+        )
         ev = _sample_group_event()
         binding = ChannelBinding.qq_group(ev.self_id, ev.group_id or 0, ev.user_id)
         req = RoutedRequest(binding=binding, content="hi")
@@ -942,9 +969,7 @@ class TestHandleOneQq:
         assert "just talk" in text_seg.text
 
     @pytest.mark.asyncio
-    async def test_summary_includes_send_attachment_line(
-        self, tmp_path: Any
-    ) -> None:
+    async def test_summary_includes_send_attachment_line(self, tmp_path: Any) -> None:
         """A send_attachment tool_call must surface as a 📎 已发送文件
         line in the summary block."""
         import asyncio
@@ -953,16 +978,18 @@ class TestHandleOneQq:
         f = tmp_path / "hello.html"
         f.write_text("<h1>hi</h1>", encoding="utf-8")
         args = json.dumps({"path": str(f), "filename": "hello.html"})
-        svc = _ScriptedChatService([
-            _Ev(
-                kind="tool_call",
-                plugin="send_attachment",
-                tool="send_attachment",
-                args_json=args.encode("utf-8"),
-            ),
-            _Ev(kind="token_delta", text="done"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(
+                    kind="tool_call",
+                    plugin="send_attachment",
+                    tool="send_attachment",
+                    args_json=args.encode("utf-8"),
+                ),
+                _Ev(kind="token_delta", text="done"),
+                _Ev(kind="done"),
+            ]
+        )
         ev = _qq_private_event(user_id=42)
         binding = ChannelBinding.qq_private(999, 42)
         req = RoutedRequest(binding=binding, content="give me the html")
@@ -971,7 +998,9 @@ class TestHandleOneQq:
         await handle_one_qq(svc, req, ev, "m", adapter, asyncio.Event())  # type: ignore[arg-type]
         # Locate the text reply (an UploadPrivateFile action also lands).
         text_actions = [a for a in adapter.sent if isinstance(a, SendPrivateMsg)]
-        assert text_actions, f"expected SendPrivateMsg; got {[type(a).__name__ for a in adapter.sent]}"
+        assert text_actions, (
+            f"expected SendPrivateMsg; got {[type(a).__name__ for a in adapter.sent]}"
+        )
         text = text_actions[-1].message[0].text
         assert "📋 本次操作:" in text
         assert "📎 已发送文件: hello.html" in text
@@ -986,14 +1015,25 @@ class TestHandleOneQq:
         import asyncio
 
         monkeypatch.setenv("CORLINMAN_QQ_TOOL_SUMMARY", "0")
-        svc = _ScriptedChatService([
-            _Ev(kind="tool_call", plugin="web_search", tool="web_search",
-                args_json=b'{"query":"x"}'),
-            _Ev(kind="tool_result", plugin="web_search", tool="web_search",
-                duration_ms=10, is_error=False),
-            _Ev(kind="token_delta", text="answer"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(
+                    kind="tool_call",
+                    plugin="web_search",
+                    tool="web_search",
+                    args_json=b'{"query":"x"}',
+                ),
+                _Ev(
+                    kind="tool_result",
+                    plugin="web_search",
+                    tool="web_search",
+                    duration_ms=10,
+                    is_error=False,
+                ),
+                _Ev(kind="token_delta", text="answer"),
+                _Ev(kind="done"),
+            ]
+        )
         ev = _sample_group_event()
         binding = ChannelBinding.qq_group(ev.self_id, ev.group_id or 0, ev.user_id)
         req = RoutedRequest(binding=binding, content="hi")
@@ -1011,15 +1051,26 @@ class TestHandleOneQq:
         in the prelude block."""
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(kind="tool_call", plugin="run_shell", tool="run_shell",
-                args_json=b'{"command":"rm -rf /"}'),
-            _Ev(kind="tool_result", plugin="run_shell", tool="run_shell",
-                duration_ms=42, is_error=True,
-                error_summary="permission denied"),
-            _Ev(kind="token_delta", text="failed"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(
+                    kind="tool_call",
+                    plugin="run_shell",
+                    tool="run_shell",
+                    args_json=b'{"command":"rm -rf /"}',
+                ),
+                _Ev(
+                    kind="tool_result",
+                    plugin="run_shell",
+                    tool="run_shell",
+                    duration_ms=42,
+                    is_error=True,
+                    error_summary="permission denied",
+                ),
+                _Ev(kind="token_delta", text="failed"),
+                _Ev(kind="done"),
+            ]
+        )
         ev = _sample_group_event()
         binding = ChannelBinding.qq_group(ev.self_id, ev.group_id or 0, ev.user_id)
         req = RoutedRequest(binding=binding, content="hi")
@@ -1040,9 +1091,11 @@ class TestHandleOneQq:
         the same session_key already has the user's text and will
         produce the actual reply when it finishes.
         """
-        svc = _ScriptedChatService([
-            _Ev(kind="done", finish_reason="supplemented"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="done", finish_reason="supplemented"),
+            ]
+        )
         ev = _sample_group_event()
         binding = ChannelBinding.qq_group(ev.self_id, ev.group_id or 0, ev.user_id)
         req = RoutedRequest(binding=binding, content="再问一句")
@@ -1067,39 +1120,70 @@ class TestHandleOneQq:
         import asyncio
         import json
 
-        first_todos = json.dumps({"todos": [
-            {"content": "Search market data",
-             "activeForm": "Searching market data",
-             "status": "in_progress"},
-            {"content": "Draft memo",
-             "activeForm": "Drafting memo",
-             "status": "pending"},
-        ]}).encode("utf-8")
-        final_todos = json.dumps({"todos": [
-            {"content": "Search market data",
-             "activeForm": "Searching market data",
-             "status": "completed"},
-            {"content": "Draft memo",
-             "activeForm": "Drafting memo",
-             "status": "in_progress"},
-        ]}).encode("utf-8")
+        first_todos = json.dumps(
+            {
+                "todos": [
+                    {
+                        "content": "Search market data",
+                        "activeForm": "Searching market data",
+                        "status": "in_progress",
+                    },
+                    {"content": "Draft memo", "activeForm": "Drafting memo", "status": "pending"},
+                ]
+            }
+        ).encode("utf-8")
+        final_todos = json.dumps(
+            {
+                "todos": [
+                    {
+                        "content": "Search market data",
+                        "activeForm": "Searching market data",
+                        "status": "completed",
+                    },
+                    {
+                        "content": "Draft memo",
+                        "activeForm": "Drafting memo",
+                        "status": "in_progress",
+                    },
+                ]
+            }
+        ).encode("utf-8")
 
-        svc = _ScriptedChatService([
-            _Ev(kind="tool_call", plugin="builtin", tool="todo_write",
-                args_json=first_todos),
-            _Ev(kind="tool_result", plugin="builtin", tool="todo_write",
-                duration_ms=3, is_error=False),
-            _Ev(kind="tool_call", plugin="web_search", tool="web_search",
-                args_json=b'{"query":"gpt-5.5 news"}'),
-            _Ev(kind="tool_result", plugin="web_search", tool="web_search",
-                duration_ms=302, is_error=False),
-            _Ev(kind="tool_call", plugin="builtin", tool="todo_write",
-                args_json=final_todos),
-            _Ev(kind="tool_result", plugin="builtin", tool="todo_write",
-                duration_ms=2, is_error=False),
-            _Ev(kind="token_delta", text="answer"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="tool_call", plugin="builtin", tool="todo_write", args_json=first_todos),
+                _Ev(
+                    kind="tool_result",
+                    plugin="builtin",
+                    tool="todo_write",
+                    duration_ms=3,
+                    is_error=False,
+                ),
+                _Ev(
+                    kind="tool_call",
+                    plugin="web_search",
+                    tool="web_search",
+                    args_json=b'{"query":"gpt-5.5 news"}',
+                ),
+                _Ev(
+                    kind="tool_result",
+                    plugin="web_search",
+                    tool="web_search",
+                    duration_ms=302,
+                    is_error=False,
+                ),
+                _Ev(kind="tool_call", plugin="builtin", tool="todo_write", args_json=final_todos),
+                _Ev(
+                    kind="tool_result",
+                    plugin="builtin",
+                    tool="todo_write",
+                    duration_ms=2,
+                    is_error=False,
+                ),
+                _Ev(kind="token_delta", text="answer"),
+                _Ev(kind="done"),
+            ]
+        )
         ev = _sample_group_event()
         binding = ChannelBinding.qq_group(ev.self_id, ev.group_id or 0, ev.user_id)
         req = RoutedRequest(binding=binding, content="hi")
@@ -1127,23 +1211,44 @@ class TestHandleOneQq:
         import asyncio
         import json
 
-        todos = json.dumps({"todos": [
-            {"content": "Plan the work",
-             "activeForm": "Planning the work",
-             "status": "in_progress"},
-        ]}).encode("utf-8")
-        svc = _ScriptedChatService([
-            _Ev(kind="tool_call", plugin="builtin", tool="todo_write",
-                args_json=todos),
-            _Ev(kind="tool_result", plugin="builtin", tool="todo_write",
-                duration_ms=3, is_error=False),
-            _Ev(kind="tool_call", plugin="web_search", tool="web_search",
-                args_json=b'{"query":"gpt-5.5 news"}'),
-            _Ev(kind="tool_result", plugin="web_search", tool="web_search",
-                duration_ms=302, is_error=False),
-            _Ev(kind="token_delta", text="answer"),
-            _Ev(kind="done"),
-        ])
+        todos = json.dumps(
+            {
+                "todos": [
+                    {
+                        "content": "Plan the work",
+                        "activeForm": "Planning the work",
+                        "status": "in_progress",
+                    },
+                ]
+            }
+        ).encode("utf-8")
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="tool_call", plugin="builtin", tool="todo_write", args_json=todos),
+                _Ev(
+                    kind="tool_result",
+                    plugin="builtin",
+                    tool="todo_write",
+                    duration_ms=3,
+                    is_error=False,
+                ),
+                _Ev(
+                    kind="tool_call",
+                    plugin="web_search",
+                    tool="web_search",
+                    args_json=b'{"query":"gpt-5.5 news"}',
+                ),
+                _Ev(
+                    kind="tool_result",
+                    plugin="web_search",
+                    tool="web_search",
+                    duration_ms=302,
+                    is_error=False,
+                ),
+                _Ev(kind="token_delta", text="answer"),
+                _Ev(kind="done"),
+            ]
+        )
         ev = _sample_group_event()
         binding = ChannelBinding.qq_group(ev.self_id, ev.group_id or 0, ev.user_id)
         req = RoutedRequest(binding=binding, content="hi")
@@ -1175,19 +1280,31 @@ class TestHandleOneQq:
         import asyncio
         import json
 
-        todos = json.dumps({"todos": [
-            {"content": "Verify the patch",
-             "activeForm": "Verifying the patch",
-             "status": "in_progress"},
-        ]}).encode("utf-8")
-        svc = _ScriptedChatService([
-            _Ev(kind="tool_call", plugin="builtin", tool="todo_write",
-                args_json=todos),
-            _Ev(kind="tool_result", plugin="builtin", tool="todo_write",
-                duration_ms=1, is_error=False),
-            _Ev(kind="token_delta", text="working on it"),
-            _Ev(kind="done"),
-        ])
+        todos = json.dumps(
+            {
+                "todos": [
+                    {
+                        "content": "Verify the patch",
+                        "activeForm": "Verifying the patch",
+                        "status": "in_progress",
+                    },
+                ]
+            }
+        ).encode("utf-8")
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="tool_call", plugin="builtin", tool="todo_write", args_json=todos),
+                _Ev(
+                    kind="tool_result",
+                    plugin="builtin",
+                    tool="todo_write",
+                    duration_ms=1,
+                    is_error=False,
+                ),
+                _Ev(kind="token_delta", text="working on it"),
+                _Ev(kind="done"),
+            ]
+        )
         ev = _sample_group_event()
         binding = ChannelBinding.qq_group(ev.self_id, ev.group_id or 0, ev.user_id)
         req = RoutedRequest(binding=binding, content="hi")
@@ -1213,17 +1330,26 @@ class TestHandleOneQq:
         import json
 
         monkeypatch.setenv("CORLINMAN_QQ_TOOL_SUMMARY", "0")
-        todos = json.dumps({"todos": [
-            {"content": "x", "activeForm": "doing x", "status": "pending"},
-        ]}).encode("utf-8")
-        svc = _ScriptedChatService([
-            _Ev(kind="tool_call", plugin="builtin", tool="todo_write",
-                args_json=todos),
-            _Ev(kind="tool_call", plugin="web_search", tool="web_search",
-                args_json=b'{"query":"x"}'),
-            _Ev(kind="token_delta", text="just text"),
-            _Ev(kind="done"),
-        ])
+        todos = json.dumps(
+            {
+                "todos": [
+                    {"content": "x", "activeForm": "doing x", "status": "pending"},
+                ]
+            }
+        ).encode("utf-8")
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="tool_call", plugin="builtin", tool="todo_write", args_json=todos),
+                _Ev(
+                    kind="tool_call",
+                    plugin="web_search",
+                    tool="web_search",
+                    args_json=b'{"query":"x"}',
+                ),
+                _Ev(kind="token_delta", text="just text"),
+                _Ev(kind="done"),
+            ]
+        )
         ev = _sample_group_event()
         binding = ChannelBinding.qq_group(ev.self_id, ev.group_id or 0, ev.user_id)
         req = RoutedRequest(binding=binding, content="hi")
@@ -1245,11 +1371,13 @@ class TestHandleOneQq:
 class TestHandleOneTelegram:
     @pytest.mark.asyncio
     async def test_concat_and_send(self) -> None:
-        svc = _ScriptedChatService([
-            _Ev(kind="token_delta", text="hi "),
-            _Ev(kind="token_delta", text="there"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="token_delta", text="hi "),
+                _Ev(kind="token_delta", text="there"),
+                _Ev(kind="done"),
+            ]
+        )
         binding = ChannelBinding.telegram(bot_id=999, chat_id=42, user_id=42)
         inbound: InboundEvent[Any] = InboundEvent(
             channel="telegram",
@@ -1319,9 +1447,7 @@ class TestHandleOneTelegram:
         assert "nope" in final_text
 
     @pytest.mark.asyncio
-    async def test_send_attachment_uploads_via_sender(
-        self, tmp_path: Any
-    ) -> None:
+    async def test_send_attachment_uploads_via_sender(self, tmp_path: Any) -> None:
         """A tool_call event with tool=send_attachment must trigger a
         real upload via the sender (not just a status edit)."""
         import json
@@ -1329,16 +1455,18 @@ class TestHandleOneTelegram:
         html = tmp_path / "page.html"
         html.write_text("<!DOCTYPE html><h1>hi</h1>", encoding="utf-8")
         args = json.dumps({"path": str(html), "filename": "page.html"})
-        svc = _ScriptedChatService([
-            _Ev(
-                kind="tool_call",
-                plugin="send_attachment",
-                tool="send_attachment",
-                args_json=args.encode("utf-8"),
-            ),
-            _Ev(kind="token_delta", text="文件已发送"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(
+                    kind="tool_call",
+                    plugin="send_attachment",
+                    tool="send_attachment",
+                    args_json=args.encode("utf-8"),
+                ),
+                _Ev(kind="token_delta", text="文件已发送"),
+                _Ev(kind="done"),
+            ]
+        )
         binding = ChannelBinding.telegram(bot_id=999, chat_id=7, user_id=7)
         inbound: InboundEvent[Any] = InboundEvent(
             channel="telegram",
@@ -1365,11 +1493,13 @@ class TestHandleOneTelegram:
         """ToolCallEvent must be rendered as a mutable-spinner line that
         edits the placeholder message in place. Mirrors hermes-agent's
         ``_last_activity_desc``."""
-        svc = _ScriptedChatService([
-            _Ev(kind="tool_call", plugin="builtin", tool="read_file"),
-            _Ev(kind="token_delta", text="ok"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="tool_call", plugin="builtin", tool="read_file"),
+                _Ev(kind="token_delta", text="ok"),
+                _Ev(kind="done"),
+            ]
+        )
         binding = ChannelBinding.telegram(bot_id=999, chat_id=7, user_id=7)
         inbound: InboundEvent[Any] = InboundEvent(
             channel="telegram",
@@ -1395,20 +1525,26 @@ class TestHandleOneTelegram:
         next to the tool name on the spinner line."""
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(
-                kind="tool_call",
-                plugin="web_search",
-                tool="web_search",
-                args_json=b'{"query":"latest gpt-5.5 news"}',
-            ),
-            _Ev(kind="token_delta", text="done"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(
+                    kind="tool_call",
+                    plugin="web_search",
+                    tool="web_search",
+                    args_json=b'{"query":"latest gpt-5.5 news"}',
+                ),
+                _Ev(kind="token_delta", text="done"),
+                _Ev(kind="done"),
+            ]
+        )
         binding = ChannelBinding.telegram(bot_id=999, chat_id=7, user_id=7)
         inbound: InboundEvent[Any] = InboundEvent(
-            channel="telegram", binding=binding, text="hi",
-            message_id="1", timestamp=0, mentioned=True,
+            channel="telegram",
+            binding=binding,
+            text="hi",
+            message_id="1",
+            timestamp=0,
+            mentioned=True,
         )
         sender = _FakeTelegramSender()
         await handle_one_telegram(svc, inbound, "m", sender, asyncio.Event())  # type: ignore[arg-type]
@@ -1421,18 +1557,33 @@ class TestHandleOneTelegram:
         """tool_result event must render ✅ + human duration."""
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(kind="tool_call", plugin="web_search", tool="web_search",
-                args_json=b'{"query":"x"}'),
-            _Ev(kind="tool_result", plugin="web_search", tool="web_search",
-                duration_ms=1234, is_error=False),
-            _Ev(kind="token_delta", text="ok"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(
+                    kind="tool_call",
+                    plugin="web_search",
+                    tool="web_search",
+                    args_json=b'{"query":"x"}',
+                ),
+                _Ev(
+                    kind="tool_result",
+                    plugin="web_search",
+                    tool="web_search",
+                    duration_ms=1234,
+                    is_error=False,
+                ),
+                _Ev(kind="token_delta", text="ok"),
+                _Ev(kind="done"),
+            ]
+        )
         binding = ChannelBinding.telegram(bot_id=999, chat_id=7, user_id=7)
         inbound: InboundEvent[Any] = InboundEvent(
-            channel="telegram", binding=binding, text="hi",
-            message_id="1", timestamp=0, mentioned=True,
+            channel="telegram",
+            binding=binding,
+            text="hi",
+            message_id="1",
+            timestamp=0,
+            mentioned=True,
         )
         sender = _FakeTelegramSender()
         await handle_one_telegram(svc, inbound, "m", sender, asyncio.Event())  # type: ignore[arg-type]
@@ -1444,19 +1595,34 @@ class TestHandleOneTelegram:
         """tool_result with is_error=True must render ❌ + summary."""
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(kind="tool_call", plugin="run_shell", tool="run_shell",
-                args_json=b'{"command":"rm -rf /"}'),
-            _Ev(kind="tool_result", plugin="run_shell", tool="run_shell",
-                duration_ms=42, is_error=True,
-                error_summary="permission denied"),
-            _Ev(kind="token_delta", text="failed"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(
+                    kind="tool_call",
+                    plugin="run_shell",
+                    tool="run_shell",
+                    args_json=b'{"command":"rm -rf /"}',
+                ),
+                _Ev(
+                    kind="tool_result",
+                    plugin="run_shell",
+                    tool="run_shell",
+                    duration_ms=42,
+                    is_error=True,
+                    error_summary="permission denied",
+                ),
+                _Ev(kind="token_delta", text="failed"),
+                _Ev(kind="done"),
+            ]
+        )
         binding = ChannelBinding.telegram(bot_id=999, chat_id=7, user_id=7)
         inbound: InboundEvent[Any] = InboundEvent(
-            channel="telegram", binding=binding, text="hi",
-            message_id="1", timestamp=0, mentioned=True,
+            channel="telegram",
+            binding=binding,
+            text="hi",
+            message_id="1",
+            timestamp=0,
+            mentioned=True,
         )
         sender = _FakeTelegramSender()
         await handle_one_telegram(svc, inbound, "m", sender, asyncio.Event())  # type: ignore[arg-type]
@@ -1469,18 +1635,22 @@ class TestHandleOneTelegram:
         the final reply."""
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(kind="token_delta", text="let me ",
-                is_reasoning=True),
-            _Ev(kind="token_delta", text="think about this.",
-                is_reasoning=True),
-            _Ev(kind="token_delta", text="the answer is 42"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="token_delta", text="let me ", is_reasoning=True),
+                _Ev(kind="token_delta", text="think about this.", is_reasoning=True),
+                _Ev(kind="token_delta", text="the answer is 42"),
+                _Ev(kind="done"),
+            ]
+        )
         binding = ChannelBinding.telegram(bot_id=999, chat_id=7, user_id=7)
         inbound: InboundEvent[Any] = InboundEvent(
-            channel="telegram", binding=binding, text="hi",
-            message_id="1", timestamp=0, mentioned=True,
+            channel="telegram",
+            binding=binding,
+            text="hi",
+            message_id="1",
+            timestamp=0,
+            mentioned=True,
         )
         sender = _FakeTelegramSender()
         await handle_one_telegram(svc, inbound, "m", sender, asyncio.Event())  # type: ignore[arg-type]
@@ -1508,22 +1678,24 @@ class TestHandleOneTelegram:
                 "options": ["yes", "no", "let me think"],
             }
         ).encode()
-        svc = _ScriptedChatService([
-            _Ev(
-                kind="tool_call",
-                plugin="builtin",
-                tool="ask_user",
-                args_json=args,
-            ),
-            _Ev(
-                kind="tool_result",
-                plugin="builtin",
-                tool="ask_user",
-                duration_ms=1,
-            ),
-            _Ev(kind="token_delta", text="Overwrite README.md?"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(
+                    kind="tool_call",
+                    plugin="builtin",
+                    tool="ask_user",
+                    args_json=args,
+                ),
+                _Ev(
+                    kind="tool_result",
+                    plugin="builtin",
+                    tool="ask_user",
+                    duration_ms=1,
+                ),
+                _Ev(kind="token_delta", text="Overwrite README.md?"),
+                _Ev(kind="done"),
+            ]
+        )
         binding = ChannelBinding.telegram(bot_id=999, chat_id=42, user_id=42)
         inbound: InboundEvent[Any] = InboundEvent(
             channel="telegram",
@@ -1535,16 +1707,16 @@ class TestHandleOneTelegram:
         )
         sender = _FakeTelegramSender()
         await handle_one_telegram(
-            svc, inbound, "m", sender, asyncio.Event()  # type: ignore[arg-type]
+            svc,
+            inbound,
+            "m",
+            sender,
+            asyncio.Event(),  # type: ignore[arg-type]
         )
 
         # The keyboard must surface exactly once — on the edited
         # placeholder (single-chunk path) or a send (multi-chunk path).
-        keyboards = [
-            kb
-            for kb in (sender.sent_keyboards + sender.edit_keyboards)
-            if kb is not None
-        ]
+        keyboards = [kb for kb in (sender.sent_keyboards + sender.edit_keyboards) if kb is not None]
         assert len(keyboards) == 1, (
             "expected exactly one inline_keyboard; "
             f"sent={sender.sent_keyboards!r} edits={sender.edit_keyboards!r}"
@@ -1565,9 +1737,9 @@ class TestHandleOneTelegram:
         # frames whose text IS the bare reply — transient spinner frames
         # (❓/✍️/🧠 prefixed) echo the question but aren't deliveries.
         reply = "Overwrite README.md?"
-        final_deliveries = sum(
-            1 for _, _, txt in sender.edits if txt.strip() == reply
-        ) + sum(1 for _, txt, _ in sender.sent if txt.strip() == reply)
+        final_deliveries = sum(1 for _, _, txt in sender.edits if txt.strip() == reply) + sum(
+            1 for _, txt, _ in sender.sent if txt.strip() == reply
+        )
         assert final_deliveries == 1, (
             f"final reply delivered {final_deliveries}x (duplicate send); "
             f"edits={sender.edits!r} sent={sender.sent!r}"
@@ -1583,24 +1755,32 @@ class TestHandleOneTelegram:
         import asyncio
         import json
 
-        args = json.dumps(
-            {"question": "Pick one?", "options": ["a", "b"]}
-        ).encode()
-        svc = _ScriptedChatService([
-            _Ev(kind="tool_call", plugin="builtin", tool="ask_user", args_json=args),
-            _Ev(kind="tool_result", plugin="builtin", tool="ask_user", duration_ms=1),
-            _Ev(kind="token_delta", text="Pick one?"),
-            _Ev(kind="done"),
-        ])
+        args = json.dumps({"question": "Pick one?", "options": ["a", "b"]}).encode()
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="tool_call", plugin="builtin", tool="ask_user", args_json=args),
+                _Ev(kind="tool_result", plugin="builtin", tool="ask_user", duration_ms=1),
+                _Ev(kind="token_delta", text="Pick one?"),
+                _Ev(kind="done"),
+            ]
+        )
         binding = ChannelBinding.telegram(bot_id=999, chat_id=42, user_id=42)
         inbound: InboundEvent[Any] = InboundEvent(
-            channel="telegram", binding=binding, text="hi",
-            message_id="1", timestamp=0, mentioned=True,
+            channel="telegram",
+            binding=binding,
+            text="hi",
+            message_id="1",
+            timestamp=0,
+            mentioned=True,
         )
         sender = _FakeTelegramSender()
         sender.edit_message_text_returns_false = True  # Telegram rejects the edit
         await handle_one_telegram(
-            svc, inbound, "m", sender, asyncio.Event()  # type: ignore[arg-type]
+            svc,
+            inbound,
+            "m",
+            sender,
+            asyncio.Event(),  # type: ignore[arg-type]
         )
 
         # The keyboard must arrive on a fresh send (edit was rejected).
@@ -1621,24 +1801,34 @@ class TestHandleOneTelegram:
         import json
 
         args = json.dumps({"question": "What's the deadline?"}).encode()
-        svc = _ScriptedChatService([
-            _Ev(
-                kind="tool_call",
-                plugin="builtin",
-                tool="ask_user",
-                args_json=args,
-            ),
-            _Ev(kind="token_delta", text="What's the deadline?"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(
+                    kind="tool_call",
+                    plugin="builtin",
+                    tool="ask_user",
+                    args_json=args,
+                ),
+                _Ev(kind="token_delta", text="What's the deadline?"),
+                _Ev(kind="done"),
+            ]
+        )
         binding = ChannelBinding.telegram(bot_id=999, chat_id=42, user_id=42)
         inbound: InboundEvent[Any] = InboundEvent(
-            channel="telegram", binding=binding, text="hi",
-            message_id="1", timestamp=0, mentioned=True,
+            channel="telegram",
+            binding=binding,
+            text="hi",
+            message_id="1",
+            timestamp=0,
+            mentioned=True,
         )
         sender = _FakeTelegramSender()
         await handle_one_telegram(
-            svc, inbound, "m", sender, asyncio.Event()  # type: ignore[arg-type]
+            svc,
+            inbound,
+            "m",
+            sender,
+            asyncio.Event(),  # type: ignore[arg-type]
         )
         # No send_message call may carry a keyboard.
         assert all(kb is None for kb in sender.sent_keyboards)
@@ -1679,10 +1869,12 @@ class TestHandleOneTelegram:
         of propagating the exception out of the channel loop."""
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(kind="token_delta", text="hi"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="token_delta", text="hi"),
+                _Ev(kind="done"),
+            ]
+        )
         binding = ChannelBinding.telegram(bot_id=999, chat_id=42, user_id=42)
         inbound: InboundEvent[Any] = InboundEvent(
             channel="telegram",
@@ -1753,10 +1945,12 @@ class TestHandleOneTelegram:
         # Pure "xxxxx" lacks structure so it'd hard-cut at the limit —
         # interleave paragraphs to exercise the natural-boundary path.
         big = ("Paragraph " + "x" * 50 + ".\n\n") * 200
-        svc = _ScriptedChatService([
-            _Ev(kind="token_delta", text=big),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="token_delta", text=big),
+                _Ev(kind="done"),
+            ]
+        )
         binding = ChannelBinding.telegram(bot_id=999, chat_id=42, user_id=42)
         inbound: InboundEvent[Any] = InboundEvent(
             channel="telegram",
@@ -1775,9 +1969,7 @@ class TestHandleOneTelegram:
         _, _, chunk1 = sender.edits[-1]
         assert len(chunk1) <= 4096
         # Chunk 1 carries the (1/N) prefix.
-        assert re.match(r"^\(1/\d+\)\n", chunk1), (
-            f"chunk 1 missing prefix: {chunk1[:30]!r}"
-        )
+        assert re.match(r"^\(1/\d+\)\n", chunk1), f"chunk 1 missing prefix: {chunk1[:30]!r}"
         # Follow-up sends carry chunks 2..N. _FakeTelegramSender.sent
         # records (chat_id, text, reply_to_message_id) tuples. The very
         # first send is the placeholder ("🧠 思考中..."); the rest are
@@ -1785,9 +1977,7 @@ class TestHandleOneTelegram:
         followups = [m for m in sender.sent if "🧠" not in m[1]]
         assert len(followups) >= 1, "expected ≥1 follow-up send for long reply"
         for i, (_, body, _) in enumerate(followups, start=2):
-            assert re.match(rf"^\({i}/\d+\)\n", body), (
-                f"chunk {i} missing prefix: {body[:30]!r}"
-            )
+            assert re.match(rf"^\({i}/\d+\)\n", body), f"chunk {i} missing prefix: {body[:30]!r}"
             assert len(body) <= 4096
         # No chunk should contain the truncation marker — the whole
         # body is preserved across the split.
@@ -1808,9 +1998,11 @@ class TestHandleOneTelegram:
         """
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(kind="done", finish_reason="supplemented"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="done", finish_reason="supplemented"),
+            ]
+        )
         binding = ChannelBinding.telegram(bot_id=999, chat_id=42, user_id=42)
         inbound: InboundEvent[Any] = InboundEvent(
             channel="telegram",
@@ -1828,9 +2020,7 @@ class TestHandleOneTelegram:
         # or "(no reply)" overwrite happened. The first turn's
         # placeholder remains in place until the running turn yields
         # its own reply.
-        assert len(sender.sent) == 1, (
-            "expected only the initial placeholder; no extra send"
-        )
+        assert len(sender.sent) == 1, "expected only the initial placeholder; no extra send"
         # No edits with the empty-reply cleanup text — the handler
         # must not have touched the placeholder.
         for _, _, edit_text in sender.edits:
@@ -1849,29 +2039,49 @@ class TestHandleOneTelegram:
         import asyncio
         import json
 
-        todos = json.dumps({"todos": [
-            {"content": "Search market data",
-             "activeForm": "Searching market data",
-             "status": "completed"},
-            {"content": "Collate vendor list",
-             "activeForm": "Collating vendor list",
-             "status": "in_progress"},
-            {"content": "Send the report",
-             "activeForm": "Sending the report",
-             "status": "pending"},
-        ]}).encode("utf-8")
-        svc = _ScriptedChatService([
-            _Ev(kind="tool_call", plugin="builtin", tool="todo_write",
-                args_json=todos),
-            _Ev(kind="tool_result", plugin="builtin", tool="todo_write",
-                duration_ms=3, is_error=False),
-            _Ev(kind="token_delta", text="done"),
-            _Ev(kind="done"),
-        ])
+        todos = json.dumps(
+            {
+                "todos": [
+                    {
+                        "content": "Search market data",
+                        "activeForm": "Searching market data",
+                        "status": "completed",
+                    },
+                    {
+                        "content": "Collate vendor list",
+                        "activeForm": "Collating vendor list",
+                        "status": "in_progress",
+                    },
+                    {
+                        "content": "Send the report",
+                        "activeForm": "Sending the report",
+                        "status": "pending",
+                    },
+                ]
+            }
+        ).encode("utf-8")
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="tool_call", plugin="builtin", tool="todo_write", args_json=todos),
+                _Ev(
+                    kind="tool_result",
+                    plugin="builtin",
+                    tool="todo_write",
+                    duration_ms=3,
+                    is_error=False,
+                ),
+                _Ev(kind="token_delta", text="done"),
+                _Ev(kind="done"),
+            ]
+        )
         binding = ChannelBinding.telegram(bot_id=999, chat_id=7, user_id=7)
         inbound: InboundEvent[Any] = InboundEvent(
-            channel="telegram", binding=binding, text="hi",
-            message_id="1", timestamp=0, mentioned=True,
+            channel="telegram",
+            binding=binding,
+            text="hi",
+            message_id="1",
+            timestamp=0,
+            mentioned=True,
         )
         sender = _FakeTelegramSender()
         await handle_one_telegram(svc, inbound, "m", sender, asyncio.Event())  # type: ignore[arg-type]
@@ -1900,21 +2110,35 @@ class TestHandleOneTelegram:
         import asyncio
         import json
 
-        todos = json.dumps({"todos": [
-            {"content": "a", "activeForm": "doing a", "status": "pending"},
-        ]}).encode("utf-8")
-        svc = _ScriptedChatService([
-            _Ev(kind="tool_call", plugin="builtin", tool="todo_write",
-                args_json=todos),
-            _Ev(kind="tool_result", plugin="builtin", tool="todo_write",
-                duration_ms=3, is_error=False),
-            _Ev(kind="token_delta", text="ok"),
-            _Ev(kind="done"),
-        ])
+        todos = json.dumps(
+            {
+                "todos": [
+                    {"content": "a", "activeForm": "doing a", "status": "pending"},
+                ]
+            }
+        ).encode("utf-8")
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="tool_call", plugin="builtin", tool="todo_write", args_json=todos),
+                _Ev(
+                    kind="tool_result",
+                    plugin="builtin",
+                    tool="todo_write",
+                    duration_ms=3,
+                    is_error=False,
+                ),
+                _Ev(kind="token_delta", text="ok"),
+                _Ev(kind="done"),
+            ]
+        )
         binding = ChannelBinding.telegram(bot_id=999, chat_id=7, user_id=7)
         inbound: InboundEvent[Any] = InboundEvent(
-            channel="telegram", binding=binding, text="hi",
-            message_id="1", timestamp=0, mentioned=True,
+            channel="telegram",
+            binding=binding,
+            text="hi",
+            message_id="1",
+            timestamp=0,
+            mentioned=True,
         )
         sender = _FakeTelegramSender()
         await handle_one_telegram(svc, inbound, "m", sender, asyncio.Event())  # type: ignore[arg-type]
@@ -1994,9 +2218,7 @@ class TestRunChannelConfig:
     async def test_run_slack_channel_requires_app_token(self) -> None:
         import asyncio
 
-        params = SlackChannelParams(
-            config=SimpleNamespace(app_token="", bot_token="xoxb")
-        )
+        params = SlackChannelParams(config=SimpleNamespace(app_token="", bot_token="xoxb"))
         with pytest.raises(ValueError, match="app_token"):
             await run_slack_channel(params, asyncio.Event())
 
@@ -2004,9 +2226,7 @@ class TestRunChannelConfig:
     async def test_run_slack_channel_requires_bot_token(self) -> None:
         import asyncio
 
-        params = SlackChannelParams(
-            config=SimpleNamespace(app_token="xapp", bot_token="")
-        )
+        params = SlackChannelParams(config=SimpleNamespace(app_token="xapp", bot_token=""))
         with pytest.raises(ValueError, match="bot_token"):
             await run_slack_channel(params, asyncio.Event())
 
@@ -2014,9 +2234,7 @@ class TestRunChannelConfig:
     async def test_run_feishu_channel_requires_app_id(self) -> None:
         import asyncio
 
-        params = FeishuChannelParams(
-            config=SimpleNamespace(app_id="", app_secret="s")
-        )
+        params = FeishuChannelParams(config=SimpleNamespace(app_id="", app_secret="s"))
         with pytest.raises(ValueError, match="app_id"):
             await run_feishu_channel(params, asyncio.Event())
 
@@ -2024,9 +2242,7 @@ class TestRunChannelConfig:
     async def test_run_feishu_channel_requires_app_secret(self) -> None:
         import asyncio
 
-        params = FeishuChannelParams(
-            config=SimpleNamespace(app_id="a", app_secret="")
-        )
+        params = FeishuChannelParams(config=SimpleNamespace(app_id="a", app_secret=""))
         with pytest.raises(ValueError, match="app_secret"):
             await run_feishu_channel(params, asyncio.Event())
 
@@ -2075,9 +2291,7 @@ class _FakeDiscordSender:
         self.sent.append((channel_id, text, reply_to_message_id))
         return f"msg-{self._next_id}"
 
-    async def edit_message(
-        self, channel_id: str, message_id: str, content: str
-    ) -> None:
+    async def edit_message(self, channel_id: str, message_id: str, content: str) -> None:
         if self.edit_message_should_raise:
             raise RuntimeError("simulated edit_message failure")
         self.edits.append((channel_id, message_id, content))
@@ -2095,9 +2309,7 @@ class _FakeDiscordSender:
         reply_to_message_id: str | None = None,
     ) -> str:
         self._next_id += 1
-        self.files.append(
-            (channel_id, str(path), filename, content)
-        )
+        self.files.append((channel_id, str(path), filename, content))
         return f"file-{self._next_id}"
 
 
@@ -2125,16 +2337,12 @@ class _FakeSlackSender:
         self.sent.append((channel, text, thread_ts))
         return f"1.{self._next_id}"
 
-    async def update_message(
-        self, channel: str, ts: str, text: str
-    ) -> None:
+    async def update_message(self, channel: str, ts: str, text: str) -> None:
         if self.update_message_should_raise:
             raise RuntimeError("simulated update_message failure")
         self.updates.append((channel, ts, text))
 
-    async def post_typing(
-        self, channel: str, thread_ts: str | None = None
-    ) -> None:
+    async def post_typing(self, channel: str, thread_ts: str | None = None) -> None:
         self.typings.append((channel, thread_ts))
 
     async def upload_file(
@@ -2147,9 +2355,7 @@ class _FakeSlackSender:
         thread_ts: str | None = None,
     ) -> str:
         self._next_id += 1
-        self.uploads.append(
-            (channels, str(path), filename, initial_comment, thread_ts)
-        )
+        self.uploads.append((channels, str(path), filename, initial_comment, thread_ts))
         return f"F-{self._next_id}"
 
 
@@ -2183,7 +2389,11 @@ class _FakeFeishuSender:
         self.updates.append((message_id, text))
 
     async def upload_file(
-        self, path: Any, *, filename: str | None = None, file_type: str = "stream",
+        self,
+        path: Any,
+        *,
+        filename: str | None = None,
+        file_type: str = "stream",
     ) -> str:
         self._next_id += 1
         self.uploads.append((str(path), filename))
@@ -2202,9 +2412,7 @@ class _FakeFeishuSender:
 
 
 def _inbound(channel: str) -> InboundEvent[Any]:
-    binding = ChannelBinding(
-        channel=channel, account="bot", thread="T1", sender="U1"
-    )
+    binding = ChannelBinding(channel=channel, account="bot", thread="T1", sender="U1")
     return InboundEvent(
         channel=channel,
         binding=binding,
@@ -2227,11 +2435,13 @@ class TestHandleOneDiscord:
         placeholder — same UX shape as Telegram."""
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(kind="token_delta", text="he"),
-            _Ev(kind="token_delta", text="llo"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="token_delta", text="he"),
+                _Ev(kind="token_delta", text="llo"),
+                _Ev(kind="done"),
+            ]
+        )
         sender = _FakeDiscordSender()
         await handle_one_discord(svc, _inbound("discord"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
         # Placeholder went out as a normal sendMessage.
@@ -2260,10 +2470,12 @@ class TestHandleOneDiscord:
         flatten it — bold/code/escaped mentions reach the client intact."""
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(kind="token_delta", text="see **bold** and `code`, not `@everyone`"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="token_delta", text="see **bold** and `code`, not `@everyone`"),
+                _Ev(kind="done"),
+            ]
+        )
         sender = _FakeDiscordSender()
         await handle_one_discord(svc, _inbound("discord"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
         assert sender.edits[-1][2] == "see **bold** and `code`, not `@everyone`"
@@ -2287,10 +2499,12 @@ class TestHandleOneDiscord:
         than leave it stuck at the generating spinner."""
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(kind="token_delta", text="  "),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="token_delta", text="  "),
+                _Ev(kind="done"),
+            ]
+        )
         sender = _FakeDiscordSender()
         await handle_one_discord(svc, _inbound("discord"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
         # No new send_message after the placeholder.
@@ -2303,16 +2517,18 @@ class TestHandleOneDiscord:
     async def test_tool_call_renders_arg_preview(self) -> None:
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(
-                kind="tool_call",
-                plugin="web_search",
-                tool="web_search",
-                args_json=b'{"query":"latest gpt-5.5 news"}',
-            ),
-            _Ev(kind="token_delta", text="done"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(
+                    kind="tool_call",
+                    plugin="web_search",
+                    tool="web_search",
+                    args_json=b'{"query":"latest gpt-5.5 news"}',
+                ),
+                _Ev(kind="token_delta", text="done"),
+                _Ev(kind="done"),
+            ]
+        )
         sender = _FakeDiscordSender()
         await handle_one_discord(svc, _inbound("discord"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
         edit_texts = [e[2] for e in sender.edits]
@@ -2322,14 +2538,25 @@ class TestHandleOneDiscord:
     async def test_tool_result_renders_duration_success(self) -> None:
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(kind="tool_call", plugin="web_search", tool="web_search",
-                args_json=b'{"query":"x"}'),
-            _Ev(kind="tool_result", plugin="web_search", tool="web_search",
-                duration_ms=1234, is_error=False),
-            _Ev(kind="token_delta", text="ok"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(
+                    kind="tool_call",
+                    plugin="web_search",
+                    tool="web_search",
+                    args_json=b'{"query":"x"}',
+                ),
+                _Ev(
+                    kind="tool_result",
+                    plugin="web_search",
+                    tool="web_search",
+                    duration_ms=1234,
+                    is_error=False,
+                ),
+                _Ev(kind="token_delta", text="ok"),
+                _Ev(kind="done"),
+            ]
+        )
         sender = _FakeDiscordSender()
         await handle_one_discord(svc, _inbound("discord"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
         edit_texts = [e[2] for e in sender.edits]
@@ -2339,15 +2566,26 @@ class TestHandleOneDiscord:
     async def test_tool_result_renders_error(self) -> None:
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(kind="tool_call", plugin="run_shell", tool="run_shell",
-                args_json=b'{"command":"rm -rf /"}'),
-            _Ev(kind="tool_result", plugin="run_shell", tool="run_shell",
-                duration_ms=42, is_error=True,
-                error_summary="permission denied"),
-            _Ev(kind="token_delta", text="failed"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(
+                    kind="tool_call",
+                    plugin="run_shell",
+                    tool="run_shell",
+                    args_json=b'{"command":"rm -rf /"}',
+                ),
+                _Ev(
+                    kind="tool_result",
+                    plugin="run_shell",
+                    tool="run_shell",
+                    duration_ms=42,
+                    is_error=True,
+                    error_summary="permission denied",
+                ),
+                _Ev(kind="token_delta", text="failed"),
+                _Ev(kind="done"),
+            ]
+        )
         sender = _FakeDiscordSender()
         await handle_one_discord(svc, _inbound("discord"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
         edit_texts = [e[2] for e in sender.edits]
@@ -2359,12 +2597,13 @@ class TestHandleOneDiscord:
         and NOT be accumulated into the final reply."""
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(kind="token_delta", text="let me think about this",
-                is_reasoning=True),
-            _Ev(kind="token_delta", text="the answer is 42"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="token_delta", text="let me think about this", is_reasoning=True),
+                _Ev(kind="token_delta", text="the answer is 42"),
+                _Ev(kind="done"),
+            ]
+        )
         sender = _FakeDiscordSender()
         await handle_one_discord(svc, _inbound("discord"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
         edit_texts = [e[2] for e in sender.edits]
@@ -2382,16 +2621,18 @@ class TestHandleOneDiscord:
         html = tmp_path / "page.html"
         html.write_text("<!DOCTYPE html><h1>hi</h1>", encoding="utf-8")
         args = json.dumps({"path": str(html), "filename": "page.html"})
-        svc = _ScriptedChatService([
-            _Ev(
-                kind="tool_call",
-                plugin="send_attachment",
-                tool="send_attachment",
-                args_json=args.encode("utf-8"),
-            ),
-            _Ev(kind="token_delta", text="文件已发送"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(
+                    kind="tool_call",
+                    plugin="send_attachment",
+                    tool="send_attachment",
+                    args_json=args.encode("utf-8"),
+                ),
+                _Ev(kind="token_delta", text="文件已发送"),
+                _Ev(kind="done"),
+            ]
+        )
         sender = _FakeDiscordSender()
         await handle_one_discord(svc, _inbound("discord"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
         assert sender.files, f"expected send_file call; got files={sender.files}"
@@ -2451,10 +2692,12 @@ class TestHandleOneDiscord:
         return cleanly."""
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(kind="token_delta", text="hi"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="token_delta", text="hi"),
+                _Ev(kind="done"),
+            ]
+        )
         sender = _FakeDiscordSender()
         original_edit = sender.edit_message
 
@@ -2478,11 +2721,13 @@ class TestHandleOneSlack:
     async def test_concat_and_send_threaded(self) -> None:
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(kind="token_delta", text="hi "),
-            _Ev(kind="token_delta", text="there"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="token_delta", text="hi "),
+                _Ev(kind="token_delta", text="there"),
+                _Ev(kind="done"),
+            ]
+        )
         sender = _FakeSlackSender()
         await handle_one_slack(svc, _inbound("slack"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
         # Placeholder sent into the thread.
@@ -2506,10 +2751,12 @@ class TestHandleOneSlack:
         it — formatting and escaped mentions reach the client intact."""
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(kind="token_delta", text="see **bold** and `code`, not `@here`"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="token_delta", text="see **bold** and `code`, not `@here`"),
+                _Ev(kind="done"),
+            ]
+        )
         sender = _FakeSlackSender()
         await handle_one_slack(svc, _inbound("slack"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
         assert sender.updates[-1][2] == "see **bold** and `code`, not `@here`"
@@ -2530,10 +2777,12 @@ class TestHandleOneSlack:
     async def test_empty_reply_edits_placeholder(self) -> None:
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(kind="token_delta", text="  "),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="token_delta", text="  "),
+                _Ev(kind="done"),
+            ]
+        )
         sender = _FakeSlackSender()
         await handle_one_slack(svc, _inbound("slack"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
         assert len(sender.sent) == 1
@@ -2544,16 +2793,18 @@ class TestHandleOneSlack:
     async def test_tool_call_renders_arg_preview(self) -> None:
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(
-                kind="tool_call",
-                plugin="web_search",
-                tool="web_search",
-                args_json=b'{"query":"slack mutable spinner"}',
-            ),
-            _Ev(kind="token_delta", text="done"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(
+                    kind="tool_call",
+                    plugin="web_search",
+                    tool="web_search",
+                    args_json=b'{"query":"slack mutable spinner"}',
+                ),
+                _Ev(kind="token_delta", text="done"),
+                _Ev(kind="done"),
+            ]
+        )
         sender = _FakeSlackSender()
         await handle_one_slack(svc, _inbound("slack"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
         edit_texts = [u[2] for u in sender.updates]
@@ -2563,14 +2814,25 @@ class TestHandleOneSlack:
     async def test_tool_result_renders_duration_success(self) -> None:
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(kind="tool_call", plugin="web_search", tool="web_search",
-                args_json=b'{"query":"x"}'),
-            _Ev(kind="tool_result", plugin="web_search", tool="web_search",
-                duration_ms=2500, is_error=False),
-            _Ev(kind="token_delta", text="ok"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(
+                    kind="tool_call",
+                    plugin="web_search",
+                    tool="web_search",
+                    args_json=b'{"query":"x"}',
+                ),
+                _Ev(
+                    kind="tool_result",
+                    plugin="web_search",
+                    tool="web_search",
+                    duration_ms=2500,
+                    is_error=False,
+                ),
+                _Ev(kind="token_delta", text="ok"),
+                _Ev(kind="done"),
+            ]
+        )
         sender = _FakeSlackSender()
         await handle_one_slack(svc, _inbound("slack"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
         edit_texts = [u[2] for u in sender.updates]
@@ -2580,15 +2842,26 @@ class TestHandleOneSlack:
     async def test_tool_result_renders_error(self) -> None:
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(kind="tool_call", plugin="run_shell", tool="run_shell",
-                args_json=b'{"command":"x"}'),
-            _Ev(kind="tool_result", plugin="run_shell", tool="run_shell",
-                duration_ms=42, is_error=True,
-                error_summary="permission denied"),
-            _Ev(kind="token_delta", text="failed"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(
+                    kind="tool_call",
+                    plugin="run_shell",
+                    tool="run_shell",
+                    args_json=b'{"command":"x"}',
+                ),
+                _Ev(
+                    kind="tool_result",
+                    plugin="run_shell",
+                    tool="run_shell",
+                    duration_ms=42,
+                    is_error=True,
+                    error_summary="permission denied",
+                ),
+                _Ev(kind="token_delta", text="failed"),
+                _Ev(kind="done"),
+            ]
+        )
         sender = _FakeSlackSender()
         await handle_one_slack(svc, _inbound("slack"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
         edit_texts = [u[2] for u in sender.updates]
@@ -2598,12 +2871,13 @@ class TestHandleOneSlack:
     async def test_reasoning_delta_shows_thinking_line(self) -> None:
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(kind="token_delta", text="hmm",
-                is_reasoning=True),
-            _Ev(kind="token_delta", text="answer"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="token_delta", text="hmm", is_reasoning=True),
+                _Ev(kind="token_delta", text="answer"),
+                _Ev(kind="done"),
+            ]
+        )
         sender = _FakeSlackSender()
         await handle_one_slack(svc, _inbound("slack"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
         edit_texts = [u[2] for u in sender.updates]
@@ -2619,16 +2893,18 @@ class TestHandleOneSlack:
         html = tmp_path / "doc.pdf"
         html.write_bytes(b"%PDF-1.4 fake")
         args = json.dumps({"path": str(html), "filename": "doc.pdf"})
-        svc = _ScriptedChatService([
-            _Ev(
-                kind="tool_call",
-                plugin="send_attachment",
-                tool="send_attachment",
-                args_json=args.encode("utf-8"),
-            ),
-            _Ev(kind="token_delta", text="文件已发送"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(
+                    kind="tool_call",
+                    plugin="send_attachment",
+                    tool="send_attachment",
+                    args_json=args.encode("utf-8"),
+                ),
+                _Ev(kind="token_delta", text="文件已发送"),
+                _Ev(kind="done"),
+            ]
+        )
         sender = _FakeSlackSender()
         await handle_one_slack(svc, _inbound("slack"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
         assert sender.uploads, f"expected upload_file call; got uploads={sender.uploads}"
@@ -2662,10 +2938,12 @@ class TestHandleOneFeishu:
     async def test_concat_and_send_reply(self) -> None:
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(kind="token_delta", text="ok"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="token_delta", text="ok"),
+                _Ev(kind="done"),
+            ]
+        )
         sender = _FakeFeishuSender()
         await handle_one_feishu(svc, _inbound("feishu"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
         # Placeholder went out as a sendMessage; final edit landed via update_message.
@@ -2697,10 +2975,12 @@ class TestHandleOneFeishu:
     async def test_empty_reply_edits_placeholder(self) -> None:
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(kind="token_delta", text="  "),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="token_delta", text="  "),
+                _Ev(kind="done"),
+            ]
+        )
         sender = _FakeFeishuSender()
         await handle_one_feishu(svc, _inbound("feishu"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
         assert len(sender.sent) == 1
@@ -2711,16 +2991,18 @@ class TestHandleOneFeishu:
     async def test_tool_call_renders_arg_preview(self) -> None:
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(
-                kind="tool_call",
-                plugin="web_search",
-                tool="web_search",
-                args_json=b'{"query":"feishu spinner port"}',
-            ),
-            _Ev(kind="token_delta", text="done"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(
+                    kind="tool_call",
+                    plugin="web_search",
+                    tool="web_search",
+                    args_json=b'{"query":"feishu spinner port"}',
+                ),
+                _Ev(kind="token_delta", text="done"),
+                _Ev(kind="done"),
+            ]
+        )
         sender = _FakeFeishuSender()
         await handle_one_feishu(svc, _inbound("feishu"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
         edit_texts = [u[1] for u in sender.updates]
@@ -2730,14 +3012,25 @@ class TestHandleOneFeishu:
     async def test_tool_result_renders_duration_success(self) -> None:
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(kind="tool_call", plugin="web_search", tool="web_search",
-                args_json=b'{"query":"x"}'),
-            _Ev(kind="tool_result", plugin="web_search", tool="web_search",
-                duration_ms=500, is_error=False),
-            _Ev(kind="token_delta", text="ok"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(
+                    kind="tool_call",
+                    plugin="web_search",
+                    tool="web_search",
+                    args_json=b'{"query":"x"}',
+                ),
+                _Ev(
+                    kind="tool_result",
+                    plugin="web_search",
+                    tool="web_search",
+                    duration_ms=500,
+                    is_error=False,
+                ),
+                _Ev(kind="token_delta", text="ok"),
+                _Ev(kind="done"),
+            ]
+        )
         sender = _FakeFeishuSender()
         await handle_one_feishu(svc, _inbound("feishu"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
         edit_texts = [u[1] for u in sender.updates]
@@ -2748,15 +3041,26 @@ class TestHandleOneFeishu:
     async def test_tool_result_renders_error(self) -> None:
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(kind="tool_call", plugin="run_shell", tool="run_shell",
-                args_json=b'{"command":"x"}'),
-            _Ev(kind="tool_result", plugin="run_shell", tool="run_shell",
-                duration_ms=42, is_error=True,
-                error_summary="permission denied"),
-            _Ev(kind="token_delta", text="failed"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(
+                    kind="tool_call",
+                    plugin="run_shell",
+                    tool="run_shell",
+                    args_json=b'{"command":"x"}',
+                ),
+                _Ev(
+                    kind="tool_result",
+                    plugin="run_shell",
+                    tool="run_shell",
+                    duration_ms=42,
+                    is_error=True,
+                    error_summary="permission denied",
+                ),
+                _Ev(kind="token_delta", text="failed"),
+                _Ev(kind="done"),
+            ]
+        )
         sender = _FakeFeishuSender()
         await handle_one_feishu(svc, _inbound("feishu"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
         edit_texts = [u[1] for u in sender.updates]
@@ -2766,12 +3070,13 @@ class TestHandleOneFeishu:
     async def test_reasoning_delta_shows_thinking_line(self) -> None:
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(kind="token_delta", text="thinking out loud",
-                is_reasoning=True),
-            _Ev(kind="token_delta", text="42"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="token_delta", text="thinking out loud", is_reasoning=True),
+                _Ev(kind="token_delta", text="42"),
+                _Ev(kind="done"),
+            ]
+        )
         sender = _FakeFeishuSender()
         await handle_one_feishu(svc, _inbound("feishu"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
         edit_texts = [u[1] for u in sender.updates]
@@ -2786,16 +3091,18 @@ class TestHandleOneFeishu:
         html = tmp_path / "report.csv"
         html.write_text("col1,col2\n1,2\n", encoding="utf-8")
         args = json.dumps({"path": str(html), "filename": "report.csv"})
-        svc = _ScriptedChatService([
-            _Ev(
-                kind="tool_call",
-                plugin="send_attachment",
-                tool="send_attachment",
-                args_json=args.encode("utf-8"),
-            ),
-            _Ev(kind="token_delta", text="文件已发送"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(
+                    kind="tool_call",
+                    plugin="send_attachment",
+                    tool="send_attachment",
+                    args_json=args.encode("utf-8"),
+                ),
+                _Ev(kind="token_delta", text="文件已发送"),
+                _Ev(kind="done"),
+            ]
+        )
         sender = _FakeFeishuSender()
         await handle_one_feishu(svc, _inbound("feishu"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
         # Two-step: upload_file mints a file_key, send_file_message posts it.
@@ -2868,9 +3175,7 @@ class TestQqHealthWatcher:
 
         from corlinman_channels.service import _qq_health_watcher
 
-        adapter = SimpleNamespace(
-            last_event_at_ms=None, url="ws://napcat.example:3001"
-        )
+        adapter = SimpleNamespace(last_event_at_ms=None, url="ws://napcat.example:3001")
         cancel = asyncio.Event()
 
         async def cancel_soon() -> None:
@@ -2884,9 +3189,7 @@ class TestQqHealthWatcher:
         os.environ["CORLINMAN_QQ_HEALTH_PROBE_S"] = "1"
         os.environ["CORLINMAN_QQ_HEALTH_LOST_S"] = "1"
         try:
-            with caplog.at_level(
-                logging.WARNING, logger="corlinman_channels.service"
-            ):
+            with caplog.at_level(logging.WARNING, logger="corlinman_channels.service"):
                 await asyncio.wait_for(
                     asyncio.gather(
                         _qq_health_watcher(adapter, cancel),  # type: ignore[arg-type]
@@ -2898,9 +3201,7 @@ class TestQqHealthWatcher:
             os.environ.pop("CORLINMAN_QQ_HEALTH_PROBE_S", None)
             os.environ.pop("CORLINMAN_QQ_HEALTH_LOST_S", None)
 
-        warnings = [
-            r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
-        ]
+        warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
         assert any("heartbeat_lost" in m for m in warnings)
         # The buggy version rendered "no NapCat event in Nones"; the fix
         # routes the None case to a different branch that names the ws url.
@@ -2932,9 +3233,7 @@ class TestQqHealthWatcher:
         os.environ["CORLINMAN_QQ_HEALTH_PROBE_S"] = "1"
         os.environ["CORLINMAN_QQ_HEALTH_LOST_S"] = "1"
         try:
-            with caplog.at_level(
-                logging.WARNING, logger="corlinman_channels.service"
-            ):
+            with caplog.at_level(logging.WARNING, logger="corlinman_channels.service"):
                 await asyncio.wait_for(
                     asyncio.gather(
                         _qq_health_watcher(adapter, cancel),  # type: ignore[arg-type]
@@ -2946,9 +3245,7 @@ class TestQqHealthWatcher:
             os.environ.pop("CORLINMAN_QQ_HEALTH_PROBE_S", None)
             os.environ.pop("CORLINMAN_QQ_HEALTH_LOST_S", None)
 
-        msgs = "\n".join(
-            r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
-        )
+        msgs = "\n".join(r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING)
         assert "heartbeat_lost" in msgs
         assert "Nones" not in msgs
         assert "scan a fresh QR" in msgs
@@ -3064,6 +3361,7 @@ class TestQqDispatchConcurrencyCap:
                         except TimeoutError:
                             pass
                         from types import SimpleNamespace
+
                         yield SimpleNamespace(kind="token_delta", text="ok")
                         yield SimpleNamespace(kind="done")
                     finally:
@@ -3106,9 +3404,7 @@ class TestQqDispatchConcurrencyCap:
         )
 
         # CRITICAL: the recorder never saw more than the cap concurrently.
-        assert peak <= 2, (
-            f"semaphore cap=2 was violated; observed peak={peak} concurrent runs"
-        )
+        assert peak <= 2, f"semaphore cap=2 was violated; observed peak={peak} concurrent runs"
         # Every accepted inbound must have been dispatched.
         assert finished == 20, f"expected all 20 to finish, got {finished}"
 
@@ -3151,9 +3447,14 @@ class TestQqDispatchInboxLocalScope:
         class _StubInbox:
             def __init__(self) -> None:
                 self.calls: list[str] = []
+                self.enqueued: list[dict[str, Any]] = []
 
-            async def enqueue(self, **_kw: Any) -> int:
+            async def list_pending(self, **_kw: Any) -> list[Any]:
+                return []
+
+            async def enqueue(self, **kw: Any) -> int:
                 self.calls.append("enqueue")
+                self.enqueued.append(dict(kw))
                 return 1
 
             async def mark_dispatched(self, *_a: Any) -> None:
@@ -3167,7 +3468,10 @@ class TestQqDispatchInboxLocalScope:
 
         sentinel_inbox = _StubInbox()
 
-        async def _fake_open() -> Any:
+        opened_instances: list[str] = []
+
+        async def _fake_open(runtime_instance_id: str) -> Any:
+            opened_instances.append(runtime_instance_id)
             return sentinel_inbox
 
         monkeypatch.setattr(_service_mod, "_try_open_inbox", _fake_open)
@@ -3205,16 +3509,19 @@ class TestQqDispatchInboxLocalScope:
             async def send_action(self, action: Any) -> None:
                 self.sent.append(action)
 
-        svc = _ScriptedChatService([
-            _Ev(kind="token_delta", text="ok"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="token_delta", text="ok"),
+                _Ev(kind="done"),
+            ]
+        )
         router = ChannelRouter(self_ids=[100])
         params = QqChannelParams(
             config=SimpleNamespace(ws_url="ws://x", self_ids=[100]),
             model="m",
             chat_service=svc,  # type: ignore[arg-type]
             inbox=None,  # explicit — the lazy-open path is what's tested
+            instance_id="bot-b",
         )
         adapter = _FakeAdapter()
         cancel = asyncio.Event()
@@ -3235,14 +3542,115 @@ class TestQqDispatchInboxLocalScope:
         # lives in a local. L4 regression: the prior code did
         # ``params.inbox = await _try_open_inbox()`` which leaked the
         # sentinel into the shared params dataclass.
-        assert params.inbox is None, (
-            "params.inbox was mutated by the dispatch loop — L4 regression"
-        )
+        assert params.inbox is None, "params.inbox was mutated by the dispatch loop — L4 regression"
+        assert opened_instances == ["bot-b"]
         # And the local *did* get used during the handler — proves the
         # lazy open ran and that handle_one_qq actually saw the stub.
         assert "enqueue" in sentinel_inbox.calls
+        assert sentinel_inbox.enqueued[0]["runtime_instance_id"] == "bot-b"
+        assert json.loads(sentinel_inbox.enqueued[0]["payload_json"])["self_id"] == 100
         assert "mark_dispatched" in sentinel_inbox.calls
         assert "mark_done" in sentinel_inbox.calls
+
+    @pytest.mark.asyncio
+    async def test_pending_non_default_row_replays_through_matching_runtime(
+        self,
+    ) -> None:
+        import asyncio
+
+        from corlinman_channels.common import ChannelBinding
+        from corlinman_channels.router import ChannelRouter
+        from corlinman_channels.service import QqChannelParams, _qq_dispatch_loop
+
+        entry = SimpleNamespace(
+            id=17,
+            runtime_instance_id="bot-b",
+            session_key="qq:100:private:200",
+            message_id="7",
+            user_text="replay me",
+            payload_json=json.dumps(
+                {
+                    "self_id": 100,
+                    "message_type": "private",
+                    "user_id": 200,
+                    "group_id": None,
+                    "message_id": 7,
+                    "time": 123,
+                    "raw_message": "replay me",
+                }
+            ),
+        )
+
+        class _Inbox:
+            def __init__(self) -> None:
+                self.list_calls: list[dict[str, Any]] = []
+                self.calls: list[tuple[str, int]] = []
+
+            async def list_pending(self, **kwargs: Any) -> list[Any]:
+                self.list_calls.append(dict(kwargs))
+                return [entry]
+
+            async def mark_dispatched(self, row_id: int) -> None:
+                self.calls.append(("dispatched", row_id))
+
+            async def mark_done(self, row_id: int) -> None:
+                self.calls.append(("done", row_id))
+
+            async def mark_dead(self, row_id: int, *_args: Any) -> None:
+                self.calls.append(("dead", row_id))
+
+        class _Adapter:
+            def __init__(self) -> None:
+                self.sent: list[Any] = []
+
+            async def inbound(self):  # type: ignore[no-untyped-def]
+                await asyncio.Event().wait()
+                yield
+
+            async def send_action(self, action: Any) -> None:
+                self.sent.append(action)
+
+        inbox = _Inbox()
+        chat = _ScriptedChatService(
+            [
+                _Ev(kind="token_delta", text="replayed"),
+                _Ev(kind="done"),
+            ]
+        )
+        cancel = asyncio.Event()
+        params = QqChannelParams(
+            config=SimpleNamespace(ws_url="ws://x", self_ids=[100]),
+            instance_id="bot-b",
+            model="m",
+            chat_service=chat,  # type: ignore[arg-type]
+            inbox=inbox,
+        )
+        adapter = _Adapter()
+
+        async def stop_when_done() -> None:
+            for _ in range(200):
+                if ("done", 17) in inbox.calls:
+                    break
+                await asyncio.sleep(0.01)
+            cancel.set()
+
+        await asyncio.gather(
+            _qq_dispatch_loop(
+                adapter,  # type: ignore[arg-type]
+                ChannelRouter(self_ids=[100]),
+                params,
+                cancel,
+            ),
+            stop_when_done(),
+        )
+
+        assert inbox.list_calls == [{"channel": "qq", "runtime_instance_id": "bot-b", "limit": 20}]
+        assert ("dispatched", 17) in inbox.calls
+        assert ("done", 17) in inbox.calls
+        assert adapter.sent
+        request = chat.calls[0]
+        assert request.runtime_instance_id == "bot-b"
+        assert request.binding == ChannelBinding.qq_private(100, 200)
 
 
 # ---------------------------------------------------------------------------
@@ -3381,11 +3789,13 @@ class TestHandleOneQqOfficial:
         ``send_c2c_text`` carrying the inbound ``msg_id``."""
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(kind="token_delta", text="hello "),
-            _Ev(kind="token_delta", text="world"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="token_delta", text="hello "),
+                _Ev(kind="token_delta", text="world"),
+                _Ev(kind="done"),
+            ]
+        )
         sender = _FakeQqOfficialSender()
         inbound = _qq_official_inbound(
             event_type="C2C_MESSAGE_CREATE",
@@ -3394,7 +3804,11 @@ class TestHandleOneQqOfficial:
             message_id="msg_inbound_42",
         )
         await handle_one_qq_official(
-            svc, inbound, "m", sender, asyncio.Event()  # type: ignore[arg-type]
+            svc,
+            inbound,
+            "m",
+            sender,
+            asyncio.Event(),  # type: ignore[arg-type]
         )
         assert len(sender.text_sends) == 1
         openid, body, msg_id = sender.text_sends[0]
@@ -3408,22 +3822,24 @@ class TestHandleOneQqOfficial:
         prepends the final reply (no mutable spinner available)."""
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(
-                kind="tool_call",
-                plugin="web_search",
-                tool="web_search",
-                args_json=b'{"query":"tencent earnings"}',
-            ),
-            _Ev(
-                kind="tool_call",
-                plugin="builtin",
-                tool="read_file",
-                args_json=b'{"path":"/tmp/notes.md"}',
-            ),
-            _Ev(kind="token_delta", text="here is the answer"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(
+                    kind="tool_call",
+                    plugin="web_search",
+                    tool="web_search",
+                    args_json=b'{"query":"tencent earnings"}',
+                ),
+                _Ev(
+                    kind="tool_call",
+                    plugin="builtin",
+                    tool="read_file",
+                    args_json=b'{"path":"/tmp/notes.md"}',
+                ),
+                _Ev(kind="token_delta", text="here is the answer"),
+                _Ev(kind="done"),
+            ]
+        )
         sender = _FakeQqOfficialSender()
         inbound = _qq_official_inbound(
             event_type="GROUP_AT_MESSAGE_CREATE",
@@ -3432,7 +3848,11 @@ class TestHandleOneQqOfficial:
             message_id="msg_grp_1",
         )
         await handle_one_qq_official(
-            svc, inbound, "m", sender, asyncio.Event()  # type: ignore[arg-type]
+            svc,
+            inbound,
+            "m",
+            sender,
+            asyncio.Event(),  # type: ignore[arg-type]
         )
         assert len(sender.text_sends) == 1
         body = sender.text_sends[0][1]
@@ -3448,9 +3868,7 @@ class TestHandleOneQqOfficial:
         assert "─" in body
 
     @pytest.mark.asyncio
-    async def test_send_attachment_uploads_and_sends_image(
-        self, tmp_path: Any
-    ) -> None:
+    async def test_send_attachment_uploads_and_sends_image(self, tmp_path: Any) -> None:
         """``send_attachment`` for an image must pre-upload via
         ``upload_*_image`` then dispatch via ``send_*_image``."""
         import asyncio
@@ -3460,16 +3878,18 @@ class TestHandleOneQqOfficial:
         img = tmp_path / "chart.png"
         img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
         args = _json.dumps({"path": str(img), "filename": "chart.png"})
-        svc = _ScriptedChatService([
-            _Ev(
-                kind="tool_call",
-                plugin="send_attachment",
-                tool="send_attachment",
-                args_json=args.encode("utf-8"),
-            ),
-            _Ev(kind="token_delta", text="see attached"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(
+                    kind="tool_call",
+                    plugin="send_attachment",
+                    tool="send_attachment",
+                    args_json=args.encode("utf-8"),
+                ),
+                _Ev(kind="token_delta", text="see attached"),
+                _Ev(kind="done"),
+            ]
+        )
         sender = _FakeQqOfficialSender()
         inbound = _qq_official_inbound(
             event_type="C2C_MESSAGE_CREATE",
@@ -3510,15 +3930,17 @@ class TestHandleOneQqOfficial:
         img = tmp_path / "blocked.png"
         img.write_bytes(b"\x89PNG\r\n\x1a\nsecret")
         args = _json.dumps({"path": str(img), "filename": "blocked.png"})
-        svc = _ScriptedChatService([
-            _Ev(
-                kind="tool_call",
-                plugin="send_attachment",
-                tool="send_attachment",
-                args_json=args.encode("utf-8"),
-            ),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(
+                    kind="tool_call",
+                    plugin="send_attachment",
+                    tool="send_attachment",
+                    args_json=args.encode("utf-8"),
+                ),
+                _Ev(kind="done"),
+            ]
+        )
         sender = _FakeQqOfficialSender()
         inbound = _qq_official_inbound(
             event_type="C2C_MESSAGE_CREATE",
@@ -3549,9 +3971,7 @@ class TestHandleOneQqOfficial:
         assert "blocked.png" not in sender.text_sends[0][1]
 
     @pytest.mark.asyncio
-    async def test_non_image_attachment_renders_unsupported_status(
-        self, tmp_path: Any
-    ) -> None:
+    async def test_non_image_attachment_renders_unsupported_status(self, tmp_path: Any) -> None:
         """Non-image files cannot be sent via QQ Official; the handler
         must surface a friendly status text instead of crashing."""
         import asyncio
@@ -3560,16 +3980,18 @@ class TestHandleOneQqOfficial:
         f = tmp_path / "doc.pdf"
         f.write_bytes(b"%PDF-1.4 fake")
         args = _json.dumps({"path": str(f), "filename": "doc.pdf"})
-        svc = _ScriptedChatService([
-            _Ev(
-                kind="tool_call",
-                plugin="send_attachment",
-                tool="send_attachment",
-                args_json=args.encode("utf-8"),
-            ),
-            _Ev(kind="token_delta", text="ok"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(
+                    kind="tool_call",
+                    plugin="send_attachment",
+                    tool="send_attachment",
+                    args_json=args.encode("utf-8"),
+                ),
+                _Ev(kind="token_delta", text="ok"),
+                _Ev(kind="done"),
+            ]
+        )
         sender = _FakeQqOfficialSender()
         inbound = _qq_official_inbound(
             event_type="C2C_MESSAGE_CREATE",
@@ -3578,7 +4000,11 @@ class TestHandleOneQqOfficial:
             message_id="msg_pdf_1",
         )
         await handle_one_qq_official(
-            svc, inbound, "m", sender, asyncio.Event()  # type: ignore[arg-type]
+            svc,
+            inbound,
+            "m",
+            sender,
+            asyncio.Event(),  # type: ignore[arg-type]
         )
         # No upload should have happened for the non-image file.
         assert sender.uploads == []
@@ -3603,7 +4029,11 @@ class TestHandleOneQqOfficial:
             sender="ou_err",
         )
         await handle_one_qq_official(
-            svc, inbound, "m", sender, asyncio.Event()  # type: ignore[arg-type]
+            svc,
+            inbound,
+            "m",
+            sender,
+            asyncio.Event(),  # type: ignore[arg-type]
         )
         assert len(sender.text_sends) == 1
         assert "[corlinman error]" in sender.text_sends[0][1]
@@ -3615,10 +4045,12 @@ class TestHandleOneQqOfficial:
         must not ship an empty message."""
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(kind="token_delta", text="   "),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="token_delta", text="   "),
+                _Ev(kind="done"),
+            ]
+        )
         sender = _FakeQqOfficialSender()
         inbound = _qq_official_inbound(
             event_type="C2C_MESSAGE_CREATE",
@@ -3626,7 +4058,11 @@ class TestHandleOneQqOfficial:
             sender="ou_empty",
         )
         await handle_one_qq_official(
-            svc, inbound, "m", sender, asyncio.Event()  # type: ignore[arg-type]
+            svc,
+            inbound,
+            "m",
+            sender,
+            asyncio.Event(),  # type: ignore[arg-type]
         )
         assert sender.text_sends == []
 
@@ -3640,25 +4076,40 @@ class TestHandleOneQqOfficial:
         import asyncio
         import json as _json
 
-        todos = _json.dumps({"todos": [
-            {"content": "Fetch earnings page",
-             "activeForm": "Fetching earnings page",
-             "status": "completed"},
-            {"content": "Draft summary",
-             "activeForm": "Drafting summary",
-             "status": "in_progress"},
-            {"content": "Email customer",
-             "activeForm": "Emailing customer",
-             "status": "pending"},
-        ]}).encode("utf-8")
-        svc = _ScriptedChatService([
-            _Ev(kind="tool_call", plugin="builtin", tool="todo_write",
-                args_json=todos),
-            _Ev(kind="tool_call", plugin="web_search", tool="web_search",
-                args_json=b'{"query":"tencent earnings"}'),
-            _Ev(kind="token_delta", text="here is the answer"),
-            _Ev(kind="done"),
-        ])
+        todos = _json.dumps(
+            {
+                "todos": [
+                    {
+                        "content": "Fetch earnings page",
+                        "activeForm": "Fetching earnings page",
+                        "status": "completed",
+                    },
+                    {
+                        "content": "Draft summary",
+                        "activeForm": "Drafting summary",
+                        "status": "in_progress",
+                    },
+                    {
+                        "content": "Email customer",
+                        "activeForm": "Emailing customer",
+                        "status": "pending",
+                    },
+                ]
+            }
+        ).encode("utf-8")
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="tool_call", plugin="builtin", tool="todo_write", args_json=todos),
+                _Ev(
+                    kind="tool_call",
+                    plugin="web_search",
+                    tool="web_search",
+                    args_json=b'{"query":"tencent earnings"}',
+                ),
+                _Ev(kind="token_delta", text="here is the answer"),
+                _Ev(kind="done"),
+            ]
+        )
         sender = _FakeQqOfficialSender()
         inbound = _qq_official_inbound(
             event_type="C2C_MESSAGE_CREATE",
@@ -3666,7 +4117,11 @@ class TestHandleOneQqOfficial:
             sender="ou_todo",
         )
         await handle_one_qq_official(
-            svc, inbound, "m", sender, asyncio.Event()  # type: ignore[arg-type]
+            svc,
+            inbound,
+            "m",
+            sender,
+            asyncio.Event(),  # type: ignore[arg-type]
         )
         assert len(sender.text_sends) == 1
         body = sender.text_sends[0][1]
@@ -3688,9 +4143,7 @@ class TestHandleOneQqOfficial:
     async def test_run_qq_official_channel_requires_app_id(self) -> None:
         import asyncio
 
-        params = QqOfficialChannelParams(
-            config=SimpleNamespace(app_id="", app_secret="s")
-        )
+        params = QqOfficialChannelParams(config=SimpleNamespace(app_id="", app_secret="s"))
         with pytest.raises(ValueError, match="app_id"):
             await run_qq_official_channel(params, asyncio.Event())
 
@@ -3698,9 +4151,7 @@ class TestHandleOneQqOfficial:
     async def test_run_qq_official_channel_requires_app_secret(self) -> None:
         import asyncio
 
-        params = QqOfficialChannelParams(
-            config=SimpleNamespace(app_id="a", app_secret="")
-        )
+        params = QqOfficialChannelParams(config=SimpleNamespace(app_id="a", app_secret=""))
         with pytest.raises(ValueError, match="app_secret"):
             await run_qq_official_channel(params, asyncio.Event())
 
@@ -3796,16 +4247,16 @@ class TestPersonaInjectionMultiChannel:
     async def test_telegram_injects_persona_and_emoji_block(self) -> None:
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(kind="token_delta", text="ok"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="token_delta", text="ok"),
+                _Ev(kind="done"),
+            ]
+        )
         sender = _FakeTelegramSender()
         # Telegram's handle_one_* does ``int(binding.thread)`` for the
         # chat id; use a numeric binding here to avoid the cast failing.
-        binding = ChannelBinding.telegram(
-            bot_id=999, chat_id=42, user_id=42
-        )
+        binding = ChannelBinding.telegram(bot_id=999, chat_id=42, user_id=42)
         inbound: InboundEvent[Any] = InboundEvent(
             channel="telegram",
             binding=binding,
@@ -3822,12 +4273,8 @@ class TestPersonaInjectionMultiChannel:
             chat_service=svc,
             humanlike_enabled=True,
             persona_id="grantley",
-            persona_store=_FakePersonaStoreW7(
-                "grantley", "PERSONA-BODY-MARK\nYou are Grantley."
-            ),
-            asset_store=_FakeAssetStoreW7(
-                [_FakeAssetRecordW7("happy", "/abs/happy.png")]
-            ),
+            persona_store=_FakePersonaStoreW7("grantley", "PERSONA-BODY-MARK\nYou are Grantley."),
+            asset_store=_FakeAssetStoreW7([_FakeAssetRecordW7("happy", "/abs/happy.png")]),
         )
         await handle_one_telegram(
             svc,
@@ -3856,9 +4303,7 @@ class TestPersonaInjectionMultiChannel:
             run_command_handler,
         )
 
-        binding = ChannelBinding.telegram(
-            bot_id=999, chat_id=42, user_id=42
-        )
+        binding = ChannelBinding.telegram(bot_id=999, chat_id=42, user_id=42)
         binding_prefs.set_persona_id(binding, "alice")
         match = match_command_with_args("/new")
         assert match is not None
@@ -3883,10 +4328,12 @@ class TestPersonaInjectionMultiChannel:
             attachments=[],
             payload=None,
         )
-        svc = _ScriptedChatService([
-            _Ev(kind="token_delta", text="ok"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="token_delta", text="ok"),
+                _Ev(kind="done"),
+            ]
+        )
         params = TelegramChannelParams(
             config={},
             model="m",
@@ -3920,10 +4367,12 @@ class TestPersonaInjectionMultiChannel:
     async def test_discord_injects_persona_and_emoji_block(self) -> None:
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(kind="token_delta", text="ok"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="token_delta", text="ok"),
+                _Ev(kind="done"),
+            ]
+        )
         sender = _FakeDiscordSender()
         params = DiscordChannelParams(
             config={},
@@ -3931,12 +4380,8 @@ class TestPersonaInjectionMultiChannel:
             chat_service=svc,
             humanlike_enabled=True,
             persona_id="grantley",
-            persona_store=_FakePersonaStoreW7(
-                "grantley", "PERSONA-BODY-MARK"
-            ),
-            asset_store=_FakeAssetStoreW7(
-                [_FakeAssetRecordW7("happy", "/abs/happy.png")]
-            ),
+            persona_store=_FakePersonaStoreW7("grantley", "PERSONA-BODY-MARK"),
+            asset_store=_FakeAssetStoreW7([_FakeAssetRecordW7("happy", "/abs/happy.png")]),
         )
         await handle_one_discord(
             svc,
@@ -3953,10 +4398,12 @@ class TestPersonaInjectionMultiChannel:
     async def test_slack_injects_persona_and_emoji_block(self) -> None:
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(kind="token_delta", text="ok"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="token_delta", text="ok"),
+                _Ev(kind="done"),
+            ]
+        )
         sender = _FakeSlackSender()
         params = SlackChannelParams(
             config={},
@@ -3964,12 +4411,8 @@ class TestPersonaInjectionMultiChannel:
             chat_service=svc,
             humanlike_enabled=True,
             persona_id="grantley",
-            persona_store=_FakePersonaStoreW7(
-                "grantley", "PERSONA-BODY-MARK"
-            ),
-            asset_store=_FakeAssetStoreW7(
-                [_FakeAssetRecordW7("happy", "/abs/happy.png")]
-            ),
+            persona_store=_FakePersonaStoreW7("grantley", "PERSONA-BODY-MARK"),
+            asset_store=_FakeAssetStoreW7([_FakeAssetRecordW7("happy", "/abs/happy.png")]),
         )
         await handle_one_slack(
             svc,
@@ -3986,10 +4429,12 @@ class TestPersonaInjectionMultiChannel:
     async def test_feishu_injects_persona_and_emoji_block(self) -> None:
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(kind="token_delta", text="ok"),
-            _Ev(kind="done"),
-        ])
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="token_delta", text="ok"),
+                _Ev(kind="done"),
+            ]
+        )
         sender = _FakeFeishuSender()
         params = FeishuChannelParams(
             config={},
@@ -3997,12 +4442,8 @@ class TestPersonaInjectionMultiChannel:
             chat_service=svc,
             humanlike_enabled=True,
             persona_id="grantley",
-            persona_store=_FakePersonaStoreW7(
-                "grantley", "PERSONA-BODY-MARK"
-            ),
-            asset_store=_FakeAssetStoreW7(
-                [_FakeAssetRecordW7("happy", "/abs/happy.png")]
-            ),
+            persona_store=_FakePersonaStoreW7("grantley", "PERSONA-BODY-MARK"),
+            asset_store=_FakeAssetStoreW7([_FakeAssetRecordW7("happy", "/abs/happy.png")]),
         )
         await handle_one_feishu(
             svc,
@@ -4022,14 +4463,14 @@ class TestPersonaInjectionMultiChannel:
         :class:`TestQqPersonaInjection` with an asset store present."""
         import asyncio
 
-        svc = _ScriptedChatService([
-            _Ev(kind="token_delta", text="ok"),
-            _Ev(kind="done"),
-        ])
-        ev = _sample_group_event()
-        binding = ChannelBinding.qq_group(
-            ev.self_id, ev.group_id or 0, ev.user_id
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="token_delta", text="ok"),
+                _Ev(kind="done"),
+            ]
         )
+        ev = _sample_group_event()
+        binding = ChannelBinding.qq_group(ev.self_id, ev.group_id or 0, ev.user_id)
         req = RoutedRequest(binding=binding, content="hi")
         adapter = _FakeOneBotAdapter()
         params = QqChannelParams(
@@ -4038,9 +4479,7 @@ class TestPersonaInjectionMultiChannel:
             chat_service=svc,
             humanlike_enabled=True,
             persona_id="grantley",
-            persona_store=_FakePersonaStoreW7(
-                "grantley", "PERSONA-BODY-MARK"
-            ),
+            persona_store=_FakePersonaStoreW7("grantley", "PERSONA-BODY-MARK"),
             asset_store=_FakeAssetStoreW7(
                 [
                     _FakeAssetRecordW7("happy", "/abs/happy.png"),
@@ -4049,7 +4488,12 @@ class TestPersonaInjectionMultiChannel:
             ),
         )
         await handle_one_qq(
-            svc, req, ev, "m", adapter, asyncio.Event(),  # type: ignore[arg-type]
+            svc,
+            req,
+            ev,
+            "m",
+            adapter,
+            asyncio.Event(),  # type: ignore[arg-type]
             params=params,
         )
         sys_msg = svc.calls[0].messages[0]
@@ -4088,9 +4532,7 @@ class TestTelegramHealth:
         text: str = "hi",
         payload: dict[str, Any] | None = None,
     ) -> InboundEvent[Any]:
-        binding = ChannelBinding.telegram(
-            bot_id=999, chat_id=chat_id, user_id=chat_id
-        )
+        binding = ChannelBinding.telegram(bot_id=999, chat_id=chat_id, user_id=chat_id)
         return InboundEvent(
             channel="telegram",
             binding=binding,

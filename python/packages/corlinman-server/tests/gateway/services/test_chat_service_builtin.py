@@ -126,6 +126,14 @@ def test_build_chat_start_carries_tenant_id() -> None:
     assert start.tenant_id == "acme"
 
 
+def test_build_chat_start_carries_runtime_instance_id() -> None:
+    req = InternalChatRequest(model="x", messages=[], runtime_instance_id="second-bot")
+
+    start = _build_chat_start(req)
+
+    assert start.runtime_instance_id == "second-bot"
+
+
 def test_build_chat_start_tolerates_request_without_tenant_id() -> None:
     """W8 regression guard (lesson: channel duck-typed contract) — a
     channel ``SimpleNamespace`` request carries no ``tenant_id``; the
@@ -134,6 +142,12 @@ def test_build_chat_start_tolerates_request_without_tenant_id() -> None:
     start = _build_chat_start(_channel_style_request())
 
     assert start.tenant_id == ""
+
+
+def test_build_chat_start_tolerates_request_without_runtime_instance_id() -> None:
+    start = _build_chat_start(_channel_style_request())
+
+    assert start.runtime_instance_id == ""
 
 
 def test_build_chat_start_defaults_to_empty_tools_json() -> None:
@@ -162,9 +176,7 @@ def test_advertised_tools_come_from_gateway_not_the_channel_request() -> None:
     stays safe."""
     advertised = b'[{"type":"function","function":{"name":"echo"}}]'
 
-    start = _build_chat_start(
-        _channel_style_request(), advertised_tools_json=advertised
-    )
+    start = _build_chat_start(_channel_style_request(), advertised_tools_json=advertised)
 
     assert start.tools_json == advertised
     assert start.persona_id == ""  # channel request needed no new attribute
@@ -176,16 +188,11 @@ async def test_run_chat_with_channel_request_missing_persona_id_streams_to_done(
     stream to a terminal ``DoneEvent`` instead of escaping ``_run_chat`` as a
     raw ``AttributeError`` that the channel reply loop never converts into a
     user-visible reply or error."""
-    backend = _ScriptedBackend(
-        [agent_pb2.ServerFrame(done=agent_pb2.Done(finish_reason="stop"))]
-    )
+    backend = _ScriptedBackend([agent_pb2.ServerFrame(done=agent_pb2.Done(finish_reason="stop"))])
     executor = _RecordingExecutor()
 
     events = [
-        ev
-        async for ev in _run_chat(
-            backend, executor, _channel_style_request(), asyncio.Event()
-        )
+        ev async for ev in _run_chat(backend, executor, _channel_style_request(), asyncio.Event())
     ]
 
     assert any(isinstance(ev, DoneEvent) for ev in events)
@@ -212,8 +219,11 @@ async def test_tool_execution_emits_per_tool_otel_span() -> None:
             [
                 agent_pb2.ServerFrame(
                     tool_call=agent_pb2.ToolCall(
-                        call_id="c1", plugin="calc", tool="calculator",
-                        args_json=b"{}", seq=1,
+                        call_id="c1",
+                        plugin="calc",
+                        tool="calculator",
+                        args_json=b"{}",
+                        seq=1,
                     )
                 ),
                 agent_pb2.ServerFrame(done=agent_pb2.Done(finish_reason="stop")),

@@ -65,6 +65,10 @@ message ChatStart {
   // so admin session surfaces can scope list/delete/replay by tenant.
   // "" = unattributed (legacy shape, owned by the default tenant).
   string tenant_id = 14;
+  // Trusted configured channel runtime (for example a QQ managed-instance id).
+  // This is control-plane context: never model-visible and never inferred from
+  // persona/model fields. "" preserves the legacy/default runtime.
+  string runtime_instance_id = 15;
 }
 
 // Non-text input attached to a chat turn. Mirrors the Rust

@@ -134,9 +134,7 @@ async def test_append_and_load_messages_round_trip(
             }
         ],
     )
-    await journal.append_message(
-        tid, "tool", '{"result":4}', tool_call_id="c1"
-    )
+    await journal.append_message(tid, "tool", '{"result":4}', tool_call_id="c1")
     msgs = await journal._load_messages(tid)
     assert [m["role"] for m in msgs] == ["user", "assistant", "tool"]
     assert msgs[1]["tool_calls"][0]["id"] == "c1"
@@ -152,9 +150,7 @@ async def test_find_resumable_only_matches_within_window(
     tid = await journal.begin_turn("sess-old", "stale task")
     # Backdate it past the resume window.
     async with aiosqlite.connect(journal._path) as conn:
-        await conn.execute(
-            "UPDATE turns SET started_at_ms = 0 WHERE turn_id = ?", (tid,)
-        )
+        await conn.execute("UPDATE turns SET started_at_ms = 0 WHERE turn_id = ?", (tid,))
         await conn.commit()
     resume = await journal.find_resumable_turn("sess-old", "stale task")
     assert resume is None
@@ -191,9 +187,7 @@ async def test_sweep_stale_in_progress_marks_errored(
 
     tid = await journal.begin_turn("sess-sweep", "abandoned task")
     async with aiosqlite.connect(journal._path) as conn:
-        await conn.execute(
-            "UPDATE turns SET started_at_ms = 0 WHERE turn_id = ?", (tid,)
-        )
+        await conn.execute("UPDATE turns SET started_at_ms = 0 WHERE turn_id = ?", (tid,))
         await conn.commit()
 
     n = await journal.mark_stale_in_progress_as_errored()
@@ -214,7 +208,9 @@ async def test_resume_returns_messages_in_seq_order(
     resume = await journal.find_resumable_turn("sess-order", "ordered task")
     assert resume is not None
     assert [m["role"] for m in resume.messages] == [
-        "user", "assistant", "tool",
+        "user",
+        "assistant",
+        "tool",
     ]
 
 
@@ -247,21 +243,15 @@ async def test_find_resumable_does_not_cross_users_within_session(
     Alice's in-progress turn. With S4, Mallory's lookup misses.
     """
     # Alice opens a turn in group ``g1`` with text "ship it".
-    alice_tid = await journal.begin_turn(
-        "g1", "ship it", user_id="alice"
-    )
+    alice_tid = await journal.begin_turn("g1", "ship it", user_id="alice")
     assert alice_tid is not None
     # Mallory in the same group replays Alice's text — must NOT resume.
-    mallory_match = await journal.find_resumable_turn(
-        "g1", "ship it", user_id="mallory"
-    )
+    mallory_match = await journal.find_resumable_turn("g1", "ship it", user_id="mallory")
     assert mallory_match is None, (
         "S4 violation: Mallory could resume Alice's turn by replaying her text"
     )
     # Alice herself can still resume — same user_id + same text + same session.
-    alice_match = await journal.find_resumable_turn(
-        "g1", "ship it", user_id="alice"
-    )
+    alice_match = await journal.find_resumable_turn("g1", "ship it", user_id="alice")
     assert alice_match is not None
     assert alice_match.turn_id == alice_tid
 
@@ -275,9 +265,7 @@ async def test_find_resumable_legacy_null_user_id_is_visible_to_anyone(
     legacy_tid = await journal.begin_turn("s-mix", "legacy task")
     assert legacy_tid is not None
     # An S4-aware lookup with any user_id can still pick up the NULL row.
-    legacy_match = await journal.find_resumable_turn(
-        "s-mix", "legacy task", user_id="someone"
-    )
+    legacy_match = await journal.find_resumable_turn("s-mix", "legacy task", user_id="someone")
     assert legacy_match is not None
     assert legacy_match.turn_id == legacy_tid
 
@@ -320,14 +308,14 @@ async def test_complete_turn_still_works_after_append_collision(
     # will see seq=1 already taken, INSERT fails with IntegrityError.
     # We bypass into the backend via the public ``backend`` accessor.
     import aiosqlite  # local to keep the public test surface tidy
+
     backend = journal.backend
     # Insert a row at seq=1 directly so the next ``append_message`` →
     # MAX(seq)+1 = 1 collides on the PRIMARY KEY.
     conn = backend._c  # noqa: SLF001 — test-only deep poke
     try:
         await conn.execute(
-            "INSERT INTO turn_messages (turn_id, seq, role, content) "
-            "VALUES (?, ?, ?, ?)",
+            "INSERT INTO turn_messages (turn_id, seq, role, content) VALUES (?, ?, ?, ?)",
             (tid, 1, "assistant", "directly inserted"),
         )
         await conn.commit()
@@ -346,9 +334,7 @@ async def test_complete_turn_still_works_after_append_collision(
     await journal.complete_turn(tid)
     # If complete_turn took effect, find_resumable_turn must miss
     # (completed turns aren't resumable).
-    assert (
-        await journal.find_resumable_turn("s-L5", "L5 task")
-    ) is None, (
+    assert (await journal.find_resumable_turn("s-L5", "L5 task")) is None, (
         "L5 violation: complete_turn silently no-op'd after a rolled-back "
         "append_message left the connection in a dirty tx state"
     )
@@ -369,9 +355,7 @@ async def test_list_resumable_in_progress_returns_recent_in_progress_only(
     or moved on). Only in_progress wins.
     """
     # Two in_progress rows on different sessions; one will get completed.
-    keep = await journal.begin_turn(
-        "sess-keep", "still cooking", channel="telegram"
-    )
+    keep = await journal.begin_turn("sess-keep", "still cooking", channel="telegram")
     completed = await journal.begin_turn("sess-done", "finished", channel="qq")
     await journal.complete_turn(completed)
 
@@ -397,9 +381,7 @@ async def test_list_resumable_in_progress_respects_window(
 
     tid = await journal.begin_turn("sess-old", "stale", channel="telegram")
     async with aiosqlite.connect(journal._path) as conn:
-        await conn.execute(
-            "UPDATE turns SET started_at_ms = 0 WHERE turn_id = ?", (tid,)
-        )
+        await conn.execute("UPDATE turns SET started_at_ms = 0 WHERE turn_id = ?", (tid,))
         await conn.commit()
 
     # Default window (5 min via RESUME_MAX_AGE_MS) excludes the row.
@@ -407,9 +389,7 @@ async def test_list_resumable_in_progress_respects_window(
     assert tid not in {r.turn_id for r in rows}
 
     # An extremely large window picks it up (sanity check the param wires).
-    rows_wide = await journal.list_resumable_in_progress(
-        window_ms=10**13
-    )
+    rows_wide = await journal.list_resumable_in_progress(window_ms=10**13)
     assert tid in {r.turn_id for r in rows_wide}
 
 
@@ -418,11 +398,12 @@ async def test_begin_turn_persists_channel_field(
 ) -> None:
     """``channel`` round-trips through the row so the scanner can
     dispatch re-delivery to the right surface."""
-    tid_tg = await journal.begin_turn(
-        "sess-tg", "telegram task", channel="telegram"
-    )
+    tid_tg = await journal.begin_turn("sess-tg", "telegram task", channel="telegram")
     tid_qq = await journal.begin_turn(
-        "sess-qq", "qq task", channel="qq"
+        "sess-qq",
+        "qq task",
+        channel="qq",
+        runtime_instance_id="bot-a",
     )
     # HTTP turn — no channel.
     tid_http = await journal.begin_turn("sess-http", "http task")
@@ -430,8 +411,64 @@ async def test_begin_turn_persists_channel_field(
     rows = await journal.list_resumable_in_progress()
     by_id = {r.turn_id: r for r in rows}
     assert by_id[tid_tg].channel == "telegram"
+    assert by_id[tid_tg].runtime_instance_id == ""
     assert by_id[tid_qq].channel == "qq"
+    assert by_id[tid_qq].runtime_instance_id == "bot-a"
     assert by_id[tid_http].channel == ""
+
+
+async def test_resume_lookup_is_exactly_runtime_instance_scoped(
+    journal: AgentJournal,
+) -> None:
+    first = await journal.begin_turn(
+        "shared-session",
+        "same text",
+        user_id="sender",
+        channel="qq",
+        runtime_instance_id="bot-a",
+    )
+    second = await journal.begin_turn(
+        "shared-session",
+        "same text",
+        user_id="sender",
+        channel="qq",
+        runtime_instance_id="bot-b",
+    )
+    assert first is not None and second is not None and first != second
+
+    match_a = await journal.find_resumable_turn(
+        "shared-session",
+        "same text",
+        user_id="sender",
+        channel="qq",
+        runtime_instance_id="bot-a",
+    )
+    match_b = await journal.find_resumable_turn(
+        "shared-session",
+        "same text",
+        user_id="sender",
+        channel="qq",
+        runtime_instance_id="bot-b",
+    )
+    wrong = await journal.find_resumable_turn(
+        "shared-session",
+        "same text",
+        user_id="sender",
+        channel="qq",
+        runtime_instance_id="bot-c",
+    )
+    channel_less = await journal.find_resumable_turn(
+        "shared-session",
+        "same text",
+        user_id="sender",
+        channel="",
+        runtime_instance_id="bot-a",
+    )
+
+    assert match_a is not None and match_a.turn_id == first
+    assert match_b is not None and match_b.turn_id == second
+    assert wrong is None
+    assert channel_less is None
 
 
 async def test_schema_migration_adds_channel_column_to_legacy_db(
@@ -483,15 +520,20 @@ async def test_schema_migration_adds_channel_column_to_legacy_db(
         legacy = {r.turn_id: r for r in rows}
         assert 42 in legacy
         assert legacy[42].channel == ""
+        assert legacy[42].runtime_instance_id == ""
 
-        # A fresh begin_turn now accepts and persists the channel kwarg.
+        # A fresh begin_turn now accepts and persists the origin fields.
         new_tid = await journal.begin_turn(
-            "sess-post", "post-migration", channel="telegram"
+            "sess-post",
+            "post-migration",
+            channel="qq",
+            runtime_instance_id="default",
         )
         assert new_tid is not None
         rows_after = await journal.list_resumable_in_progress(window_ms=10**13)
         by_id = {r.turn_id: r for r in rows_after}
-        assert by_id[new_tid].channel == "telegram"
+        assert by_id[new_tid].channel == "qq"
+        assert by_id[new_tid].runtime_instance_id == "default"
     finally:
         await journal.close()
 
@@ -518,15 +560,11 @@ async def test_mark_stale_in_progress_accepts_older_than_seconds(
 
     # Sweep with a 1-hour cutoff — the row should NOT flip (it's
     # younger than 1 h).
-    swept_long = await journal.mark_stale_in_progress_as_errored(
-        older_than_seconds=3600
-    )
+    swept_long = await journal.mark_stale_in_progress_as_errored(older_than_seconds=3600)
     assert swept_long == 0
 
     # Sweep with a 1-minute cutoff — now it DOES flip (it's 10 min old).
-    swept_short = await journal.mark_stale_in_progress_as_errored(
-        older_than_seconds=60
-    )
+    swept_short = await journal.mark_stale_in_progress_as_errored(older_than_seconds=60)
     assert swept_short == 1
 
 
@@ -613,31 +651,20 @@ async def test_append_messages_single_transaction(
     # Exactly ONE BEGIN IMMEDIATE for the whole batch.
     begins = [s for s in sql_log if s.strip().upper().startswith("BEGIN")]
     assert len(begins) == 1, (
-        f"expected 1 BEGIN IMMEDIATE for the batch, got {len(begins)}: "
-        f"{begins!r}"
+        f"expected 1 BEGIN IMMEDIATE for the batch, got {len(begins)}: {begins!r}"
     )
     # Exactly ONE commit for the whole batch.
-    assert commit_count["n"] == 1, (
-        f"expected 1 commit for the batch, got {commit_count['n']}"
-    )
+    assert commit_count["n"] == 1, f"expected 1 commit for the batch, got {commit_count['n']}"
     # N INSERTs into turn_messages (one per message — 2 here).
-    inserts = [
-        s for s in sql_log
-        if "INSERT INTO turn_messages" in s
-    ]
+    inserts = [s for s in sql_log if "INSERT INTO turn_messages" in s]
     assert len(inserts) == 2, (
-        f"expected 2 INSERTs for the 2-message batch, got {len(inserts)}: "
-        f"{inserts!r}"
+        f"expected 2 INSERTs for the 2-message batch, got {len(inserts)}: {inserts!r}"
     )
     # Exactly ONE SELECT MAX(seq) — the per-message increment is local
     # to the loop so we don't pay a round-trip per row.
-    seq_selects = [
-        s for s in sql_log
-        if "MAX(seq)" in s and "turn_messages" in s
-    ]
+    seq_selects = [s for s in sql_log if "MAX(seq)" in s and "turn_messages" in s]
     assert len(seq_selects) == 1, (
-        f"expected 1 SELECT MAX(seq), got {len(seq_selects)}: "
-        f"{seq_selects!r}"
+        f"expected 1 SELECT MAX(seq), got {len(seq_selects)}: {seq_selects!r}"
     )
 
     # ── Data-shape assertion ──────────────────────────────────────
@@ -667,24 +694,19 @@ async def test_append_messages_empty_list_is_noop(
     assert isinstance(backend, SqliteJournalBackend)
     conn = backend._c  # type: ignore[attr-defined]
 
-    cur = await conn.execute(
-        "SELECT COUNT(*) FROM turn_messages WHERE turn_id = ?", (tid,)
-    )
+    cur = await conn.execute("SELECT COUNT(*) FROM turn_messages WHERE turn_id = ?", (tid,))
     row = await cur.fetchone()
     await cur.close()
     before = int(row[0]) if row is not None else 0
 
     await journal.append_messages(tid, [])
 
-    cur = await conn.execute(
-        "SELECT COUNT(*) FROM turn_messages WHERE turn_id = ?", (tid,)
-    )
+    cur = await conn.execute("SELECT COUNT(*) FROM turn_messages WHERE turn_id = ?", (tid,))
     row = await cur.fetchone()
     await cur.close()
     after = int(row[0]) if row is not None else 0
     assert before == after, (
-        "append_messages([]) must not insert any rows; "
-        f"before={before} after={after}"
+        f"append_messages([]) must not insert any rows; before={before} after={after}"
     )
 
 
@@ -719,7 +741,10 @@ async def test_append_messages_round_trips_in_order(
 
     msgs = await journal._load_messages(tid)
     assert [m["role"] for m in msgs] == [
-        "user", "assistant", "assistant", "tool",
+        "user",
+        "assistant",
+        "assistant",
+        "tool",
     ]
     # The 3rd row carries the tool_calls payload; the 4th carries the
     # tool_call_id back-reference.

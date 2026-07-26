@@ -101,7 +101,7 @@ def test_qq_reconnect_reports_napcat_not_logged_in(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
     async def fake_ensure(_cfg: dict[str, Any]) -> bool:
-        raise NapcatError("napcat_app_error", "Not Login")
+        raise NapcatError("napcat_not_logged_in", "Not Login")
 
     monkeypatch.setattr(
         channels_routes,
@@ -126,6 +126,43 @@ def test_qq_reconnect_reports_napcat_not_logged_in(
 
     assert resp.status_code == 409, resp.text
     assert resp.json()["detail"]["error"] == "napcat_not_logged_in"
+
+
+def test_qq_reconnect_redacts_napcat_error_detail(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    secret = "http://user:password@private-napcat:6099/private?token=secret"
+
+    async def fake_ensure(_cfg: dict[str, Any]) -> bool:
+        raise NapcatError("napcat_unreachable", secret, status=418)
+
+    monkeypatch.setattr(
+        channels_routes,
+        "_ensure_onebot_websocket_server_for_config",
+        fake_ensure,
+    )
+    state = AdminState(
+        data_dir=tmp_path,
+        admin_username="admin",
+        admin_password_hash=hash_password("rootroot"),
+        session_store=AdminSessionStore(86_400),
+        channels_config={"qq": {"enabled": True}},
+    )
+    set_admin_state(state)
+    try:
+        app = FastAPI()
+        app.include_router(build_router())
+        with TestClient(app, headers={"Authorization": _basic_auth_header()}) as c:
+            resp = c.post("/admin/channels/qq/reconnect")
+    finally:
+        set_admin_state(None)
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == {
+        "error": "reconnect_failed",
+        "message": "failed to reconnect the QQ instance",
+    }
+    assert secret not in resp.text
 
 
 def test_qq_status_does_not_schedule_napcat_onebot_ensure_when_ws_online(

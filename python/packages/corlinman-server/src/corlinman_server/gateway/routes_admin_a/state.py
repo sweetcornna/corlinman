@@ -48,6 +48,9 @@ class AdminState:
     # bootstrapper pass the resolved dir verbatim so the admin slice
     # doesn't have to take a dep on the gateway Config shape.
     data_dir: Path | None = None
+    # Gateway/Agent shared execution-state root. Defaults to ``data_dir`` at
+    # boot so existing flat-layout deployments remain byte-for-byte compatible.
+    execution_state_dir: Path | None = None
 
     # -- /admin/auth --------------------------------------------------
     #
@@ -130,6 +133,19 @@ class AdminState:
     # writable channels surface" → 503.
     channels_config: dict[str, Any] | None = None
     channels_writer: Any | None = None
+    # Unprivileged client for the root/Docker-owned managed NapCat helper.
+    # Routes never receive Docker or systemd handles directly.
+    napcat_manager: Any | None = None
+    # Account-keyed runtime registry and shared instance-admin service. The
+    # lifecycle updates the registry after channel bootstrap; routes construct
+    # the service lazily when this slot is not pre-populated by a test.
+    qq_runtime_registry: Any | None = None
+    qq_instance_admin: Any | None = None
+    # Serialises each account's multi-step retained-runtime/config saga without
+    # holding the channels writer's own lock and deadlocking nested mutation.
+    qq_lifecycle_locks: dict[str, Any] = field(default_factory=dict)
+    # Admin-B scheduler state used only for QZone reference checks/migration.
+    scheduler_admin_state: Any | None = None
 
     # Live :class:`corlinman_channels.TelegramSender` instance for the
     # active Telegram channel. Wired by ``channels_runtime.bootstrap``

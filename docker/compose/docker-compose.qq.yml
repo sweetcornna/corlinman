@@ -2,7 +2,8 @@
 #
 # Usage:
 #   cd docker/compose
-#   docker compose -f docker-compose.yml -f docker-compose.qq.yml \
+#   docker compose --env-file ../../.env \
+#       -f docker-compose.yml -f docker-compose.qq.yml \
 #       --profile qq up -d
 #
 # Services:
@@ -34,7 +35,9 @@ services:
     environment:
       NAPCAT_UID: "1000"
       NAPCAT_GID: "1000"
-      WEBUI_TOKEN: "${NAPCAT_WEBUI_TOKEN:-corlinman-local-napcat}"
+      # Required: install.sh generates this in the private .env file. Manual
+      # Compose users must set it explicitly; never use a repository-known token.
+      WEBUI_TOKEN: "${NAPCAT_WEBUI_TOKEN:?set NAPCAT_WEBUI_TOKEN in the project .env}"
       # Leave QQ_ACCOUNT unset — users sign in via the admin UI scan flow.
     volumes:
       # Authoritative NapCat state: QQ session, WebUI users, OneBot config.
@@ -45,15 +48,90 @@ services:
     networks:
       - corlinman-net
 
+  napcat-manager:
+    image: ghcr.io/sweetcornna/corlinman:${CORLINMAN_TAG:-latest}
+    profiles: ["qq"]
+    command:
+      - /bin/sh
+      - -c
+      - >-
+        exec corlinman-napcat-manager
+        --socket /run/corlinman-napcat/manager.sock
+        --data-dir /data
+        --mode docker
+        --allowed-uid "$$(id -u corlinman)"
+        --socket-gid "$$(id -g corlinman)"
+    environment:
+      CORLINMAN_NAPCAT_IMAGE: "mlikiowa/napcat-docker:${NAPCAT_VERSION:-v4.18.4}"
+      CORLINMAN_DOCKER_NETWORK: "${COMPOSE_PROJECT_NAME:-compose}_corlinman-net"
+    # The SDK must be able to open the host Docker socket. The manager exposes
+    # only its narrow authenticated Unix protocol; neither gateway nor agent gets
+    # the root-equivalent Docker socket itself.
+    user: "0:0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - napcat-manager-state:/data
+      - napcat-manager-socket:/run/corlinman-napcat
+    restart: unless-stopped
+    networks:
+      - corlinman-net
+
+  # Privileged control plane: admin HTTP + QQ runtime reconciliation only. It
+  # receives the narrow manager socket but cannot execute model-selected tools;
+  # chat is forced to the separate agent process over the private network.
   corlinman:
     environment:
+      CORLINMAN_PROCESS_ROLE: gateway
+      CORLINMAN_CHAT_BACKEND: grpc_agent
+      CORLINMAN_PY_SOCKET: /run/corlinman-agent/socket/agent.sock
+      CORLINMAN_PY_CONFIG: /run/corlinman-agent/config/py-config.json
+      CORLINMAN_PY_CONFIG_GID: "10004"
+      CORLINMAN_EXECUTION_STATE_DIR: /execution-state
       # Admin REST scan-login flow dials NapCat webui here.
       CORLINMAN_NAPCAT_URL: http://napcat:6099
       # Lets the gateway authenticate to NapCat's WebUI API when it
       # auto-repairs the OneBot websocket server config.
-      NAPCAT_WEBUI_TOKEN: "${NAPCAT_WEBUI_TOKEN:-corlinman-local-napcat}"
+      NAPCAT_WEBUI_TOKEN: "${NAPCAT_WEBUI_TOKEN:?set NAPCAT_WEBUI_TOKEN in the project .env}"
       # OneBot v11 forward-WS bridge for the channel dispatcher.
       # nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket -- internal compose-only OneBot bridge on corlinman-net; use wss:// when crossing hosts.
       QQ_WS_URL: ws://napcat:3001
+      CORLINMAN_NAPCAT_MANAGER_SOCKET: /run/corlinman-napcat/manager.sock
+    volumes:
+      - napcat-manager-socket:/run/corlinman-napcat
+      - agent-socket:/run/corlinman-agent
+      - execution-state:/execution-state
     depends_on:
       - napcat
+      - napcat-manager
+      - corlinman-agent
+
+  # Unprivileged execution plane: provider calls, built-in tools, subagents, and
+  # model-controlled run_shell. It intentionally has neither the manager socket
+  # nor Docker socket and is not published to the host. The fixed IDs match the
+  # image accounts; the narrow IPC group permits socket creation and config reads
+  # without granting the Agent write access to the config drop directory.
+  corlinman-agent:
+    image: ghcr.io/sweetcornna/corlinman:${CORLINMAN_TAG:-latest}
+    profiles: ["qq"]
+    user: "10002:10002"
+    group_add: ["10003", "10004"]
+    command: ["/app/start.sh"]
+    environment:
+      CORLINMAN_PROCESS_ROLE: agent
+      CORLINMAN_PY_SOCKET: /run/corlinman-agent/socket/agent.sock
+      CORLINMAN_EXECUTION_STATE_DIR: /execution-state
+      CORLINMAN_PY_CONFIG: /run/corlinman-agent/config/py-config.json
+    volumes:
+      # The Agent receives the same execution-state directory as the gateway plus
+      # the dedicated exchange. It cannot traverse gateway-owned /data.
+      - execution-state:/execution-state
+      - agent-socket:/run/corlinman-agent
+    restart: unless-stopped
+    networks:
+      - corlinman-net
+
+volumes:
+  napcat-manager-state:
+  napcat-manager-socket:
+  execution-state:
+  agent-socket:

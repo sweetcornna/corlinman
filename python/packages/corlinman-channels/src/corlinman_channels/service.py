@@ -38,12 +38,16 @@ from __future__ import annotations
 import asyncio
 import base64
 import collections
+import contextlib
 import functools
+import json
 import logging
 import mimetypes
 import os
 import random
+import re
 import time
+from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -87,7 +91,10 @@ _SUBAGENT_SPAWN_TOOLS: frozenset[str] = frozenset(
 )
 
 
-async def _try_open_inbox() -> Any:
+_INBOX_OPEN_LOCK = asyncio.Lock()
+
+
+async def _try_open_inbox(runtime_instance_id: str = "default") -> Any:
     """T4.3 — best-effort lazy open of the durable inbox.
 
     Tolerates corlinman-server not being importable (standalone
@@ -98,27 +105,30 @@ async def _try_open_inbox() -> Any:
         from corlinman_server.inbox import Inbox  # type: ignore[import-not-found]
     except Exception:  # noqa: BLE001 — module isn't required
         return None
-    import os
-    from pathlib import Path
+    from corlinman_runtime import resolve_execution_state_dir
 
-    raw = os.environ.get("CORLINMAN_DATA_DIR")
-    data_dir = Path(raw) if raw else Path.home() / ".corlinman"
     try:
-        inbox = await Inbox.open(data_dir / "inbox.sqlite")
+        async with _INBOX_OPEN_LOCK:
+            inbox = await Inbox.open(
+                resolve_execution_state_dir() / "inbox.sqlite"
+            )
     except Exception as exc:  # noqa: BLE001 — degrade silently
         _log.warning("qq inbox open failed: %s", exc)
         return None
     # Boot-time housekeeping — only runs once per channel start.
     try:
-        stale = await inbox.reset_stale_dispatched()
-        pending = await inbox.list_pending(channel="qq", limit=20)
+        stale = await inbox.reset_stale_dispatched(
+            channel="qq", runtime_instance_id=runtime_instance_id
+        )
+        pending = await inbox.list_pending(
+            channel="qq", runtime_instance_id=runtime_instance_id, limit=20
+        )
         if stale or pending:
-            _log.info(
-                "qq inbox boot: stale_reset=%d pending=%d", stale, len(pending)
-            )
+            _log.info("qq inbox boot: stale_reset=%d pending=%d", stale, len(pending))
     except Exception as exc:  # noqa: BLE001
         _log.warning("qq inbox boot sweep failed: %s", exc)
     return inbox
+
 
 from corlinman_channels._status import (
     REASONING_PREVIEW_CHARS as _REASONING_PREVIEW_CHARS,
@@ -203,6 +213,7 @@ from corlinman_channels.onebot import (
     TextSegment,
     UploadGroupFile,
     UploadPrivateFile,
+    segments_to_text,
 )
 from corlinman_channels.persona_inject import (
     inject_persona_if_enabled as _inject_persona_if_enabled,
@@ -215,7 +226,7 @@ from corlinman_channels.qq_official import (
     QqOfficialConfig,
 )
 from corlinman_channels.qq_official_send import QqOfficialSender
-from corlinman_channels.rate_limit import TokenBucket
+from corlinman_channels.rate_limit import SlidingWindowCounter, TokenBucket
 from corlinman_channels.router import ChannelRouter, GroupKeywords, RoutedRequest
 from corlinman_channels.slack import (
     DEFAULT_API_BASE as SLACK_API_BASE,
@@ -278,14 +289,10 @@ def _binding_persona_resolver(
             resolved = humanlike_resolver()
             if isinstance(resolved, tuple) and len(resolved) == 2:
                 enabled = bool(resolved[0])
-                resolved_persona_id = (
-                    resolved[1] if isinstance(resolved[1], str) else None
-                )
+                resolved_persona_id = resolved[1] if isinstance(resolved[1], str) else None
         return (
             enabled,
-            _binding_prefs.effective_persona_id(
-                binding, resolved_persona_id
-            ),
+            _binding_prefs.effective_persona_id(binding, resolved_persona_id),
         )
 
     return _resolve
@@ -399,6 +406,15 @@ class QqChannelParams:
     optional ``rate_limit`` sub-struct with ``group_per_min`` /
     ``sender_per_min``."""
 
+    instance_id: str = "default"
+    """Stable configured runtime identity, distinct from the live bot UIN."""
+
+    health: dict[str, Any] | None = None
+    """Per-instance mutable health snapshot. ``None`` uses the legacy default."""
+
+    identity_guard: Any = None
+    """Optional callable receiving an observed bot UIN; false blocks the runtime."""
+
     model: str = ""
     chat_service: ChatServiceLike | None = None
     rate_limit_hook: Any = None
@@ -457,6 +473,9 @@ class QqChannelParams:
     tencent_policy_resolver: Any = None
     """Live callable returning whether Tencent freeze-risk protection is on."""
 
+    identity_ready: Any = None
+    """Optional zero-arg gate; false drops inbound and proactive effects."""
+
     event_emitter: Any = None
     """W4.1 — see :class:`TelegramChannelParams.event_emitter`. QQ uses
     the same emitter to source ``ToolStateHeartbeat`` / ``Cancelling`` /
@@ -505,25 +524,32 @@ async def run_qq_channel(
         gc_tasks.append(sender_limiter.start_gc(cancel))
 
     wl_raw = _attr(cfg, "group_whitelist", None)
-    group_whitelist = (
-        frozenset(str(g) for g in wl_raw) if wl_raw is not None else None
-    )
+    group_whitelist = frozenset(str(g) for g in wl_raw) if wl_raw is not None else None
     router = ChannelRouter(
         group_keywords=_coerce_keywords(_attr(cfg, "group_keywords", {})),
         self_ids=self_ids,
         group_replies_enabled=bool(_attr(cfg, "group_replies_enabled", True)),
         group_whitelist=group_whitelist,
-        group_reply_policy=str(
-            _attr(cfg, "group_reply_policy", "mention_or_keyword")
-        ),
-        group_reply_cooldown_secs=float(
-            _attr(cfg, "group_reply_cooldown_secs", 20) or 0
-        ),
+        group_reply_policy=str(_attr(cfg, "group_reply_policy", "mention_or_keyword")),
+        group_reply_cooldown_secs=float(_attr(cfg, "group_reply_cooldown_secs", 20) or 0),
     ).with_rate_limits(group_limiter, sender_limiter)
     if params.rate_limit_hook is not None:
         router = router.with_rate_limit_hook(params.rate_limit_hook)
     if params.hook_bus is not None:
         router = router.with_hook_bus(params.hook_bus)
+
+    health = params.health if params.health is not None else QQ_HEALTH
+
+    def _on_self_id(self_id: int) -> None:
+        guard = params.identity_guard
+        if callable(guard) and guard(self_id) is False:
+            health.update(
+                online=False,
+                account_online=False,
+                account_last_error="identity_rejected",
+            )
+            return
+        _record_qq_self_id(self_id, health=health)
 
     adapter = OneBotAdapter(
         OneBotConfig(
@@ -532,7 +558,7 @@ async def run_qq_channel(
             self_ids=self_ids,
         ),
         tencent_policy_resolver=params.tencent_policy_resolver,
-        on_self_id=_record_qq_self_id,
+        on_self_id=_on_self_id,
     )
 
     try:
@@ -543,16 +569,16 @@ async def run_qq_channel(
             # by Tencent while the WS stayed up. Logs warn + flips
             # state so /admin/channels/qq/status can surface it.
             health_task = asyncio.create_task(
-                _qq_health_watcher(adapter, cancel),
-                name="qq-health-watcher",
+                _qq_health_watcher(adapter, cancel, health=health),
+                name=f"qq-health-watcher-{params.instance_id}",
             )
             # Human-paced proactive speech (off unless configured on).
             proactive_cfg = _qq_proactive_config(cfg, group_whitelist)
             proactive_task: asyncio.Task[None] | None = None
             if proactive_cfg is not None and params.chat_service is not None:
                 proactive_task = asyncio.create_task(
-                    _qq_proactive_loop(adapter, params, proactive_cfg, cancel),
-                    name="qq-proactive-loop",
+                    _qq_proactive_loop(adapter, params, proactive_cfg, cancel, health=health),
+                    name=f"qq-proactive-loop-{params.instance_id}",
                 )
             try:
                 await _qq_dispatch_loop(adapter, router, params, cancel)
@@ -581,27 +607,32 @@ async def run_qq_channel(
 # ``account_online`` (real QQ login state) can disagree. The admin UI
 # should treat ``account_online == False`` as the operator action
 # signal — it means re-scan-QR is required.
-QQ_HEALTH: dict[str, Any] = {
-    "online": False,
-    "last_event_at_ms": None,
-    "seconds_since_event": None,
-    "checked_at_ms": None,
-    "account_online": None,        # None = never probed; True/False = last result
-    "account_qq": None,            # int — the QQ id NapCat reports for the bot
-    "account_nickname": None,      # str — display name on the bot account
-    "account_checked_at_ms": None,
-    "account_last_error": None,    # str — most recent probe failure reason
-}
+def new_qq_health() -> dict[str, Any]:
+    """Create an isolated QQ runtime health snapshot."""
+    return {
+        "online": False,
+        "last_event_at_ms": None,
+        "seconds_since_event": None,
+        "checked_at_ms": None,
+        "account_online": None,
+        "account_qq": None,
+        "account_nickname": None,
+        "account_checked_at_ms": None,
+        "account_last_error": None,
+    }
 
 
-def _record_qq_self_id(self_id: int) -> None:
-    """Publish a newly observed OneBot account without persisting config."""
-    previous = QQ_HEALTH.get("account_qq")
-    QQ_HEALTH.update(
+QQ_HEALTH: dict[str, Any] = new_qq_health()
+"""Legacy read-only-by-convention view used by the explicit default instance."""
+
+
+def _record_qq_self_id(self_id: int, *, health: dict[str, Any] | None = None) -> None:
+    """Publish a newly observed OneBot account into one runtime snapshot."""
+    target = health if health is not None else QQ_HEALTH
+    previous = target.get("account_qq")
+    target.update(
         account_qq=self_id,
-        account_nickname=(
-            QQ_HEALTH.get("account_nickname") if previous == self_id else None
-        ),
+        account_nickname=(target.get("account_nickname") if previous == self_id else None),
         account_checked_at_ms=int(time.time() * 1000),
     )
 
@@ -617,6 +648,77 @@ _QQ_PROACTIVE_DEFAULT_PROMPT = (
     "不要刻意打招呼，不要自我介绍，也不要每次都用相似的开头。"
 )
 
+_QQ_PROACTIVE_SKIP_HINT = (
+    "如果你看完之后觉得现在不适合插话（话题不便加入、群里正忙着聊别的、"
+    "或者确实没什么想说的），就只回复 SKIP，不要输出其他内容。"
+)
+
+_QQ_PROACTIVE_SKIP_RE = re.compile(r"^\[?\s*skip\s*\]?[。.!！]?$", re.IGNORECASE)
+
+
+# ---------------------------------------------------------------------------
+# Module-level group speech state. Deliberately NOT per channel task: a
+# config save restarts the QQ instance (fingerprint reconcile), and the
+# speech cap / daily budget / recent-context buffers must survive that
+# restart or every save would reset them to zero.
+# ---------------------------------------------------------------------------
+
+#: Sliding-window speech cap shared by reactive replies + proactive posts.
+#: Key: ``"<instance_id>:<group_id>"``.
+_QQ_GROUP_SPEECH = SlidingWindowCounter()
+
+#: Recent inbound group chatter for proactive context injection.
+#: Key: ``"<instance_id>:<group_id>"`` → deque of (epoch_secs, sender, text).
+_QQ_GROUP_RECENT: dict[str, deque[tuple[float, str, str]]] = {}
+_QQ_GROUP_RECENT_MAX = 30
+
+#: Per-group proactive daily budget: key → (day_str, count).
+_QQ_PROACTIVE_SENT: dict[str, tuple[str, int]] = {}
+
+#: Per-group monotonic timestamp of the last proactive post.
+_QQ_PROACTIVE_LAST_MONO: dict[str, float] = {}
+
+
+def _qq_speech_key(instance_id: str, group: str) -> str:
+    return f"{instance_id}:{group}"
+
+
+def _qq_speech_window_cfg(cfg: Any) -> tuple[float, int]:
+    """Read the group speech cap: (window_secs, max_messages). 0/0 = off."""
+    try:
+        win_min = float(_attr(cfg, "group_rate_limit_window_minutes", 0) or 0)
+    except (TypeError, ValueError):
+        win_min = 0.0
+    try:
+        max_msgs = int(_attr(cfg, "group_rate_limit_max_messages", 0) or 0)
+    except (TypeError, ValueError):
+        max_msgs = 0
+    return (max(0.0, win_min) * 60.0, max(0, max_msgs))
+
+
+def _qq_record_group_message(
+    instance_id: str, group: str, sender: str, text: str
+) -> None:
+    """Append one inbound group message to the proactive context buffer."""
+    text = (text or "").strip()
+    if not text:
+        return
+    key = _qq_speech_key(instance_id, group)
+    buf = _QQ_GROUP_RECENT.get(key)
+    if buf is None:
+        buf = deque(maxlen=_QQ_GROUP_RECENT_MAX)
+        _QQ_GROUP_RECENT[key] = buf
+    buf.append((time.time(), sender, text[:200]))
+
+
+def _qq_proactive_sent_today(key: str, day: str) -> int:
+    rec = _QQ_PROACTIVE_SENT.get(key)
+    return rec[1] if rec is not None and rec[0] == day else 0
+
+
+def _qq_proactive_mark_sent(key: str, day: str) -> None:
+    _QQ_PROACTIVE_SENT[key] = (day, _qq_proactive_sent_today(key, day) + 1)
+
 
 @dataclass(frozen=True)
 class _QqProactiveConfig:
@@ -629,6 +731,9 @@ class _QqProactiveConfig:
     active_start_hour: int
     active_end_hour: int
     prompt: str
+    probability: float = 1.0
+    timezone: str = ""
+    context_messages: int = 12
 
 
 def _qq_proactive_config(
@@ -642,6 +747,15 @@ def _qq_proactive_config(
     if not bool(_attr(cfg, "proactive_enabled", False)):
         return None
     groups = tuple(str(g) for g in (_attr(cfg, "proactive_groups", None) or []))
+    if groups and group_whitelist is not None:
+        # The whitelist is the hard gate everywhere else (mentions don't
+        # bypass it) — proactive speech must not either.
+        outside = [g for g in groups if g not in group_whitelist]
+        if outside:
+            _log.warning(
+                "qq proactive_groups outside group_whitelist ignored: %s", outside
+            )
+        groups = tuple(g for g in groups if g in group_whitelist)
     if not groups and group_whitelist:
         groups = tuple(sorted(group_whitelist))
     if not groups:
@@ -655,6 +769,17 @@ def _qq_proactive_config(
     if max_gap < min_gap:
         # Human pacing: default spread is a wide window, not a fixed beat.
         max_gap = min_gap * 4
+    raw_probability = _attr(cfg, "proactive_probability", None)
+    try:
+        probability = 1.0 if raw_probability is None else float(raw_probability)
+    except (TypeError, ValueError):
+        probability = 1.0
+    probability = min(1.0, max(0.0, probability))
+    raw_context = _attr(cfg, "proactive_context_messages", None)
+    try:
+        context_messages = 12 if raw_context is None else int(raw_context)
+    except (TypeError, ValueError):
+        context_messages = 12
     return _QqProactiveConfig(
         groups=groups,
         min_gap_minutes=min_gap,
@@ -664,7 +789,27 @@ def _qq_proactive_config(
         active_end_hour=int(_attr(cfg, "proactive_active_end_hour", 23)),
         prompt=str(_attr(cfg, "proactive_prompt", "") or "").strip()
         or _QQ_PROACTIVE_DEFAULT_PROMPT,
+        probability=probability,
+        timezone=str(_attr(cfg, "proactive_timezone", "") or "").strip(),
+        context_messages=max(0, context_messages),
     )
+
+
+def _qq_proactive_now_parts(tz_name: str) -> tuple[str, int]:
+    """(day_str, hour) in the configured IANA timezone, or process-local.
+
+    Containers routinely run UTC — without this, a 9-23 active window
+    means the bot wakes at 17:00 and posts through the night in CN time.
+    """
+    if tz_name:
+        try:
+            from zoneinfo import ZoneInfo
+
+            now = datetime.now(ZoneInfo(tz_name))
+            return now.strftime("%Y-%m-%d"), now.hour
+        except Exception:  # noqa: BLE001 — bad tz name falls back to local
+            _log.warning("qq proactive_timezone invalid: %r — using local", tz_name)
+    return time.strftime("%Y-%m-%d"), int(time.strftime("%H"))
 
 
 def _qq_proactive_in_active_hours(hour: int, start: int, end: int) -> bool:
@@ -701,31 +846,34 @@ async def _qq_proactive_generate(
     group: str,
     prompt: str,
     cancel: asyncio.Event,
+    *,
+    health: dict[str, Any] | None = None,
 ) -> str:
     """Run one persona chat turn for a proactive message; returns text.
 
-    Uses the same duck-typed ``InternalChatRequest`` shape as
-    :func:`_build_internal_request` (keep the fields in sync!) with a
-    dedicated per-group ``proactive`` session so the persona keeps its
-    own thread of what it already said, separate from user chats."""
-    from types import SimpleNamespace
-
+    Uses the neutral :class:`ChannelChatRequest` contract shared with
+    :func:`_build_internal_request`, with a dedicated per-group ``proactive``
+    session so the persona keeps its own thread of what it already said."""
     from corlinman_channels import binding_prefs as _binding_prefs
+    from corlinman_channels.chat_request import (
+        ChannelChatMessage,
+        ChannelChatRequest,
+    )
 
-    self_id = QQ_HEALTH.get("account_qq") or 0
+    target_health = health if health is not None else QQ_HEALTH
+    self_id = target_health.get("account_qq") or 0
     binding = ChannelBinding.qq_group(self_id, group, "proactive")
-    request = SimpleNamespace(
+    request = ChannelChatRequest(
         model=_binding_prefs.effective_model(binding, params.model),
-        messages=[SimpleNamespace(role="user", content=prompt)],
-        session_key=_binding_prefs.effective_session_key(
-            binding, binding.session_key()
-        ),
+        messages=[ChannelChatMessage(role="user", content=prompt)],
+        session_key=_binding_prefs.effective_session_key(binding, binding.session_key()),
         stream=True,
         max_tokens=None,
         temperature=None,
         attachments=[],
         binding=binding,
         persona_id=None,
+        runtime_instance_id=params.instance_id,
     )
     await _qq_inject_persona_if_enabled(request, params)
     parts: list[str] = []
@@ -743,82 +891,184 @@ async def _qq_proactive_generate(
     return "".join(parts).strip()
 
 
+def _qq_proactive_context_lines(
+    instance_id: str, group: str, cfg: _QqProactiveConfig
+) -> list[str]:
+    """Render the recent-chatter buffer as ``[HH:MM] sender: text`` lines."""
+    if cfg.context_messages <= 0:
+        return []
+    buf = _QQ_GROUP_RECENT.get(_qq_speech_key(instance_id, group))
+    if not buf:
+        return []
+    tz = None
+    if cfg.timezone:
+        with suppress(Exception):
+            from zoneinfo import ZoneInfo
+
+            tz = ZoneInfo(cfg.timezone)
+    lines: list[str] = []
+    for ts, sender, text in list(buf)[-cfg.context_messages :]:
+        stamp = datetime.fromtimestamp(ts, tz).strftime("%H:%M")
+        lines.append(f"[{stamp}] {sender}: {text}")
+    return lines
+
+
+def _qq_proactive_compose_prompt(
+    cfg: _QqProactiveConfig, context_lines: list[str]
+) -> str:
+    """Base prompt + optional recent-chat context + the SKIP escape hatch.
+
+    Context is what makes the post feel human: the persona can pick up
+    the live topic instead of broadcasting into the void — and can bow
+    out (SKIP) when barging in would read as botlike."""
+    parts: list[str] = []
+    if context_lines:
+        parts.append(
+            "以下是这个群最近的聊天记录（越靠下越新），供你参考语境：\n"
+            + "\n".join(context_lines)
+        )
+        parts.append(
+            cfg.prompt
+            + "\n如果上面的聊天还在进行中且话题合适，可以自然地接话；"
+            "如果话题已经过去了，就另起一个轻松的话头。不要复述别人刚说过的内容。"
+        )
+    else:
+        parts.append(cfg.prompt)
+    parts.append(_QQ_PROACTIVE_SKIP_HINT)
+    return "\n\n".join(parts)
+
+
+def _qq_proactive_is_skip(text: str) -> bool:
+    return bool(_QQ_PROACTIVE_SKIP_RE.match(text.strip()))
+
+
+async def _qq_proactive_send(
+    adapter: OneBotAdapter, group: str, text: str
+) -> None:
+    """Ship one proactive post through the same outbound shaping as replies.
+
+    Raw model output leaks markdown (``**`` / headings) into QQ plain text
+    and a ``[MSG_BREAK]`` marker would print literally — normalize, bubble
+    -split, and chunk exactly like the reactive path does."""
+    body = _normalize_for_channel(text, "qq")
+    bubbles = _split_on_msg_break(body)
+    for bubble_idx, bubble in enumerate(bubbles):
+        for chunk in chunk_reply(bubble, _QQ_TEXT_LIMIT):
+            await adapter.send_action(
+                SendGroupMsg(group_id=int(group), message=[TextSegment(text=chunk)])
+            )
+        if bubble_idx < len(bubbles) - 1:
+            await asyncio.sleep(0.3)
+
+
 async def _qq_proactive_loop(
     adapter: OneBotAdapter,
     params: QqChannelParams,
     cfg: _QqProactiveConfig,
     cancel: asyncio.Event,
+    *,
+    health: dict[str, Any] | None = None,
 ) -> None:
     """Speak in configured groups at a human pace, forever.
 
     Each cycle: sleep a RANDOM gap (min..max minutes), then — only if
-    inside the active-hours window, the bot account is online, and the
-    picked group still has daily budget — run one persona turn and post
-    it. Failures log and skip; the loop never crashes the channel."""
+    inside the active-hours window (in ``proactive_timezone``), group
+    replies aren't emergency-muted, the bot account is online, and a
+    probability draw says "speak" — pick one group that still has daily
+    budget, hasn't heard from us within ``min_gap``, and is under the
+    shared speech cap; run one persona turn over the group's recent
+    chatter and post it. The model may answer SKIP to stay silent.
+    Failures log and skip; the loop never crashes the channel."""
     _log.info(
-        "qq proactive loop started groups=%s gap=%.0f-%.0fmin"
-        " daily_max=%d hours=%02d-%02d",
+        "qq proactive loop started groups=%s gap=%.0f-%.0fmin daily_max=%d "
+        "hours=%02d-%02d tz=%s p=%.2f ctx=%d",
         list(cfg.groups),
         cfg.min_gap_minutes,
         cfg.max_gap_minutes,
         cfg.daily_max,
         cfg.active_start_hour,
         cfg.active_end_hour,
+        cfg.timezone or "local",
+        cfg.probability,
+        cfg.context_messages,
     )
-    sent_today: dict[str, int] = {}
-    day = time.strftime("%Y-%m-%d")
+    target_health = health if health is not None else QQ_HEALTH
     while not cancel.is_set():
         if await _qq_proactive_sleep(cancel, _qq_proactive_next_delay_secs(cfg)):
             break
-        today = time.strftime("%Y-%m-%d")
-        if today != day:
-            sent_today.clear()
-            day = today
-        now_hour = int(time.strftime("%H"))
-        if not _qq_proactive_in_active_hours(
-            now_hour, cfg.active_start_hour, cfg.active_end_hour
+        day, now_hour = _qq_proactive_now_parts(cfg.timezone)
+        if not _qq_proactive_in_active_hours(now_hour, cfg.active_start_hour, cfg.active_end_hour):
+            continue
+        if target_health.get("online") is not True or (
+            target_health.get("account_online") is False
         ):
             continue
-        if QQ_HEALTH.get("online") is not True or (
-            QQ_HEALTH.get("account_online") is False
-        ):
+        if callable(params.identity_ready) and not params.identity_ready():
             continue
-        eligible = [g for g in cfg.groups if sent_today.get(g, 0) < cfg.daily_max]
+        # The emergency mute silences ALL group speech, proactive included.
+        if not bool(_attr(params.config, "group_replies_enabled", True)):
+            continue
+        # A person doesn't post every time they glance at their phone.
+        if cfg.probability < 1.0 and random.random() >= cfg.probability:
+            continue
+        win_secs, max_msgs = _qq_speech_window_cfg(params.config)
+        now_mono = time.monotonic()
+        eligible: list[str] = []
+        for g in cfg.groups:
+            key = _qq_speech_key(params.instance_id, g)
+            if _qq_proactive_sent_today(key, day) >= cfg.daily_max:
+                continue
+            last = _QQ_PROACTIVE_LAST_MONO.get(key)
+            if last is not None and (now_mono - last) < cfg.min_gap_minutes * 60.0:
+                continue
+            if not _QQ_GROUP_SPEECH.allow(key, win_secs, max_msgs, record=False):
+                continue
+            eligible.append(g)
         if not eligible:
             continue
         group = random.choice(eligible)
+        prompt = _qq_proactive_compose_prompt(
+            cfg, _qq_proactive_context_lines(params.instance_id, group, cfg)
+        )
         try:
-            text = await _qq_proactive_generate(params, group, cfg.prompt, cancel)
+            text = await _qq_proactive_generate(
+                params, group, prompt, cancel, health=target_health
+            )
         except Exception as exc:  # noqa: BLE001 — skip this beat, keep living
             _log.warning("qq proactive generate failed group=%s: %s", group, exc)
             continue
         if not text:
+            continue
+        if _qq_proactive_is_skip(text):
+            _log.info("qq proactive skipped by model group=%s", group)
             continue
         policy = _tencent_text_decision(text, params.tencent_policy_resolver)
         if not policy.allowed:
             _log_tencent_block(policy, channel="qq", direction="proactive")
             continue
         try:
-            await adapter.send_action(
-                SendGroupMsg(
-                    group_id=int(group), message=[TextSegment(text=text)]
-                )
-            )
+            await _qq_proactive_send(adapter, group, text)
         except Exception as exc:  # noqa: BLE001
             _log.warning("qq proactive send failed group=%s: %s", group, exc)
             continue
-        sent_today[group] = sent_today.get(group, 0) + 1
+        key = _qq_speech_key(params.instance_id, group)
+        _qq_proactive_mark_sent(key, day)
+        _QQ_PROACTIVE_LAST_MONO[key] = time.monotonic()
+        _QQ_GROUP_SPEECH.record(key)
         _log.info(
             "qq proactive sent group=%s chars=%d today=%d/%d",
             group,
             len(text),
-            sent_today[group],
+            _qq_proactive_sent_today(key, day),
             cfg.daily_max,
         )
 
 
 async def _qq_health_watcher(
-    adapter: OneBotAdapter, cancel: asyncio.Event
+    adapter: OneBotAdapter,
+    cancel: asyncio.Event,
+    *,
+    health: dict[str, Any] | None = None,
 ) -> None:
     """Periodic NapCat heartbeat watcher.
 
@@ -844,6 +1094,7 @@ async def _qq_health_watcher(
     except ValueError:
         lost_s = 120
 
+    target_health = health if health is not None else QQ_HEALTH
     was_lost = False
     lost_since_ms: int | None = None
 
@@ -851,9 +1102,7 @@ async def _qq_health_watcher(
     # heartbeat poll. Default 60s (covers KickedOffLine within a minute);
     # tunable via ``CORLINMAN_QQ_ACCOUNT_PROBE_S``.
     try:
-        account_probe_s = max(
-            10, int(os.environ.get("CORLINMAN_QQ_ACCOUNT_PROBE_S", "60"))
-        )
+        account_probe_s = max(10, int(os.environ.get("CORLINMAN_QQ_ACCOUNT_PROBE_S", "60")))
     except ValueError:
         account_probe_s = 60
     last_account_probe_ms = 0
@@ -867,12 +1116,10 @@ async def _qq_health_watcher(
 
         now_ms = int(time.time() * 1000)
         last = adapter.last_event_at_ms
-        seconds_since = (
-            None if last is None else max(0, (now_ms - last) // 1000)
-        )
+        seconds_since = None if last is None else max(0, (now_ms - last) // 1000)
         is_lost = seconds_since is None or seconds_since >= lost_s
 
-        QQ_HEALTH.update(
+        target_health.update(
             online=(not is_lost) and seconds_since is not None,
             last_event_at_ms=last,
             seconds_since_event=seconds_since,
@@ -893,22 +1140,23 @@ async def _qq_health_watcher(
             # than 2× the heartbeat-lost threshold, the adapter likely
             # disconnected entirely — surface as unknown (None) rather
             # than a misleading True/False from a frozen value.
-            stale = (
-                status_ts is None
-                or (now_ms - status_ts) > (lost_s * 2 * 1000)
-            )
+            stale = status_ts is None or (now_ms - status_ts) > (lost_s * 2 * 1000)
             account_online = None if stale else bool(status_online)
-            QQ_HEALTH.update(
+            target_health.update(
                 account_online=account_online,
-                account_qq=(QQ_HEALTH.get("account_qq") if account_online else None),
+                account_qq=(target_health.get("account_qq") if account_online else None),
                 account_nickname=(
-                    QQ_HEALTH.get("account_nickname") if account_online else None
+                    target_health.get("account_nickname") if account_online else None
                 ),
                 account_checked_at_ms=now_ms,
                 account_last_error=(
-                    "no_heartbeat_yet" if status_ts is None
-                    else ("stale_status" if stale
-                          else (None if status_online else "napcat_status_offline"))
+                    "no_heartbeat_yet"
+                    if status_ts is None
+                    else (
+                        "stale_status"
+                        if stale
+                        else (None if status_online else "napcat_status_offline")
+                    )
                 ),
             )
 
@@ -961,9 +1209,9 @@ def _napcat_http_base(ws_url: str | None) -> str | None:
         return None
     base = ws_url
     if base.startswith("wss://"):
-        base = "https://" + base[len("wss://"):]
+        base = "https://" + base[len("wss://") :]
     elif base.startswith("ws://"):
-        base = "http://" + base[len("ws://"):]
+        base = "http://" + base[len("ws://") :]
     # Strip any /onebot or /onebot/v11 suffix.
     for suffix in ("/onebot/v11", "/onebot"):
         if base.endswith(suffix):
@@ -973,7 +1221,10 @@ def _napcat_http_base(ws_url: str | None) -> str | None:
 
 
 async def _qq_probe_account_online(
-    adapter: OneBotAdapter, now_ms: int
+    adapter: OneBotAdapter,
+    now_ms: int,
+    *,
+    health: dict[str, Any] | None = None,
 ) -> None:
     """Probe NapCat HTTP ``/get_login_info`` and update QQ_HEALTH.
 
@@ -984,9 +1235,10 @@ async def _qq_probe_account_online(
     """
     import httpx as _httpx
 
+    target_health = health if health is not None else QQ_HEALTH
     base = _napcat_http_base(getattr(adapter, "url", None))
     if base is None:
-        QQ_HEALTH.update(
+        target_health.update(
             account_online=False,
             account_checked_at_ms=now_ms,
             account_last_error="napcat_http_url_unknown",
@@ -1001,14 +1253,14 @@ async def _qq_probe_account_online(
         async with _httpx.AsyncClient(timeout=2.0) as client:
             resp = await client.get(url, headers=headers)
     except _httpx.HTTPError as exc:
-        QQ_HEALTH.update(
+        target_health.update(
             account_online=False,
             account_checked_at_ms=now_ms,
             account_last_error=f"http_error: {exc}",
         )
         return
     if resp.status_code != 200:
-        QQ_HEALTH.update(
+        target_health.update(
             account_online=False,
             account_checked_at_ms=now_ms,
             account_last_error=f"http_{resp.status_code}",
@@ -1017,7 +1269,7 @@ async def _qq_probe_account_online(
     try:
         env = resp.json()
     except ValueError:
-        QQ_HEALTH.update(
+        target_health.update(
             account_online=False,
             account_checked_at_ms=now_ms,
             account_last_error="bad_json",
@@ -1030,7 +1282,7 @@ async def _qq_probe_account_online(
         msg = ""
         if isinstance(env, dict):
             msg = str(env.get("message") or env.get("wording") or "")
-        QQ_HEALTH.update(
+        target_health.update(
             account_online=False,
             account_checked_at_ms=now_ms,
             account_last_error=f"napcat: {msg or 'status_not_ok'}",
@@ -1042,7 +1294,7 @@ async def _qq_probe_account_online(
     # NapCat reports user_id 0 when the account is offline mid-rotation
     # but the HTTP plane is still answering. Treat that as offline.
     account_online = isinstance(user_id, int) and user_id > 0
-    QQ_HEALTH.update(
+    target_health.update(
         account_online=account_online,
         account_qq=user_id if account_online else None,
         account_nickname=nickname if account_online else None,
@@ -1074,14 +1326,26 @@ async def _qq_dispatch_loop(
     # override (tests pass a pre-built inbox); only the loop's lazy
     # fallback lives in this local scope.
     inbox = params.inbox
+    owns_inbox = inbox is None
     if inbox is None:
-        inbox = await _try_open_inbox()
+        inbox = await _try_open_inbox(params.instance_id)
     semaphore = asyncio.Semaphore(_channel_max_concurrency("QQ"))
     # CMP-06 — resolve the slash-access policy once at loop start. ``None``
     # (no env config) keeps the historical allow-by-default behaviour.
     slash_policy = slash_access_policy_from_env()
     pending: set[asyncio.Task[None]] = set()
     try:
+        if inbox is not None and not cancel.is_set():
+            await _replay_qq_inbox_rows(
+                inbox,
+                router,
+                params,
+                adapter,
+                cancel,
+                semaphore,
+                pending,
+                slash_policy,
+            )
         while not cancel.is_set():
             # Get the next inbound event with a cancel-aware wait.
             ev = await _race_iter_or_cancel(inbound_iter, cancel)
@@ -1090,6 +1354,26 @@ async def _qq_dispatch_loop(
             payload = ev.payload
             if not isinstance(payload, MessageEvent):
                 continue
+            if callable(params.identity_ready) and not params.identity_ready():
+                _log.warning(
+                    "qq inbound blocked: instance identity is not verified instance=%s",
+                    params.instance_id,
+                )
+                continue
+            if payload.message_type == MessageType.GROUP and payload.group_id is not None:
+                # Feed the proactive context buffer for EVERY group message
+                # (router-filtered ones included) — the persona needs to see
+                # the room's chatter, not just the messages it answered.
+                sender = payload.sender
+                sender_name = (
+                    (sender.card or sender.nickname) if sender is not None else None
+                ) or str(payload.user_id)
+                _qq_record_group_message(
+                    params.instance_id,
+                    str(payload.group_id),
+                    sender_name,
+                    segments_to_text(payload.message) or payload.raw_message,
+                )
             req = router.dispatch(payload, slash_policy=slash_policy)
             if req is None:
                 _log.debug(
@@ -1124,9 +1408,7 @@ async def _qq_dispatch_loop(
             # both the handler and the agent turn.
             if req.command_refused:
                 try:
-                    await adapter.send_action(
-                        _build_reply_action(payload, req.content)
-                    )
+                    await adapter.send_action(_build_reply_action(payload, req.content))
                 except Exception as exc:  # noqa: BLE001
                     _log.warning("qq command-refusal send failed: %s", exc)
                 continue
@@ -1136,18 +1418,17 @@ async def _qq_dispatch_loop(
             # adapter — the agent turn is skipped entirely. Specs with
             # only a wizard_prelude fall through to the chat-task path
             # below; their content was already rewritten by the router.
-            if (
-                req.command_spec is not None
-                and req.command_spec.handler is not None
-            ):
+            if req.command_spec is not None and req.command_spec.handler is not None:
                 cmd_inbox_id: int | None = None
                 if inbox is not None:
                     try:
                         cmd_inbox_id = await inbox.enqueue(
                             channel="qq",
+                            runtime_instance_id=params.instance_id,
                             session_key=req.session_key,
                             message_id=str(payload.message_id),
                             user_text=req.content[:1000],
+                            payload_json=_qq_inbox_payload(payload),
                         )
                     except Exception as exc:  # noqa: BLE001
                         _log.warning("qq inbox enqueue (cmd) failed: %s", exc)
@@ -1170,9 +1451,7 @@ async def _qq_dispatch_loop(
                         pass
                 if cmd_result is not None and cmd_result.reply:
                     try:
-                        await adapter.send_action(
-                            _build_reply_action(payload, cmd_result.reply)
-                        )
+                        await adapter.send_action(_build_reply_action(payload, cmd_result.reply))
                     except Exception as exc:  # noqa: BLE001
                         _log.warning("qq command reply send failed: %s", exc)
                 if cmd_inbox_id is not None and inbox is not None:
@@ -1193,6 +1472,28 @@ async def _qq_dispatch_loop(
                 except Exception as exc:  # noqa: BLE001
                     _log.warning("qq unknown-command notice send failed: %s", exc)
                 continue
+            # Hard speech cap: at most N messages per group per M-minute
+            # window, shared with the proactive loop. Checked AFTER the
+            # command short-circuits so slash commands (operator tooling)
+            # can't be locked out, and BEFORE the chat turn so a capped
+            # group never burns a model call. Mentions do NOT bypass it —
+            # it is a hard budget on how chatty the bot may be in a group.
+            if payload.message_type == MessageType.GROUP and payload.group_id is not None:
+                win_secs, max_msgs = _qq_speech_window_cfg(params.config)
+                if not _QQ_GROUP_SPEECH.allow(
+                    _qq_speech_key(params.instance_id, str(payload.group_id)),
+                    win_secs,
+                    max_msgs,
+                ):
+                    _log.info(
+                        "qq group speech cap hit group=%s window_secs=%.0f max=%d",
+                        payload.group_id,
+                        win_secs,
+                        max_msgs,
+                    )
+                    if params.rate_limit_hook is not None:
+                        params.rate_limit_hook("qq", "group_window")
+                    continue
             if params.chat_service is None:
                 # No backend wired — drop silently (matches Rust when
                 # the gateway opts not to provide one).
@@ -1206,9 +1507,11 @@ async def _qq_dispatch_loop(
                 try:
                     inbox_id = await inbox.enqueue(
                         channel="qq",
+                        runtime_instance_id=params.instance_id,
                         session_key=req.session_key,
                         message_id=str(payload.message_id),
                         user_text=req.content[:1000],
+                        payload_json=_qq_inbox_payload(payload),
                     )
                 except Exception as exc:  # noqa: BLE001 — never block chat
                     _log.warning("qq inbox enqueue failed: %s", exc)
@@ -1237,6 +1540,11 @@ async def _qq_dispatch_loop(
         # Best-effort: cancel any in-flight handlers on shutdown.
         for t in pending:
             t.cancel()
+        if owns_inbox and inbox is not None:
+            close = getattr(inbox, "close", None)
+            if callable(close):
+                with contextlib.suppress(Exception):
+                    await close()
 
 
 async def _qq_run_one(
@@ -1459,13 +1767,9 @@ async def _qq_send_attachment(
             record_file = _qq_local_record_segment_file(p)
             record_msg: list[MessageSegment] = [RecordSegment(file=record_file)]
             if event.message_type == MessageType.GROUP and event.group_id is not None:
-                await adapter.send_action(
-                    SendGroupMsg(group_id=event.group_id, message=record_msg)
-                )
+                await adapter.send_action(SendGroupMsg(group_id=event.group_id, message=record_msg))
             else:
-                await adapter.send_action(
-                    SendPrivateMsg(user_id=event.user_id, message=record_msg)
-                )
+                await adapter.send_action(SendPrivateMsg(user_id=event.user_id, message=record_msg))
             _log.info("qq send_attachment inline-record path=%s mime=%s", p, mime)
             return f"🎙️ 已发送语音: {display}"
         if event.message_type == MessageType.GROUP and event.group_id is not None:
@@ -1595,7 +1899,12 @@ async def handle_one_qq(
     what the agent did. Disable per-deployment with
     ``CORLINMAN_QQ_TOOL_SUMMARY=0``.
     """
-    request = _build_internal_request(req, event, model)
+    request = _build_internal_request(
+        req,
+        event,
+        model,
+        runtime_instance_id=(params.instance_id if params is not None else "default"),
+    )
     # Optionally prepend a persona system_prompt at the head of the
     # request messages. Off by default; opt-in via the per-channel
     # ``[channels.qq.humanlike]`` config or the live ``humanlike_resolver``
@@ -1616,9 +1925,7 @@ async def handle_one_qq(
     # NapCat-only input-status indicator in private chats.
     typing_task: asyncio.Task[None] | None = None
     if event.message_type == MessageType.PRIVATE:
-        typing_task = asyncio.create_task(
-            _qq_input_status_pulse(adapter, event.user_id, cancel)
-        )
+        typing_task = asyncio.create_task(_qq_input_status_pulse(adapter, event.user_id, cancel))
 
     text_parts: list[str] = []
     policy_blocked_output = False
@@ -1653,9 +1960,7 @@ async def handle_one_qq(
                     )
                 break
             elif kind == "error":
-                error_message = getattr(chat_ev, "error", "") or getattr(
-                    chat_ev, "message", ""
-                )
+                error_message = getattr(chat_ev, "error", "") or getattr(chat_ev, "message", "")
                 break
             elif kind == "tool_call":
                 tool_name = getattr(chat_ev, "tool", "") or ""
@@ -1670,22 +1975,16 @@ async def handle_one_qq(
                     # _effective_session_key_for) — a base-key link
                     # points at the dead pre-/new session. Same applies
                     # to every converted call site below.
-                    _qq_link = _status_link_line(
-                        _effective_session_key_for(req.binding)
-                    )
+                    _qq_link = _status_link_line(_effective_session_key_for(req.binding))
                     if _qq_link:
                         _qq_status_link_requested = True
                         try:
                             await adapter.send_action(
-                                _build_reply_action(
-                                    event, _qq_link, prepend_at_mention=False
-                                )
+                                _build_reply_action(event, _qq_link, prepend_at_mention=False)
                             )
                             _qq_status_link_sent = True
                         except Exception as exc:  # noqa: BLE001
-                            _log.warning(
-                                "qq early status link send failed: %s", exc
-                            )
+                            _log.warning("qq early status link send failed: %s", exc)
                 if tool_name == _SEND_ATTACHMENT_TOOL:
                     # Real upload; the agent-side dispatch is a no-op
                     # stub so the loop continues — we do the work here.
@@ -1693,9 +1992,7 @@ async def handle_one_qq(
                     if "tencent_content_policy_blocked" in status:
                         policy_blocked_output = True
                     else:
-                        _path, _caption, _filename = _parse_send_attachment_args(
-                            chat_ev
-                        )
+                        _path, _caption, _filename = _parse_send_attachment_args(chat_ev)
                         display = (_filename or "").strip()
                         if not display and _path:
                             from pathlib import Path as _P
@@ -1718,10 +2015,7 @@ async def handle_one_qq(
                     # happened" signal the user actually wants.
                     pass
                 else:
-                    activity.append(
-                        ("call", _qq_activity_label_for_call(chat_ev),
-                         None, False, "")
-                    )
+                    activity.append(("call", _qq_activity_label_for_call(chat_ev), None, False, ""))
                 # Other tool_call frames stay informational — QQ has no
                 # editMessage equivalent, so we can't render a mutable
                 # spinner. The set_input_status pulse is the user-
@@ -1743,9 +2037,7 @@ async def handle_one_qq(
                 tool_label = (tool_name or "?").replace("\n", " ")
                 if len(tool_label) > 60:
                     tool_label = tool_label[:57] + "..."
-                activity.append(
-                    ("result", tool_label, dur_ms, is_error, err_summary)
-                )
+                activity.append(("result", tool_label, dur_ms, is_error, err_summary))
     except Exception as exc:  # noqa: BLE001 — never let a crash kill the row
         _log.exception("qq handle_one crashed: %s", exc)
         if inbox is not None and inbox_id is not None:
@@ -1777,11 +2069,7 @@ async def handle_one_qq(
     # todo block is intentionally DROPPED on QQ — pending ☐ rows are
     # forward-looking noise for non-editable channels; the operation
     # flow IS the "what just happened" signal.
-    summary = (
-        _qq_format_activity_summary(activity)
-        if _qq_tool_summary_enabled()
-        else ""
-    )
+    summary = _qq_format_activity_summary(activity) if _qq_tool_summary_enabled() else ""
 
     if policy_blocked_output:
         body = QQ_SAFE_REFUSAL_TEXT
@@ -1805,9 +2093,7 @@ async def handle_one_qq(
                     len(activity),
                 )
             else:
-                _log.warning(
-                    "qq handle_one empty reply user=%s", event.user_id
-                )
+                _log.warning("qq handle_one empty reply user=%s", event.user_id)
                 if inbox is not None and inbox_id is not None:
                     try:
                         await inbox.mark_done(inbox_id)
@@ -1855,9 +2141,7 @@ async def handle_one_qq(
         # Surface the shareable agent-status link on the LAST chunk of the
         # LAST bubble only (one link per turn).
         if _qq_status_line and chunks and bubble_idx == len(bubbles) - 1:
-            chunks[-1] = try_append_footer(
-                chunks[-1], _qq_status_line, _QQ_TEXT_LIMIT
-            )
+            chunks[-1] = try_append_footer(chunks[-1], _qq_status_line, _QQ_TEXT_LIMIT)
         if len(chunks) > 1:
             _log.info(
                 "qq reply split user=%s len=%d chunks=%d",
@@ -1879,9 +2163,7 @@ async def handle_one_qq(
             _log.warning("qq inbox mark_done failed: %s", exc)
 
 
-async def _qq_inject_persona_if_enabled(
-    request: Any, params: QqChannelParams
-) -> None:
+async def _qq_inject_persona_if_enabled(request: Any, params: QqChannelParams) -> None:
     """Thin wrapper around :func:`persona_inject.inject_persona_if_enabled`.
 
     Kept as a named QQ-specific helper for ``handle_one_qq`` callers and
@@ -1910,13 +2192,14 @@ def _build_internal_request(
     req: RoutedRequest,
     event: MessageEvent,
     model: str,
+    *,
+    runtime_instance_id: str = "default",
 ) -> Any:
     """Build the request object handed to ``chat_service.run``.
 
-    Returns a :class:`~types.SimpleNamespace` with attribute-style access
-    matching the ``InternalChatRequest`` contract. Avoids a hard import
-    dependency on ``corlinman-server`` so the channels package stays
-    importable in isolation (unit tests, standalone deploys).
+    Returns the channels package's neutral :class:`ChannelChatRequest`.
+    The gateway validates and converts it without making this package depend
+    on ``corlinman-server`` (unit tests and standalone deploys stay isolated).
 
     Bug fix (2026-05-26): we used to hand the chat service a list of
     ``corlinman_channels.common.Attachment`` dataclasses, which carry a
@@ -1928,14 +2211,13 @@ def _build_internal_request(
     the inbox row went ``dead``. We now normalise to the lighter
     "shape" the server-side proto builder is actually written against.
     """
-    from types import SimpleNamespace
-
+    from corlinman_channels.chat_request import (
+        ChannelChatMessage,
+        ChannelChatRequest,
+    )
     from corlinman_channels.onebot import segments_to_attachments
 
-    attachments = [
-        _to_server_attachment_shape(a)
-        for a in segments_to_attachments(event.message)
-    ]
+    attachments = [_to_server_attachment_shape(a) for a in segments_to_attachments(event.message)]
     # Inbound attribution: prefix with sender / reply-to context when the
     # router carried it (group attribution). A no-op for the OneBot path
     # today since the QQ ``MessageEvent`` port doesn't expose a display
@@ -1946,19 +2228,17 @@ def _build_internal_request(
         reply_to_text=getattr(req, "reply_to_text", None),
     )
     content = f"{prefix}\n{req.content}" if prefix else req.content
-    message = SimpleNamespace(role="user", content=content)
+    message = ChannelChatMessage(role="user", content=content)
     # Per-binding session prefs (/model override + /new epoch) — fail-open
     # shims that return the inputs unchanged when the server-side store is
     # unavailable. Applied here (the single choke point) so every QQ call
     # site honours the user's /model and /new choices.
     from corlinman_channels import binding_prefs as _binding_prefs
 
-    return SimpleNamespace(
+    return ChannelChatRequest(
         model=_binding_prefs.effective_model(req.binding, model),
         messages=[message],
-        session_key=_binding_prefs.effective_session_key(
-            req.binding, req.session_key
-        ),
+        session_key=_binding_prefs.effective_session_key(req.binding, req.session_key),
         stream=True,
         max_tokens=None,
         temperature=None,
@@ -1968,6 +2248,7 @@ def _build_internal_request(
         # with a real id when humanlike is enabled; default None keeps the
         # server-side proto builder's tolerant read happy.
         persona_id=None,
+        runtime_instance_id=runtime_instance_id,
     )
 
 
@@ -1980,7 +2261,7 @@ _KIND_REMAP: dict[str, str] = {
     "image": "image",
     "audio": "audio",
     "video": "video",
-    "document": "file",   # channels uses DOCUMENT; server uses FILE
+    "document": "file",  # channels uses DOCUMENT; server uses FILE
     "file": "file",
 }
 
@@ -1997,9 +2278,7 @@ def _to_server_attachment_shape(att: Any) -> Any:
     from types import SimpleNamespace
 
     kind_raw: Any = getattr(att, "kind", None)
-    kind_str = (
-        str(kind_raw.value) if hasattr(kind_raw, "value") else str(kind_raw or "")
-    ).lower()
+    kind_str = (str(kind_raw.value) if hasattr(kind_raw, "value") else str(kind_raw or "")).lower()
     kind = _KIND_REMAP.get(kind_str, kind_str)
 
     # Server's _attachment_to_proto compares via `== ApiAttachmentKind.IMAGE`
@@ -2028,6 +2307,106 @@ def _to_server_attachment_shape(att: Any) -> Any:
         mime=getattr(att, "mime", None) or None,
         file_name=getattr(att, "file_name", None) or None,
     )
+
+
+def _qq_inbox_payload(event: MessageEvent) -> str:
+    """Serialize the minimal trusted event shape needed for crash replay."""
+    return json.dumps(
+        {
+            "self_id": event.self_id,
+            "message_type": event.message_type.value,
+            "user_id": event.user_id,
+            "group_id": event.group_id,
+            "message_id": event.message_id,
+            "time": event.time,
+            "raw_message": event.raw_message,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _qq_event_from_inbox(entry: Any) -> MessageEvent | None:
+    """Reconstruct a text-only QQ event from a durable inbox row."""
+    payload_json = getattr(entry, "payload_json", None)
+    if not isinstance(payload_json, str) or not payload_json:
+        return None
+    try:
+        payload = json.loads(payload_json)
+        message_type = MessageType(str(payload["message_type"]))
+        self_id = int(payload["self_id"])
+        user_id = int(payload["user_id"])
+        message_id = int(payload["message_id"])
+        timestamp = int(payload.get("time") or 0)
+        group_id_raw = payload.get("group_id")
+        group_id = int(group_id_raw) if group_id_raw is not None else None
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    user_text = str(getattr(entry, "user_text", None) or "").strip()
+    if not user_text:
+        return None
+    return MessageEvent(
+        self_id=self_id,
+        message_type=message_type,
+        sub_type=None,
+        group_id=group_id,
+        user_id=user_id,
+        message_id=message_id,
+        message=[TextSegment(text=user_text)],
+        raw_message=user_text,
+        time=timestamp,
+        sender=None,
+    )
+
+
+async def _replay_qq_inbox_rows(
+    inbox: Any,
+    router: ChannelRouter,
+    params: QqChannelParams,
+    adapter: OneBotAdapter,
+    cancel: asyncio.Event,
+    semaphore: asyncio.Semaphore,
+    pending: set[asyncio.Task[None]],
+    slash_policy: Any,
+) -> None:
+    """Replay only this runtime's persisted normal-chat messages."""
+    try:
+        rows = await inbox.list_pending(
+            channel="qq",
+            runtime_instance_id=params.instance_id,
+            limit=20,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("qq inbox replay scan failed: %s", exc)
+        return
+    for entry in rows:
+        event = _qq_event_from_inbox(entry)
+        if event is None:
+            await inbox.mark_dead(entry.id, "unreplayable_qq_payload")
+            continue
+        req = router.dispatch(event, slash_policy=slash_policy)
+        if req is None or req.command_spec is not None:
+            await inbox.mark_dead(entry.id, "qq_replay_no_longer_routable")
+            continue
+        if params.chat_service is None:
+            return
+        await semaphore.acquire()
+        task = asyncio.create_task(
+            _qq_run_one(
+                semaphore,
+                params.chat_service,
+                req,
+                event,
+                params.model,
+                adapter,
+                cancel,
+                inbox=inbox,
+                inbox_id=entry.id,
+                params=params,
+            )
+        )
+        pending.add(task)
+        task.add_done_callback(pending.discard)
 
 
 def _build_reply_action(
@@ -2120,9 +2499,7 @@ TELEGRAM_HEALTH: dict[str, Any] = {
 # from_username / content / timestamp_ms / routing / mention_reason).
 # Capped at 500 so a long-running gateway can't blow memory; the admin
 # UI typically fetches the most recent 20.
-TELEGRAM_RECENT_MESSAGES: collections.deque[dict[str, Any]] = collections.deque(
-    maxlen=500
-)
+TELEGRAM_RECENT_MESSAGES: collections.deque[dict[str, Any]] = collections.deque(maxlen=500)
 
 # Trailing 7-day per-day counters keyed by ``YYYY-MM-DD`` (UTC). Pruned
 # on every update so a quiet bot doesn't accumulate stale keys.
@@ -2187,6 +2564,7 @@ def _telegram_recompute_aggregates(now_ms: int | None = None) -> None:
     # Latency percentiles from the ring buffer.
     samples = sorted(_TELEGRAM_LATENCIES)
     if samples:
+
         def _pct(p: float) -> int:
             if len(samples) == 1:
                 return int(samples[0])
@@ -2382,15 +2760,9 @@ DISCORD_HEALTH: dict[str, Any] = _new_channel_health()
 SLACK_HEALTH: dict[str, Any] = _new_channel_health()
 FEISHU_HEALTH: dict[str, Any] = _new_channel_health()
 
-DISCORD_RECENT_MESSAGES: collections.deque[dict[str, Any]] = collections.deque(
-    maxlen=500
-)
-SLACK_RECENT_MESSAGES: collections.deque[dict[str, Any]] = collections.deque(
-    maxlen=500
-)
-FEISHU_RECENT_MESSAGES: collections.deque[dict[str, Any]] = collections.deque(
-    maxlen=500
-)
+DISCORD_RECENT_MESSAGES: collections.deque[dict[str, Any]] = collections.deque(maxlen=500)
+SLACK_RECENT_MESSAGES: collections.deque[dict[str, Any]] = collections.deque(maxlen=500)
+FEISHU_RECENT_MESSAGES: collections.deque[dict[str, Any]] = collections.deque(maxlen=500)
 
 
 def _channel_refresh_online(health: dict[str, Any], now_ms: int | None = None) -> None:
@@ -2463,9 +2835,7 @@ def _channel_record_error(health: dict[str, Any]) -> None:
         _log.debug("_channel_record_error failed: %s", exc)
 
 
-def _channel_mark_responded(
-    recent: collections.deque[dict[str, Any]], chat_id: str
-) -> None:
+def _channel_mark_responded(recent: collections.deque[dict[str, Any]], chat_id: str) -> None:
     """Flip the most recent ``queued`` entry for ``chat_id`` to
     ``responded`` so the admin feed reflects the live routing decision —
     parallel to :func:`telegram_record_reply_sent`. Best-effort."""
@@ -2618,9 +2988,7 @@ async def _telegram_try_dispatch_command(
         # CMP-06 — run_command_handler consults the policy (if any) and
         # returns an ephemeral refusal without invoking the handler when
         # the caller isn't permitted.
-        result = await run_command_handler(
-            spec, ctx, policy=slash_policy, is_dm=_inbound_is_dm(ev)
-        )
+        result = await run_command_handler(spec, ctx, policy=slash_policy, is_dm=_inbound_is_dm(ev))
     except Exception as exc:  # noqa: BLE001 — never crash the dispatch loop
         _log.exception("telegram command handler crashed: %s", exc)
         return True
@@ -2645,9 +3013,7 @@ async def _telegram_try_dispatch_command(
             await sender.send_message(
                 chat_id,
                 chunk,
-                reply_to_message_id=(
-                    int(ev.message_id) if ev.message_id and first else None
-                ),
+                reply_to_message_id=(int(ev.message_id) if ev.message_id and first else None),
             )
             first = False
     except Exception as exc:  # noqa: BLE001
@@ -2806,9 +3172,7 @@ async def _try_dispatch_text_command(
             try:
                 await send_reply(_command_refusal_text(spec, slash_policy))
             except Exception as exc:  # noqa: BLE001
-                _log.warning(
-                    "%s command-refusal send failed: %s", channel_label, exc
-                )
+                _log.warning("%s command-refusal send failed: %s", channel_label, exc)
             return True
         return False
     try:
@@ -2819,9 +3183,7 @@ async def _try_dispatch_text_command(
             binding=ev.binding,
             is_admin=is_command_admin(ev.binding),
         )
-        result = await run_command_handler(
-            spec, ctx, policy=slash_policy, is_dm=_inbound_is_dm(ev)
-        )
+        result = await run_command_handler(spec, ctx, policy=slash_policy, is_dm=_inbound_is_dm(ev))
     except Exception as exc:  # noqa: BLE001 — never crash the inbound loop
         _log.exception("%s command handler crashed: %s", channel_label, exc)
         return True
@@ -2879,15 +3241,11 @@ async def _discord_send_command_reply(
         first = False
 
 
-async def _slack_send_command_reply(
-    sender: SlackSender, ev: InboundEvent[Any], reply: str
-) -> None:
+async def _slack_send_command_reply(sender: SlackSender, ev: InboundEvent[Any], reply: str) -> None:
     """Ship a command reply via Slack — chunked, threaded under the
     inbound ``ts`` (same grouping as the agent reply path)."""
     for chunk in chunk_reply(reply, _SLACK_TEXT_LIMIT):
-        await sender.send_message(
-            ev.binding.thread, chunk, thread_ts=ev.message_id
-        )
+        await sender.send_message(ev.binding.thread, chunk, thread_ts=ev.message_id)
 
 
 async def _feishu_send_command_reply(
@@ -2991,9 +3349,7 @@ async def run_telegram_channel(
                 # prelude via _telegram_apply_command_prelude — that
                 # closes the seam the QQ path gets for free from
                 # router.dispatch.
-                if await _telegram_try_dispatch_command(
-                    ev, sender, slash_policy=slash_policy
-                ):
+                if await _telegram_try_dispatch_command(ev, sender, slash_policy=slash_policy):
                     continue
                 chat_service = params.chat_service
                 if chat_service is None:
@@ -3049,9 +3405,7 @@ def _chunk_for_telegram(body: str) -> list[str]:
     """
     chunks = chunk_reply(body, _TELEGRAM_TEXT_LIMIT)
     if len(chunks) > 1:
-        _log.info(
-            "telegram reply split len=%d chunks=%d", len(body), len(chunks)
-        )
+        _log.info("telegram reply split len=%d chunks=%d", len(body), len(chunks))
     return chunks
 
 
@@ -3161,9 +3515,7 @@ async def _telegram_send_attachment(
         elif mime.startswith("audio/") and p.suffix.lower() in {".ogg", ".oga"}:
             await sender.send_voice(chat_id, p, caption=caption)
         else:
-            await sender.send_document(
-                chat_id, p, caption=caption, filename=display, mime=mime
-            )
+            await sender.send_document(chat_id, p, caption=caption, filename=display, mime=mime)
     except Exception as exc:  # noqa: BLE001
         _log.warning("telegram send_attachment failed: %s", exc)
         return f"⚠️ 发送文件失败: {display} ({exc})"
@@ -3221,9 +3573,7 @@ async def handle_one_telegram(
     # never strand it firing sendChatAction forever.
     placeholder_id: int | None = None
     error_message: str | None = None
-    typing_task = asyncio.create_task(
-        _telegram_typing_pulse(sender, chat_id, cancel)
-    )
+    typing_task = asyncio.create_task(_telegram_typing_pulse(sender, chat_id, cancel))
 
     async def _edit(text: str) -> None:
         # The spinner already dedupes by last_status; here we only need
@@ -3276,9 +3626,7 @@ async def handle_one_telegram(
             _log.warning("telegram placeholder send failed: %s", exc)
 
         async def _emit_status_link(line: str) -> None:
-            await sender.send_message(
-                chat_id, line, reply_to_message_id=reply_to
-            )
+            await sender.send_message(chat_id, line, reply_to_message_id=reply_to)
 
         outcome = await _drive_spinner(
             spinner,
@@ -3322,9 +3670,7 @@ async def handle_one_telegram(
             # failure here must not crash the turn.
             if placeholder_id is not None:
                 try:
-                    await sender.edit_message_text(
-                        chat_id, placeholder_id, "（无回复）"
-                    )
+                    await sender.edit_message_text(chat_id, placeholder_id, "（无回复）")
                 except Exception as exc:  # noqa: BLE001
                     _log.warning("telegram final emit failed: %s", exc)
             return
@@ -3387,13 +3733,9 @@ async def handle_one_telegram(
                         # Single bubble, multiple chunks: edit placeholder
                         # with chunk-0, send the middle chunks, then send
                         # the genuinely-last chunk with the keyboard.
-                        await sender.edit_message_text(
-                            chat_id, placeholder_id, b_chunks[0]
-                        )
+                        await sender.edit_message_text(chat_id, placeholder_id, b_chunks[0])
                         for chunk in b_chunks[1:-1]:
-                            await sender.send_message(
-                                chat_id, chunk, reply_to_message_id=reply_to
-                            )
+                            await sender.send_message(chat_id, chunk, reply_to_message_id=reply_to)
                         await sender.send_message(
                             chat_id,
                             b_chunks[-1],
@@ -3403,19 +3745,13 @@ async def handle_one_telegram(
                     else:
                         # More bubbles follow: edit placeholder, send remaining
                         # chunks of this bubble (no keyboard yet).
-                        await sender.edit_message_text(
-                            chat_id, placeholder_id, b_chunks[0]
-                        )
+                        await sender.edit_message_text(chat_id, placeholder_id, b_chunks[0])
                         for chunk in b_chunks[1:]:
-                            await sender.send_message(
-                                chat_id, chunk, reply_to_message_id=reply_to
-                            )
+                            await sender.send_message(chat_id, chunk, reply_to_message_id=reply_to)
                 elif is_last_bubble:
                     # Middle chunks of last bubble (no buttons yet).
                     for chunk in b_chunks[:-1]:
-                        await sender.send_message(
-                            chat_id, chunk, reply_to_message_id=reply_to
-                        )
+                        await sender.send_message(chat_id, chunk, reply_to_message_id=reply_to)
                     # Very last chunk carries the keyboard.
                     await sender.send_message(
                         chat_id,
@@ -3425,9 +3761,7 @@ async def handle_one_telegram(
                     )
                 else:
                     for chunk in b_chunks:
-                        await sender.send_message(
-                            chat_id, chunk, reply_to_message_id=reply_to
-                        )
+                        await sender.send_message(chat_id, chunk, reply_to_message_id=reply_to)
                 if not is_last_bubble:
                     await asyncio.sleep(0.3)
             telegram_record_reply_sent(inbound, inbound_ts_ms=inbound_ts_ms)
@@ -3448,14 +3782,10 @@ async def handle_one_telegram(
             if is_first_bubble and placeholder_id is not None:
                 await sender.edit_message_text(chat_id, placeholder_id, b_chunks[0])
                 for chunk in b_chunks[1:]:
-                    await sender.send_message(
-                        chat_id, chunk, reply_to_message_id=reply_to
-                    )
+                    await sender.send_message(chat_id, chunk, reply_to_message_id=reply_to)
             else:
                 for chunk in b_chunks:
-                    await sender.send_message(
-                        chat_id, chunk, reply_to_message_id=reply_to
-                    )
+                    await sender.send_message(chat_id, chunk, reply_to_message_id=reply_to)
             if not is_last_bubble:
                 await asyncio.sleep(0.3)
         telegram_record_reply_sent(inbound, inbound_ts_ms=inbound_ts_ms)
@@ -3674,18 +4004,14 @@ async def _drive_spinner(
                 and not outcome.status_link_emitted
                 and tool_name in _SUBAGENT_SPAWN_TOOLS
             ):
-                line = _status_link_line(
-                    _effective_session_key_for(inbound.binding)
-                )
+                line = _status_link_line(_effective_session_key_for(inbound.binding))
                 if line:
                     outcome.status_link_requested = True
                     try:
                         await on_subagent_spawn(line)
                         outcome.status_link_emitted = True
                     except Exception as exc:  # noqa: BLE001
-                        _log.warning(
-                            "early status link emit failed: %s", exc
-                        )
+                        _log.warning("early status link emit failed: %s", exc)
             await spinner.on_tool_call(ev)
         elif kind == "tool_result":
             await spinner.on_tool_result(ev)
@@ -3697,9 +4023,7 @@ async def _drive_spinner(
             return outcome
         elif kind == "error":
             await spinner.flush_reasoning()
-            outcome.error_message = (
-                getattr(ev, "error", "") or getattr(ev, "message", "")
-            )
+            outcome.error_message = getattr(ev, "error", "") or getattr(ev, "message", "")
             return outcome
     await spinner.flush_reasoning()
     return outcome
@@ -4105,9 +4429,7 @@ async def handle_one_discord(
 
     placeholder_id: str | None = None
     error_message: str | None = None
-    typing_task = asyncio.create_task(
-        _discord_typing_pulse(sender, channel_id, cancel)
-    )
+    typing_task = asyncio.create_task(_discord_typing_pulse(sender, channel_id, cancel))
 
     async def _edit(text: str) -> None:
         if placeholder_id is None:
@@ -4155,9 +4477,7 @@ async def handle_one_discord(
             _log.warning("discord placeholder send failed: %s", exc)
 
         async def _emit_status_link(line: str) -> None:
-            await sender.send_message(
-                channel_id, line, reply_to_message_id=reply_to
-            )
+            await sender.send_message(channel_id, line, reply_to_message_id=reply_to)
 
         outcome = await _drive_spinner(
             spinner,
@@ -4192,9 +4512,7 @@ async def handle_one_discord(
         if not body:
             if placeholder_id is not None:
                 try:
-                    await sender.edit_message(
-                        channel_id, placeholder_id, "（无回复）"
-                    )
+                    await sender.edit_message(channel_id, placeholder_id, "（无回复）")
                 except Exception as exc:  # noqa: BLE001
                     _log.warning("discord final emit failed: %s", exc)
             return
@@ -4222,14 +4540,10 @@ async def handle_one_discord(
             if is_first_bubble and placeholder_id is not None:
                 await sender.edit_message(channel_id, placeholder_id, b_chunks[0])
                 for chunk in b_chunks[1:]:
-                    await sender.send_message(
-                        channel_id, chunk, reply_to_message_id=reply_to
-                    )
+                    await sender.send_message(channel_id, chunk, reply_to_message_id=reply_to)
             else:
                 for chunk in b_chunks:
-                    await sender.send_message(
-                        channel_id, chunk, reply_to_message_id=reply_to
-                    )
+                    await sender.send_message(channel_id, chunk, reply_to_message_id=reply_to)
             if not is_last_bubble:
                 await asyncio.sleep(0.3)
         # Admin health: count a successful outbound + mark the inbound
@@ -4526,9 +4840,7 @@ async def handle_one_slack(
             is_first_bubble = b_idx == 0
             is_last_bubble = b_idx == len(all_bubble_chunks) - 1
             if len(b_chunks) > 1:
-                _log.info(
-                    "slack reply split len=%d chunks=%d", len(bubbles[b_idx]), len(b_chunks)
-                )
+                _log.info("slack reply split len=%d chunks=%d", len(bubbles[b_idx]), len(b_chunks))
             if is_first_bubble and placeholder_ts is not None:
                 await sender.update_message(channel, placeholder_ts, b_chunks[0])
                 for chunk in b_chunks[1:]:
@@ -4700,9 +5012,7 @@ async def _feishu_send_attachment(
     display = filename or p.name
     try:
         file_key = await sender.upload_file(p, filename=display)
-        await sender.send_file_message(
-            chat_id, file_key, reply_to_message_id=reply_to
-        )
+        await sender.send_file_message(chat_id, file_key, reply_to_message_id=reply_to)
     except Exception as exc:  # noqa: BLE001
         _log.warning("feishu send_attachment failed: %s", exc)
         return f"⚠️ 发送文件失败: {display} ({exc})"
@@ -4781,9 +5091,7 @@ async def handle_one_feishu(
             _log.warning("feishu placeholder send failed: %s", exc)
 
         async def _emit_status_link(line: str) -> None:
-            await sender.send_message(
-                chat_id, line, reply_to_message_id=reply_to
-            )
+            await sender.send_message(chat_id, line, reply_to_message_id=reply_to)
 
         outcome = await _drive_spinner(
             spinner,
@@ -4837,20 +5145,14 @@ async def handle_one_feishu(
             is_first_bubble = b_idx == 0
             is_last_bubble = b_idx == len(all_bubble_chunks) - 1
             if len(b_chunks) > 1:
-                _log.info(
-                    "feishu reply split len=%d chunks=%d", len(bubbles[b_idx]), len(b_chunks)
-                )
+                _log.info("feishu reply split len=%d chunks=%d", len(bubbles[b_idx]), len(b_chunks))
             if is_first_bubble and placeholder_id is not None:
                 await sender.update_message(placeholder_id, b_chunks[0])
                 for chunk in b_chunks[1:]:
-                    await sender.send_message(
-                        chat_id, chunk, reply_to_message_id=reply_to
-                    )
+                    await sender.send_message(chat_id, chunk, reply_to_message_id=reply_to)
             else:
                 for chunk in b_chunks:
-                    await sender.send_message(
-                        chat_id, chunk, reply_to_message_id=reply_to
-                    )
+                    await sender.send_message(chat_id, chunk, reply_to_message_id=reply_to)
             if not is_last_bubble:
                 await asyncio.sleep(0.3)
         # Admin health: count a successful outbound + mark the inbound
@@ -4966,9 +5268,7 @@ async def run_qq_official_channel(
                     params.tencent_policy_resolver,
                 )
                 if not policy.allowed:
-                    _log_tencent_block(
-                        policy, channel="qq_official", direction="inbound"
-                    )
+                    _log_tencent_block(policy, channel="qq_official", direction="inbound")
                     try:
                         await _qq_official_send_text(
                             sender,
@@ -5038,9 +5338,7 @@ async def _qq_official_send_text(
     if not application_safe:
         decision = _tencent_text_decision(text, tencent_policy_resolver)
         if not decision.allowed:
-            _log_tencent_block(
-                decision, channel="qq_official", direction="outbound_final"
-            )
+            _log_tencent_block(decision, channel="qq_official", direction="outbound_final")
             raise TransportError("tencent_content_policy_blocked")
     msg_id = inbound.message_id
     event_type = _qq_official_event_type(inbound)
@@ -5076,37 +5374,23 @@ async def _qq_official_send_image(
         tencent_policy_resolver,
     )
     if not decision.allowed:
-        _log_tencent_block(
-            decision, channel="qq_official", direction="outbound_media"
-        )
+        _log_tencent_block(decision, channel="qq_official", direction="outbound_media")
         raise TransportError("tencent_content_policy_blocked")
     event_type = _qq_official_event_type(inbound)
     thread = inbound.binding.thread
     msg_id = inbound.message_id
     if event_type == _QQ_OFFICIAL_EVT_C2C:
-        info = await sender.upload_c2c_image(
-            thread, url=url, file_data=file_data
-        )
-        return await sender.send_c2c_image(
-            thread, info, msg_id=msg_id, content=caption
-        )
+        info = await sender.upload_c2c_image(thread, url=url, file_data=file_data)
+        return await sender.send_c2c_image(thread, info, msg_id=msg_id, content=caption)
     if event_type == _QQ_OFFICIAL_EVT_GROUP:
-        info = await sender.upload_group_image(
-            thread, url=url, file_data=file_data
-        )
-        return await sender.send_group_image(
-            thread, info, msg_id=msg_id, content=caption
-        )
+        info = await sender.upload_group_image(thread, url=url, file_data=file_data)
+        return await sender.send_group_image(thread, info, msg_id=msg_id, content=caption)
     # Guild channel — direct image URL is supported on this endpoint.
     if url is None:
         # Guild channel needs an HTTPS URL; for local files we can't
         # synthesize one. Surface a status caption instead.
-        raise TransportError(
-            "qq_official guild-channel image requires a public HTTPS url"
-        )
-    return await sender.send_image(
-        thread, url, msg_id=msg_id, content=caption
-    )
+        raise TransportError("qq_official guild-channel image requires a public HTTPS url")
+    return await sender.send_image(thread, url, msg_id=msg_id, content=caption)
 
 
 async def _qq_official_send_attachment(
@@ -5293,9 +5577,7 @@ async def handle_one_qq_official(
                     and not _qqo_status_link_sent
                     and tool_name in _SUBAGENT_SPAWN_TOOLS
                 ):
-                    _qqo_link = _status_link_line(
-                        _effective_session_key_for(inbound.binding)
-                    )
+                    _qqo_link = _status_link_line(_effective_session_key_for(inbound.binding))
                     if _qqo_link:
                         _qqo_status_link_requested = True
                         try:
@@ -5304,9 +5586,7 @@ async def handle_one_qq_official(
                                 inbound,
                                 _qqo_link,
                                 tencent_policy_resolver=(
-                                    params.tencent_policy_resolver
-                                    if params is not None
-                                    else None
+                                    params.tencent_policy_resolver if params is not None else None
                                 ),
                             )
                             _qqo_status_link_sent = True
@@ -5321,9 +5601,7 @@ async def handle_one_qq_official(
                         inbound,
                         chat_ev,
                         tencent_policy_resolver=(
-                            params.tencent_policy_resolver
-                            if params is not None
-                            else None
+                            params.tencent_policy_resolver if params is not None else None
                         ),
                     )
                     if "tencent_content_policy_blocked" in status:
@@ -5343,10 +5621,7 @@ async def handle_one_qq_official(
                     supplemented = True
                 break
             elif kind == "error":
-                error_message = (
-                    getattr(chat_ev, "error", "")
-                    or getattr(chat_ev, "message", "")
-                )
+                error_message = getattr(chat_ev, "error", "") or getattr(chat_ev, "message", "")
                 break
             # tool_result frames are intentionally absorbed — the summary
             # block stays short by listing the tool invocations only.
@@ -5563,9 +5838,7 @@ async def run_wechat_official_channel(
         # skipped entirely.
         if await _try_dispatch_text_command(
             inbound,
-            functools.partial(
-                _wechat_send_command_reply, sender, inbound, passive_future
-            ),
+            functools.partial(_wechat_send_command_reply, sender, inbound, passive_future),
             slash_policy=slash_policy,
             channel_label="wechat_official",
         ):
@@ -5714,31 +5987,20 @@ async def handle_one_wechat_official(
                     supplemented = True
                 break
             elif kind == "error":
-                error_message = getattr(ev, "error", "") or getattr(
-                    ev, "message", ""
-                )
+                error_message = getattr(ev, "error", "") or getattr(ev, "message", "")
                 break
-            elif (
-                kind == "tool_call"
-                and not _wx_status_link_requested
-                and not _wx_status_link_sent
-            ):
+            elif kind == "tool_call" and not _wx_status_link_requested and not _wx_status_link_sent:
                 tool_name = getattr(ev, "tool", "") or ""
                 if tool_name in _SUBAGENT_SPAWN_TOOLS:
-                    _wx_link = _status_link_line(
-                        _effective_session_key_for(inbound.binding)
-                    )
+                    _wx_link = _status_link_line(_effective_session_key_for(inbound.binding))
                     if _wx_link:
                         _wx_status_link_requested = True
                         try:
-                            await sender.send_text_customer(
-                                inbound.binding.sender, _wx_link
-                            )
+                            await sender.send_text_customer(inbound.binding.sender, _wx_link)
                             _wx_status_link_sent = True
                         except Exception as exc:  # noqa: BLE001
                             _log.warning(
-                                "wechat_official early status link send "
-                                "failed: %s",
+                                "wechat_official early status link send failed: %s",
                                 exc,
                             )
             # tool_call / tool_result frames are informational only —
@@ -5819,7 +6081,8 @@ async def handle_one_wechat_official(
             except Exception as exc:
                 _log.warning(
                     "wechat_official customer/send failed user=%s err=%s",
-                    openid, exc,
+                    openid,
+                    exc,
                 )
             if not is_last:
                 await asyncio.sleep(0.3)
@@ -5869,6 +6132,7 @@ async def _debounce_albums(
     flushes promptly instead of stalling until the next unrelated
     message arrives.
     """
+
     async def _anext() -> InboundEvent[Any]:
         return await iterator.__anext__()
 
@@ -5923,23 +6187,20 @@ async def _debounce_albums(
         yield ready
 
 
-def _build_text_channel_request(
-    inbound: InboundEvent[Any], model: str
-) -> Any:
+def _build_text_channel_request(inbound: InboundEvent[Any], model: str) -> Any:
     """Build the request handed to ``chat_service.run`` for the
     text-only channels (Telegram / Discord / Slack / Feishu).
 
-    Returns a :class:`~types.SimpleNamespace` so the downstream
-    ``ChatService`` can use attribute access (``req.model``,
-    ``req.messages``…) — same shape as :func:`_build_internal_request`
-    for QQ. The earlier dict form crashed the gateway with
-    ``AttributeError: 'dict' object has no attribute 'model'``.
+    Returns the same neutral :class:`ChannelChatRequest` contract as QQ.
+    The gateway bridge validates it before entering ``ChatService``.
 
     Attachments go through :func:`_to_server_attachment_shape` so the
-    server-side proto builder reads ``bytes_`` + ``ApiAttachmentKind``
-    correctly (see the same bug fix on ``_build_internal_request``).
+    gateway bridge reads ``bytes_`` and the normalized kind correctly.
     """
-    from types import SimpleNamespace
+    from corlinman_channels.chat_request import (
+        ChannelChatMessage,
+        ChannelChatRequest,
+    )
 
     # Inbound attribution: prefix the agent-facing content with the
     # sender display-name + (when this is a reply) a truncated quote of
@@ -5951,13 +6212,13 @@ def _build_text_channel_request(
     prefix = _attribution_prefix(inbound)
     content = f"{prefix}\n{inbound.text}" if prefix else inbound.text
 
-    message = SimpleNamespace(role="user", content=content)
+    message = ChannelChatMessage(role="user", content=content)
     # Same per-binding prefs choke point as _build_internal_request — the
     # four text channels (Telegram / Discord / Slack / Feishu) all build
     # their request here, so /model and /new work uniformly.
     from corlinman_channels import binding_prefs as _binding_prefs
 
-    return SimpleNamespace(
+    return ChannelChatRequest(
         model=_binding_prefs.effective_model(inbound.binding, model),
         messages=[message],
         session_key=_binding_prefs.effective_session_key(
@@ -5966,9 +6227,7 @@ def _build_text_channel_request(
         stream=True,
         max_tokens=None,
         temperature=None,
-        attachments=[
-            _to_server_attachment_shape(a) for a in inbound.attachments
-        ],
+        attachments=[_to_server_attachment_shape(a) for a in inbound.attachments],
         binding=inbound.binding,
         # Shape-match InternalChatRequest. Persona injection overwrites this
         # with a real id when humanlike is enabled; default None keeps the
@@ -6027,6 +6286,7 @@ async def _race_iter_or_cancel(
     fires first. Equivalent of Rust ``tokio::select! { recv() => ...,
     cancelled() => break }``.
     """
+
     async def _anext() -> Any:
         return await iterator.__anext__()
 

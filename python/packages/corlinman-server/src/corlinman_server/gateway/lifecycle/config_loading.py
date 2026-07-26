@@ -96,20 +96,14 @@ def _wire_status_links(cfg: Any | None, data_dir: Path) -> bool:
             resolve_signing_key,
         )
     except ImportError as exc:
-        logger.warning(
-            "gateway.channels.status_links_import_failed", error=str(exc)
-        )
+        logger.warning("gateway.channels.status_links_import_failed", error=str(exc))
         return False
 
     explicit = _status_links_explicitly_configured(cfg)
 
     server_cfg = _extract_section(cfg, "server")
     config_public_url = _extract_section(server_cfg, "public_url")
-    config_public_url = (
-        config_public_url.strip()
-        if isinstance(config_public_url, str)
-        else ""
-    )
+    config_public_url = config_public_url.strip() if isinstance(config_public_url, str) else ""
     env_public_url = os.environ.get("CORLINMAN_PUBLIC_URL", "").strip()
     learned_public_url = load_remembered_origin(data_dir)
     public_url = config_public_url or env_public_url or learned_public_url
@@ -137,19 +131,11 @@ def _wire_status_links(cfg: Any | None, data_dir: Path) -> bool:
         # Fold the session's live revocation epoch into each freshly-minted
         # link (#34) so a later ``revoke_session`` bump leaves already-shared
         # links behind while new ones keep working.
-        minter=lambda sk: make_status_token(
-            sk, signing_key, epoch=current_epoch(data_dir, sk)
-        ),
+        minter=lambda sk: make_status_token(sk, signing_key, epoch=current_epoch(data_dir, sk)),
     )
 
     if status_enabled:
-        source = (
-            "config"
-            if config_public_url
-            else "env"
-            if env_public_url
-            else "learned"
-        )
+        source = "config" if config_public_url else "env" if env_public_url else "learned"
         logger.info(
             "gateway.channels.status_links_enabled",
             public_url=public_url,
@@ -180,9 +166,8 @@ def _load_config(path: Path | None) -> Any | None:
             detail="gateway.core.config not present; skipping load",
         )
         return None
-    loader: Callable[[Path], Any] | None = (
-        getattr(core_config, "load_from_path", None)
-        or getattr(core_config, "Config", None)
+    loader: Callable[[Path], Any] | None = getattr(core_config, "load_from_path", None) or getattr(
+        core_config, "Config", None
     )
     if loader is None:
         logger.warning("gateway.config.no_loader_symbol", path=str(path))
@@ -192,9 +177,7 @@ def _load_config(path: Path | None) -> Any | None:
         # ``Config(path)`` returning a class is fine — the duck-typed
         # downstream code only reads attributes off whatever we hand it.
     except Exception as exc:
-        logger.warning(
-            "gateway.config.load_failed", path=str(path), error=str(exc)
-        )
+        logger.warning("gateway.config.load_failed", path=str(path), error=str(exc))
         return None
     logger.info("gateway.config.loaded", path=str(path))
     return cfg
@@ -321,17 +304,49 @@ def _start_config_watcher(app: Any, state: Any, config_path: Path | None) -> Any
         # successful reload then publishes the real snapshot.
         initial = {}
 
-    def _on_reload(report: Any, old_cfg: dict[str, Any], new_cfg: dict[str, Any]) -> None:
+    async def _on_reload(
+        report: Any,
+        old_cfg: dict[str, Any],
+        new_cfg: dict[str, Any],
+    ) -> None:
         # Publish the new snapshot onto the live AppState first so any
         # re-applied bootstrap reads the fresh config.
         state.config = new_cfg
         with suppress(AttributeError, TypeError):
             app.state.corlinman_config = new_cfg
         changed = list(getattr(report, "changed_sections", []))
-        restart_needed = sorted(
-            set(changed) & RESTART_REQUIRED_SECTIONS_LOCAL()
-        )
+        restart_needed = sorted(set(changed) & RESTART_REQUIRED_SECTIONS_LOCAL())
         reapplied = _reapply_hot_reloadable(state, changed)
+        if "channels" in changed:
+            registry = getattr(state, "qq_runtime_registry", None)
+            if registry is not None:
+                from corlinman_server.gateway.lifecycle.py_config import (
+                    default_py_config_path,
+                )
+
+                try:
+                    await registry.reconcile_and_write_sidecar(
+                        new_cfg.get("channels") or {},
+                        config=new_cfg,
+                        path=os.environ.get("CORLINMAN_PY_CONFIG") or default_py_config_path(),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    state.config = old_cfg
+                    with suppress(AttributeError, TypeError):
+                        app.state.corlinman_config = old_cfg
+                    watcher = getattr(state, "config_watcher", None)
+                    snapshot = getattr(watcher, "_snapshot", None)
+                    if snapshot is not None and hasattr(snapshot, "store"):
+                        snapshot.store(old_cfg)
+                    _reapply_hot_reloadable(state, changed)
+                    errors = getattr(report, "errors", None)
+                    if isinstance(errors, list):
+                        errors.append(f"QQ runtime reconcile failed: {exc}")
+                    logger.warning(
+                        "gateway.qq_runtime.reconcile_failed",
+                        error=str(exc),
+                    )
+                    return
         logger.info(
             "gateway.config_reload.applied",
             path=str(config_path),
@@ -370,9 +385,7 @@ def _start_config_watcher(app: Any, state: Any, config_path: Path | None) -> Any
             return []
         return [str(i) for i in issues]
 
-    async def _hook_emitter(
-        event: str, section: str, old: Any, new: Any
-    ) -> None:
+    async def _hook_emitter(event: str, section: str, old: Any, new: Any) -> None:
         """Fire a ``ConfigChanged`` notice onto the shared HookBus per
         changed section so in-process subscribers (evolution observer,
         future config-reactive components) react to a live edit. The
@@ -389,14 +402,10 @@ def _start_config_watcher(app: Any, state: Any, config_path: Path | None) -> Any
             reload_fn = getattr(runner, "reload", None)
             if callable(reload_fn):
                 try:
-                    summary = reload_fn(
-                        {"hooks": new if isinstance(new, dict) else {}}
-                    )
+                    summary = reload_fn({"hooks": new if isinstance(new, dict) else {}})
                     logger.info("gateway.config_reload.hooks_reloaded", **summary)
                 except Exception as exc:  # noqa: BLE001 — reload is best-effort
-                    logger.warning(
-                        "gateway.config_reload.hooks_reload_failed", error=str(exc)
-                    )
+                    logger.warning("gateway.config_reload.hooks_reload_failed", error=str(exc))
         bus = getattr(app.state, "hook_bus", None)
         if bus is None:
             return

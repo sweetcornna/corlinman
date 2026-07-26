@@ -480,7 +480,7 @@ async def _render_usage(ctx: CommandContext) -> CommandResult:
 
     base_key = ctx.binding.session_key()
     session_key = binding_prefs.effective_session_key(ctx.binding, base_key)
-    journal_path = Path(_channels_data_dir()) / "agent_journal.sqlite"
+    journal_path = Path(_channels_execution_state_dir()) / "agent_journal.sqlite"
     # Only gate on the sqlite file's existence when the configured
     # backend actually IS sqlite (unset env = sqlite default). Postgres /
     # Redis deployments journal elsewhere and have no local file to
@@ -525,22 +525,17 @@ async def _render_usage(ctx: CommandContext) -> CommandResult:
 
 
 def _channels_data_dir() -> str:
-    """Resolve the gateway data dir from the environment (handler-local).
+    """Resolve the gateway-private control-plane root."""
+    from corlinman_runtime import resolve_data_dir  # noqa: PLC0415
 
-    Mirrors the env-var precedence used by
-    ``gateway.lifecycle.entrypoint`` and the persona-store handler:
-    ``$CORLINMAN_DATA_DIR`` → ``~/.corlinman`` → ``.corlinman``. Kept as
-    a tiny helper so the status-card handlers don't each re-implement it.
-    """
-    raw = os.environ.get("CORLINMAN_DATA_DIR")
-    if raw:
-        return os.path.abspath(raw)
-    try:
-        from pathlib import Path as _Path  # noqa: PLC0415
+    return os.path.abspath(resolve_data_dir())
 
-        return str(_Path.home() / ".corlinman")
-    except (RuntimeError, OSError):
-        return ".corlinman"
+
+def _channels_execution_state_dir() -> str:
+    """Resolve the gateway/Agent shared execution-state root."""
+    from corlinman_runtime import resolve_execution_state_dir  # noqa: PLC0415
+
+    return os.path.abspath(resolve_execution_state_dir())
 
 
 def _render_status(ctx: CommandContext) -> CommandResult:

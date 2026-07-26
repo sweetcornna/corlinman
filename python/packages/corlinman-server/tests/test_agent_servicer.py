@@ -91,9 +91,7 @@ async def test_servicer_streams_tokens_and_done() -> None:
                 yield agent_pb2.ClientFrame(
                     start=agent_pb2.ChatStart(
                         model="claude-sonnet-4-5",
-                        messages=[
-                            common_pb2.Message(role=common_pb2.USER, content="hi")
-                        ],
+                        messages=[common_pb2.Message(role=common_pb2.USER, content="hi")],
                     )
                 )
 
@@ -125,9 +123,7 @@ async def test_env_mock_provider_is_used(monkeypatch: pytest.MonkeyPatch) -> Non
             stub = agent_pb2_grpc.AgentStub(channel)
 
             async def frames():
-                yield agent_pb2.ClientFrame(
-                    start=agent_pb2.ChatStart(model="any-model")
-                )
+                yield agent_pb2.ClientFrame(start=agent_pb2.ChatStart(model="any-model"))
 
             call = stub.Chat(frames())
             texts: list[str] = []
@@ -176,9 +172,7 @@ async def test_servicer_emits_tool_call_frame() -> None:
             stub = agent_pb2_grpc.AgentStub(channel)
 
             async def frames():
-                yield agent_pb2.ClientFrame(
-                    start=agent_pb2.ChatStart(model="claude-sonnet-4-5")
-                )
+                yield agent_pb2.ClientFrame(start=agent_pb2.ChatStart(model="claude-sonnet-4-5"))
 
             call = stub.Chat(frames())
             tool_names: list[str] = []
@@ -269,9 +263,8 @@ async def test_scheduler_shadow_executes_qzone_simulators(
 
             payloads: list[dict[str, Any]] = []
             async for frame in stub.Chat(frames()):
-                if (
-                    frame.WhichOneof("kind") == "tool_call"
-                    and frame.tool_call.plugin.startswith("_builtin_done:")
+                if frame.WhichOneof("kind") == "tool_call" and frame.tool_call.plugin.startswith(
+                    "_builtin_done:"
                 ):
                     meta = json.loads(frame.tool_call.args_json)
                     payloads.append(json.loads(meta["payload_json"]))
@@ -417,9 +410,7 @@ async def test_servicer_threads_merged_params_into_provider(
             stub = agent_pb2_grpc.AgentStub(channel)
 
             async def frames():
-                yield agent_pb2.ClientFrame(
-                    start=agent_pb2.ChatStart(model="fast-chat")
-                )
+                yield agent_pb2.ClientFrame(start=agent_pb2.ChatStart(model="fast-chat"))
 
             call = stub.Chat(frames())
             async for _ in call:
@@ -487,9 +478,7 @@ async def test_servicer_forwards_openai_tools_json_to_provider() -> None:
     # client tool is forwarded and the builtins were appended.
     forwarded = fake.last_kwargs["tools"]
     assert tools[0] in forwarded
-    forwarded_names = {
-        t.get("function", {}).get("name") for t in forwarded
-    }
+    forwarded_names = {t.get("function", {}).get("name") for t in forwarded}
     assert {"search", "calculator", "web_search", "web_fetch"} <= forwarded_names
 
 
@@ -542,9 +531,7 @@ async def test_servicer_assembles_context_before_provider_call() -> None:
     # Caller-supplied system message survives the assembler's placeholder
     # substitution; T1.3 then appends the dynamic env block, so only the
     # prefix is fixed.
-    assert provider_messages[0]["content"].startswith(
-        "Recall: memory hit from assembler"
-    )
+    assert provider_messages[0]["content"].startswith("Recall: memory hit from assembler")
 
 
 @pytest.mark.asyncio
@@ -650,11 +637,26 @@ def test_proto_chat_start_tenant_id_maps_to_extra() -> None:
     assert _extract_tenant_id(start) == "acme"
 
     # Unset field → no extra entry, extractor returns "".
-    bare = _to_agent_start(
-        agent_pb2.ChatStart(model="gpt-4o-mini", session_key="s")
-    )
+    bare = _to_agent_start(agent_pb2.ChatStart(model="gpt-4o-mini", session_key="s"))
     assert "tenant_id" not in bare.extra
     assert _extract_tenant_id(bare) == ""
+
+
+def test_proto_chat_start_runtime_instance_id_maps_to_extra() -> None:
+    from corlinman_grpc import agent_pb2
+    from corlinman_server.agent_servicer import _to_agent_start
+
+    start = _to_agent_start(
+        agent_pb2.ChatStart(
+            model="gpt-4o-mini",
+            session_key="sess-qq-instance",
+            runtime_instance_id="second-bot",
+        )
+    )
+    assert start.extra == {"runtime_instance_id": "second-bot"}
+
+    bare = _to_agent_start(agent_pb2.ChatStart(model="gpt-4o-mini", session_key="s"))
+    assert "runtime_instance_id" not in bare.extra
 
 
 def test_proto_chat_start_provider_config_maps_provider_hint_to_extra() -> None:
@@ -664,9 +666,7 @@ def test_proto_chat_start_provider_config_maps_provider_hint_to_extra() -> None:
     start = _to_agent_start(
         agent_pb2.ChatStart(
             model="gpt-4o-mini",
-            provider_config_json=json.dumps(
-                {"provider_hint": "persona-provider"}
-            ).encode("utf-8"),
+            provider_config_json=json.dumps({"provider_hint": "persona-provider"}).encode("utf-8"),
         )
     )
 
@@ -785,9 +785,7 @@ async def test_persona_create_binds_created_persona_to_channel(
     from corlinman_server.binding_prefs_store import get_prefs
 
     monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
-    servicer = CorlinmanAgentServicer(
-        provider_resolver=lambda _m: _FakeProvider([])
-    )
+    servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: _FakeProvider([]))
     servicer.set_persona_stores(persona_store=_CreatePersonaStore())
     result = await servicer._dispatch_builtin(
         ToolCallEvent(
@@ -922,10 +920,14 @@ async def test_persona_voice_binding_routes_text_to_speech_tool(
     ) -> tuple[Any, str, dict[str, Any]]:
         resolve_calls.append((alias_or_model, provider_hint))
         if alias_or_model == "voice-model":
-            return voice_provider, "upstream-voice-model", {
-                "tts_backend": "fish",
-                "reference_id": "voice-123",
-            }
+            return (
+                voice_provider,
+                "upstream-voice-model",
+                {
+                    "tts_backend": "fish",
+                    "reference_id": "voice-123",
+                },
+            )
         return parent_provider, alias_or_model, {}
 
     async def fake_dispatch_text_to_speech(
@@ -1037,9 +1039,7 @@ async def test_servicer_registry_end_to_end_resolves_alias() -> None:
         )
     }
 
-    servicer = CorlinmanAgentServicer(
-        provider_resolver=reg.resolve, aliases=aliases
-    )
+    servicer = CorlinmanAgentServicer(provider_resolver=reg.resolve, aliases=aliases)
     server = grpc.aio.server()
     agent_pb2_grpc.add_AgentServicer_to_server(servicer, server)
     port = server.add_insecure_port("127.0.0.1:0")
@@ -1050,9 +1050,7 @@ async def test_servicer_registry_end_to_end_resolves_alias() -> None:
             stub = agent_pb2_grpc.AgentStub(channel)
 
             async def frames():
-                yield agent_pb2.ClientFrame(
-                    start=agent_pb2.ChatStart(model="creative")
-                )
+                yield agent_pb2.ClientFrame(start=agent_pb2.ChatStart(model="creative"))
 
             call = stub.Chat(frames())
             async for _ in call:
@@ -1099,9 +1097,7 @@ async def test_servicer_dispatches_blackboard_write_in_process(
         args_json=b'{"key": "topic", "value": "research the moon"}',
     )
 
-    result_json = await servicer._dispatch_builtin(
-        event, start, _FakeProvider([])
-    )
+    result_json = await servicer._dispatch_builtin(event, start, _FakeProvider([]))
     payload = json.loads(result_json)
     assert payload["key"] == "topic"
     assert "error" not in payload
@@ -1116,9 +1112,7 @@ async def test_servicer_dispatches_blackboard_write_in_process(
         tool="blackboard.read",
         args_json=b'{"key": "topic"}',
     )
-    read_json = await servicer._dispatch_builtin(
-        read_event, start, _FakeProvider([])
-    )
+    read_json = await servicer._dispatch_builtin(read_event, start, _FakeProvider([]))
     read_payload = json.loads(read_json)
     assert read_payload == {
         "key": "topic",
@@ -1145,9 +1139,7 @@ async def test_servicer_builtin_tool_unknown_envelope() -> None:
     )
     # This tool isn't in BUILTIN_TOOLS so the loop wouldn't normally
     # call _dispatch_builtin, but the method itself is defensive.
-    result_json = await servicer._dispatch_builtin(
-        event, start, _FakeProvider([])
-    )
+    result_json = await servicer._dispatch_builtin(event, start, _FakeProvider([]))
     payload = json.loads(result_json)
     assert "error" in payload
 
@@ -1178,9 +1170,7 @@ async def test_servicer_dispatches_spawn_many_round_trip(
             "researcher": AgentCard(
                 name="researcher", description="", system_prompt="you research"
             ),
-            "editor": AgentCard(
-                name="editor", description="", system_prompt="you edit"
-            ),
+            "editor": AgentCard(name="editor", description="", system_prompt="you edit"),
         }
     )
 
@@ -1240,16 +1230,13 @@ async def test_servicer_allocates_child_seq_across_single_spawns(
 
     monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
     servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: _FakeProvider([]))
+
     async def _no_persona_state_store() -> None:
         return None
 
     servicer._get_persona_state_store = _no_persona_state_store  # type: ignore[method-assign]
     servicer._builtin_agents = AgentCardRegistry(
-        {
-            "researcher": AgentCard(
-                name="researcher", description="", system_prompt="you research"
-            )
-        }
+        {"researcher": AgentCard(name="researcher", description="", system_prompt="you research")}
     )
     provider = _FakeProvider(_token_stream(["did the work"]))
     start = ChatStart(
@@ -1310,9 +1297,7 @@ async def test_servicer_reserves_child_seq_range_for_spawn_many(
             "researcher": AgentCard(
                 name="researcher", description="", system_prompt="you research"
             ),
-            "editor": AgentCard(
-                name="editor", description="", system_prompt="you edit"
-            ),
+            "editor": AgentCard(name="editor", description="", system_prompt="you edit"),
         }
     )
     provider = _FakeProvider(_token_stream(["did the work"]))
@@ -1377,16 +1362,10 @@ async def test_servicer_spawn_seeds_child_persona_state(
     monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
     servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: _FakeProvider([]))
     servicer._builtin_agents = AgentCardRegistry(
-        {
-            "researcher": AgentCard(
-                name="researcher", description="", system_prompt="you research"
-            )
-        }
+        {"researcher": AgentCard(name="researcher", description="", system_prompt="you research")}
     )
     provider = _FakeProvider(_token_stream(["did the work"]))
-    start = ChatStart(
-        model="orchestrator", messages=[], tools=[], session_key="tenant-a::sess-1"
-    )
+    start = ChatStart(model="orchestrator", messages=[], tools=[], session_key="tenant-a::sess-1")
     args = json.dumps({"tasks": [{"agent": "researcher", "goal": "find papers"}]})
     event = ToolCallEvent(
         call_id="spawn-1",
@@ -1490,9 +1469,7 @@ async def test_servicer_threads_parent_tools_into_spawn(
         tool="subagent_spawn",
         args_json=args.encode(),
     )
-    result_json = await servicer._dispatch_builtin(
-        event, start, _FakeProvider([])
-    )
+    result_json = await servicer._dispatch_builtin(event, start, _FakeProvider([]))
     payload = json.loads(result_json)
     # The escalation reject proves parent_tools flowed through; if
     # ``start.tools`` had been dropped, the filter would have seen an
@@ -1527,11 +1504,7 @@ async def test_servicer_rejects_unknown_subagent_model_override_up_front(
 
     servicer._get_persona_state_store = _no_persona_state_store  # type: ignore[method-assign]
     servicer._builtin_agents = AgentCardRegistry(
-        {
-            "researcher": AgentCard(
-                name="researcher", description="", system_prompt="you research"
-            )
-        }
+        {"researcher": AgentCard(name="researcher", description="", system_prompt="you research")}
     )
     start = ChatStart(
         model="parent-model",
@@ -1552,9 +1525,7 @@ async def test_servicer_rejects_unknown_subagent_model_override_up_front(
         ).encode(),
     )
 
-    payload = json.loads(
-        await servicer._dispatch_builtin(event, start, child_provider)
-    )
+    payload = json.loads(await servicer._dispatch_builtin(event, start, child_provider))
 
     assert payload["finish_reason"] == "rejected"
     assert payload["error"] == "model_alias_invalid: 'missing-child-model'"
@@ -1597,9 +1568,7 @@ async def test_servicer_rejects_unknown_inline_model_override_up_front(
         ).encode(),
     )
 
-    payload = json.loads(
-        await servicer._dispatch_builtin(event, start, child_provider)
-    )
+    payload = json.loads(await servicer._dispatch_builtin(event, start, child_provider))
 
     assert payload["finish_reason"] == "rejected"
     assert payload["error"] == "model_alias_invalid: 'missing-inline-model'"
@@ -1631,11 +1600,7 @@ async def test_servicer_rejects_unknown_spawn_many_model_override_up_front(
 
     servicer._get_persona_state_store = _no_persona_state_store  # type: ignore[method-assign]
     servicer._builtin_agents = AgentCardRegistry(
-        {
-            "researcher": AgentCard(
-                name="researcher", description="", system_prompt="you research"
-            )
-        }
+        {"researcher": AgentCard(name="researcher", description="", system_prompt="you research")}
     )
     start = ChatStart(
         model="parent-model",
@@ -1661,9 +1626,7 @@ async def test_servicer_rejects_unknown_spawn_many_model_override_up_front(
         ).encode(),
     )
 
-    payload = json.loads(
-        await servicer._dispatch_builtin(event, start, child_provider)
-    )
+    payload = json.loads(await servicer._dispatch_builtin(event, start, child_provider))
 
     assert payload == {
         "tasks": [],
@@ -1766,9 +1729,7 @@ async def test_servicer_dispatches_calculator_in_process() -> None:
         tool="calculator",
         args_json=b'{"expression": "6 * 7"}',
     )
-    payload = json.loads(
-        await servicer._dispatch_builtin(event, start, _FakeProvider([]))
-    )
+    payload = json.loads(await servicer._dispatch_builtin(event, start, _FakeProvider([])))
     assert payload["result"] == 42
 
 
@@ -1833,17 +1794,11 @@ async def test_servicer_shell_task_poll_kill_are_session_scoped(
 
     st.reset_registry()
     reg = st.get_registry()
-    task = await reg.spawn(
-        command="sleep 5", session_key="owner", workspace=tmp_path
-    )
+    task = await reg.spawn(command="sleep 5", session_key="owner", workspace=tmp_path)
     tid = task.task_id
     try:
-        servicer = CorlinmanAgentServicer(
-            provider_resolver=lambda _m: _FakeProvider([])
-        )
-        intruder = ChatStart(
-            model="m", messages=[], tools=[], session_key="intruder"
-        )
+        servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: _FakeProvider([]))
+        intruder = ChatStart(model="m", messages=[], tools=[], session_key="intruder")
         owner = ChatStart(model="m", messages=[], tools=[], session_key="owner")
         args = f'{{"task_id": "{tid}"}}'.encode()
 
@@ -1927,9 +1882,7 @@ async def test_servicer_web_search_degrades_without_network(
         tool="web_search",
         args_json=b'{"query": "anything"}',
     )
-    payload = json.loads(
-        await servicer._dispatch_builtin(event, start, _FakeProvider([]))
-    )
+    payload = json.loads(await servicer._dispatch_builtin(event, start, _FakeProvider([])))
     assert payload["results"] == []
     assert "error" in payload
 
@@ -2043,10 +1996,14 @@ def test_cost_meter_keeps_sessions_isolated() -> None:
     servicer._cost_meter.add("s2", {"input_tokens": 3, "output_tokens": 4})
 
     assert servicer.cost_snapshot("s1") == {
-        "input_tokens": 10, "output_tokens": 20, "requests": 1,
+        "input_tokens": 10,
+        "output_tokens": 20,
+        "requests": 1,
     }
     assert servicer.cost_snapshot("s2") == {
-        "input_tokens": 3, "output_tokens": 4, "requests": 1,
+        "input_tokens": 3,
+        "output_tokens": 4,
+        "requests": 1,
     }
     # Unknown session returns an empty snapshot, not a KeyError.
     assert servicer.cost_snapshot("s-missing") == {}
@@ -2301,6 +2258,7 @@ async def test_recent_errored_turns_surfaces_journal_entries(
     await j.error_turn(tid, "BANG")
     crumbs = await servicer.recent_errored_turns("s-err")
     assert any("BANG" in (c["error"] or "") for c in crumbs)
+    await servicer.aclose()
 
 
 # ---------------------------------------------------------------------------
@@ -2363,6 +2321,9 @@ async def _drive_chat_once(
     *,
     session_key: str,
     user_text: str,
+    channel_name: str = "",
+    runtime_instance_id: str = "",
+    sender: str = "",
 ) -> None:
     """Drive one Chat RPC end-to-end against ``servicer`` and drain it."""
     server = grpc.aio.server()
@@ -2378,11 +2339,14 @@ async def _drive_chat_once(
                     start=agent_pb2.ChatStart(
                         model="claude-sonnet-4-5",
                         session_key=session_key,
-                        messages=[
-                            common_pb2.Message(
-                                role=common_pb2.USER, content=user_text
-                            )
-                        ],
+                        messages=[common_pb2.Message(role=common_pb2.USER, content=user_text)],
+                        binding=common_pb2.ChannelBinding(
+                            channel=channel_name,
+                            account="bot",
+                            thread="thread",
+                            sender=sender,
+                        ),
+                        runtime_instance_id=runtime_instance_id,
                     )
                 )
 
@@ -2473,9 +2437,7 @@ async def test_chat_resumes_in_progress_turn_replaying_tool_results(
         (
             m.get("role"),
             m.get("tool_call_id"),
-            (m.get("tool_calls") or [{}])[0].get("id")
-            if m.get("tool_calls")
-            else None,
+            (m.get("tool_calls") or [{}])[0].get("id") if m.get("tool_calls") else None,
         )
         for m in spliced
     ]
@@ -2484,41 +2446,85 @@ async def test_chat_resumes_in_progress_turn_replaying_tool_results(
     # adds. We assert on the relative positions rather than the absolute
     # message count so prompt scaffolding can evolve without breaking us.
     user_idx = next(
-        i for i, m in enumerate(spliced)
+        i
+        for i, m in enumerate(spliced)
         if m.get("role") == "user" and m.get("content") == "do the thing"
     )
     assistant_idx = next(
-        i for i, m in enumerate(spliced)
+        i
+        for i, m in enumerate(spliced)
         if m.get("role") == "assistant"
-        and any(
-            (tc or {}).get("id") == "call_seed"
-            for tc in (m.get("tool_calls") or [])
-        )
+        and any((tc or {}).get("id") == "call_seed" for tc in (m.get("tool_calls") or []))
     )
     tool_idx = next(
-        i for i, m in enumerate(spliced)
+        i
+        for i, m in enumerate(spliced)
         if m.get("role") == "tool" and m.get("tool_call_id") == "call_seed"
     )
-    assert user_idx < assistant_idx < tool_idx, (
-        f"replay ordering broken: {roles_and_calls}"
-    )
+    assert user_idx < assistant_idx < tool_idx, f"replay ordering broken: {roles_and_calls}"
 
     # ``begin_turn`` was NOT called by the handler — resume reuses the
     # seeded turn_id.
-    assert begin_calls == [], (
-        f"resume path must not call begin_turn; got {begin_calls}"
-    )
+    assert begin_calls == [], f"resume path must not call begin_turn; got {begin_calls}"
 
     # The resume log line fired with the canonical fields.
     resume_logs = [r for r in captured if r.get("event") == "agent.chat.resumed"]
     assert resume_logs, (
-        f"expected agent.chat.resumed log; got events: "
-        f"{[r.get('event') for r in captured]}"
+        f"expected agent.chat.resumed log; got events: {[r.get('event') for r in captured]}"
     )
     rec = resume_logs[0]
     assert rec["turn_id"] == seed_turn_id
     assert rec["session"] == "s1"
     assert rec["replayed_tool_results"] == 1
+    await servicer.aclose()
+
+
+async def test_chat_resume_is_exactly_qq_runtime_scoped(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import structlog
+    from corlinman_server import agent_servicer as srv_mod
+
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(srv_mod, "ReasoningLoop", _CapturingLoop)
+    _CapturingLoop.captured_starts = []
+
+    servicer = CorlinmanAgentServicer(
+        provider_resolver=lambda _m: _FakeProvider([]),
+    )
+    journal = await servicer._get_journal()
+    assert journal is not None
+    seed = await journal.begin_turn(
+        "shared-session",
+        "same prompt",
+        user_id="sender",
+        channel="qq",
+        runtime_instance_id="bot-a",
+    )
+    assert seed is not None
+    await journal.append_message(seed, role="user", content="same prompt")
+
+    with structlog.testing.capture_logs() as captured:
+        await _drive_chat_once(
+            servicer,
+            session_key="shared-session",
+            user_text="same prompt",
+            channel_name="qq",
+            runtime_instance_id="bot-b",
+            sender="sender",
+        )
+
+    assert not [row for row in captured if row.get("event") == "agent.chat.resumed"]
+    async with journal.backend._c.execute(  # noqa: SLF001 — test inspection
+        "SELECT channel, runtime_instance_id, status FROM turns WHERE session_key = ?",
+        ("shared-session",),
+    ) as cursor:
+        origins = {tuple(row) for row in await cursor.fetchall()}
+    await servicer.aclose()
+    assert origins == {
+        ("qq", "bot-a", "in_progress"),
+        ("qq", "bot-b", "completed"),
+    }
 
 
 async def test_chat_does_not_resume_stale_in_progress_turn(
@@ -2579,12 +2585,11 @@ async def test_chat_does_not_resume_stale_in_progress_turn(
 
     # Stale row doesn't match → no resume log, fresh begin_turn fired.
     resume_logs = [r for r in captured if r.get("event") == "agent.chat.resumed"]
-    assert resume_logs == [], (
-        f"stale in_progress must not trigger resume; got {resume_logs}"
-    )
+    assert resume_logs == [], f"stale in_progress must not trigger resume; got {resume_logs}"
     assert begin_calls == [("s2", "old prompt")], (
         f"expected one fresh begin_turn; got {begin_calls}"
     )
+    await servicer.aclose()
 
 
 # ---------------------------------------------------------------------------
@@ -2631,14 +2636,10 @@ def test_prune_stale_tool_calls_drops_unknown_and_pairs() -> None:
     # The assistant row keeps only c1.
     assistant_row = next(m for m in out if m["role"] == "assistant")
     kept_ids = [tc["id"] for tc in assistant_row["tool_calls"]]
-    assert kept_ids == ["c1"], (
-        f"expected only c1 to survive, got {kept_ids}"
-    )
+    assert kept_ids == ["c1"], f"expected only c1 to survive, got {kept_ids}"
     # The matching c2 tool row is gone.
     tool_ids = [m.get("tool_call_id") for m in out if m["role"] == "tool"]
-    assert tool_ids == ["c1"], (
-        f"expected only c1's tool row, got {tool_ids}"
-    )
+    assert tool_ids == ["c1"], f"expected only c1's tool row, got {tool_ids}"
 
 
 async def test_chat_resume_prunes_stale_tool_calls(
@@ -2680,17 +2681,11 @@ async def test_chat_resume_prunes_stale_tool_calls(
             },
         ],
     )
-    await j.append_message(
-        seed, role="tool", content='{"result":1}', tool_call_id="keep1"
-    )
-    await j.append_message(
-        seed, role="tool", content='{"result":2}', tool_call_id="drop1"
-    )
+    await j.append_message(seed, role="tool", content='{"result":1}', tool_call_id="keep1")
+    await j.append_message(seed, role="tool", content='{"result":2}', tool_call_id="drop1")
 
     with structlog.testing.capture_logs() as captured:
-        await _drive_chat_once(
-            servicer, session_key="c6-sess", user_text="two-tool task"
-        )
+        await _drive_chat_once(servicer, session_key="c6-sess", user_text="two-tool task")
 
     spliced = _CapturingLoop.captured_starts[0].messages
     # The kept tool_call (calculator) survives.
@@ -2700,25 +2695,18 @@ async def test_chat_resume_prunes_stale_tool_calls(
         if m.get("role") == "assistant"
         for tc in (m.get("tool_calls") or [])
     ]
-    assert "keep1" in kept and "drop1" not in kept, (
-        f"C6 violation: kept={kept}"
-    )
+    assert "keep1" in kept and "drop1" not in kept, f"C6 violation: kept={kept}"
     # The matching ``tool`` row for drop1 is also gone.
     tool_ids = [
-        m["tool_call_id"]
-        for m in spliced
-        if m.get("role") == "tool" and "tool_call_id" in m
+        m["tool_call_id"] for m in spliced if m.get("role") == "tool" and "tool_call_id" in m
     ]
     assert "drop1" not in tool_ids, (
         f"C6 violation: dropped tool_call's role=tool row survived: {tool_ids}"
     )
     # The structured log fires with the drop count.
-    pruned_logs = [
-        r for r in captured if r.get("event") == "agent.resume.tools_pruned"
-    ]
+    pruned_logs = [r for r in captured if r.get("event") == "agent.resume.tools_pruned"]
     assert pruned_logs, (
-        "expected agent.resume.tools_pruned log; got "
-        f"{[r.get('event') for r in captured]}"
+        f"expected agent.resume.tools_pruned log; got {[r.get('event') for r in captured]}"
     )
     assert pruned_logs[0]["dropped"] >= 1
 
@@ -2740,9 +2728,7 @@ def test_session_lock_cache_evicts_unheld_locks_at_cap() -> None:
         cache.get(f"s-{i}")
     # The cap is the steady-state upper bound — there should be no
     # entry growth beyond it.
-    assert len(cache) <= cap, (
-        f"R1 violation: cache grew to {len(cache)} entries (cap={cap})"
-    )
+    assert len(cache) <= cap, f"R1 violation: cache grew to {len(cache)} entries (cap={cap})"
 
 
 def test_session_lock_cache_pins_held_locks() -> None:
@@ -2764,9 +2750,7 @@ def test_session_lock_cache_pins_held_locks() -> None:
                 cache.get(f"flood-{i}")
             # The held entry is still present.
             still_present = cache.get("held")
-            assert still_present is first, (
-                "R1 violation: held lock got evicted under flood load"
-            )
+            assert still_present is first, "R1 violation: held lock got evicted under flood load"
         finally:
             first.release()
 
@@ -2782,9 +2766,7 @@ def test_cost_meter_evicts_oldest_unconditionally() -> None:
     meter = _CostMeter(cap=100)
     for i in range(500):
         meter.add(f"sess-{i}", {"input_tokens": 1, "output_tokens": 1})
-    assert len(meter) == 100, (
-        f"R1 violation: cost meter grew to {len(meter)} sessions (cap=100)"
-    )
+    assert len(meter) == 100, f"R1 violation: cost meter grew to {len(meter)} sessions (cap=100)"
     # The most recently added session is still there.
     assert meter.snapshot("sess-499") != {}
     # An old session has been evicted.
@@ -3006,11 +2988,7 @@ async def test_concurrent_chat_for_same_session_injects_instead_of_serializing(
                     start=agent_pb2.ChatStart(
                         model="claude-sonnet-4-5",
                         session_key="sess-supplement",
-                        messages=[
-                            common_pb2.Message(
-                                role=common_pb2.USER, content="算 1+1"
-                            )
-                        ],
+                        messages=[common_pb2.Message(role=common_pb2.USER, content="算 1+1")],
                     )
                 )
                 # Hold the request side open so the inbound pump on the
@@ -3050,11 +3028,7 @@ async def test_concurrent_chat_for_same_session_injects_instead_of_serializing(
                     start=agent_pb2.ChatStart(
                         model="claude-sonnet-4-5",
                         session_key="sess-supplement",
-                        messages=[
-                            common_pb2.Message(
-                                role=common_pb2.USER, content="再算 2+2"
-                            )
-                        ],
+                        messages=[common_pb2.Message(role=common_pb2.USER, content="再算 2+2")],
                     )
                 )
 
@@ -3086,14 +3060,13 @@ async def test_concurrent_chat_for_same_session_injects_instead_of_serializing(
             assert len(provider.rounds_seen) == 2
             round2_msgs = provider.rounds_seen[1]
             supplemented = [
-                m for m in round2_msgs
+                m
+                for m in round2_msgs
                 if isinstance(m.get("content"), str)
                 and m["content"].startswith("[追加上下文] ")
                 and "2+2" in m["content"]
             ]
-            assert len(supplemented) == 1, (
-                f"RPC #1 round 2 missing supplement: {round2_msgs!r}"
-            )
+            assert len(supplemented) == 1, f"RPC #1 round 2 missing supplement: {round2_msgs!r}"
 
             # RPC #1 produced the final answer text.
             assert "final answer" in "".join(first_tokens)
@@ -3148,9 +3121,7 @@ def test_builtin_tool_schemas_cached_at_module_load() -> None:
     live = _builtin_tool_schemas()
     assert len(_CACHED_BUILTIN_TOOL_SCHEMAS) == len(live)
     # Names match in order (descriptor lists are ordered).
-    cached_names = [
-        s["function"]["name"] for s in _CACHED_BUILTIN_TOOL_SCHEMAS
-    ]
+    cached_names = [s["function"]["name"] for s in _CACHED_BUILTIN_TOOL_SCHEMAS]
     live_names = [s["function"]["name"] for s in live]
     assert cached_names == live_names
 
@@ -3199,9 +3170,7 @@ async def test_ask_user_dispatch_returns_stub_envelope() -> None:
         tool="ask_user",
         args_json=b'{"question": "Overwrite README.md?"}',
     )
-    payload = json.loads(
-        await servicer._dispatch_builtin(event, start, _FakeProvider([]))
-    )
+    payload = json.loads(await servicer._dispatch_builtin(event, start, _FakeProvider([])))
     assert payload["ok"] is True
     assert payload["status"] == "awaiting_user_reply"
     assert payload["question"] == "Overwrite README.md?"
@@ -3222,9 +3191,7 @@ async def test_ask_user_dispatch_propagates_options() -> None:
         tool="ask_user",
         args_json=b'{"question": "pick", "options": ["a", "b"]}',
     )
-    payload = json.loads(
-        await servicer._dispatch_builtin(event, start, _FakeProvider([]))
-    )
+    payload = json.loads(await servicer._dispatch_builtin(event, start, _FakeProvider([])))
     assert payload["options"] == ["a", "b"]
 
 
@@ -3242,9 +3209,7 @@ async def test_ask_user_empty_question_returns_error_envelope() -> None:
         tool="ask_user",
         args_json=b'{"question": ""}',
     )
-    payload = json.loads(
-        await servicer._dispatch_builtin(event, start, _FakeProvider([]))
-    )
+    payload = json.loads(await servicer._dispatch_builtin(event, start, _FakeProvider([])))
     assert payload["ok"] is False
     assert "question" in payload["error"]
 
@@ -3259,8 +3224,10 @@ def test_ask_user_system_prompt_clause_present() -> None:
     # Pin the two key behaviours so a future prompt rewrite that drops
     # them fails this test loudly.
     assert "finalize" in _CODING_SYSTEM_PROMPT.lower()
-    assert "do not invoke" in _CODING_SYSTEM_PROMPT.lower() or \
-        "do not call" in _CODING_SYSTEM_PROMPT.lower()
+    assert (
+        "do not invoke" in _CODING_SYSTEM_PROMPT.lower()
+        or "do not call" in _CODING_SYSTEM_PROMPT.lower()
+    )
 
 
 # ─── W2.3: explicit agent_id hint in _peek_agent_binding ─────────────
@@ -3455,9 +3422,9 @@ async def test_recall_memory_consumes_prefetch_one_shot(
         await servicer._recall_memory(start)
 
         assert host.recent_calls == []  # served from the prefetch, no host await
-        assert any(
-            "cached fact" in str(m.get("content", "")) for m in start.messages
-        ), "prefetched recall folded into the prompt"
+        assert any("cached fact" in str(m.get("content", "")) for m in start.messages), (
+            "prefetched recall folded into the prompt"
+        )
         assert "s1" not in servicer._recall_prefetch  # one-shot
 
         # No prefetch available → inline recall as before.

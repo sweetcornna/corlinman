@@ -269,9 +269,7 @@ def router() -> APIRouter:
             raise _invalid_input_400("user_id path segment must be non-empty")
 
         try:
-            phrase = await store.issue_phrase(
-                UserId(user_id), body.channel, body.channel_user_id
-            )
+            phrase = await store.issue_phrase(UserId(user_id), body.channel, body.channel_user_id)
         except InvalidInputError as exc:
             raise _invalid_input_400(str(exc)) from exc
         except IdentityError as exc:
@@ -318,27 +316,62 @@ def router() -> APIRouter:
         # ``facts/{tenant}/{user}/…`` note namespaces. Best-effort: a
         # memory failure must not fail the identity merge itself (the
         # rows just stay split until a manual re-run).
-        loser = (
-            body.from_user_id
-            if str(surviving) == body.into_user_id
-            else body.into_user_id
-        )
+        loser = body.from_user_id if str(surviving) == body.into_user_id else body.into_user_id
         try:
+            from corlinman_memory_kernel import user_namespace_prefix
+
+            from corlinman_server.gateway.qq_instances import normalize_qq_fleet
+
+            scope_users = {loser}
+            fleet = normalize_qq_fleet(state.channels_config)
+            for instance_id in fleet.instances:
+                if str(instance_id) != "default":
+                    scope_users.add(f"qq-instance:{instance_id}:{loser}")
+
             kernel = getattr(state, "memory_kernel", None)
             if kernel is not None:
-                await kernel.merge_scope_user(loser, str(surviving))
+                list_scopes = getattr(kernel, "list_instance_scopes_for_user", None)
+                if list_scopes is not None:
+                    scope_users.update(await list_scopes(loser))
             host = getattr(state, "memory_host", None)
-            rename = getattr(host, "rename_namespace_prefix", None)
-            if rename is not None:
-                from corlinman_memory_kernel import user_namespace_prefix
+            list_prefixes = getattr(host, "list_instance_namespace_prefixes_for_user", None)
+            if list_prefixes is not None:
+                for prefix in await list_prefixes(loser):
+                    scope_users.add(prefix.removeprefix("facts/default/"))
 
-                await rename(
-                    user_namespace_prefix("default", loser),
-                    user_namespace_prefix("default", str(surviving)),
-                )
-        except Exception as exc:  # noqa: BLE001 — memory re-home is best-effort
+            scope_pairs = [
+                (old_scope, old_scope.removesuffix(loser) + str(surviving))
+                for old_scope in sorted(scope_users)
+            ]
+            rename = getattr(host, "rename_namespace_prefix", None)
+            for old_scope, new_scope in scope_pairs:
+                if kernel is not None:
+                    try:
+                        await kernel.merge_scope_user(old_scope, new_scope)
+                    except Exception as exc:  # noqa: BLE001 — best-effort
+                        _log.warning(
+                            "identity.merge.memory_rehome_failed",
+                            backend="kernel",
+                            scope_user_id=old_scope,
+                            error=str(exc),
+                        )
+                if rename is not None:
+                    try:
+                        await rename(
+                            user_namespace_prefix("default", old_scope),
+                            user_namespace_prefix("default", new_scope),
+                        )
+                    except Exception as exc:  # noqa: BLE001 — best-effort
+                        _log.warning(
+                            "identity.merge.memory_rehome_failed",
+                            backend="host",
+                            scope_user_id=old_scope,
+                            error=str(exc),
+                        )
+        except Exception as exc:  # noqa: BLE001 — config parsing is best-effort
             _log.warning(
                 "identity.merge.memory_rehome_failed",
+                backend="setup",
                 error=str(exc),
             )
 

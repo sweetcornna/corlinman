@@ -29,7 +29,11 @@ from corlinman_grpc import agent_pb2_grpc
 from corlinman_providers import AliasEntry, ProviderRegistry, ProviderSpec
 
 from corlinman_server.agent_journal import AgentJournal
-from corlinman_server.agent_servicer import CorlinmanAgentServicer, _resolve_data_dir
+from corlinman_server.agent_servicer import (
+    CorlinmanAgentServicer,
+    _resolve_data_dir,
+    _resolve_execution_state_dir,
+)
 from corlinman_server.auto_resume import (
     open_inbox_for_boot_resume,
     run_boot_auto_resume,
@@ -135,14 +139,10 @@ def _build_hook_runner() -> Any | None:
                 _eval_resolver = _ReloadingProviderResolver(path)
 
                 def _resolve_for_eval(m: str) -> tuple[Any, str]:
-                    provider, upstream, _params = _eval_resolver(
-                        alias_or_model=m
-                    )
+                    provider, upstream, _params = _eval_resolver(alias_or_model=m)
                     return provider, upstream
 
-                _prompt_eval = build_prompt_evaluator(
-                    _resolve_for_eval, _eval_model
-                )
+                _prompt_eval = build_prompt_evaluator(_resolve_for_eval, _eval_model)
             _agent_eval = build_agent_evaluator()
         except Exception as exc:  # noqa: BLE001 — evaluators are optional
             logger.warning("hooks.evaluators.init_failed", error=str(exc))
@@ -163,6 +163,7 @@ def _build_hook_runner() -> Any | None:
     except Exception as exc:  # noqa: BLE001 — no hooks degrades fine
         logger.warning("hooks.runner.init_failed", error=str(exc))
         return None
+
 
 logger = structlog.get_logger(__name__)
 
@@ -314,9 +315,7 @@ def _load_config(
             try:
                 aliases[name] = AliasEntry.model_validate(body)
             except Exception as exc:
-                logger.warning(
-                    "py_config.alias_invalid", alias=name, error=str(exc)
-                )
+                logger.warning("py_config.alias_invalid", alias=name, error=str(exc))
 
     subagent: dict[str, Any] = {}
     raw_subagent: Any = data.get("subagent") or {}
@@ -357,16 +356,16 @@ async def _run_boot_auto_resume() -> None:
     re-delivery that turns "user has to resend" into "agent picks up
     automatically".
     """
-    data_dir = _resolve_data_dir()
+    execution_state_dir = _resolve_execution_state_dir()
     try:
         journal = await AgentJournal.open_from_env(
-            data_dir / "agent_journal.sqlite"
+            execution_state_dir / "agent_journal.sqlite"
         )
     except Exception as exc:  # noqa: BLE001 — degrade silently
         logger.warning("agent.resume.journal_open_failed", error=str(exc))
         return
 
-    inbox = await open_inbox_for_boot_resume(data_dir)
+    inbox = await open_inbox_for_boot_resume(execution_state_dir)
     try:
         await run_boot_auto_resume(journal, inbox)
     except Exception as exc:  # noqa: BLE001 — degrade silently
@@ -423,7 +422,7 @@ async def _build_event_emitter() -> tuple[Any | None, Any | None]:
             JournalBackedEmitter,
         )
 
-        path = _resolve_data_dir() / "agent_journal.sqlite"
+        path = _resolve_execution_state_dir() / "agent_journal.sqlite"
         journal = await AgentJournal.open_from_env(path)
         emitter = JournalBackedEmitter(journal)
         logger.info("agent.event_emitter.ready", path=str(path))
@@ -524,6 +523,12 @@ async def _serve() -> int:
             event_emitter=event_emitter,
             tencent_policy_resolver=tencent_policy_resolver,
         )
+    from corlinman_server.standalone_app_state import build_standalone_app_state
+
+    standalone_app_state = await build_standalone_app_state(
+        _resolve_execution_state_dir()
+    )
+    agent_servicer.set_app_state(standalone_app_state)
     agent_pb2_grpc.add_AgentServicer_to_server(agent_servicer, server)
 
     bind = _bind_address()
@@ -553,6 +558,11 @@ async def _serve() -> int:
         await agent_servicer.aclose()
     except Exception as exc:  # noqa: BLE001 — never block shutdown
         logger.warning("server.shutdown.aclose_failed", error=str(exc))
+    agent_servicer.set_app_state(None)
+    try:
+        await standalone_app_state.aclose()
+    except Exception as exc:  # noqa: BLE001 — never block shutdown
+        logger.warning("server.shutdown.app_state_close_failed", error=str(exc))
 
     # Close the observability emitter's journal handle. It is a SECOND
     # handle onto the same WAL-mode sqlite file as the servicer's lazy

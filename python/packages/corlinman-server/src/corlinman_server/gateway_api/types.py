@@ -244,6 +244,13 @@ class InternalChatRequest(BaseModel):
     same persona-scoped state.
     """
 
+    runtime_instance_id: str = ""
+    """Trusted configured channel-instance identity.
+
+    Kept separate from ``ChannelBinding.account`` (the live bot UIN), persona,
+    and model-visible content. Empty means the legacy/default runtime.
+    """
+
     scheduler_context: dict[str, str] = Field(default_factory=dict)
     """Trusted scheduler-only routing metadata for an internal turn.
 
@@ -444,10 +451,5 @@ class ErrorEvent:
 # Sum type alias matching the Rust ``enum InternalChatEvent``. Discriminate
 # via ``isinstance`` or the ``.kind`` literal field — both work.
 InternalChatEvent = (
-    TokenDeltaEvent
-    | ToolCallEvent
-    | ToolResultEvent
-    | AttachmentEvent
-    | DoneEvent
-    | ErrorEvent
+    TokenDeltaEvent | ToolCallEvent | ToolResultEvent | AttachmentEvent | DoneEvent | ErrorEvent
 )

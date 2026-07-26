@@ -95,6 +95,38 @@ async def test_wire_c2_handles_populates_all_slots(
     await close_c2_handles(state, app)
 
 
+async def test_wire_c2_uses_execution_state_but_private_hooks(
+    tmp_path: Path, close_c2_handles: Any
+) -> None:
+    from corlinman_server.gateway.lifecycle.entrypoint import _wire_c2_handles
+
+    execution_dir = tmp_path / "execution"
+    control_dir = tmp_path / "control"
+    execution_hooks = execution_dir / "hooks"
+    execution_hooks.mkdir(parents=True)
+    (execution_hooks / "untrusted.yaml").write_text("events: {}\n", encoding="utf-8")
+    control_dir.mkdir()
+
+    state = AppState()
+    app = SimpleNamespace(state=SimpleNamespace())
+    await _wire_c2_handles(
+        app,
+        state,
+        None,
+        execution_dir,
+        cfg={},
+        control_data_dir=control_dir,
+    )
+
+    assert (execution_dir / "memory.sqlite").exists()
+    assert (execution_dir / "agent_state.sqlite").exists()
+    assert not (control_dir / "memory.sqlite").exists()
+    assert state.hook_runner is not None
+    assert getattr(state.hook_runner, "_hooks_dir", None) is None
+
+    await close_c2_handles(state, app)
+
+
 async def test_wire_c2_persona_resolver_reads_agent_state(
     tmp_path: Path, close_c2_handles: Any
 ) -> None:

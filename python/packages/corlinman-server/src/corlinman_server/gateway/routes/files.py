@@ -20,14 +20,14 @@ stream-contract work in :mod:`~corlinman_server.gateway.routes.chat`.
 
 Storage layout (sidecar JSON metadata + filesystem blob)
 --------------------------------------------------------
-Files live under ``<data_dir>/files/``. Each upload writes two
+Files live under ``<execution_state_dir>/files/``. Each upload writes two
 files keyed by the same opaque ``file_id``::
 
-    <data_dir>/files/<file_id>.blob   # raw bytes, exactly as received
-    <data_dir>/files/<file_id>.json   # {name, mime, size, created_at_ms}
+    <execution_state_dir>/files/<file_id>.blob   # raw bytes, exactly as received
+    <execution_state_dir>/files/<file_id>.json   # {name, mime, size, created_at_ms}
 
 The sidecar-JSON shape mirrors the rest of the gateway's
-``<data_dir>``-local persistence (``status_epochs.json``,
+``<execution_state_dir>``-local persistence (``status_epochs.json``,
 ``public_origin``, the OAuth token blobs) rather than standing up a
 second sqlite store: there is no boot-wired singleton to hang a
 connection off (the route resolves the data dir lazily per request,
@@ -63,6 +63,7 @@ import uuid
 from pathlib import Path
 from typing import Annotated, Any
 
+from corlinman_runtime import resolve_execution_state_dir
 from fastapi import APIRouter, File, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse
 
@@ -99,7 +100,7 @@ _READ_CHUNK_BYTES: int = 1024 * 1024
 #: asset store's :func:`asset_store._ulid`). The strict ``[0-9a-f]``
 #: class is also the path-traversal guard: a value matching this regex
 #: structurally cannot contain ``/``, ``\\``, ``.`` or ``..`` so it can
-#: never escape ``<data_dir>/files/`` when joined onto the base dir.
+#: never escape ``<execution_state_dir>/files/`` when joined onto the base dir.
 _FILE_ID_RE: re.Pattern[str] = re.compile(r"^[0-9a-f]{26}$")
 
 #: MIME types served ``inline`` rather than as a forced download. Raster
@@ -153,12 +154,12 @@ def _max_bytes() -> int:
     return val if val > 0 else DEFAULT_MAX_BYTES
 
 
-#: Boot-resolved data dir, stamped by the lifecycle entrypoint via
-#: :func:`configure_data_dir`. The full boot resolution is ``--data-dir``
-#: > ``$CORLINMAN_DATA_DIR`` > ``[server].data_dir`` > ``~/.corlinman``
-#: (``cli_helpers._resolve_data_dir``); without this stamp a gateway
-#: booted with the CLI flag / config key (env unset) would store chat
-#: files in a different tree from the journal & session stores.
+#: Boot-resolved shared execution-state dir, stamped by the lifecycle
+#: entrypoint via :func:`configure_data_dir`. It follows
+#: ``$CORLINMAN_EXECUTION_STATE_DIR`` and otherwise falls back to the
+#: resolved data dir, preserving the historical flat layout. Without this
+#: stamp a gateway booted with ``--data-dir`` / ``[server].data_dir`` could
+#: store chat files in a different tree from the journal and Agent process.
 _CONFIGURED_DATA_DIR: Path | None = None
 
 
@@ -169,27 +170,28 @@ def configure_data_dir(path: Path | None) -> None:
 
 
 def _data_dir() -> Path | None:
-    """Resolve the gateway data dir, or ``None`` when none exists.
+    """Resolve the shared execution-state dir, or ``None`` when absent.
 
     Prefers the boot-resolved directory stamped by
-    :func:`configure_data_dir` (kept in lock-step with the journal /
-    session stores), then falls back to the ``CORLINMAN_DATA_DIR`` env
-    override and ``~/.corlinman`` iff it already exists — the same
-    degraded-path order :func:`status._data_dir` uses for routers built
-    outside the entrypoint (tests, embedded apps). The upload path
-    creates ``<data_dir>/files/`` on demand; the read path treats a
+    :func:`configure_data_dir`, then follows the shared runtime resolver's
+    ``CORLINMAN_EXECUTION_STATE_DIR`` → ``CORLINMAN_DATA_DIR`` → historical
+    home fallback order for routers built outside the entrypoint (tests,
+    embedded apps). The upload path creates
+    ``<execution_state_dir>/files/`` on demand; the read path treats a
     missing dir as a 404 (the file genuinely isn't there)."""
     if _CONFIGURED_DATA_DIR is not None:
         return _CONFIGURED_DATA_DIR
-    raw = os.environ.get("CORLINMAN_DATA_DIR")
-    if raw:
-        return Path(raw)
     home = Path.home() / ".corlinman"
+    resolved = resolve_execution_state_dir()
+    if os.environ.get("CORLINMAN_EXECUTION_STATE_DIR") or os.environ.get(
+        "CORLINMAN_DATA_DIR"
+    ):
+        return resolved
     return home if home.exists() else None
 
 
 def _files_dir() -> Path | None:
-    """``<data_dir>/files`` — the blob + sidecar root. ``None`` if no
+    """``<execution_state_dir>/files`` — the blob + sidecar root. ``None`` if no
     data dir is resolvable (degraded boot)."""
     base = _data_dir()
     return None if base is None else base / "files"
@@ -381,7 +383,7 @@ def router() -> APIRouter:
     """Build the ``/v1/files`` sub-router.
 
     Stateless: the route resolves its storage dir lazily from
-    ``<data_dir>`` per request (no boot wiring / ``GatewayState`` slot),
+    ``<execution_state_dir>`` per request (no boot wiring / ``GatewayState`` slot),
     so it is always safe to mount. Auth is handled upstream by
     :class:`ApiKeyAuthMiddleware` (bearer key) + the admin-session
     bridge (in-app chat cookie) — see the module docstring.

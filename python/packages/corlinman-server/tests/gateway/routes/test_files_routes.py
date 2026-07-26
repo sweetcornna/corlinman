@@ -123,6 +123,7 @@ def test_oversize_rejected(
 
 
 def test_upload_without_data_dir_503(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CORLINMAN_EXECUTION_STATE_DIR", raising=False)
     monkeypatch.delenv("CORLINMAN_DATA_DIR", raising=False)
     monkeypatch.setattr(files_route, "_data_dir", lambda: None)
     app = FastAPI()
@@ -134,12 +135,28 @@ def test_upload_without_data_dir_503(monkeypatch: pytest.MonkeyPatch) -> None:
     assert resp.json()["error"]["code"] == "storage_unavailable"
 
 
+def test_execution_state_env_wins_over_data_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    private_dir = tmp_path / "private"
+    shared_dir = tmp_path / "shared"
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(private_dir))
+    monkeypatch.setenv("CORLINMAN_EXECUTION_STATE_DIR", str(shared_dir))
+    monkeypatch.setattr(files_route, "_CONFIGURED_DATA_DIR", None)
+
+    app = FastAPI()
+    app.include_router(files_route.router())
+    client = TestClient(app)
+    meta = _upload(client)
+
+    assert (shared_dir / "files" / f"{meta['file_id']}.blob").is_file()
+    assert not (private_dir / "files").exists()
+
+
 def test_configured_data_dir_wins_over_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The boot-resolved dir (``--data-dir`` / ``[server].data_dir``,
-    stamped via ``configure_data_dir``) must beat the env fallback so
-    chat files land in the same tree as the journal/session stores."""
+    """The boot-resolved shared root must beat environment fallbacks."""
     env_dir = tmp_path / "env-tree"
     boot_dir = tmp_path / "boot-tree"
     monkeypatch.setenv("CORLINMAN_DATA_DIR", str(env_dir))

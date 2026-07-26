@@ -11,7 +11,6 @@ where the original was lazy.
 
 from __future__ import annotations
 
-import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -225,15 +224,20 @@ def _resolve_request_tenant(
 
 
 def _resolve_data_dir(state: AdminState) -> Path:
-    """Mirror the Rust ``resolve_data_dir``: prefer the state override
-    (used by tests pinning a tempdir), fall back to ``CORLINMAN_DATA_DIR``,
-    finally ``~/.corlinman``."""
-    if state.data_dir is not None:
-        return Path(state.data_dir)
-    env = os.environ.get("CORLINMAN_DATA_DIR")
-    if env:
-        return Path(env)
-    return Path.home() / ".corlinman"
+    """Resolve the gateway-private root for legacy session-store fallback."""
+    from corlinman_runtime import resolve_data_dir
+
+    return resolve_data_dir(state.data_dir)
+
+
+def _resolve_execution_state_dir(state: AdminState) -> Path:
+    """Resolve the journal root shared by the gateway and Agent process."""
+    from corlinman_runtime import resolve_execution_state_dir
+
+    return resolve_execution_state_dir(
+        state.execution_state_dir,
+        data_dir=state.data_dir,
+    )
 
 
 def _should_use_flat_legacy_sessions(
@@ -827,6 +831,7 @@ async def _replay_from_journal(
 async def _replay_for_request(
     state: AdminState,
     data_dir: Path,
+    execution_state_dir: Path,
     tenant: TenantId,
     session_key: str,
     mode: ReplayMode,
@@ -841,7 +846,7 @@ async def _replay_for_request(
     # only in the legacy file). Pagination (W5) is journal-only —
     # the legacy stores never grew sessions long enough to need it.
     primary = await _replay_from_journal(
-        data_dir,
+        execution_state_dir,
         tenant,
         session_key,
         mode,

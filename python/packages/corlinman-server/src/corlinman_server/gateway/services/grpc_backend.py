@@ -143,29 +143,21 @@ def chat_backend_mode(state: Any) -> str:
 def resolve_agent_target(state: Any | None = None) -> str:
     """Resolve the ``grpc.aio`` target for the Python agent server.
 
-    Precedence (mirrors ``corlinman_server.main._bind_address`` so the
-    gateway dials exactly where ``corlinman-python-server`` binds):
+    Deployment-provided environment targets take precedence over mutable
+    application configuration so an execution plane with data access cannot
+    redirect the privileged gateway after boot:
 
-    1. ``config["agent"]["endpoint"]`` — explicit declarative override.
-    2. ``$CORLINMAN_PY_SOCKET`` — Unix domain socket path → ``unix://``.
-    3. ``$CORLINMAN_PY_ADDR`` — explicit ``host:port``.
-    4. ``$CORLINMAN_PY_PORT`` — port only, bound to ``127.0.0.1``.
+    1. ``$CORLINMAN_PY_SOCKET`` — Unix domain socket path → ``unix://``.
+    2. ``$CORLINMAN_PY_ADDR`` — explicit ``host:port``.
+    3. ``$CORLINMAN_PY_PORT`` — port only, bound to ``127.0.0.1``.
+    4. ``config["agent"]["endpoint"]`` — declarative fallback.
     5. :data:`DEFAULT_AGENT_ENDPOINT`.
 
     ``connect_channel`` in :mod:`corlinman_grpc.agent_client` strips a
     leading ``http(s)://`` and accepts ``unix:`` targets, so the string
     returned here is handed straight to it.
     """
-    # 1 — declarative config override.
-    if state is not None:
-        cfg = getattr(state, "config", None) or {}
-        agent_cfg = cfg.get("agent") if isinstance(cfg, dict) else None
-        if isinstance(agent_cfg, dict):
-            endpoint = agent_cfg.get("endpoint")
-            if endpoint:
-                return str(endpoint)
-
-    # 2-4 — env overrides, matching ``main._bind_address`` shape.
+    # 1-3 — deployment targets matching ``main._bind_address`` shape.
     sock = os.environ.get("CORLINMAN_PY_SOCKET")
     if sock:
         # ``grpc.aio`` UDS URIs use the single-slash ``unix:`` form;
@@ -177,6 +169,15 @@ def resolve_agent_target(state: Any | None = None) -> str:
     port = os.environ.get("CORLINMAN_PY_PORT")
     if port:
         return f"127.0.0.1:{port}"
+
+    # 4 — declarative fallback when deployment did not pin a target.
+    if state is not None:
+        cfg = getattr(state, "config", None) or {}
+        agent_cfg = cfg.get("agent") if isinstance(cfg, dict) else None
+        if isinstance(agent_cfg, dict):
+            endpoint = agent_cfg.get("endpoint")
+            if endpoint:
+                return str(endpoint)
 
     # 5 — default.
     return DEFAULT_AGENT_ENDPOINT

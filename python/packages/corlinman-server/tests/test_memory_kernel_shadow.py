@@ -37,9 +37,7 @@ class _NullHost:
 
 def _servicer(kernel: MemoryKernel) -> CorlinmanAgentServicer:
     servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: _FakeProvider())
-    servicer.set_app_state(
-        SimpleNamespace(memory_host=_NullHost(), memory_kernel=kernel)
-    )
+    servicer.set_app_state(SimpleNamespace(memory_host=_NullHost(), memory_kernel=kernel))
     return servicer
 
 
@@ -173,6 +171,7 @@ async def test_scope_fields_tolerate_missing_binding() -> None:
     assert fields == {
         "channel": None,
         "channel_user_id": None,
+        "runtime_instance_id": "",
         "persona_id": "",
     }
     fields = CorlinmanAgentServicer._kernel_scope_fields(
@@ -181,5 +180,6 @@ async def test_scope_fields_tolerate_missing_binding() -> None:
     assert fields == {
         "channel": None,
         "channel_user_id": None,
+        "runtime_instance_id": "",
         "persona_id": "",
     }

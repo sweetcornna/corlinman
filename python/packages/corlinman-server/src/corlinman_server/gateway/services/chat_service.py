@@ -239,15 +239,9 @@ async def _run_chat_traced(
                 svc_span.set_attribute("chat.token_chars", token_count)
                 svc_span.set_attribute("chat.chunks", chunk_count)
                 if event.usage is not None:
-                    svc_span.set_attribute(
-                        "chat.prompt_tokens", event.usage.prompt_tokens
-                    )
-                    svc_span.set_attribute(
-                        "chat.completion_tokens", event.usage.completion_tokens
-                    )
-                    svc_span.set_attribute(
-                        "chat.total_tokens", event.usage.total_tokens
-                    )
+                    svc_span.set_attribute("chat.prompt_tokens", event.usage.prompt_tokens)
+                    svc_span.set_attribute("chat.completion_tokens", event.usage.completion_tokens)
+                    svc_span.set_attribute("chat.total_tokens", event.usage.total_tokens)
                 svc_span.set_attribute("chat.finish_reason", event.finish_reason)
             elif isinstance(event, ErrorEvent):
                 svc_span.set_attribute("chat.error_reason", event.error.reason)
@@ -270,10 +264,9 @@ async def _run_chat(
     """
     try:
         # Build the proto request inside the try so a malformed request
-        # (e.g. a channel-built ``SimpleNamespace`` missing an optional
-        # field) degrades to a terminal ErrorEvent the caller can surface
-        # as "[corlinman error] ..." instead of escaping as a raw
-        # exception that silently kills the turn with no reply.
+        # degrades to a terminal ErrorEvent the caller can surface as
+        # "[corlinman error] ..." instead of escaping as a raw exception
+        # that silently kills the turn with no reply.
         start = _build_chat_start(req, advertised_tools_json=advertised_tools_json)
         tx, rx = await backend.start(start)
     except Exception as err:  # noqa: BLE001 — surface as terminal error
@@ -339,8 +332,7 @@ async def _run_chat(
                 if tc.plugin.startswith(_BUILTIN_ATTACHMENT_PREFIX):
                     try:
                         meta = (
-                            json.loads(bytes(tc.args_json).decode("utf-8"))
-                            if tc.args_json else {}
+                            json.loads(bytes(tc.args_json).decode("utf-8")) if tc.args_json else {}
                         )
                     except (UnicodeDecodeError, json.JSONDecodeError):
                         meta = {}
@@ -365,12 +357,13 @@ async def _run_chat(
                     try:
                         meta = (
                             __import__("json").loads(bytes(tc.args_json).decode("utf-8"))
-                            if tc.args_json else {}
+                            if tc.args_json
+                            else {}
                         )
                     except Exception:  # noqa: BLE001
                         meta = {}
                     yield ToolResultEvent(
-                        plugin=tc.plugin[len(_BUILTIN_DONE_PREFIX):],
+                        plugin=tc.plugin[len(_BUILTIN_DONE_PREFIX) :],
                         tool=tc.tool,
                         call_id=tc.call_id,
                         duration_ms=int(meta.get("duration_ms", 0) or 0),
@@ -387,7 +380,7 @@ async def _run_chat(
                 # Strip the prefix and yield the event without executing.
                 if tc.plugin.startswith(_BUILTIN_OBSERVATION_PREFIX):
                     yield ToolCallEvent(
-                        plugin=tc.plugin[len(_BUILTIN_OBSERVATION_PREFIX):],
+                        plugin=tc.plugin[len(_BUILTIN_OBSERVATION_PREFIX) :],
                         tool=tc.tool,
                         args_json=bytes(tc.args_json),
                         call_id=tc.call_id,
@@ -504,14 +497,13 @@ def _build_chat_start(
         stream=req.stream,
         provider_config_json=provider_config_json,
         attachments=attachments,
-        # Channel turns hand in a lightweight ``SimpleNamespace`` request
-        # that carries no ``persona_id`` unless humanlike persona injection
-        # is enabled (off by default), so read it tolerantly. The pydantic
-        # ``InternalChatRequest`` from the web path always carries it.
+        # Keep tolerant reads for legacy/in-process request producers. The
+        # typed channel bridge and pydantic web path both carry these fields.
         persona_id=getattr(req, "persona_id", None) or "",
         # W8 — same tolerant read: channels carry no tenant (deployment
         # scoped → ""), the HTTP paths stamp the authenticated tenant.
         tenant_id=getattr(req, "tenant_id", None) or "",
+        runtime_instance_id=getattr(req, "runtime_instance_id", None) or "",
     )
     if binding is not None:
         start.binding.CopyFrom(binding)

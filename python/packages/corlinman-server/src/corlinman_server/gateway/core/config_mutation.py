@@ -18,12 +18,55 @@ from __future__ import annotations
 
 import inspect
 import logging
+from collections.abc import Mapping
+from copy import deepcopy
 from typing import Any
 
 from fastapi.responses import JSONResponse
 
-__all__ = ["publish_config_mutation", "write_config_atomic"]
+__all__ = [
+    "merge_resolved_section_into_raw",
+    "publish_config_mutation",
+    "write_config_atomic",
+]
 logger = logging.getLogger(__name__)
+
+
+def _is_env_ref(value: Any) -> bool:
+    return isinstance(value, Mapping) and "env" in value and set(value) <= {"env", "default"}
+
+
+def merge_resolved_section_into_raw(raw: Any, resolved: Any) -> Any:
+    """Merge a resolved admin edit onto raw TOML without leaking env secrets.
+
+    Channel routes historically mutate the runtime-resolved ``channels`` tree
+    and hand the whole section to the writer.  Blindly serialising that value
+    turns ``{env = "TOKEN"}`` into the resolved token during an unrelated edit.
+    Preserve a raw env reference when the submitted scalar is either the
+    resolved value or an unchanged copy of the raw default; explicit structured
+    replacements still win.  The function returns fresh containers and never
+    mutates either input.
+    """
+    if _is_env_ref(raw) and not isinstance(resolved, Mapping):
+        from corlinman_server.gateway.core.config import resolve_env_refs  # noqa: PLC0415
+
+        if resolved == resolve_env_refs(raw):
+            return deepcopy(raw)
+    if isinstance(raw, Mapping) and isinstance(resolved, Mapping):
+        out: dict[str, Any] = {}
+        for key, value in resolved.items():
+            out[str(key)] = merge_resolved_section_into_raw(raw.get(key), value)
+        return out
+    if isinstance(resolved, list):
+        raw_list = raw if isinstance(raw, list) else []
+        return [
+            merge_resolved_section_into_raw(
+                raw_list[index] if index < len(raw_list) else None,
+                value,
+            )
+            for index, value in enumerate(resolved)
+        ]
+    return deepcopy(resolved)
 
 
 def _refresh_provider_runtime(state: Any, cfg: dict[str, Any]) -> None:

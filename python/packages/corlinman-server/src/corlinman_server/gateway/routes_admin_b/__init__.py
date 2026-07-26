@@ -47,6 +47,9 @@ from corlinman_server.gateway.routes_admin_b import (
     napcat as _napcat,
 )
 from corlinman_server.gateway.routes_admin_b import (
+    napcat_instances as _napcat_instances,
+)
+from corlinman_server.gateway.routes_admin_b import (
     oauth as _oauth,
 )
 from corlinman_server.gateway.routes_admin_b import (
@@ -149,6 +152,7 @@ def build_router() -> APIRouter:
         _memory,
         _models,
         _napcat,
+        _napcat_instances,
         _oauth,
         _onboard,
         _personas,

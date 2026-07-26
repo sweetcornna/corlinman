@@ -218,6 +218,47 @@ self_ids = []
 # [channels.qq.group_keywords]
 # "123456789" = ["bot", "help"]
 
+# --- Group behaviour ---------------------------------------------------
+# Master switch for group replies (private chat unaffected). Default true.
+# group_replies_enabled = true
+# Hard allow-list of group ids. UNSET = no whitelist (all groups pass);
+# an explicit [] mutes every group. @mentions do NOT bypass it.
+# group_whitelist = []
+# "mention_or_keyword" (default) or "all" (legacy dispatch-all).
+# group_reply_policy = "mention_or_keyword"
+# Minimum seconds between NON-mention replies per group. Default 20.
+# group_reply_cooldown_secs = 20
+# Hard speech cap shared by replies AND proactive posts: at most
+# `group_rate_limit_max_messages` bot messages per group inside a sliding
+# `group_rate_limit_window_minutes` window. Mentions are NOT exempt;
+# slash commands are. 0 on either key disables. Default off.
+# group_rate_limit_window_minutes = 10
+# group_rate_limit_max_messages = 5
+
+# --- Proactive speech (human-paced, opt-in) ----------------------------
+# proactive_enabled = false
+# Target groups; empty falls back to group_whitelist. Listed groups must
+# also be whitelisted when a whitelist exists.
+# proactive_groups = []
+# Random gap between beats, minutes. max < min coerces to min * 4.
+# proactive_min_gap_minutes = 45
+# proactive_max_gap_minutes = 180
+# Max proactive posts per group per day (budget survives restarts).
+# proactive_daily_max = 4
+# Active-hours window [start, end) in `proactive_timezone` (IANA name;
+# empty = server-local time — containers often run UTC, so set this).
+# proactive_active_start_hour = 9
+# proactive_active_end_hour = 23
+# proactive_timezone = "Asia/Shanghai"
+# Chance (0-1) of actually posting when a beat fires — below 1 the bot
+# randomly stays silent, which reads more human.
+# proactive_probability = 1.0
+# Recent group messages shown to the persona before it speaks (0 = off).
+# With context it joins the live topic, or answers SKIP to stay silent.
+# proactive_context_messages = 12
+# Override the built-in proactive prompt (rarely needed).
+# proactive_prompt = ""
+
 # Token-bucket rate limits (Sprint 4 T2).
 #   - Omitting the whole `[channels.qq.rate_limit]` section applies the
 #     built-in defaults (group 20/min, sender 5/min).

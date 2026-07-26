@@ -112,7 +112,11 @@ def _has_home() -> bool:
 # ---------------------------------------------------------------------------
 
 
-def render_py_config(cfg: Any) -> dict[str, Any]:
+def render_py_config(
+    cfg: Any,
+    *,
+    qq_transport_overlay: Mapping[str, Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Render the in-process config object as the Python JSON shape.
 
     Duck-typed against the Rust ``Config``:
@@ -168,7 +172,27 @@ def render_py_config(cfg: Any) -> dict[str, Any]:
         "enabled": _attr(qq, "freeze_risk_topic_blocking", True) is not False,
         "unclassified_media": "deny",
     }
-    qq_onebot = _render_qq_onebot(qq)
+    canonical_instances = isinstance(_attr(qq, "instances", None), Mapping)
+    if canonical_instances:
+        # Canonical fleets are actionable only through the runtime overlay,
+        # after the current OneBot connection has verified its live UIN.
+        qq_onebot: dict[str, Any] | None = None
+        qq_onebot_instances: dict[str, dict[str, Any]] = {}
+    else:
+        qq_onebot, qq_onebot_instances = _render_qq_onebot_transports(qq)
+    for instance_id, transport in (qq_transport_overlay or {}).items():
+        rendered = _render_qq_onebot(transport)
+        if rendered is None:
+            continue
+        expected_uin = _attr(transport, "expected_uin", None)
+        qq_onebot_instances[str(instance_id)] = {
+            **rendered,
+            "expected_uin": (str(expected_uin) if expected_uin not in (None, "") else None),
+        }
+    default_instance = _attr(qq, "default_instance", None)
+    if not canonical_instances:
+        default_instance = "default" if qq_onebot_instances else None
+    qq_onebot = qq_onebot_instances.get(str(default_instance or ""))
 
     return {
         "providers": providers,
@@ -176,8 +200,42 @@ def render_py_config(cfg: Any) -> dict[str, Any]:
         "embedding": embedding,
         "subagent": subagent,
         "tencent_safety": tencent_safety,
+        "qq_onebot_default_instance": (
+            str(default_instance) if default_instance not in (None, "") else None
+        ),
         "qq_onebot": qq_onebot,
+        "qq_onebot_instances": qq_onebot_instances,
     }
+
+
+def _render_qq_onebot_transports(
+    qq: Any,
+) -> tuple[dict[str, Any] | None, dict[str, dict[str, Any]]]:
+    instances = _attr(qq, "instances", None)
+    if not isinstance(instances, Mapping):
+        rendered = _render_qq_onebot(qq)
+        return rendered, ({"default": rendered} if rendered is not None else {})
+
+    rendered_instances: dict[str, dict[str, Any]] = {}
+    for instance_id, config in instances.items():
+        if _attr(config, "enabled", False) is not True:
+            continue
+        expected_uin = _attr(config, "expected_uin", None)
+        # Canonical multi-account transports are not actionable until their
+        # live OneBot identity has been pinned. The runtime overlay supplies
+        # first-bind identities without writing credentials into TOML.
+        if expected_uin in (None, ""):
+            continue
+        rendered = _render_qq_onebot(config)
+        if rendered is None:
+            continue
+        rendered_instances[str(instance_id)] = {
+            **rendered,
+            "expected_uin": str(expected_uin),
+        }
+    default_instance = _attr(qq, "default_instance", None)
+    default = rendered_instances.get(str(default_instance or ""))
+    return default, rendered_instances
 
 
 def _render_qq_onebot(qq: Any) -> dict[str, Any] | None:
@@ -371,7 +429,12 @@ def _attr(obj: Any, name: str, default: Any) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def write_py_config_sync(cfg: Any, path: Path | str) -> None:
+def write_py_config_sync(
+    cfg: Any,
+    path: Path | str,
+    *,
+    qq_transport_overlay: Mapping[str, Mapping[str, Any]] | None = None,
+) -> None:
     """Synchronously render + atomically write the JSON drop.
 
     Atomicity: write to a sibling ``<path>.new``, then ``os.rename`` so
@@ -379,7 +442,7 @@ def write_py_config_sync(cfg: Any, path: Path | str) -> None:
     fully-formed file on every mtime bump.
     """
     target = Path(path)
-    payload = render_py_config(cfg)
+    payload = render_py_config(cfg, qq_transport_overlay=qq_transport_overlay)
     body = json.dumps(payload, indent=2, sort_keys=False) + "\n"
     if target.parent and not target.parent.exists():
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -392,9 +455,25 @@ def write_py_config_sync(cfg: Any, path: Path | str) -> None:
         dir=str(target.parent) if target.parent.as_posix() else ".",
     )
     try:
+        shared_gid_raw = os.environ.get("CORLINMAN_PY_CONFIG_GID")
+        if shared_gid_raw:
+            os.fchown(fd, -1, int(shared_gid_raw))
+            os.fchmod(fd, 0o640)
+        else:
+            os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(body)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(tmp, target)
+        # Persist the directory entry as well as the file contents. This drop
+        # carries provider and OneBot credentials, so after a successful return
+        # it must survive a host crash without exposing the previous generation.
+        dir_fd = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
     except BaseException:
         # Clean up the temp file on any failure; the rename window is
         # microscopic but we don't want to leak ``.new`` shards.
@@ -405,7 +484,12 @@ def write_py_config_sync(cfg: Any, path: Path | str) -> None:
         raise
 
 
-async def write_py_config(cfg: Any, path: Path | str) -> None:
+async def write_py_config(
+    cfg: Any,
+    path: Path | str,
+    *,
+    qq_transport_overlay: Mapping[str, Mapping[str, Any]] | None = None,
+) -> None:
     """Async wrapper around :func:`write_py_config_sync`.
 
     The Rust version uses ``tokio::fs`` for the rename hop. We stay sync
@@ -414,7 +498,11 @@ async def write_py_config(cfg: Any, path: Path | str) -> None:
     flow doesn't block the loop noticeably. Wrapping in
     :func:`asyncio.to_thread` would only buy us pretend-concurrency.
     """
-    write_py_config_sync(cfg, path)
+    write_py_config_sync(
+        cfg,
+        path,
+        qq_transport_overlay=qq_transport_overlay,
+    )
 
 
 __all__ = [

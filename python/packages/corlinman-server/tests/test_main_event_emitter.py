@@ -86,6 +86,9 @@ async def test_serve_passes_event_emitter_to_servicer(
         def __init__(self, **kwargs: Any) -> None:
             captured.update(kwargs)
 
+        def set_app_state(self, app_state: Any) -> None:
+            captured["app_state"] = app_state
+
         async def aclose(self) -> None:
             pass
 
@@ -115,9 +118,7 @@ async def test_serve_passes_event_emitter_to_servicer(
     monkeypatch.delenv("CORLINMAN_PY_CONFIG", raising=False)
     monkeypatch.setattr(server_main, "CorlinmanAgentServicer", _StubServicer)
     monkeypatch.setattr(server_main, "GracefulShutdown", _StubShutdown)
-    monkeypatch.setattr(
-        server_main.grpc.aio, "server", lambda *a, **k: _StubGrpcServer()
-    )
+    monkeypatch.setattr(server_main.grpc.aio, "server", lambda *a, **k: _StubGrpcServer())
     monkeypatch.setattr(
         server_main.agent_pb2_grpc,
         "add_AgentServicer_to_server",

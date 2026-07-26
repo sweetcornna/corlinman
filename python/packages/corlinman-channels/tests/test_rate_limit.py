@@ -13,6 +13,7 @@ import time
 import pytest
 from corlinman_channels.rate_limit import (
     GC_STALE_AFTER,
+    SlidingWindowCounter,
     TokenBucket,
 )
 
@@ -154,3 +155,48 @@ class TestGc:
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.wait_for(task, timeout=1.0)
         assert task.done()
+
+
+class TestSlidingWindowCounter:
+    """Hard N-per-window cap backing the QQ group speech limit."""
+
+    def test_allows_up_to_max_then_blocks(self) -> None:
+        c = SlidingWindowCounter()
+        assert c.allow("g", 600.0, 2, now=100.0)
+        assert c.allow("g", 600.0, 2, now=101.0)
+        assert not c.allow("g", 600.0, 2, now=102.0)
+        assert c.count("g", 600.0, now=102.0) == 2
+
+    def test_window_actually_slides(self) -> None:
+        c = SlidingWindowCounter()
+        assert c.allow("g", 60.0, 1, now=0.0)
+        assert not c.allow("g", 60.0, 1, now=59.0)
+        # The event at t=0 leaves the window after 60s.
+        assert c.allow("g", 60.0, 1, now=61.0)
+
+    def test_zero_window_or_zero_max_disables(self) -> None:
+        c = SlidingWindowCounter()
+        for _ in range(10):
+            assert c.allow("g", 0.0, 5)
+            assert c.allow("g", 600.0, 0)
+        assert c.tracked_keys() == 0  # disabled cap records nothing
+
+    def test_peek_without_record_then_record(self) -> None:
+        c = SlidingWindowCounter()
+        assert c.allow("g", 600.0, 1, record=False, now=0.0)
+        assert c.count("g", 600.0, now=0.0) == 0
+        c.record("g", now=0.0)
+        assert not c.allow("g", 600.0, 1, record=False, now=1.0)
+
+    def test_keys_are_independent(self) -> None:
+        c = SlidingWindowCounter()
+        assert c.allow("a", 600.0, 1, now=0.0)
+        assert c.allow("b", 600.0, 1, now=0.0)
+        assert not c.allow("a", 600.0, 1, now=1.0)
+
+    def test_sweep_stale_prunes_old_keys(self) -> None:
+        c = SlidingWindowCounter()
+        c.record("old", now=time.monotonic() - 2 * GC_STALE_AFTER)
+        c.record("new")
+        c.sweep_stale()
+        assert c.tracked_keys() == 1

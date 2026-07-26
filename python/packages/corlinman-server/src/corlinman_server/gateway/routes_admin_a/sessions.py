@@ -81,6 +81,7 @@ from corlinman_server.gateway.routes_admin_a._sessions_lib import (
     _replay_to_dict,
     _rerun_disabled,
     _resolve_data_dir,
+    _resolve_execution_state_dir,
     _resolve_request_tenant,
     _session_exists_in_journal,
     _session_not_found,
@@ -118,13 +119,16 @@ def router() -> APIRouter:
             raise _sessions_disabled()
         tenant_id = _resolve_request_tenant(state, request, tenant)
         data_dir = _resolve_data_dir(state)
+        execution_state_dir = _resolve_execution_state_dir(state)
 
         # Primary path: read from ``agent_journal.sqlite`` — that is
         # where the live ``agent_servicer`` writes chat history. The
         # legacy ``sessions.sqlite`` file is no longer written by any
         # code path so reading from it always returns an empty list,
         # which is why this page looked broken.
-        journal_rows = await _list_from_journal(state, data_dir, tenant_id)
+        journal_rows = await _list_from_journal(
+            state, execution_state_dir, tenant_id
+        )
         if journal_rows is not None and len(journal_rows) >= 1:
             return SessionsListOut(sessions=journal_rows)
 
@@ -165,9 +169,9 @@ def router() -> APIRouter:
         if state.sessions_disabled:
             raise _sessions_disabled()
         tenant_id = _resolve_request_tenant(state, request, tenant)
-        data_dir = _resolve_data_dir(state)
+        execution_state_dir = _resolve_execution_state_dir(state)
         deleted = await _delete_from_journal(
-            state, data_dir, session_key, tenant_id
+            state, execution_state_dir, session_key, tenant_id
         )
         if deleted is None:
             # Journal unavailable — operator can't wipe a session we
@@ -203,8 +207,10 @@ def router() -> APIRouter:
         if state.sessions_disabled:
             raise _sessions_disabled()
         tenant_id = _resolve_request_tenant(state, request, tenant)
-        data_dir = _resolve_data_dir(state)
-        deleted = await _delete_all_from_journal(state, data_dir, tenant_id)
+        execution_state_dir = _resolve_execution_state_dir(state)
+        deleted = await _delete_all_from_journal(
+            state, execution_state_dir, tenant_id
+        )
         if deleted is None:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -276,8 +282,10 @@ def router() -> APIRouter:
         # avoids a sqlite open per cancel. W8 — the probe is tenant
         # scoped so a cross-tenant key 404s like an unknown one.
         tenant_id = _resolve_request_tenant(state, request, tenant)
-        data_dir = _resolve_data_dir(state)
-        if await _session_exists_in_journal(data_dir, session_key, tenant_id):
+        execution_state_dir = _resolve_execution_state_dir(state)
+        if await _session_exists_in_journal(
+            execution_state_dir, session_key, tenant_id
+        ):
             return SessionCancelOut(status="not_running", turn_id=None)
         raise _session_not_found(session_key)
 
@@ -320,9 +328,9 @@ def router() -> APIRouter:
                 },
             )
         tenant_id = _resolve_request_tenant(state, request, tenant)
-        data_dir = _resolve_data_dir(state)
+        execution_state_dir = _resolve_execution_state_dir(state)
         updated = await _update_session_meta_in_journal(
-            data_dir,
+            execution_state_dir,
             session_key,
             title=body.title,
             pinned=body.pinned,
@@ -357,6 +365,7 @@ def router() -> APIRouter:
         mode = _parse_mode(body.mode if body is not None else None)
         tenant_id = _resolve_request_tenant(state, request, tenant)
         data_dir = _resolve_data_dir(state)
+        execution_state_dir = _resolve_execution_state_dir(state)
 
         # Always run the underlying replay in TRANSCRIPT mode — rerun
         # mode is wholly served by the chat-service plumbing in
@@ -365,6 +374,7 @@ def router() -> APIRouter:
             out = await _replay_for_request(
                 state,
                 data_dir,
+                execution_state_dir,
                 tenant_id,
                 session_key,
                 ReplayMode.TRANSCRIPT,

@@ -258,8 +258,7 @@ class _SqliteStore:
     ) -> int:
         async with self._lock:
             cur = await self._conn.execute(
-                "INSERT INTO files(path, diary_name, checksum, mtime, size) "
-                "VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO files(path, diary_name, checksum, mtime, size) VALUES (?, ?, ?, ?, ?)",
                 (path, diary_name, checksum, mtime, size),
             )
             await self._conn.commit()
@@ -302,6 +301,24 @@ class _SqliteStore:
                     (int(row["file_id"]), int(row["file_id"])),
                 )
             await self._conn.commit()
+
+    async def list_namespace_prefixes_for_suffix(self, suffix: str) -> list[str]:
+        """Return distinct namespace prefixes ending in ``suffix``."""
+        if not suffix:
+            return []
+        pattern = f"facts/default/qq-instance:%{suffix}/%"
+        rows = await self._conn.execute_fetchall(
+            "SELECT DISTINCT namespace FROM chunks WHERE namespace LIKE ?",
+            (pattern,),
+        )
+        prefixes: set[str] = set()
+        for row in rows:
+            namespace = str(row[0] or "")
+            marker = namespace.rfind(suffix)
+            end = marker + len(suffix)
+            if marker >= 0 and namespace[end : end + 1] in ("", "/"):
+                prefixes.add(namespace[:end])
+        return sorted(prefixes)
 
     async def rename_namespace_prefix(self, old: str, new: str) -> int:
         """Move ``old`` and every ``old/…`` namespace to ``new`` in the
@@ -346,17 +363,12 @@ class _SqliteStore:
         if not namespaces:
             return []
         placeholders = ",".join("?" * len(namespaces))
-        sql = (
-            "SELECT id FROM chunks "
-            f"WHERE namespace IN ({placeholders}) ORDER BY id ASC"
-        )
+        sql = f"SELECT id FROM chunks WHERE namespace IN ({placeholders}) ORDER BY id ASC"
         async with self._conn.execute(sql, namespaces) as cur:
             rows = await cur.fetchall()
         return [int(r["id"]) for r in rows]
 
-    async def recent_chunk_ids_by_namespace(
-        self, namespace: str, limit: int
-    ) -> list[int]:
+    async def recent_chunk_ids_by_namespace(self, namespace: str, limit: int) -> list[int]:
         """Return the newest ``limit`` chunk ids in ``namespace``, newest first.
 
         Recency is inferred from ``id`` (higher = newer), the same
@@ -367,10 +379,7 @@ class _SqliteStore:
         """
         if limit <= 0:
             return []
-        sql = (
-            "SELECT id FROM chunks "
-            "WHERE namespace = ? ORDER BY id DESC LIMIT ?"
-        )
+        sql = "SELECT id FROM chunks WHERE namespace = ? ORDER BY id DESC LIMIT ?"
         async with self._conn.execute(sql, (namespace, limit)) as cur:
             rows = await cur.fetchall()
         return [int(r["id"]) for r in rows]
@@ -599,10 +608,7 @@ class _SqliteStore:
                     "INSERT INTO memory_host_links"
                     "(chunk_id, namespace, src_node_id, dst_node_id) "
                     "VALUES (?, ?, ?, ?)",
-                    [
-                        (chunk_id, namespace, src_node_id, dst)
-                        for dst in dst_node_ids
-                    ],
+                    [(chunk_id, namespace, src_node_id, dst) for dst in dst_node_ids],
                 )
             await self._conn.commit()
 
@@ -631,9 +637,7 @@ class _SqliteStore:
             rows = await cur.fetchall()
         return [str(r["src_node_id"]) for r in rows]
 
-    async def memory_host_metadata_by_chunk_ids(
-        self, chunk_ids: list[int]
-    ) -> list[_MetaRow]:
+    async def memory_host_metadata_by_chunk_ids(self, chunk_ids: list[int]) -> list[_MetaRow]:
         if not chunk_ids:
             return []
         placeholders = ",".join("?" * len(chunk_ids))
@@ -669,9 +673,7 @@ class _SqliteStore:
             rows = await cur.fetchall()
         return [int(r["chunk_id"]) for r in rows]
 
-    async def list_memory_host_metadata(
-        self, namespace: str | None
-    ) -> list[_MetaRow]:
+    async def list_memory_host_metadata(self, namespace: str | None) -> list[_MetaRow]:
         sql = "SELECT chunk_id, namespace, metadata, node_id FROM memory_host_docs"
         params: list[Any] = []
         if namespace is not None:
@@ -753,9 +755,7 @@ class LocalSqliteHost(MemoryHost):
     # ---- construction -----------------------------------------------------
 
     @classmethod
-    async def open(
-        cls, host_name: str, path: str | Path
-    ) -> LocalSqliteHost:
+    async def open(cls, host_name: str, path: str | Path) -> LocalSqliteHost:
         """Open (or create) the SQLite DB at ``path`` and wrap it."""
         store = await _SqliteStore.open(path)
         return cls(host_name, store)
@@ -799,9 +799,7 @@ class LocalSqliteHost(MemoryHost):
                     req.text, req.top_k, req.namespace
                 )
             else:
-                hits = await self._store.search_bm25_with_filter(
-                    req.text, req.top_k, None
-                )
+                hits = await self._store.search_bm25_with_filter(req.text, req.top_k, None)
         except aiosqlite.Error as exc:
             raise MemoryHostError(f"LocalSqliteHost: BM25 search: {exc}") from exc
 
@@ -818,9 +816,7 @@ class LocalSqliteHost(MemoryHost):
         # ``scored`` carries (chunk_id, score, graph_expanded). Seed
         # hits keep their BM25 score; graph-expanded hits get
         # ``seed_floor = max(seed) * 0.85`` so they rank below all seeds.
-        scored: list[tuple[int, float, bool]] = [
-            (cid, score, False) for (cid, score) in hits
-        ]
+        scored: list[tuple[int, float, bool]] = [(cid, score, False) for (cid, score) in hits]
         seed_ids = [cid for (cid, _) in hits]
         expanded_ids = await self._one_hop_graph_ids(seed_ids, req.namespace)
         seen_ids: set[int] = set(seed_ids)
@@ -854,9 +850,7 @@ class LocalSqliteHost(MemoryHost):
         try:
             chunks = await self._store.query_chunks_by_ids(ids)
         except aiosqlite.Error as exc:
-            raise MemoryHostError(
-                f"LocalSqliteHost: hydrate chunks: {exc}"
-            ) from exc
+            raise MemoryHostError(f"LocalSqliteHost: hydrate chunks: {exc}") from exc
 
         by_id: dict[int, _ChunkRow] = {c.id: c for c in chunks}
 
@@ -899,21 +893,15 @@ class LocalSqliteHost(MemoryHost):
             # Newest ``limit`` ids, already newest-first (id DESC). The
             # ordering + bound live in SQL so this is O(limit), not a full
             # namespace scan — recent() runs once per conversational turn.
-            recent_ids = await self._store.recent_chunk_ids_by_namespace(
-                namespace, limit
-            )
+            recent_ids = await self._store.recent_chunk_ids_by_namespace(namespace, limit)
         except aiosqlite.Error as exc:
-            raise MemoryHostError(
-                f"LocalSqliteHost: recent namespace scan: {exc}"
-            ) from exc
+            raise MemoryHostError(f"LocalSqliteHost: recent namespace scan: {exc}") from exc
         if not recent_ids:
             return []
         try:
             chunks = await self._store.query_chunks_by_ids(recent_ids)
         except aiosqlite.Error as exc:
-            raise MemoryHostError(
-                f"LocalSqliteHost: recent hydrate: {exc}"
-            ) from exc
+            raise MemoryHostError(f"LocalSqliteHost: recent hydrate: {exc}") from exc
         by_id: dict[int, _ChunkRow] = {c.id: c for c in chunks}
         out: list[MemoryHit] = []
         for rank, cid in enumerate(recent_ids):
@@ -948,23 +936,22 @@ class LocalSqliteHost(MemoryHost):
                 synthetic_path, _DEFAULT_DIARY_NAME, "", created_unix, 0
             )
         except aiosqlite.Error as exc:
-            raise MemoryHostError(
-                f"LocalSqliteHost: insert synthetic file row: {exc}"
-            ) from exc
+            raise MemoryHostError(f"LocalSqliteHost: insert synthetic file row: {exc}") from exc
 
         namespace = doc.namespace if doc.namespace is not None else "general"
         try:
-            chunk_id = await self._store.insert_chunk(
-                file_id, 0, doc.content, None, namespace
-            )
+            chunk_id = await self._store.insert_chunk(file_id, 0, doc.content, None, namespace)
         except aiosqlite.Error as exc:
-            raise MemoryHostError(
-                f"LocalSqliteHost: insert chunk: {exc}"
-            ) from exc
+            raise MemoryHostError(f"LocalSqliteHost: insert chunk: {exc}") from exc
 
         await self._ensure_metadata_schema()
         await self._upsert_metadata(chunk_id, namespace, doc.metadata)
         return str(chunk_id)
+
+    async def list_instance_namespace_prefixes_for_user(self, user_id: str) -> list[str]:
+        """Return persisted QQ-instance namespace roots for ``user_id``."""
+        suffix = f":{user_id}"
+        return await self._store.list_namespace_prefixes_for_suffix(suffix)
 
     async def rename_namespace_prefix(self, old: str, new: str) -> int:
         """Re-home every namespace under ``old`` to ``new`` (identity merge).
@@ -983,23 +970,17 @@ class LocalSqliteHost(MemoryHost):
         try:
             return await self._store.rename_namespace_prefix(old, new)
         except aiosqlite.Error as exc:
-            raise MemoryHostError(
-                f"LocalSqliteHost: rename namespace prefix: {exc}"
-            ) from exc
+            raise MemoryHostError(f"LocalSqliteHost: rename namespace prefix: {exc}") from exc
 
     async def delete(self, doc_id: str) -> None:
         try:
             chunk_id = int(doc_id)
         except ValueError as exc:
-            raise MemoryHostError(
-                f"LocalSqliteHost: invalid chunk id '{doc_id}'"
-            ) from exc
+            raise MemoryHostError(f"LocalSqliteHost: invalid chunk id '{doc_id}'") from exc
         try:
             await self._store.delete_chunk_by_id(chunk_id)
         except aiosqlite.Error as exc:
-            raise MemoryHostError(
-                f"LocalSqliteHost: delete chunk: {exc}"
-            ) from exc
+            raise MemoryHostError(f"LocalSqliteHost: delete chunk: {exc}") from exc
 
     async def get(self, doc_id: str) -> MemoryHit | None:
         # Phase 4 W3 C1 (MCP ``resources/read`` over
@@ -1012,9 +993,7 @@ class LocalSqliteHost(MemoryHost):
         try:
             rows = await self._store.query_chunks_by_ids([chunk_id])
         except aiosqlite.Error as exc:
-            raise MemoryHostError(
-                f"LocalSqliteHost.get: query chunk by id: {exc}"
-            ) from exc
+            raise MemoryHostError(f"LocalSqliteHost.get: query chunk by id: {exc}") from exc
         if not rows:
             return None
         chunk = rows[0]
@@ -1059,15 +1038,9 @@ class LocalSqliteHost(MemoryHost):
         try:
             mtimes = await self._store.chunk_mtimes_by_ids(ids)
         except aiosqlite.Error as exc:
-            raise MemoryHostError(
-                f"LocalSqliteHost: time-decay mtime lookup: {exc}"
-            ) from exc
+            raise MemoryHostError(f"LocalSqliteHost: time-decay mtime lookup: {exc}") from exc
 
-        now_s = (
-            req.time_decay_now_s
-            if req.time_decay_now_s is not None
-            else time.time()
-        )
+        now_s = req.time_decay_now_s if req.time_decay_now_s is not None else time.time()
         decay_k = math.log(2.0) / half_life
 
         reweighted: list[tuple[int, float]] = []
@@ -1094,9 +1067,7 @@ class LocalSqliteHost(MemoryHost):
         try:
             await self._store.ensure_memory_host_metadata_schema()
         except aiosqlite.Error as exc:
-            raise MemoryHostError(
-                f"LocalSqliteHost: ensure metadata schema: {exc}"
-            ) from exc
+            raise MemoryHostError(f"LocalSqliteHost: ensure metadata schema: {exc}") from exc
 
     async def _upsert_metadata(
         self,
@@ -1125,25 +1096,17 @@ class LocalSqliteHost(MemoryHost):
             await self._store.upsert_memory_host_metadata(
                 chunk_id, namespace, metadata_json, node_id
             )
-            await self._store.replace_memory_host_links(
-                chunk_id, namespace, node_id, links
-            )
+            await self._store.replace_memory_host_links(chunk_id, namespace, node_id, links)
         except aiosqlite.Error as exc:
-            raise MemoryHostError(
-                f"LocalSqliteHost: upsert metadata: {exc}"
-            ) from exc
+            raise MemoryHostError(f"LocalSqliteHost: upsert metadata: {exc}") from exc
 
-    async def _metadata_for_chunk_ids(
-        self, chunk_ids: list[int]
-    ) -> dict[int, Any]:
+    async def _metadata_for_chunk_ids(self, chunk_ids: list[int]) -> dict[int, Any]:
         if not chunk_ids:
             return {}
         try:
             rows = await self._store.memory_host_metadata_by_chunk_ids(chunk_ids)
         except aiosqlite.Error as exc:
-            raise MemoryHostError(
-                f"LocalSqliteHost: query metadata by chunk ids: {exc}"
-            ) from exc
+            raise MemoryHostError(f"LocalSqliteHost: query metadata by chunk ids: {exc}") from exc
         out: dict[int, Any] = {}
         for row in rows:
             try:
@@ -1172,13 +1135,9 @@ class LocalSqliteHost(MemoryHost):
         wanted: list[str] = []
         wanted.extend(linked_node_ids)
         try:
-            wanted.extend(
-                await self._backlinked_node_ids(seed_node_ids, namespace)
-            )
+            wanted.extend(await self._backlinked_node_ids(seed_node_ids, namespace))
         except aiosqlite.Error as exc:
-            raise MemoryHostError(
-                f"LocalSqliteHost: query backlinks: {exc}"
-            ) from exc
+            raise MemoryHostError(f"LocalSqliteHost: query backlinks: {exc}") from exc
         wanted = _dedupe_strings(wanted)
         if not wanted:
             return []
@@ -1199,13 +1158,9 @@ class LocalSqliteHost(MemoryHost):
         # scales with the seed set + matching edges, not the namespace size
         # — replaces the prior O(namespace) JSON-decode scan (PERF-02).
         try:
-            srcs = await self._store.backlink_src_node_ids(
-                seed_node_ids, namespace
-            )
+            srcs = await self._store.backlink_src_node_ids(seed_node_ids, namespace)
         except aiosqlite.Error as exc:
-            raise MemoryHostError(
-                f"LocalSqliteHost: query backlink edges: {exc}"
-            ) from exc
+            raise MemoryHostError(f"LocalSqliteHost: query backlink edges: {exc}") from exc
         return _dedupe_strings(srcs)
 
     async def _chunk_ids_for_node_ids(
@@ -1214,13 +1169,9 @@ class LocalSqliteHost(MemoryHost):
         if not node_ids:
             return []
         try:
-            return await self._store.memory_host_chunk_ids_by_node_ids(
-                node_ids, namespace
-            )
+            return await self._store.memory_host_chunk_ids_by_node_ids(node_ids, namespace)
         except aiosqlite.Error as exc:
-            raise MemoryHostError(
-                f"LocalSqliteHost: query one-hop chunks: {exc}"
-            ) from exc
+            raise MemoryHostError(f"LocalSqliteHost: query one-hop chunks: {exc}") from exc
 
 
 __all__ = ["LocalSqliteHost"]

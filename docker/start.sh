@@ -1,68 +1,38 @@
 #!/bin/sh
 set -e
-export CORLINMAN_PY_CONFIG=/data/py-config.json
 
-# Pre-render py-config.json in Python so the env is set before the
-# gateway boots. The gateway also rewrites this file on config reload —
-# this bootstrap lets python see providers on its very first resolve.
-/opt/venv/bin/python3 - <<PY
-import os, json, tomllib
-cfg_path = os.environ.get("CORLINMAN_CONFIG", "/data/config.toml")
-try:
-    with open(cfg_path, "rb") as f:
-        c = tomllib.load(f)
-except FileNotFoundError:
-    c = {}
+role="${CORLINMAN_PROCESS_ROLE:-combined}"
+: "${CORLINMAN_PY_CONFIG:=/data/py-config.json}"
+export CORLINMAN_PY_CONFIG
 
-providers = []
-for name, p in (c.get("providers") or {}).items():
-    if not isinstance(p, dict): continue
-    kind = p.get("kind", name)
-    # resolve api_key: {env=...} → env lookup; {value=...} → literal
-    ak = p.get("api_key")
-    if isinstance(ak, dict):
-        if "env" in ak:
-            ak = os.environ.get(ak["env"])
-        elif "value" in ak:
-            ak = ak["value"]
-        else:
-            ak = None
-    providers.append({
-        "name": name,
-        "kind": kind,
-        "enabled": p.get("enabled", True),
-        "base_url": p.get("base_url"),
-        "api_key": ak,
-        "params": p.get("params", {}),
-    })
+# The gateway boot path owns the only py-config writer. It resolves secret
+# references and publishes atomically with restrictive ownership before runtime
+# reconciliation; the Agent only watches the completed drop.
 
-aliases = {}
-for k, v in (c.get("models", {}).get("aliases") or {}).items():
-    if isinstance(v, dict):
-        aliases[k] = v
-    # else shorthand string → legacy fallback handles it; skip
+# QQ-managed deployments split the privileged gateway from model-controlled
+# agent execution. The agent container never receives the NapCat manager socket;
+# the gateway is forced through gRPC and therefore never executes model tools.
+case "${CORLINMAN_PROCESS_ROLE:-combined}" in
+    agent)
+        # gRPC creates the Unix socket using the process umask. Keep group write
+        # for the gateway's narrow IPC group while denying all other users.
+        umask 0007
+        exec /opt/venv/bin/corlinman-python-server
+        ;;
+    gateway)
+        exec /opt/venv/bin/corlinman-gateway --config /data/config.toml
+        ;;
+    combined)
+        ;;
+    *)
+        echo "ERROR: invalid CORLINMAN_PROCESS_ROLE=${CORLINMAN_PROCESS_ROLE}" >&2
+        exit 64
+        ;;
+esac
 
-emb = c.get("embedding")
-if emb and emb.get("enabled") is not False and emb.get("provider") and emb.get("model") and emb.get("dimension"):
-    emb_out = {k: emb.get(k) for k in ("provider","model","dimension","enabled","params")}
-else:
-    emb_out = None
-
-out = {"providers": providers, "aliases": aliases, "embedding": emb_out}
-with open("/data/py-config.json","w") as f:
-    json.dump(out, f, indent=2)
-print(f"py-config bootstrapped: {len(providers)} providers, {len(aliases)} aliases, embedding={bool(emb_out)}")
-PY
-
-# Now boot the agent sidecar + gateway in order (sidecar first).
+# Backward-compatible combined image mode for deployments without the QQ
+# manager boundary. Boot the agent sidecar first, then wait for its listener.
 /opt/venv/bin/corlinman-python-server &
-
-# Wait for the agent sidecar's gRPC listener to accept on :50051 before
-# starting the gateway — replaces a blind `sleep 3` that raced on slow
-# boots. We test-connect via the bundled venv python (no socket-utils
-# needed) and bail after ~18s so a broken sidecar can't block boot
-# indefinitely; the gateway will then surface the failure via its own
-# /health probe.
 echo "waiting for python sidecar gRPC ready on :50051..."
 ready=""
 i=1

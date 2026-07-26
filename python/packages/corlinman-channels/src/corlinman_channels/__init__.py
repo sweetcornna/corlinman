@@ -44,6 +44,7 @@ from corlinman_channels.channel import (
     TelegramChannel,
     spawn_all,
 )
+from corlinman_channels.chat_request import ChannelChatMessage, ChannelChatRequest
 from corlinman_channels.commands import (
     COMMAND_REGISTRY,
     CommandSpec,
@@ -233,7 +234,7 @@ from corlinman_channels.wechat_official_send import (
 # subclassing.
 _ = _CommonChannelError
 
-__all__ = [
+__all__ = [  # noqa: RUF022 — exports remain grouped by channel subsystem
     # Slash-command registry (W8 Persona Studio)
     "COMMAND_REGISTRY",
     "CORLINMAN_CHANNEL_ENV_FLAG",
@@ -256,6 +257,8 @@ __all__ = [
     "ChannelBinding",
     "ChannelContext",
     "ChannelError",
+    "ChannelChatMessage",
+    "ChannelChatRequest",
     "ChannelRegistry",
     # Router
     "ChannelRouter",

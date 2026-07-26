@@ -110,6 +110,9 @@ from corlinman_server.scheduler.builtins.chat_driver import (
     resolve_or_open_persona_stores as _resolve_or_open_persona_stores,
 )
 from corlinman_server.scheduler.builtins.chat_driver import (
+    resolve_qq_instance_id as _resolve_qq_instance_id,
+)
+from corlinman_server.scheduler.builtins.chat_driver import (
     scheduler_context as _scheduler_context,
 )
 from corlinman_server.scheduler.builtins.chat_driver import (
@@ -203,12 +206,17 @@ async def _qzone_daily_publish_action(context: BuiltinContext) -> dict[str, Any]
     persona_id = _coerce_str(metadata.get("persona_id"))
     prompt_template = _coerce_str(metadata.get("prompt_template"))
     qq_account = _coerce_optional_str(metadata.get("qq_account"))
+    qq_instance_id = _resolve_qq_instance_id(context, metadata)
 
     base: dict[str, Any] = {
         "persona_id": persona_id,
         "qq_account": qq_account,
     }
+    if _coerce_str(metadata.get("qq_instance_id")):
+        base["qq_instance_id"] = qq_instance_id
 
+    if not qq_instance_id:
+        return {**base, "ok": False, "error": "missing_qq_instance_id"}
     if not persona_id:
         return {**base, "ok": False, "error": "missing_persona_id"}
     if not prompt_template:
@@ -231,8 +239,7 @@ async def _qzone_daily_publish_action(context: BuiltinContext) -> dict[str, Any]
                 "scheduler.builtin.qzone_daily.persona_get_failed",
                 extra={"persona_id": persona_id, "error": repr(exc)},
             )
-            return {**base, "ok": False, "error": "persona_store_failed",
-                    "message": str(exc)}
+            return {**base, "ok": False, "error": "persona_store_failed", "message": str(exc)}
 
         if persona is None:
             return {**base, "ok": False, "error": "persona_not_found"}
@@ -255,7 +262,10 @@ async def _qzone_daily_publish_action(context: BuiltinContext) -> dict[str, Any]
         if diversity:
             seed_block = await _resolve_seed_block(persona_id, data_dir)
             recent_posts_block = _resolve_recent_posts_block(
-                data_dir, persona_id, _resolve_recent_posts_n(metadata)
+                data_dir,
+                persona_id,
+                _resolve_recent_posts_n(metadata),
+                qq_instance_id,
             )
         image_ref_labels = _resolve_image_ref_labels(metadata)
         image_ref_descriptions = await _resolve_image_ref_descriptions(
@@ -271,7 +281,7 @@ async def _qzone_daily_publish_action(context: BuiltinContext) -> dict[str, Any]
             image_ref_descriptions=image_ref_descriptions,
         )
         model = _resolve_default_model(context)
-        session_key = _build_session_key(persona_id)
+        session_key = _build_session_key(persona_id, qq_instance_id)
 
         request = _build_internal_chat_request(
             model=model,
@@ -279,12 +289,12 @@ async def _qzone_daily_publish_action(context: BuiltinContext) -> dict[str, Any]
             system_prompt=system_prompt,
             user_turn=prompt_template,
             persona_id=persona_id,
+            runtime_instance_id=qq_instance_id,
             execution_mode=context.execution_mode,
-            scheduler_context=_scheduler_context(context),
+            scheduler_context=_scheduler_context(context, qq_instance_id=qq_instance_id),
         )
         if request is None:
-            return {**base, "ok": False,
-                    "error": "internal_chat_request_unavailable"}
+            return {**base, "ok": False, "error": "internal_chat_request_unavailable"}
 
         cancel = asyncio.Event()
         result = await _drive_chat_turn(
@@ -305,6 +315,7 @@ async def _qzone_daily_publish_action(context: BuiltinContext) -> dict[str, Any]
         ):
             _record_post_log(
                 data_dir=data_dir,
+                qq_instance_id=qq_instance_id,
                 persona_id=persona_id,
                 job=context.name,
                 result=result,
@@ -393,9 +404,7 @@ async def _drive_chat_turn(
             "duration_ms": outcome.duration_ms,
         }
 
-    publish_call = next(
-        (c for c in outcome.calls if c.tool == _QZONE_PUBLISH_TOOL), None
-    )
+    publish_call = next((c for c in outcome.calls if c.tool == _QZONE_PUBLISH_TOOL), None)
     if publish_call is None:
         return {
             **base,
@@ -406,9 +415,7 @@ async def _drive_chat_turn(
             "duration_ms": outcome.duration_ms,
         }
 
-    publish_result = next(
-        (r for r in outcome.results if r.tool == _QZONE_PUBLISH_TOOL), None
-    )
+    publish_result = next((r for r in outcome.results if r.tool == _QZONE_PUBLISH_TOOL), None)
     if publish_result is None:
         return {
             **base,
@@ -511,9 +518,7 @@ def _compose_system_prompt(
     else:
         tail = QZONE_DAILY_SYSTEM_TAIL
     parts.append(tail)
-    ref_block = _compose_image_ref_block(
-        image_ref_labels, image_ref_descriptions
-    )
+    ref_block = _compose_image_ref_block(image_ref_labels, image_ref_descriptions)
     if ref_block:
         parts.append(ref_block)
     return "".join(
@@ -607,9 +612,7 @@ async def _resolve_image_ref_descriptions(
     return out
 
 
-async def _resolve_life_block(
-    context: BuiltinContext, persona_id: str
-) -> str | None:
+async def _resolve_life_block(context: BuiltinContext, persona_id: str) -> str | None:
     """Build a short ``## 我最近的生活`` block from the persona's runtime
     life-state + recent diary tail.
 
@@ -656,9 +659,7 @@ async def _resolve_life_block(
             ]
             resolver_lines = [f"- {label}：{val}" for label, val in rows if val]
             if resolver_lines:
-                return "## 我最近的生活（写说说时自然带上，别逐条念）\n" + "\n".join(
-                    resolver_lines
-                )
+                return "## 我最近的生活（写说说时自然带上，别逐条念）\n" + "\n".join(resolver_lines)
 
     # Strategy 2: read the open runtime persona-state store directly so we
     # can also surface a recent diary tail (the resolver doesn't expose it).
@@ -727,9 +728,7 @@ async def _resolve_life_block(
             if isinstance(msg, str) and msg.strip():
                 lines.append(f"⚠ 生活节奏提示（优先响应）：{msg.strip()}")
         if lines:
-            return "## 我最近的生活（写说说时自然带上，别逐条念）\n" + "\n".join(
-                lines
-            )
+            return "## 我最近的生活（写说说时自然带上，别逐条念）\n" + "\n".join(lines)
     return None
 
 
@@ -808,15 +807,21 @@ def _resolve_recent_posts_n(metadata: dict[str, Any]) -> int:
     return max(_RECENT_POSTS_N_MIN, min(n, _RECENT_POSTS_N_MAX))
 
 
-def _post_log_path(data_dir: Path | None, persona_id: str) -> Path | None:
-    """Resolve ``<DATA_DIR>/qzone_post_log/<persona_id>.json`` or ``None``.
-
-    Returns ``None`` when no data dir is wired or ``persona_id`` fails the
-    slug guard — either way the whole post-log feature is skipped for the
-    firing (read-side + write-side both funnel through here)."""
-    if data_dir is None or not _valid_persona_slug(persona_id):
+def _post_log_path(
+    data_dir: Path | None,
+    persona_id: str,
+    qq_instance_id: str = "default",
+) -> Path | None:
+    """Resolve one account-qualified post-log sidecar path."""
+    if (
+        data_dir is None
+        or not _valid_persona_slug(qq_instance_id)
+        or not _valid_persona_slug(persona_id)
+    ):
         return None
-    return Path(data_dir) / _POST_LOG_DIR / f"{persona_id}.json"
+    if qq_instance_id == "default":
+        return Path(data_dir) / _POST_LOG_DIR / f"{persona_id}.json"
+    return Path(data_dir) / _POST_LOG_DIR / qq_instance_id / f"{persona_id}.json"
 
 
 def _read_post_log(path: Path) -> list[dict[str, Any]]:
@@ -843,6 +848,7 @@ def _record_post_log(
     data_dir: Path | None,
     persona_id: str,
     job: str | None,
+    qq_instance_id: str = "default",
     result: dict[str, Any],
 ) -> None:
     """Append one published-post record to the sidecar (atomic, last-30).
@@ -852,7 +858,7 @@ def _record_post_log(
     forwards the published body) and is capped at :data:`_POST_LOG_TEXT_CAP`.
     Uses the repo's atomic ``write tmp + replace`` dance so a crash mid-write
     can't truncate the sidecar."""
-    path = _post_log_path(data_dir, persona_id)
+    path = _post_log_path(data_dir, persona_id, qq_instance_id)
     if path is None:
         return
     posts = _read_post_log(path)
@@ -881,14 +887,17 @@ def _record_post_log(
 
 
 def _resolve_recent_posts_block(
-    data_dir: Path | None, persona_id: str, n: int
+    data_dir: Path | None,
+    persona_id: str,
+    n: int,
+    qq_instance_id: str = "default",
 ) -> str | None:
     """Build the ``## 最近已发过的说说`` anti-repeat block from the sidecar.
 
     Lists the body excerpts of the last ``n`` posts so the model can steer
     away from repeating a topic / scene / opening句式. ``None`` when the
     sidecar is empty / unavailable (the prompt then omits the block)."""
-    path = _post_log_path(data_dir, persona_id)
+    path = _post_log_path(data_dir, persona_id, qq_instance_id)
     if path is None:
         return None
     posts = _read_post_log(path)
@@ -905,9 +914,7 @@ def _resolve_recent_posts_block(
     return "## 最近已发过的说说（禁止重复主题/场景/句式）\n" + "\n".join(lines)
 
 
-async def _resolve_seed_block(
-    persona_id: str, data_dir: Path | None
-) -> str | None:
+async def _resolve_seed_block(persona_id: str, data_dir: Path | None) -> str | None:
     """Draw one ``persona_life_event_seed(kind=freeform)`` and render it as a
     ``## 今日灵感种子`` block. Best-effort — a missing agent package / empty
     draw simply omits the block."""
@@ -918,9 +925,7 @@ async def _resolve_seed_block(
     return "## 今日灵感种子（至少换一个新切入点）\n" + "\n".join(lines)
 
 
-async def _draw_event_seed(
-    persona_id: str, data_dir: Path | None
-) -> dict[str, str]:
+async def _draw_event_seed(persona_id: str, data_dir: Path | None) -> dict[str, str]:
     """Call the agent-side ``persona_life_event_seed`` dispatcher (freeform)
     and return the drawn ``{category: cue}`` map.
 

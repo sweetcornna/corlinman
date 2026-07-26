@@ -110,19 +110,13 @@ def _trigram_match_query(units: list[str]) -> str:
     produce no trigram and are dropped here; :meth:`MemoryKernel.recall`
     falls back to a LIKE scan when nothing survives.
     """
-    quoted = [
-        '"{}"'.format(u.replace('"', '""'))
-        for u in units
-        if len(u) >= 3
-    ]
+    quoted = ['"{}"'.format(u.replace('"', '""')) for u in units if len(u) >= 3]
     return " OR ".join(quoted)
 
 
 def _escape_like(unit: str) -> str:
     r"""Escape LIKE wildcards so a unit matches literally (ESCAPE '\')."""
-    return (
-        unit.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    )
+    return unit.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 class MemoryKernel:
@@ -190,8 +184,7 @@ class MemoryKernel:
     async def _prune_observations_locked(self) -> None:
         """Retention sweep (caller holds ``self._lock``; commit is theirs)."""
         await self._conn.execute(
-            "DELETE FROM mk_observations WHERE processed_at_ms IS NOT NULL"
-            " AND processed_at_ms < ?",
+            "DELETE FROM mk_observations WHERE processed_at_ms IS NOT NULL AND processed_at_ms < ?",
             (now_ms() - _OBS_PROCESSED_TTL_MS,),
         )
         await self._conn.execute(
@@ -252,9 +245,7 @@ class MemoryKernel:
             await self._conn.commit()
         return item_id
 
-    async def invalidate_item(
-        self, item_id: str, *, reason: str, by: str | None = None
-    ) -> bool:
+    async def invalidate_item(self, item_id: str, *, reason: str, by: str | None = None) -> bool:
         """Bi-temporal retirement — sets ``valid_to_ms``, never deletes.
 
         Returns ``False`` when the item is unknown or already invalid
@@ -329,9 +320,7 @@ class MemoryKernel:
         like_units = [u for u in units if u][:4]
         if not like_units:
             return []
-        like_clause = " OR ".join(
-            "i.text LIKE ? ESCAPE '\\'" for _ in like_units
-        )
+        like_clause = " OR ".join("i.text LIKE ? ESCAPE '\\'" for _ in like_units)
         sql = (
             "SELECT i.*, 0.0 AS fts_score FROM mk_items i"
             " WHERE i.tenant_id = ?"
@@ -394,18 +383,12 @@ class MemoryKernel:
             for key, value in weights.items():
                 # bool is an int subclass — reject it like the config
                 # sanitisers do (TOML `true` must not become weight 1.0).
-                if (
-                    key in w
-                    and isinstance(value, (int, float))
-                    and not isinstance(value, bool)
-                ):
+                if key in w and isinstance(value, (int, float)) and not isinstance(value, bool):
                     w[key] = float(value)
 
         # Risk filtering happens IN the candidate queries so high-risk
         # rows can't starve the candidate pool for legitimate matches.
-        fts_hits = await self.recall(
-            scope, text, top_k=candidates, exclude_high_risk=True
-        )
+        fts_hits = await self.recall(scope, text, top_k=candidates, exclude_high_risk=True)
         # RRF rank positions per branch (1-indexed).
         rrf: dict[str, float] = {}
         by_id: dict[str, MemoryItem] = {}
@@ -413,9 +396,7 @@ class MemoryKernel:
             rrf[item.id] = rrf.get(item.id, 0.0) + 1.0 / (60.0 + rank)
             by_id[item.id] = item
         if query_vector:
-            vec_ranked = await self._vector_candidates(
-                scope, query_vector, candidates
-            )
+            vec_ranked = await self._vector_candidates(scope, query_vector, candidates)
             for rank, item in enumerate(vec_ranked, start=1):
                 if item.risk == "high":
                     continue
@@ -490,9 +471,7 @@ class MemoryKernel:
         items = {row["id"]: self._row_to_item(row) for row in rows}
         return [items[item_id] for item_id in ids if item_id in items]
 
-    async def record_injection(
-        self, turn_key: str, entries: list[LedgerEntry]
-    ) -> None:
+    async def record_injection(self, turn_key: str, entries: list[LedgerEntry]) -> None:
         """Injection bookkeeping in ONE transaction: mk_recall_ledger rows
         plus recall_count/last_recalled_ms bumps on the injected items.
         Atomic so the trust loop's shown-vs-recalled ratio can't skew when
@@ -526,9 +505,7 @@ class MemoryKernel:
             )
             await self._conn.commit()
 
-    async def ledger_rows_for_turn(
-        self, turn_key: str
-    ) -> list[tuple[int, str, str]]:
+    async def ledger_rows_for_turn(self, turn_key: str) -> list[tuple[int, str, str]]:
         """Verdict-less ledger rows of ONE injection, with item text.
 
         The caller supplies the exact turn_key it minted at injection
@@ -597,8 +574,7 @@ class MemoryKernel:
                     )
                 elif verdict == "ignored":
                     await self._conn.execute(
-                        "UPDATE mk_items SET utility = utility * (1.0 - ?)"
-                        " WHERE id = ?",
+                        "UPDATE mk_items SET utility = utility * (1.0 - ?) WHERE id = ?",
                         (utility_alpha, item_id),
                     )
                 else:  # contradicted
@@ -724,9 +700,7 @@ class MemoryKernel:
             out.append(obs)
         return out
 
-    async def set_affect(
-        self, item_id: str, e: float, p: float, a: float, salience: float
-    ) -> None:
+    async def set_affect(self, item_id: str, e: float, p: float, a: float, salience: float) -> None:
         """Stamp the EPA affect vector on an item (W6 affect lens)."""
         async with self._lock:
             await self._conn.execute(
@@ -736,13 +710,10 @@ class MemoryKernel:
             )
             await self._conn.commit()
 
-    async def get_affect_state(
-        self, persona_id: str
-    ) -> tuple[float, float, float]:
+    async def get_affect_state(self, persona_id: str) -> tuple[float, float, float]:
         """The persona's current mood in EPA space (0,0,0 when unset)."""
         async with self._conn.execute(
-            "SELECT mood_e, mood_p, mood_a FROM mk_affect_state"
-            " WHERE persona_id = ?",
+            "SELECT mood_e, mood_p, mood_a FROM mk_affect_state WHERE persona_id = ?",
             (persona_id,),
         ) as cur:
             row = await cur.fetchone()
@@ -764,8 +735,7 @@ class MemoryKernel:
         """
         current = await self.get_affect_state(persona_id)
         new = tuple(
-            (1.0 - alpha) * c + alpha * t
-            for c, t in zip(current, turn_affect, strict=True)
+            (1.0 - alpha) * c + alpha * t for c, t in zip(current, turn_affect, strict=True)
         )
         async with self._lock:
             await self._conn.execute(
@@ -807,9 +777,7 @@ class MemoryKernel:
             await self._conn.commit()
         return (new[0], new[1], new[2])
 
-    async def add_edge(
-        self, src_id: str, dst_id: str, rel: str, *, weight: float = 1.0
-    ) -> None:
+    async def add_edge(self, src_id: str, dst_id: str, rel: str, *, weight: float = 1.0) -> None:
         """Record a typed edge (supports/contradicts/refines/derived_from)."""
         async with self._lock:
             await self._conn.execute(
@@ -820,16 +788,13 @@ class MemoryKernel:
             )
             await self._conn.commit()
 
-    async def set_embedding(
-        self, item_id: str, vector: list[float]
-    ) -> None:
+    async def set_embedding(self, item_id: str, vector: list[float]) -> None:
         """Stamp an embedding on an item (feeds the vector recall branch)."""
         from corlinman_memory_kernel.vector import encode_f32
 
         async with self._lock:
             await self._conn.execute(
-                "UPDATE mk_items SET embedding = ?, embedding_dim = ?"
-                " WHERE id = ?",
+                "UPDATE mk_items SET embedding = ?, embedding_dim = ? WHERE id = ?",
                 (encode_f32(vector), len(vector), item_id),
             )
             await self._conn.commit()
@@ -870,9 +835,7 @@ class MemoryKernel:
             rows = await cur.fetchall()
         return [self._row_to_item(row) for row in rows]
 
-    async def set_core_block(
-        self, scope: KernelScope, block: str, content: str
-    ) -> None:
+    async def set_core_block(self, scope: KernelScope, block: str, content: str) -> None:
         """Upsert one core-memory block for a scope (maintenance writer).
 
         Content is rendered by the maintenance pipeline; recall injects
@@ -899,6 +862,27 @@ class MemoryKernel:
             )
             await self._conn.commit()
 
+    async def list_instance_scopes_for_user(self, user_id: str) -> list[str]:
+        """Return historical ``qq-instance:*:<user>`` scope ids.
+
+        Configuration is not a complete inventory after an account is deleted,
+        so identity merges discover persisted scopes directly from every
+        user-keyed kernel table.
+        """
+        if not user_id:
+            return []
+        suffix = f":{user_id}"
+        pattern = f"qq-instance:%{suffix}"
+        rows = await self._conn.execute_fetchall(
+            "SELECT DISTINCT scope_user_id FROM ("
+            " SELECT scope_user_id FROM mk_items"
+            " UNION ALL SELECT scope_user_id FROM mk_observations"
+            " UNION ALL SELECT scope_user_id FROM mk_core"
+            ") WHERE scope_user_id LIKE ? AND substr(scope_user_id, ?) = ?",
+            (pattern, -len(suffix), suffix),
+        )
+        return sorted(str(row[0]) for row in rows if row[0])
+
     async def merge_scope_user(self, from_user: str, into_user: str) -> int:
         """Re-stamp every row of a merged identity onto the survivor.
 
@@ -912,8 +896,7 @@ class MemoryKernel:
         async with self._lock:
             for table in ("mk_items", "mk_observations"):
                 cur = await self._conn.execute(
-                    f"UPDATE {table} SET scope_user_id = ?"
-                    " WHERE scope_user_id = ?",
+                    f"UPDATE {table} SET scope_user_id = ? WHERE scope_user_id = ?",
                     (into_user, from_user),
                 )
                 moved += cur.rowcount
@@ -941,8 +924,7 @@ class MemoryKernel:
         placeholders = ",".join("?" * len(obs_ids))
         async with self._lock:
             await self._conn.execute(
-                f"UPDATE mk_observations SET processed_at_ms = ?"
-                f" WHERE id IN ({placeholders})",
+                f"UPDATE mk_observations SET processed_at_ms = ? WHERE id IN ({placeholders})",
                 (now_ms(), *obs_ids),
             )
             await self._conn.commit()
@@ -953,7 +935,10 @@ class MemoryKernel:
         for key, sql in (
             ("items", "SELECT COUNT(*) FROM mk_items WHERE valid_to_ms IS NULL"),
             ("items_invalidated", "SELECT COUNT(*) FROM mk_items WHERE valid_to_ms IS NOT NULL"),
-            ("observations_pending", "SELECT COUNT(*) FROM mk_observations WHERE processed_at_ms IS NULL"),
+            (
+                "observations_pending",
+                "SELECT COUNT(*) FROM mk_observations WHERE processed_at_ms IS NULL",
+            ),
             ("observations_total", "SELECT COUNT(*) FROM mk_observations"),
         ):
             async with self._conn.execute(sql) as cur:
@@ -986,9 +971,7 @@ class MemoryKernel:
             affect_a=float(row["affect_a"] or 0.0),
             affect_salience=float(row["affect_salience"] or 0.0),
             valid_from_ms=int(row["valid_from_ms"]),
-            valid_to_ms=(
-                int(row["valid_to_ms"]) if row["valid_to_ms"] is not None else None
-            ),
+            valid_to_ms=(int(row["valid_to_ms"]) if row["valid_to_ms"] is not None else None),
             recorded_at_ms=int(row["recorded_at_ms"]),
             # bm25() is lower-is-better; flip to the higher-is-better
             # contract the rest of the codebase uses.

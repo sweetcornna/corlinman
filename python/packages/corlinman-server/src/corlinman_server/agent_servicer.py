@@ -346,34 +346,41 @@ EXIT_PLAN_MODE_TOOL: str = "exit_plan_mode"
 #: tools (web_fetch / web_search) and a self-contained calculator;
 #: adding to this set is the way to expose a new builtin tool that
 #: doesn't fit the plugin model.
-BUILTIN_TOOLS: frozenset[str] = frozenset(
-    {
-        SUBAGENT_SPAWN_TOOL,
-        SUBAGENT_SPAWN_MANY_TOOL,
-        SUBAGENT_SPAWN_INLINE_TOOL,
-        SUBAGENT_STOP_TOOL,
-        BLACKBOARD_READ_TOOL,
-        BLACKBOARD_WRITE_TOOL,
-        WEB_FETCH_TOOL,
-        WEB_SEARCH_TOOL,
-        CALCULATOR_TOOL,
-        SEND_ATTACHMENT_TOOL,
-        ASK_USER_TOOL,
-        IMAGE_WITH_REFS_TOOL,
-        IMAGE_GENERATE_TOOL,
-        VISION_ANALYZE_TOOL,
-        TEXT_TO_SPEECH_TOOL,
-        QZONE_PUBLISH_TOOL,
-        AGENT_STATUS_CARD_TOOL,
-        SKILL_TOOL,
-        EXIT_PLAN_MODE_TOOL,
-        # ``memory_write`` / ``memory_read`` also arrive via ``MEMORY_TOOLS``
-        # once wire-B widens that frozenset; naming them here keeps the
-        # dispatch gate correct independently of that re-export landing.
-        MEMORY_WRITE_TOOL,
-        MEMORY_READ_TOOL,
-    }
-) | CODING_TOOLS | PERSONA_TOOLS | PERSONA_LIFE_TOOLS | QZONE_COMMENT_TOOLS | MEMORY_TOOLS
+BUILTIN_TOOLS: frozenset[str] = (
+    frozenset(
+        {
+            SUBAGENT_SPAWN_TOOL,
+            SUBAGENT_SPAWN_MANY_TOOL,
+            SUBAGENT_SPAWN_INLINE_TOOL,
+            SUBAGENT_STOP_TOOL,
+            BLACKBOARD_READ_TOOL,
+            BLACKBOARD_WRITE_TOOL,
+            WEB_FETCH_TOOL,
+            WEB_SEARCH_TOOL,
+            CALCULATOR_TOOL,
+            SEND_ATTACHMENT_TOOL,
+            ASK_USER_TOOL,
+            IMAGE_WITH_REFS_TOOL,
+            IMAGE_GENERATE_TOOL,
+            VISION_ANALYZE_TOOL,
+            TEXT_TO_SPEECH_TOOL,
+            QZONE_PUBLISH_TOOL,
+            AGENT_STATUS_CARD_TOOL,
+            SKILL_TOOL,
+            EXIT_PLAN_MODE_TOOL,
+            # ``memory_write`` / ``memory_read`` also arrive via ``MEMORY_TOOLS``
+            # once wire-B widens that frozenset; naming them here keeps the
+            # dispatch gate correct independently of that re-export landing.
+            MEMORY_WRITE_TOOL,
+            MEMORY_READ_TOOL,
+        }
+    )
+    | CODING_TOOLS
+    | PERSONA_TOOLS
+    | PERSONA_LIFE_TOOLS
+    | QZONE_COMMENT_TOOLS
+    | MEMORY_TOOLS
+)
 
 #: The three subagent-spawn tools. A spawned child is refused these by
 #: :meth:`AgentServicer._make_child_tool_executor` (v1.12.3) — recursive
@@ -495,6 +502,7 @@ def _send_attachment_tool_schema() -> dict[str, Any]:
         },
     }
 
+
 def _agent_status_card_tool_schema() -> dict[str, Any]:
     """OpenAI descriptor for the ``agent_status_card`` builtin."""
     return {
@@ -554,8 +562,7 @@ def _exit_plan_mode_tool_schema() -> dict[str, Any]:
                     "plan": {
                         "type": "string",
                         "description": (
-                            "Optional short summary of the approved plan, "
-                            "echoed back to the user."
+                            "Optional short summary of the approved plan, echoed back to the user."
                         ),
                     },
                 },
@@ -886,10 +893,7 @@ def _build_env_block() -> str:
     every coding tool.
     """
     workspace = resolve_workspace()
-    py_version = (
-        f"{sys.version_info.major}.{sys.version_info.minor}."
-        f"{sys.version_info.micro}"
-    )
+    py_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
     shell = os.environ.get("SHELL") or "unknown"
     today = date.today().isoformat()
     return (
@@ -1030,9 +1034,7 @@ def _calculator_timeout_secs() -> float:
 
 # Dim 9 — builtin tools whose success mutates workspace files; the
 # ``file_changed`` hook event fires after their post_tool hooks.
-_FILE_MUTATING_TOOLS: frozenset[str] = frozenset(
-    {"write_file", "edit_file", "notebook_edit"}
-)
+_FILE_MUTATING_TOOLS: frozenset[str] = frozenset({"write_file", "edit_file", "notebook_edit"})
 
 
 def _hook_result_max_bytes() -> int:
@@ -1301,14 +1303,11 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # W7: session_key → the turn_key minted at this turn's injection,
         # consumed one-shot by the post-turn trust loop.
         self._injection_turn_keys: OrderedDict[str, str] = OrderedDict()
-        # W2: (channel, sender) → (canonical UserId, expires_at_monotonic).
-        # Bounded LRU with a TTL: an operator identity merge re-homes
-        # rows in the DB but cannot reach this in-process cache (nor the
-        # caches of other gateways in HA), so entries expire instead of
-        # living until eviction — bounding post-merge staleness.
-        self._identity_cache: OrderedDict[tuple[str, str], tuple[str, float]] = (
-            OrderedDict()
-        )
+        # W2: successful identity resolutions are deliberately not cached.
+        # An operator merge re-homes memory immediately; a stale process-local
+        # cache could keep writing new rows into the losing scope afterwards.
+        # Keep the empty attribute for compatibility with diagnostics/tests.
+        self._identity_cache: OrderedDict[tuple[str, str, str], tuple[str, float]] = OrderedDict()
         # Per-session task lists for the ``todo_write`` tool.
         self._todo_store = TodoStore()
         # T1.4: per-session token / cost accumulator. Updated from the
@@ -1334,9 +1333,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # settings.local.json + env, env still the final word; with no
         # settings file this is byte-identical to the old from_env()).
         self._permission_gate = (
-            permission_gate
-            if permission_gate is not None
-            else build_permission_gate()
+            permission_gate if permission_gate is not None else build_permission_gate()
         )
         # gap permissions-no-ask-action: the unified approval gate wraps the
         # permission gate + an optional prompt-and-wait resolver. Lazily
@@ -1373,9 +1370,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # R1: bounded LRU so the per-session lock map can't grow
         # without limit. Held locks are pinned; idle ones are evicted
         # in LRU order once we exceed ``CORLINMAN_MAX_SESSION_CACHE``.
-        self._session_locks: _SessionLockCache = _SessionLockCache(
-            _session_cache_cap()
-        )
+        self._session_locks: _SessionLockCache = _SessionLockCache(_session_cache_cap())
         # Claude-Code-style mid-turn supplements: while a turn is in
         # flight for ``session_key``, a second Chat RPC for the SAME
         # session_key shouldn't queue up behind the lock — instead the
@@ -1443,6 +1438,9 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             turn_channel = (binding.channel or "").strip()
         except (AttributeError, TypeError):  # pragma: no cover — defensive
             turn_channel = ""
+        turn_runtime_instance_id = (
+            getattr(start_frame.start, "runtime_instance_id", "") or ""
+        ).strip()
         logger.info("agent.chat.start", model=start.model, session=start.session_key)
 
         # W-D1: per-agent model binding. Peek the messages for an agent
@@ -1459,9 +1457,8 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             )
             start.model = bound_card.model
         request_provider_hint = _provider_hint_from_extra(start.extra)
-        provider_hint = (
-            request_provider_hint
-            or (bound_card.provider if bound_card is not None else None)
+        provider_hint = request_provider_hint or (
+            bound_card.provider if bound_card is not None else None
         )
 
         try:
@@ -1507,9 +1504,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # ``tools = false``, or the resolved adapter's ``supports_tools``
         # saying no) get NO tools at all — sending a ``tools`` array to a
         # model that can't accept one 400s the whole turn.
-        if tools_param is False or not _provider_supports_tools(
-            provider, upstream_model
-        ):
+        if tools_param is False or not _provider_supports_tools(provider, upstream_model):
             logger.info(
                 "agent.tools_disabled_for_model",
                 model=start.model,
@@ -1578,9 +1573,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                         },
                     )
                 except Exception as exc:  # noqa: BLE001 — advisory only
-                    logger.warning(
-                        "agent.chat.session_start_hook_failed", error=str(exc)
-                    )
+                    logger.warning("agent.chat.session_start_hook_failed", error=str(exc))
         if user_text:
             _runner = self._resolve_hook_runner()
             _run_event = getattr(_runner, "run_event_async", None)
@@ -1606,9 +1599,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     if _note:
                         _hook_note = f"[hook:user_prompt_submit] {_note}"
                 except Exception as exc:  # noqa: BLE001 — never block the chat
-                    logger.warning(
-                        "agent.chat.user_prompt_hook_failed", error=str(exc)
-                    )
+                    logger.warning("agent.chat.user_prompt_hook_failed", error=str(exc))
 
         # Claude-Code-style mid-turn supplement: if a turn is ALREADY
         # running for this session_key, inject the new user text into
@@ -1625,9 +1616,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 # restart replays the same guidance the live model saw
                 # (Codex #109: the journal previously dropped the note).
                 _supplement_text = (
-                    user_text
-                    if _hook_note is None
-                    else f"{user_text}\n\n{_hook_note}"
+                    user_text if _hook_note is None else f"{user_text}\n\n{_hook_note}"
                 )
                 active_loop.inject_user_message(_supplement_text)
                 # T4.1: journal the supplement onto the existing turn
@@ -1635,11 +1624,21 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 journal = await self._get_journal()
                 if journal is not None:
                     try:
-                        active_turn = await journal.find_resumable_turn(
-                            start.session_key,
-                            user_text,
-                            user_id=_extract_user_id(start),
-                        )
+                        try:
+                            active_turn = await journal.find_resumable_turn(
+                                start.session_key,
+                                user_text,
+                                user_id=_extract_user_id(start),
+                                channel=turn_channel,
+                                runtime_instance_id=turn_runtime_instance_id,
+                            )
+                        except TypeError:
+                            # Compatibility for injected/older journal adapters.
+                            active_turn = await journal.find_resumable_turn(
+                                start.session_key,
+                                user_text,
+                                user_id=_extract_user_id(start),
+                            )
                         if active_turn is not None:
                             await journal.append_message(
                                 active_turn.turn_id,
@@ -1675,9 +1674,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 # a free-form string on the proto. The channel handler
                 # interprets ``"supplemented"`` as "absorbed by the
                 # running turn — do not render a reply".
-                yield agent_pb2.ServerFrame(
-                    done=agent_pb2.Done(finish_reason="supplemented")
-                )
+                yield agent_pb2.ServerFrame(done=agent_pb2.Done(finish_reason="supplemented"))
                 return
 
         # Fresh turn (no in-flight loop absorbed the prompt): the hook
@@ -1719,7 +1716,11 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         if journal is not None and start.session_key and user_text:
             try:
                 resume_data = await journal.find_resumable_turn(
-                    start.session_key, user_text, user_id=turn_user_id
+                    start.session_key,
+                    user_text,
+                    user_id=turn_user_id,
+                    channel=turn_channel,
+                    runtime_instance_id=turn_runtime_instance_id,
                 )
             except Exception as exc:  # noqa: BLE001 — degrade
                 logger.warning("agent.journal.find_resumable_failed", error=str(exc))
@@ -1737,9 +1738,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             # assistant message but strips stale tool_calls + their
             # paired results.
             current_tools = _current_tool_names(start)
-            filtered_messages, pruned = _prune_stale_tool_calls(
-                resume_data.messages, current_tools
-            )
+            filtered_messages, pruned = _prune_stale_tool_calls(resume_data.messages, current_tools)
             if pruned:
                 logger.info(
                     "agent.resume.tools_pruned",
@@ -1747,9 +1746,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     turn_id=journal_turn_id,
                     dropped=pruned,
                 )
-            replayed_tool_results = sum(
-                1 for m in filtered_messages if m.get("role") == "tool"
-            )
+            replayed_tool_results = sum(1 for m in filtered_messages if m.get("role") == "tool")
             logger.info(
                 "agent.chat.resumed",
                 session=start.session_key,
@@ -1766,10 +1763,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             # Strip the leading duplicate user turn — the replay already
             # contains a user message with the same text.
             for idx, msg in enumerate(tail_messages):
-                role = (
-                    msg.get("role") if isinstance(msg, dict)
-                    else getattr(msg, "role", None)
-                )
+                role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", None)
                 if role == "user":
                     tail_messages.pop(idx)
                     break
@@ -1781,6 +1775,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     user_text,
                     user_id=turn_user_id,
                     channel=turn_channel,
+                    runtime_instance_id=turn_runtime_instance_id,
                     tenant_id=_extract_tenant_id(start),
                 )
                 # C5 — the Postgres backend returns ``None`` when its
@@ -1801,6 +1796,8 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                             start.session_key,
                             user_text,
                             user_id=turn_user_id,
+                            channel=turn_channel,
+                            runtime_instance_id=turn_runtime_instance_id,
                         )
                     except Exception as exc:  # noqa: BLE001
                         logger.warning(
@@ -1819,9 +1816,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                         journal_turn_id,
                         role="user",
                         content=user_text,
-                        attachments=_attachment_meta_for_journal(
-                            start.attachments
-                        ),
+                        attachments=_attachment_meta_for_journal(start.attachments),
                     )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("agent.journal.begin_failed", error=str(exc))
@@ -1861,9 +1856,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # plan across turns (the todo_write tool persists it in-process).
         todo_block = render_todo_block(self._todo_store, start.session_key)
         if todo_block:
-            start.messages = _inject_memory_note(
-                list(start.messages), todo_block
-            )
+            start.messages = _inject_memory_note(list(start.messages), todo_block)
 
         # Bump the tool-result timeout above the M2 default (0.05s) so the
         # loop actually waits long enough for the gateway to round-trip a
@@ -1901,9 +1894,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # pump fires the hooks through this callback (Codex #109).
         pending_external_tools: dict[str, tuple[str, dict[str, Any]]] = {}
 
-        async def _on_external_tool_result(
-            call_id: str, content: str, is_error: bool
-        ) -> None:
+        async def _on_external_tool_result(call_id: str, content: str, is_error: bool) -> None:
             _ = is_error
             info = pending_external_tools.pop(call_id, None)
             if info is None:
@@ -1911,9 +1902,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             await self._run_post_tool_hooks(info[0], info[1], start, content)
 
         inbound_task = asyncio.create_task(
-            _pump_inbound(
-                request_iterator, loop, on_tool_result=_on_external_tool_result
-            ),
+            _pump_inbound(request_iterator, loop, on_tool_result=_on_external_tool_result),
             name="agent.chat.pump_inbound",
         )
 
@@ -2010,9 +1999,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                             "call_id": event.call_id,
                         }
                         if not _scheduler_shadow(start):
-                            log_fields["args"] = event.args_json.decode(
-                                "utf-8", "replace"
-                            )[:200]
+                            log_fields["args"] = event.args_json.decode("utf-8", "replace")[:200]
                         logger.info("agent.tool.dispatch", **log_fields)
                         _dispatch_started_at = time.monotonic()
                         # W3.1 — emit ToolStateRunning before dispatch,
@@ -2030,17 +2017,14 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                             emitter=self._event_emitter,
                         )
 
-                        def _summarise(
-                            rj: str | list[dict[str, Any]]
-                        ) -> tuple[str, bool]:
+                        def _summarise(rj: str | list[dict[str, Any]]) -> tuple[str, bool]:
                             if not isinstance(rj, str):
                                 return json.dumps(rj), False
                             is_err = False
                             try:
                                 parsed = json.loads(rj or "{}")
                                 if isinstance(parsed, dict) and (
-                                    parsed.get("error")
-                                    or parsed.get("is_error")
+                                    parsed.get("error") or parsed.get("is_error")
                                 ):
                                     is_err = True
                             except (json.JSONDecodeError, TypeError, ValueError):
@@ -2065,9 +2049,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                             ),
                             summarise_result=_summarise,
                         )
-                        _dispatch_dur_ms = int(
-                            (time.monotonic() - _dispatch_started_at) * 1000
-                        )
+                        _dispatch_dur_ms = int((time.monotonic() - _dispatch_started_at) * 1000)
                         # W4 — register any media files the tool produced
                         # (local paths are useless to a browser) into the
                         # gateway file store and rewrite the result JSON
@@ -2103,23 +2085,16 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                                             url=str(_media_meta["url"]),
                                             name=str(_media_meta["name"]),
                                             mime=str(_media_meta["mime"]),
-                                            size=_positive_int_or_none(
-                                                _media_meta.get("size")
-                                            ),
+                                            size=_positive_int_or_none(_media_meta.get("size")),
                                             tool_call_id=event.call_id,
                                         ),
                                     )
                                 yield agent_pb2.ServerFrame(
                                     tool_call=agent_pb2.ToolCall(
                                         call_id=event.call_id,
-                                        plugin=(
-                                            f"{_BUILTIN_ATTACHMENT_PREFIX}"
-                                            f"{event.plugin}"
-                                        ),
+                                        plugin=(f"{_BUILTIN_ATTACHMENT_PREFIX}{event.plugin}"),
                                         tool=event.tool,
-                                        args_json=json.dumps(
-                                            _media_meta
-                                        ).encode("utf-8"),
+                                        args_json=json.dumps(_media_meta).encode("utf-8"),
                                         seq=seq,
                                     )
                                 )
@@ -2145,9 +2120,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                                 if isinstance(_parsed, dict):
                                     if _parsed.get("error"):
                                         _result_is_error = True
-                                        _result_err_summary = str(
-                                            _parsed["error"]
-                                        )[:200]
+                                        _result_err_summary = str(_parsed["error"])[:200]
                                     elif _parsed.get("is_error"):
                                         _result_is_error = True
                                         _result_err_summary = str(
@@ -2164,9 +2137,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                                     # serialize failure — best-effort
                                     # observability, never fatal.
                                     try:
-                                        _payload = json.dumps(
-                                            _parsed, ensure_ascii=False
-                                        )
+                                        _payload = json.dumps(_parsed, ensure_ascii=False)
                                         if len(_payload.encode("utf-8")) <= 8192:
                                             _result_payload_json = _payload
                                     except (TypeError, ValueError):
@@ -2193,12 +2164,14 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                                 call_id=event.call_id,
                                 plugin=f"_builtin_done:{event.plugin}",
                                 tool=event.tool,
-                                args_json=json.dumps({
-                                    "duration_ms": _dispatch_dur_ms,
-                                    "is_error": _result_is_error,
-                                    "error_summary": _result_err_summary,
-                                    "payload_json": _result_payload_json,
-                                }).encode("utf-8"),
+                                args_json=json.dumps(
+                                    {
+                                        "duration_ms": _dispatch_dur_ms,
+                                        "is_error": _result_is_error,
+                                        "error_summary": _result_err_summary,
+                                        "payload_json": _result_payload_json,
+                                    }
+                                ).encode("utf-8"),
                                 seq=seq,
                             )
                         )
@@ -2255,8 +2228,8 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     # could stop builtins but not a mutating MCP/plugin
                     # call (Codex #109). Run it here before yielding the
                     # ToolCall frame chat_service executes.
-                    _ext_allow, _ext_reason, _ext_mutated = (
-                        await self._run_pre_tool_hook_gate(event, start)
+                    _ext_allow, _ext_reason, _ext_mutated = await self._run_pre_tool_hook_gate(
+                        event, start
                     )
                     if not _ext_allow:
                         logger.info(
@@ -2336,9 +2309,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                             )
                             journal_turn_id = None  # consumed
                         except Exception as exc:  # noqa: BLE001
-                            logger.warning(
-                                "agent.journal.error_failed", error=str(exc)
-                            )
+                            logger.warning("agent.journal.error_failed", error=str(exc))
                     # Hook bus: ``TurnErrored`` fires before the ErrorEvent
                     # gRPC frame so subscribers see the failure with the
                     # same reason / message the client will receive.
@@ -2354,9 +2325,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                             )
                         )
                     except Exception as exc:  # noqa: BLE001
-                        logger.warning(
-                            "agent.chat.turn_errored_emit_failed", error=str(exc)
-                        )
+                        logger.warning("agent.chat.turn_errored_emit_failed", error=str(exc))
                     yield _error_frame(event.reason, event.message)
                     return
                 elif isinstance(event, DoneEvent):
@@ -2391,9 +2360,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                             await journal.complete_turn(journal_turn_id)
                             journal_turn_id = None  # consumed
                         except Exception as exc:  # noqa: BLE001
-                            logger.warning(
-                                "agent.journal.complete_failed", error=str(exc)
-                            )
+                            logger.warning("agent.journal.complete_failed", error=str(exc))
                     # gap cost-no-usd-math: persist the loop's per-turn USD
                     # cost. ``DoneEvent.usd_cost`` is computed from the
                     # reasoning loop's 4-class MODEL_COSTS map (incl.
@@ -2401,11 +2368,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     # captured ``local_turn_id`` because ``journal_turn_id``
                     # was cleared inside the try above on success.
                     _usd_cost = getattr(event, "usd_cost", None)
-                    if (
-                        journal is not None
-                        and local_turn_id is not None
-                        and _usd_cost is not None
-                    ):
+                    if journal is not None and local_turn_id is not None and _usd_cost is not None:
                         try:
                             await journal.update_turn_cost(
                                 local_turn_id,
@@ -2444,15 +2407,11 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                                 turn_id=local_turn_id,
                                 finish_reason=event.finish_reason or "",
                                 usage=dict(event.usage) if event.usage else None,
-                                duration_ms=int(
-                                    (time.monotonic() - turn_started_at) * 1000
-                                ),
+                                duration_ms=int((time.monotonic() - turn_started_at) * 1000),
                             )
                         )
                     except Exception as exc:  # noqa: BLE001
-                        logger.warning(
-                            "agent.chat.turn_complete_emit_failed", error=str(exc)
-                        )
+                        logger.warning("agent.chat.turn_complete_emit_failed", error=str(exc))
                     yield agent_pb2.ServerFrame(
                         done=agent_pb2.Done(finish_reason=event.finish_reason)
                     )
@@ -2467,9 +2426,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             local_turn_id = journal_turn_id
             if journal is not None and journal_turn_id is not None:
                 try:
-                    await journal.error_turn(
-                        journal_turn_id, f"fatal: {exc!r}"[:1000]
-                    )
+                    await journal.error_turn(journal_turn_id, f"fatal: {exc!r}"[:1000])
                     journal_turn_id = None
                 except Exception:  # noqa: BLE001
                     pass
@@ -2489,9 +2446,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     )
                 )
             except Exception as inner_exc:  # noqa: BLE001
-                logger.warning(
-                    "agent.chat.turn_errored_emit_failed", error=str(inner_exc)
-                )
+                logger.warning("agent.chat.turn_errored_emit_failed", error=str(inner_exc))
             yield _error_frame("unknown", str(exc))
         finally:
             # Drop the active-loop registration FIRST (sync, no await
@@ -2547,9 +2502,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         """
         for name in model_names:
             try:
-                provider, upstream_model, _ = _call_resolver(
-                    self._resolve, name, self._aliases
-                )
+                provider, upstream_model, _ = _call_resolver(self._resolve, name, self._aliases)
             except Exception as exc:
                 logger.warning(
                     "agent.chat.prewarm_failed",
@@ -2589,7 +2542,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             return self._journal
         self._journal_init_done = True
         try:
-            path = _resolve_data_dir() / "agent_journal.sqlite"
+            path = _resolve_execution_state_dir() / "agent_journal.sqlite"
             # ``open_from_env`` honours ``CORLINMAN_JOURNAL_BACKEND``;
             # unset / "sqlite" preserves the existing on-disk behavior
             # at ``path``. Future HA deployments can swap the backend
@@ -2610,9 +2563,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 logger.warning("agent.journal.sweep_failed", error=str(exc))
         return self._journal
 
-    async def recent_errored_turns(
-        self, session_key: str, limit: int = 5
-    ) -> list[dict[str, Any]]:
+    async def recent_errored_turns(self, session_key: str, limit: int = 5) -> list[dict[str, Any]]:
         """T4.4 helper — recent errored turns for an operator / self-heal hook."""
         j = await self._get_journal()
         if j is None:
@@ -2732,7 +2683,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 from corlinman_server.scheduler import SchedulerStore
 
                 store = await SchedulerStore.open(
-                    _resolve_data_dir() / "scheduler.sqlite"
+                    _resolve_execution_state_dir() / "scheduler.sqlite"
                 )
             except Exception as exc:  # noqa: BLE001 — tool dispatch fails closed
                 logger.warning(
@@ -2887,9 +2838,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                             "tool": child_event.tool,
                         }
                     )
-            result = await self._dispatch_builtin(
-                child_event, start, provider, file_state
-            )
+            result = await self._dispatch_builtin(child_event, start, provider, file_state)
             return result if isinstance(result, str) else json.dumps(result)
 
         return _execute
@@ -2897,9 +2846,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
     def _validate_subagent_model_override(self, args_json: bytes | str) -> str | None:
         return self._validate_model_override_in_args(self._parse_args_dict(args_json))
 
-    def _validate_subagent_many_model_overrides(
-        self, args_json: bytes | str
-    ) -> str | None:
+    def _validate_subagent_many_model_overrides(self, args_json: bytes | str) -> str | None:
         args = self._parse_args_dict(args_json)
         tasks = args.get("tasks")
         if not isinstance(tasks, list):
@@ -3099,9 +3046,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                         },
                     )
                 except Exception as exc:  # noqa: BLE001 — advisory only
-                    logger.warning(
-                        "agent.tool.notification_hook_error", error=str(exc)
-                    )
+                    logger.warning("agent.tool.notification_hook_error", error=str(exc))
 
     async def _run_pre_tool_hook_gate(
         self, event: ToolCallEvent, start: AgentChatStart
@@ -3142,19 +3087,13 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 decision = None
             if not allow:
                 reason = (
-                    getattr(decision, "reason", None)
-                    if decision is not None
-                    else reason_legacy
+                    getattr(decision, "reason", None) if decision is not None else reason_legacy
                 ) or "hook blocked"
                 return False, reason, None
-            mutated = (
-                getattr(decision, "mutated_args", None) if decision is not None else None
-            )
+            mutated = getattr(decision, "mutated_args", None) if decision is not None else None
             return True, "", mutated if isinstance(mutated, dict) else None
         except Exception as exc:  # noqa: BLE001 — hook failure must not break dispatch
-            logger.warning(
-                "agent.tool.hook_runner_error", tool=event.tool, error=str(exc)
-            )
+            logger.warning("agent.tool.hook_runner_error", tool=event.tool, error=str(exc))
             return True, "", None
 
     async def _dispatch_builtin_inner(
@@ -3215,9 +3154,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             # Escalate to the approval gate (prompt-and-wait). When no
             # resolver is wired the gate fail-closes to deny, surfaced
             # below as a permission_denied envelope.
-            _outcome = await self._approval_decide(
-                event.tool, _perm_args, perm_ctx
-            )
+            _outcome = await self._approval_decide(event.tool, _perm_args, perm_ctx)
             if _APPROVALS_TOTAL is not None:
                 try:
                     _APPROVALS_TOTAL.labels(
@@ -3233,7 +3170,10 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     reason=_outcome.reason,
                 )
                 self._emit_tool_called(
-                    event, start, ok=False, duration_ms=0,
+                    event,
+                    start,
+                    ok=False,
+                    duration_ms=0,
                     error_code="approval_denied",
                 )
                 return json.dumps(
@@ -3264,8 +3204,9 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     "tool": event.tool,
                 }
             )
-            self._emit_tool_called(event, start, ok=False, duration_ms=0,
-                                   error_code="permission_denied")
+            self._emit_tool_called(
+                event, start, ok=False, duration_ms=0, error_code="permission_denied"
+            )
             return result
         if decision == _PERM_LOG:
             logger.info(
@@ -3287,9 +3228,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # is enforced too (not just on-demand ``Skill`` pulls).
         _skill_session_key = getattr(start, "session_key", "") or ""
         self._ensure_injected_skills_recorded(start, _skill_session_key)
-        _denied_by_skill = self._skill_allowed_tools_block(
-            event.tool, _skill_session_key
-        )
+        _denied_by_skill = self._skill_allowed_tools_block(event.tool, _skill_session_key)
         if _denied_by_skill is not None:
             logger.info(
                 "agent.tool.skill_allowed_tools_block",
@@ -3297,7 +3236,10 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 call_id=event.call_id,
             )
             self._emit_tool_called(
-                event, start, ok=False, duration_ms=0,
+                event,
+                start,
+                ok=False,
+                duration_ms=0,
                 error_code="skill_tool_not_allowed",
             )
             return json.dumps(
@@ -3323,12 +3265,8 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 call_id=event.call_id,
                 message=_reason,
             )
-            self._emit_tool_called(
-                event, start, ok=False, duration_ms=0, error_code="hook_blocked"
-            )
-            return json.dumps(
-                {"error": f"blocked by hook: {_reason}", "tool": event.tool}
-            )
+            self._emit_tool_called(event, start, ok=False, duration_ms=0, error_code="hook_blocked")
+            return json.dumps({"error": f"blocked by hook: {_reason}", "tool": event.tool})
         if _mutated is not None:
             try:
                 event.args_json = json.dumps(_mutated).encode("utf-8")
@@ -3346,9 +3284,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             if event.tool == SUBAGENT_SPAWN_TOOL:
                 registry = self._get_agent_registry()
                 if registry is None:
-                    return json.dumps(
-                        {"error": "agent_registry_unavailable"}
-                    )
+                    return json.dumps({"error": "agent_registry_unavailable"})
                 # W3.2 — thread the parent's turn correlation through so
                 # the dispatcher can emit SubagentSpawned /
                 # SubagentCompleted envelopes on the parent's SSE
@@ -3358,15 +3294,11 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 # smoke-test paths) we pass None and the dispatcher
                 # silently no-ops the obs emits.
                 _parent_loop = self._active_loops.get(start.session_key or "")
-                _parent_turn_id = (
-                    _parent_loop.turn_id if _parent_loop is not None else None
-                )
+                _parent_turn_id = _parent_loop.turn_id if _parent_loop is not None else None
                 _sup, _acquire = self._get_subagent_caps()
                 model_error = self._validate_subagent_model_override(event.args_json)
                 if model_error is not None:
-                    return self._subagent_rejected_json(
-                        parent_ctx, error=model_error
-                    )
+                    return self._subagent_rejected_json(parent_ctx, error=model_error)
                 return await dispatch_subagent_spawn(
                     args_json=event.args_json,
                     parent_ctx=parent_ctx,
@@ -3397,9 +3329,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     # v1.12.3: the child can now actually EXECUTE its tools
                     # (web_search, etc.) and synthesize a real answer instead
                     # of returning a bare tool-call trajectory.
-                    tool_executor=self._make_child_tool_executor(
-                        start, provider, file_state
-                    ),
+                    tool_executor=self._make_child_tool_executor(start, provider, file_state),
                     event_emitter=self._event_emitter,
                     parent_turn_id=_parent_turn_id,
                     parent_session_key=start.session_key or None,
@@ -3408,17 +3338,11 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             if event.tool == SUBAGENT_SPAWN_MANY_TOOL:
                 registry = self._get_agent_registry()
                 if registry is None:
-                    return json.dumps(
-                        {"tasks": [], "error": "agent_registry_unavailable"}
-                    )
+                    return json.dumps({"tasks": [], "error": "agent_registry_unavailable"})
                 _parent_loop = self._active_loops.get(start.session_key or "")
-                _parent_turn_id = (
-                    _parent_loop.turn_id if _parent_loop is not None else None
-                )
+                _parent_turn_id = _parent_loop.turn_id if _parent_loop is not None else None
                 _sup, _acquire = self._get_subagent_caps()
-                model_error = self._validate_subagent_many_model_overrides(
-                    event.args_json
-                )
+                model_error = self._validate_subagent_many_model_overrides(event.args_json)
                 if model_error is not None:
                     return json.dumps({"tasks": [], "error": model_error})
                 # BUG-04: reserve one seq per sibling so the fan-out's
@@ -3427,9 +3351,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 # (a malformed payload reserves 1 — the dispatch then rejects
                 # with its own args-invalid envelope).
                 _many_count = self._count_spawn_many_tasks(event.args_json)
-                _many_base = self._next_child_seq(
-                    start.session_key or "", _many_count
-                )
+                _many_base = self._next_child_seq(start.session_key or "", _many_count)
                 return await dispatch_subagent_spawn_many(
                     args_json=event.args_json,
                     parent_ctx=parent_ctx,
@@ -3452,9 +3374,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     max_depth=_sup.policy.max_depth,
                     max_wall_seconds_ceiling=_sup.policy.max_wall_seconds_ceiling,
                     parent_model=start.model or None,
-                    tool_executor=self._make_child_tool_executor(
-                        start, provider, file_state
-                    ),
+                    tool_executor=self._make_child_tool_executor(start, provider, file_state),
                     event_emitter=self._event_emitter,
                     parent_turn_id=_parent_turn_id,
                     parent_session_key=start.session_key or None,
@@ -3466,15 +3386,11 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 # dispatcher builds an ephemeral card from the inline
                 # system_prompt. Same supervisor caps as the named path.
                 _parent_loop = self._active_loops.get(start.session_key or "")
-                _parent_turn_id = (
-                    _parent_loop.turn_id if _parent_loop is not None else None
-                )
+                _parent_turn_id = _parent_loop.turn_id if _parent_loop is not None else None
                 _sup, _acquire = self._get_subagent_caps()
                 model_error = self._validate_subagent_model_override(event.args_json)
                 if model_error is not None:
-                    return self._subagent_rejected_json(
-                        parent_ctx, error=model_error
-                    )
+                    return self._subagent_rejected_json(parent_ctx, error=model_error)
                 return await dispatch_subagent_spawn_inline(
                     args_json=event.args_json,
                     parent_ctx=parent_ctx,
@@ -3489,9 +3405,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     # model, so without this the child 400s "model is
                     # required" — inherit the parent's resolved alias.
                     parent_model=start.model or None,
-                    tool_executor=self._make_child_tool_executor(
-                        start, provider, file_state
-                    ),
+                    tool_executor=self._make_child_tool_executor(start, provider, file_state),
                     event_emitter=self._event_emitter,
                     parent_turn_id=_parent_turn_id,
                     parent_session_key=start.session_key or None,
@@ -3501,9 +3415,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 # gap subagents-no-stop-tool: route to the operator stop
                 # mechanism. Defaults to the current session; an explicit
                 # session_key lets a parent stop a child loop it started.
-                return self._dispatch_subagent_stop(
-                    event.args_json, start.session_key or ""
-                )
+                return self._dispatch_subagent_stop(event.args_json, start.session_key or "")
             if event.tool == EXIT_PLAN_MODE_TOOL:
                 # claude-code parity: the model leaves plan mode itself once
                 # its plan is ready. Flip plan → default so the mutating
@@ -3518,9 +3430,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 # catalog the context assembler injected. SEC-01: record the
                 # pull against THIS session_key so its allowed-tools never
                 # leaks across sessions.
-                return self._dispatch_skill_tool(
-                    event.args_json, start.session_key or ""
-                )
+                return self._dispatch_skill_tool(event.args_json, start.session_key or "")
             if event.tool == BLACKBOARD_READ_TOOL:
                 return dispatch_blackboard_read(
                     args_json=event.args_json,
@@ -3546,9 +3456,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 # (LANE-C) defense; this is the loop-liveness guarantee.
                 try:
                     return await asyncio.wait_for(
-                        asyncio.to_thread(
-                            dispatch_calculator, args_json=event.args_json
-                        ),
+                        asyncio.to_thread(dispatch_calculator, args_json=event.args_json),
                         timeout=_calculator_timeout_secs(),
                     )
                 except TimeoutError:
@@ -3569,9 +3477,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             if event.tool == EDIT_FILE_TOOL:
                 return dispatch_edit_file(args_json=event.args_json, state=file_state)
             if event.tool == NOTEBOOK_EDIT_TOOL:
-                return dispatch_notebook_edit(
-                    args_json=event.args_json, state=file_state
-                )
+                return dispatch_notebook_edit(args_json=event.args_json, state=file_state)
             if event.tool == LIST_FILES_TOOL:
                 return dispatch_list_files(args_json=event.args_json)
             if event.tool == SEARCH_FILES_TOOL:
@@ -3766,10 +3672,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                         {
                             "ok": False,
                             "error": "persona_state_store_unavailable",
-                            "message": (
-                                "persona-state store is not available in "
-                                "this deployment"
-                            ),
+                            "message": ("persona-state store is not available in this deployment"),
                         },
                         ensure_ascii=False,
                     )
@@ -3797,12 +3700,14 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 # later; today the agent falls back to the explicit
                 # ``persona_id`` arg the model passes in).
                 bound_persona_id = _bound_persona_id_from_start(start)
-                image_provider, image_model_override, _image_provider_params = (
-                    await self._resolve_persona_tool_provider(
-                        start,
-                        "image",
-                        provider,
-                    )
+                (
+                    image_provider,
+                    image_model_override,
+                    _image_provider_params,
+                ) = await self._resolve_persona_tool_provider(
+                    start,
+                    "image",
+                    provider,
                 )
                 return await dispatch_image_with_refs(
                     args_json=event.args_json,
@@ -3825,12 +3730,14 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 # Plain text-to-image: intentionally takes no persona /
                 # asset_store arguments — isolation from image_with_refs
                 # is structural. Never invoked by qzone_publish.
-                image_provider, image_model_override, _image_provider_params = (
-                    await self._resolve_persona_tool_provider(
-                        start,
-                        "image",
-                        provider,
-                    )
+                (
+                    image_provider,
+                    image_model_override,
+                    _image_provider_params,
+                ) = await self._resolve_persona_tool_provider(
+                    start,
+                    "image",
+                    provider,
                 )
                 return await dispatch_image_generate(
                     args_json=event.args_json,
@@ -3854,15 +3761,15 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 # for the packaging-skew case where the submodule was absent
                 # at import time (then dispatch_text_to_speech is None).
                 if not _TTS_AVAILABLE or dispatch_text_to_speech is None:
-                    return json.dumps(
-                        {"ok": False, "error": "text_to_speech_unavailable"}
-                    )
-                voice_provider, voice_model_override, voice_provider_params = (
-                    await self._resolve_persona_tool_provider(
-                        start,
-                        "voice",
-                        provider,
-                    )
+                    return json.dumps({"ok": False, "error": "text_to_speech_unavailable"})
+                (
+                    voice_provider,
+                    voice_model_override,
+                    voice_provider_params,
+                ) = await self._resolve_persona_tool_provider(
+                    start,
+                    "voice",
+                    provider,
                 )
                 return await dispatch_text_to_speech(
                     args_json=event.args_json,
@@ -3885,18 +3792,18 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     val = qz_extra.get("persona_id")
                     if isinstance(val, str) and val.strip():
                         qz_bound_persona_id = val.strip()
-                qz_image_provider, qz_image_model_override, _qz_image_params = (
-                    await self._resolve_persona_tool_provider(
-                        start,
-                        "image",
-                        provider,
-                    )
+                (
+                    qz_image_provider,
+                    qz_image_model_override,
+                    _qz_image_params,
+                ) = await self._resolve_persona_tool_provider(
+                    start,
+                    "image",
+                    provider,
                 )
                 scheduler_context = qz_extra.get("scheduler_context")
                 scheduler_context = (
-                    dict(scheduler_context)
-                    if isinstance(scheduler_context, Mapping)
-                    else {}
+                    dict(scheduler_context) if isinstance(scheduler_context, Mapping) else {}
                 )
                 execution_mode = (
                     "shadow"
@@ -3904,8 +3811,30 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     or qz_extra.get("scheduler_execution_mode") == "shadow"
                     else "live"
                 )
+                from corlinman_agent.onebot import OneBotClient
+
+                runtime_instance_id = str(qz_extra.get("runtime_instance_id") or "").strip()
+                scheduled_instance_id = str(scheduler_context.get("qq_instance_id") or "").strip()
+                if (
+                    runtime_instance_id
+                    and scheduled_instance_id
+                    and runtime_instance_id != scheduled_instance_id
+                ):
+                    return json.dumps(
+                        {
+                            "ok": False,
+                            "error": "qq_instance_mismatch",
+                            "message": "Scheduler and turn QQ instance identities disagree.",
+                        },
+                        ensure_ascii=False,
+                    )
+                qq_instance_id = scheduled_instance_id or runtime_instance_id
+                onebot_factory = (
+                    (lambda: OneBotClient(instance_id=qq_instance_id)) if qq_instance_id else None
+                )
                 return await dispatch_qzone_publish(
                     args_json=event.args_json,
+                    onebot_client_factory=onebot_factory,
                     policy_resolver=self._tencent_policy_resolver,
                     execution_mode=execution_mode,
                     scheduler_store=(
@@ -3924,29 +3853,45 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     },
                 )
             if event.tool in QZONE_COMMENT_TOOLS:
-                # qzone_* read + comment. Each dispatcher borrows the QQ
-                # login state the same way qzone_publish does (an env-
-                # configured OneBot HTTP client constructed inside the
-                # dispatcher) — no persona binding needed, these operate on
-                # the bound QQ account itself, not a persona.
+                from corlinman_agent.onebot import OneBotClient
+
+                qz_extra = getattr(start, "extra", None) or {}
+                scheduler_context = qz_extra.get("scheduler_context")
+                scheduler_context = (
+                    dict(scheduler_context) if isinstance(scheduler_context, Mapping) else {}
+                )
+                runtime_instance_id = str(qz_extra.get("runtime_instance_id") or "").strip()
+                scheduled_instance_id = str(scheduler_context.get("qq_instance_id") or "").strip()
+                if (
+                    runtime_instance_id
+                    and scheduled_instance_id
+                    and runtime_instance_id != scheduled_instance_id
+                ):
+                    return json.dumps(
+                        {
+                            "ok": False,
+                            "error": "qq_instance_mismatch",
+                            "message": "Scheduler and turn QQ instance identities disagree.",
+                        },
+                        ensure_ascii=False,
+                    )
+                qq_instance_id = scheduled_instance_id or runtime_instance_id
+                onebot_factory = (
+                    (lambda: OneBotClient(instance_id=qq_instance_id)) if qq_instance_id else None
+                )
                 if event.tool == QZONE_LIST_FEED_TOOL:
                     return await dispatch_qzone_list_feed(
                         args_json=event.args_json,
+                        onebot_client_factory=onebot_factory,
                         policy_resolver=self._tencent_policy_resolver,
                     )
                 if event.tool == QZONE_GET_POST_TOOL:
                     return await dispatch_qzone_get_post(
                         args_json=event.args_json,
+                        onebot_client_factory=onebot_factory,
                         policy_resolver=self._tencent_policy_resolver,
                     )
                 if event.tool == QZONE_POST_COMMENT_TOOL:
-                    qz_extra = getattr(start, "extra", None) or {}
-                    scheduler_context = qz_extra.get("scheduler_context")
-                    scheduler_context = (
-                        dict(scheduler_context)
-                        if isinstance(scheduler_context, Mapping)
-                        else {}
-                    )
                     execution_mode = (
                         "shadow"
                         if scheduler_context.get("execution_mode") == "shadow"
@@ -3955,6 +3900,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     )
                     return await dispatch_qzone_post_comment(
                         args_json=event.args_json,
+                        onebot_client_factory=onebot_factory,
                         policy_resolver=self._tencent_policy_resolver,
                         execution_mode=execution_mode,
                         scheduler_store=(
@@ -3967,6 +3913,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 if event.tool == QZONE_LIST_FRIENDS_TOOL:
                     return await dispatch_qzone_list_friends(
                         args_json=event.args_json,
+                        onebot_client_factory=onebot_factory,
                         policy_resolver=self._tencent_policy_resolver,
                     )
             if (
@@ -3991,9 +3938,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 _legacy_ns = (
                     "agent_notes"
                     if _mem_scope
-                    and self._memory_scope_config()[
-                        "legacy_agent_notes_read_fallback"
-                    ]
+                    and self._memory_scope_config()["legacy_agent_notes_read_fallback"]
                     else None
                 )
                 if event.tool == MEMORY_SEARCH_TOOL:
@@ -4036,9 +3981,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 # upload are reported to the user as a [corlinman error]
                 # reply by the channel handler.
                 try:
-                    args = json.loads(
-                        event.args_json.decode("utf-8") or "{}"
-                    )
+                    args = json.loads(event.args_json.decode("utf-8") or "{}")
                 except json.JSONDecodeError:
                     args = {}
                 path = str(args.get("path") or "").strip()
@@ -4073,10 +4016,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                         "ok": True,
                         "deferred_to_channel": True,
                         "path": path,
-                        "filename": (
-                            str(args.get("filename") or "").strip()
-                            or Path(path).name
-                        ),
+                        "filename": (str(args.get("filename") or "").strip() or Path(path).name),
                         "caption": str(args.get("caption") or ""),
                         "note": (
                             "The file is being delivered to the user. "
@@ -4100,8 +4040,11 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             # so subscribers get a complete trace of every tool call.
             duration_ms = int((time.perf_counter() - started_at) * 1000)
             self._emit_tool_called(
-                event, start,
-                ok=ok, duration_ms=duration_ms, error_code=error_code,
+                event,
+                start,
+                ok=ok,
+                duration_ms=duration_ms,
+                error_code=error_code,
             )
         # Unreachable in practice — BUILTIN_TOOLS is the gate above the
         # dispatch — but return a clean envelope rather than implicit None.
@@ -4151,7 +4094,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         data dir; created on first use."""
         if self._blackboard_store is not None:
             return self._blackboard_store
-        data_dir = _resolve_data_dir()
+        data_dir = _resolve_execution_state_dir()
         data_dir.mkdir(parents=True, exist_ok=True)
         self._blackboard_store = BlackboardStore(data_dir / "blackboard.sqlite")
         return self._blackboard_store
@@ -4184,16 +4127,12 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         try:
             from corlinman_server.persona import PersonaStore  # noqa: PLC0415
 
-            data_dir = _resolve_data_dir()
+            data_dir = _resolve_execution_state_dir()
             data_dir.mkdir(parents=True, exist_ok=True)
-            self._persona_store = await PersonaStore.open(
-                data_dir / "personas.sqlite"
-            )
+            self._persona_store = await PersonaStore.open(data_dir / "personas.sqlite")
             logger.info("agent.persona_store.opened_lazy")
         except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "agent.persona_store.init_failed", error=str(exc)
-            )
+            logger.warning("agent.persona_store.init_failed", error=str(exc))
             self._persona_store = None
         return self._persona_store
 
@@ -4277,9 +4216,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 "ok": True,
                 "url": f"{public_url}/status/{token}",
                 "expires_in_seconds": ttl,
-                "note": (
-                    "把这个链接发给用户; 点开就能看到你的实时状态和工作轨迹 (只读, 会过期)."
-                ),
+                "note": ("把这个链接发给用户; 点开就能看到你的实时状态和工作轨迹 (只读, 会过期)."),
             },
             ensure_ascii=False,
         )
@@ -4341,18 +4278,14 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 try:
                     reset()
                 except Exception as exc:  # noqa: BLE001 — reset must not fail the switch
-                    logger.warning(
-                        "agent.exit_plan_mode.reset_error", error=str(exc)
-                    )
+                    logger.warning("agent.exit_plan_mode.reset_error", error=str(exc))
 
         result: dict[str, Any] = {"status": "ok", "mode": new_mode}
         if plan_str is not None:
             result["plan"] = plan_str
         return json.dumps(result, ensure_ascii=False)
 
-    def _dispatch_subagent_stop(
-        self, args_json: bytes | str, current_session_key: str
-    ) -> str:
+    def _dispatch_subagent_stop(self, args_json: bytes | str, current_session_key: str) -> str:
         """Dispatch ``subagent_stop`` — route to :func:`cancel_session`.
 
         gap ``subagents-no-stop-tool``. Defaults to the current turn's
@@ -4373,20 +4306,14 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             obj = {}
         target = obj.get("session_key")
         target_session = (
-            target.strip()
-            if isinstance(target, str) and target.strip()
-            else current_session_key
+            target.strip() if isinstance(target, str) and target.strip() else current_session_key
         )
         reason = obj.get("reason")
         reason_str = (
-            reason.strip()
-            if isinstance(reason, str) and reason.strip()
-            else "agent_self_stop"
+            reason.strip() if isinstance(reason, str) and reason.strip() else "agent_self_stop"
         )
         if not target_session:
-            return json.dumps(
-                {"ok": False, "error": "no_session", "message": "no session to stop"}
-            )
+            return json.dumps({"ok": False, "error": "no_session", "message": "no session to stop"})
         # SEC-02: this tool is advertised to the model, so a caller-supplied
         # ``session_key`` must be ownership-gated — a misbehaving agent must
         # not be able to abort an arbitrary session by guessing its key. Allow
@@ -4397,8 +4324,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         if current_session_key:
             child_prefix = f"{current_session_key}::child::"
             if not (
-                target_session == current_session_key
-                or target_session.startswith(child_prefix)
+                target_session == current_session_key or target_session.startswith(child_prefix)
             ):
                 logger.warning(
                     "agent.subagent_stop.not_authorized",
@@ -4410,8 +4336,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                         "ok": False,
                         "error": "not_authorized_for_session",
                         "message": (
-                            "may only stop the current session or one of its "
-                            "spawned child sessions"
+                            "may only stop the current session or one of its spawned child sessions"
                         ),
                         "session_key": target_session,
                     }
@@ -4430,9 +4355,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             }
         )
 
-    def _dispatch_skill_tool(
-        self, args_json: bytes | str, session_key: str
-    ) -> str:
+    def _dispatch_skill_tool(self, args_json: bytes | str, session_key: str) -> str:
         """Dispatch the on-demand ``Skill`` tool — return a skill body.
 
         gap ``skills-no-progressive-disclosure``. Looks the skill up in the
@@ -4461,14 +4384,10 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
 
         registry = self._get_skill_registry()
         if registry is None:
-            return json.dumps(
-                {"ok": False, "error": "skills_unavailable", "name": name}
-            )
+            return json.dumps({"ok": False, "error": "skills_unavailable", "name": name})
         skill = registry.get(name)
         if skill is None:
-            return json.dumps(
-                {"ok": False, "error": "skill_not_registered", "name": name}
-            )
+            return json.dumps({"ok": False, "error": "skill_not_registered", "name": name})
         try:
             problems = registry.check_requirements(name, self._skill_config_lookup)
         except Exception as exc:  # noqa: BLE001 — degrade to "no problems"
@@ -4574,9 +4493,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                         "make them interactive"
                     ),
                 )
-            self._approval_gate = ApprovalGate(
-                self._permission_gate, resolver=resolver
-            )
+            self._approval_gate = ApprovalGate(self._permission_gate, resolver=resolver)
         return self._approval_gate
 
     def set_permission_mode(self, mode: Any) -> str:
@@ -4655,9 +4572,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 return runner
         return getattr(self, "_hook_runner", None)
 
-    def _record_active_skill(
-        self, session_key: str, name: str, allowed_tools: list[str]
-    ) -> None:
+    def _record_active_skill(self, session_key: str, name: str, allowed_tools: list[str]) -> None:
         """Record ``name`` as active for ``session_key`` with its allowed-tools.
 
         SEC-01: the active-skill map is keyed by ``session_key`` so one
@@ -4691,9 +4606,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         self._active_skills.pop(session_key, None)
         self._injected_skills_computed.discard(session_key)
 
-    def _ensure_injected_skills_recorded(
-        self, start: AgentChatStart, session_key: str
-    ) -> None:
+    def _ensure_injected_skills_recorded(self, start: AgentChatStart, session_key: str) -> None:
         """Fold the session's injected/always-on/card skills into the active map.
 
         CMP-02: the context assembler injects ``_DEFAULT_ALWAYS_SKILLS`` plus
@@ -4736,9 +4649,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 error=str(exc),
             )
 
-    def _skill_allowed_tools_block(
-        self, tool: str, session_key: str
-    ) -> list[str] | None:
+    def _skill_allowed_tools_block(self, tool: str, session_key: str) -> list[str] | None:
         """Return the allowed-tools list when ``tool`` is blocked, else ``None``.
 
         gap skills-no-progressive-disclosure (enforcement half) + SEC-01 +
@@ -4861,9 +4772,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 SupervisorPolicy,
             )
 
-            sup = Supervisor(
-                SupervisorPolicy(**_subagent_policy_kwargs(self._subagent_config))
-            )
+            sup = Supervisor(SupervisorPolicy(**_subagent_policy_kwargs(self._subagent_config)))
             self._subagent_supervisor = sup
 
         from corlinman_subagent.errors import AcquireRejectError  # noqa: PLC0415
@@ -4901,16 +4810,14 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         try:
             from corlinman_persona.store import PersonaStore as _StateStore  # noqa: PLC0415
 
-            data_dir = _resolve_data_dir()
+            data_dir = _resolve_execution_state_dir()
             data_dir.mkdir(parents=True, exist_ok=True)
             self._persona_state_store = await _StateStore.open_or_create(
                 data_dir / "agent_state.sqlite"
             )
             logger.info("agent.persona_state_store.opened_lazy")
         except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "agent.persona_state_store.init_failed", error=str(exc)
-            )
+            logger.warning("agent.persona_state_store.init_failed", error=str(exc))
             self._persona_state_store = None
             self._persona_state_store_init_done = False
         return self._persona_state_store
@@ -4931,7 +4838,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 PersonaAssetStore,
             )
 
-            data_dir = _resolve_data_dir()
+            data_dir = _resolve_execution_state_dir()
             data_dir.mkdir(parents=True, exist_ok=True)
             self._persona_asset_store = await PersonaAssetStore.open(
                 data_dir / "persona_assets.sqlite",
@@ -4939,9 +4846,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             )
             logger.info("agent.persona_asset_store.opened_lazy")
         except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "agent.persona_asset_store.init_failed", error=str(exc)
-            )
+            logger.warning("agent.persona_asset_store.init_failed", error=str(exc))
             self._persona_asset_store = None
         return self._persona_asset_store
 
@@ -5156,7 +5061,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         try:
             from corlinman_memory_host import LocalSqliteHost
 
-            path = _resolve_data_dir() / "memory.sqlite"
+            path = _resolve_execution_state_dir() / "memory.sqlite"
             host = await LocalSqliteHost.open("local", str(path))
             if getattr(self, "_closing", False):
                 # aclose ran while the open was in flight — a fresh
@@ -5232,7 +5137,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         try:
             from corlinman_memory_kernel import MemoryKernel
 
-            path = _resolve_data_dir() / "memory.sqlite"
+            path = _resolve_execution_state_dir() / "memory.sqlite"
             kernel = await MemoryKernel.open(path)
             if getattr(self, "_closing", False):
                 # See _get_memory_host: never hand a fresh connection to
@@ -5263,8 +5168,11 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # fall back to unscoped. Persona reuses the canonical extractor.
         channel: str | None = None
         channel_user_id: str | None = None
+        runtime_instance_id = ""
         extra = getattr(start, "extra", None)
         if isinstance(extra, dict):
+            raw_instance = extra.get("runtime_instance_id")
+            runtime_instance_id = str(raw_instance or "").strip()
             binding = extra.get("binding")
             if isinstance(binding, dict):
                 raw_channel = binding.get("channel")
@@ -5274,6 +5182,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         return {
             "channel": channel,
             "channel_user_id": channel_user_id,
+            "runtime_instance_id": runtime_instance_id,
             "persona_id": _bound_persona_id_from_start(start) or "",
         }
 
@@ -5301,41 +5210,23 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     cfg[key] = value
         return cfg
 
-    #: Identity-cache entry lifetime. Bounds how long a merged (stale)
-    #: mapping can survive in this process after an operator merge.
-    _IDENTITY_CACHE_TTL_S = 300.0
+    async def _resolve_scope_user(
+        self, channel: str, sender: str, runtime_instance_id: str = ""
+    ) -> str:
+        """Map (channel, runtime instance, sender) → scoped canonical UserId.
 
-    async def _resolve_scope_user(self, channel: str, sender: str) -> str:
-        """Map (channel, sender) → canonical identity UserId.
-
-        Successful resolves are LRU-cached with a TTL (see
-        ``_identity_cache``); failures are NOT cached and fall open to
-        the channel-qualified raw sender (``qq:10086``) so a transient
-        resolver outage cannot pin a wrong scope. The fallback is
-        channel-qualified because bare sender ids collide across
-        transports.
+        Resolutions are intentionally uncached so an identity merge cannot be
+        followed by writes into a stale losing scope. Failures fall open to the
+        channel-qualified raw sender (``qq:10086``); bare ids would collide
+        across transports.
         """
-        key = (channel, sender)
-        cached = self._identity_cache.get(key)
-        if cached is not None:
-            user_id, expires_at = cached
-            if time.monotonic() < expires_at:
-                self._identity_cache.move_to_end(key)
-                return user_id
-            self._identity_cache.pop(key, None)
         app_state = getattr(self, "_app_state", None)
         resolver = getattr(app_state, "identity_resolver", None)
         if resolver is not None:
             try:
                 user_id = str(await resolver.resolve(channel, sender))
-                self._identity_cache[key] = (
-                    user_id,
-                    time.monotonic() + self._IDENTITY_CACHE_TTL_S,
-                )
-                self._identity_cache.move_to_end(key)
-                cap = _session_cache_cap()
-                while len(self._identity_cache) > cap:
-                    self._identity_cache.popitem(last=False)
+                if channel == "qq" and runtime_instance_id not in ("", "default"):
+                    user_id = f"qq-instance:{runtime_instance_id}:{user_id}"
                 return user_id
             except Exception as exc:  # noqa: BLE001 — fail open, never block a turn
                 logger.warning(
@@ -5343,11 +5234,12 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     channel=channel,
                     error=str(exc),
                 )
-        return f"{channel}:{sender}"
+        fallback = f"{channel}:{sender}"
+        if channel == "qq" and runtime_instance_id not in ("", "default"):
+            return f"qq-instance:{runtime_instance_id}:{fallback}"
+        return fallback
 
-    async def _memory_scope_from_fields(
-        self, fields: dict[str, Any]
-    ) -> dict[str, Any] | None:
+    async def _memory_scope_from_fields(self, fields: dict[str, Any]) -> dict[str, Any] | None:
         """Core of :meth:`_memory_scope`, for callers that captured the
         binding fields synchronously (the background kernel lanes). Every
         consumer of per-user scope MUST come through here so the
@@ -5360,15 +5252,15 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         sender = fields["channel_user_id"]
         if not channel or not sender:
             return None
-        user_id = await self._resolve_scope_user(channel, sender)
+        user_id = await self._resolve_scope_user(
+            channel, sender, str(fields.get("runtime_instance_id") or "")
+        )
         persona = fields["persona_id"]
         try:
             from corlinman_memory_kernel import scope_namespace
         except Exception:  # noqa: BLE001 — package absent: same scheme inline
 
-            def scope_namespace(
-                tenant_id: str, user_id: str, persona_id: str = ""
-            ) -> str:
+            def scope_namespace(tenant_id: str, user_id: str, persona_id: str = "") -> str:
                 return f"facts/{tenant_id}/{user_id}/{persona_id or '_'}"
 
         return {
@@ -5387,9 +5279,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         ``facts/{tenant}/{user}/{persona}`` with ``_`` for the unbound
         persona segment.
         """
-        return await self._memory_scope_from_fields(
-            self._kernel_scope_fields(start)
-        )
+        return await self._memory_scope_from_fields(self._kernel_scope_fields(start))
 
     async def _observe_turn_kernel(
         self, session_key: str, user_text: str, reply_text: str, start: Any
@@ -5402,6 +5292,8 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             from corlinman_memory_kernel import Observation, now_ms
 
             scope = await self._memory_scope(start)
+            fields = self._kernel_scope_fields(start)
+            fields.pop("runtime_instance_id", None)
             obs_id = await kernel.observe(
                 Observation(
                     session_key=session_key,
@@ -5409,7 +5301,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     reply_text=reply_text,
                     ts_ms=now_ms(),
                     scope_user_id=scope["user_id"] if scope else None,
-                    **self._kernel_scope_fields(start),
+                    **fields,
                 )
             )
             logger.debug(
@@ -5445,9 +5337,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     cfg[key] = float(value)
         return cfg
 
-    async def _update_mood_from_turn(
-        self, kernel: Any, persona_id: str, user_text: str
-    ) -> None:
+    async def _update_mood_from_turn(self, kernel: Any, persona_id: str, user_text: str) -> None:
         """Nudge the persona's EPA mood from this turn's user text.
 
         Runs in the observe background task (never the hot path); no-ops
@@ -5518,9 +5408,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 cfg["judge_sample"] = float(value)
         return cfg
 
-    async def _kernel_trust_loop(
-        self, session_key: str, reply_text: str
-    ) -> None:
+    async def _kernel_trust_loop(self, session_key: str, reply_text: str) -> None:
         """W7: attribute the finished reply against what was injected.
 
         Tier-0 (pure Python): containment overlap + negation cues →
@@ -5635,9 +5523,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 if verdict in ("used", "contradicted", "ignored"):
                     out.append((ledger_id, item_id, verdict, score, 1))
             except Exception as exc:  # noqa: BLE001 — judge is best-effort
-                logger.warning(
-                    "agent.memory.trust_judge_failed", error=str(exc)
-                )
+                logger.warning("agent.memory.trust_judge_failed", error=str(exc))
         return out
 
     def _memory_kernel_effective_mode(self, channel: str | None) -> str:
@@ -5659,9 +5545,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 return "shadow"
         return mode
 
-    async def _inject_kernel_memory(
-        self, start: Any, fields: dict[str, Any]
-    ) -> None:
+    async def _inject_kernel_memory(self, start: Any, fields: dict[str, Any]) -> None:
         """W3 ``on`` mode: fold ranked kernel memory into the prompt.
 
         Two blocks: the scope's core-memory blocks (stable bytes —
@@ -5689,9 +5573,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
 
         blocks = await kernel.core_blocks(scope)
         if blocks:
-            core_text = "\n\n".join(
-                f"### {block}\n{content}" for (block, content) in blocks
-            )
+            core_text = "\n\n".join(f"### {block}\n{content}" for (block, content) in blocks)
             note = (
                 "## Core memory\n"
                 "Stable notes about this user, maintained by the memory "
@@ -5729,9 +5611,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 item,
                 "- [{}, {}] {}".format(
                     item.kind,
-                    time.strftime(
-                        "%Y-%m-%d", time.gmtime(item.recorded_at_ms / 1000)
-                    ),
+                    time.strftime("%Y-%m-%d", time.gmtime(item.recorded_at_ms / 1000)),
                     item.text,
                 ),
             )
@@ -5774,20 +5654,14 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 cap = _session_cache_cap()
                 while len(self._injection_turn_keys) > cap:
                     self._injection_turn_keys.popitem(last=False)
-            self._spawn_background(
-                self._kernel_injection_bookkeeping(kernel, turn_key, entries)
-            )
+            self._spawn_background(self._kernel_injection_bookkeeping(kernel, turn_key, entries))
 
     @staticmethod
-    async def _kernel_injection_bookkeeping(
-        kernel: Any, turn_key: str, entries: list[Any]
-    ) -> None:
+    async def _kernel_injection_bookkeeping(kernel: Any, turn_key: str, entries: list[Any]) -> None:
         try:
             await kernel.record_injection(turn_key, entries)
         except Exception as exc:  # noqa: BLE001 — bookkeeping is best-effort
-            logger.warning(
-                "agent.memory.kernel_ledger_failed", error=str(exc)
-            )
+            logger.warning("agent.memory.kernel_ledger_failed", error=str(exc))
 
     async def _kernel_shadow_recall(
         self, session_key: str | None, user_text: str, fields: dict[str, Any]
@@ -5895,9 +5769,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # ``start.messages`` mutations below. on (W3): inject ranked
         # kernel memory + core blocks into the prompt inline.
         kernel_fields = self._kernel_scope_fields(start)
-        kernel_mode = self._memory_kernel_effective_mode(
-            kernel_fields["channel"]
-        )
+        kernel_mode = self._memory_kernel_effective_mode(kernel_fields["channel"])
         if kernel_mode == "shadow":
             self._spawn_background(
                 self._kernel_shadow_recall(
@@ -5910,9 +5782,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             try:
                 await self._inject_kernel_memory(start, kernel_fields)
             except Exception as exc:  # noqa: BLE001 — degrade, never crash chat
-                logger.warning(
-                    "agent.memory.kernel_inject_failed", error=str(exc)
-                )
+                logger.warning("agent.memory.kernel_inject_failed", error=str(exc))
         # Consume the background-prefetched hits when present (one-shot pop:
         # a rare cross-surface write between turns costs at most one slightly
         # stale recall, and the next post-turn prefetch repopulates).
@@ -5933,9 +5803,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 logger.warning("agent.memory.recall_failed", error=str(exc))
                 return
         else:
-            logger.info(
-                "agent.memory.recall_prefetch_hit", session=start.session_key
-            )
+            logger.info("agent.memory.recall_prefetch_hit", session=start.session_key)
         if not hits:
             return
         # ``recent`` returns newest-first; present oldest-first so the
@@ -5948,9 +5816,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             "recalling stored memory."
         )
         start.messages = _inject_memory_note(list(start.messages), note)
-        logger.info(
-            "agent.memory.recalled", session=start.session_key, hits=len(hits)
-        )
+        logger.info("agent.memory.recalled", session=start.session_key, hits=len(hits))
         # gap memory-and-session-search (server half): in addition to the
         # recency recall above, run a RELEVANCE query against the shared
         # durable-notes host (CONTRACT C2 — ``app_state.memory_host``, set
@@ -5990,9 +5856,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 text=user_text.strip()[: recall_cfg["query_chars"]],
                 top_k=recall_cfg["notes_top_k"],
                 namespace=namespace,
-                time_decay_half_life_s=(
-                    half_life_h * 3600.0 if half_life_h > 0 else None
-                ),
+                time_decay_half_life_s=(half_life_h * 3600.0 if half_life_h > 0 else None),
             )
             hits = await query_fn(req)
             if (
@@ -6025,11 +5889,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             # DECAYED score (relevance × recency), not raw BM25.
             hits = [h for h in hits if getattr(h, "score", 0.0) >= min_score]
         lines = _budget_lines(
-            [
-                f"- {getattr(h, 'content', '')}"
-                for h in hits
-                if getattr(h, "content", "")
-            ],
+            [f"- {getattr(h, 'content', '')}" for h in hits if getattr(h, "content", "")],
             int(recall_cfg["max_chars"]),
         )
         if not lines:
@@ -6069,9 +5929,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             )
             # W7: attribute the finished reply against this turn's
             # injected memories (no-op unless [memory.trust] enables it).
-            self._spawn_background(
-                self._kernel_trust_loop(session_key, reply_text)
-            )
+            self._spawn_background(self._kernel_trust_loop(session_key, reply_text))
         host = await self._get_memory_host()
         if host is None:
             return
@@ -6082,9 +5940,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 f"User said: {user_text.strip()[:1000]}\n"
                 f"Assistant replied: {reply_text.strip()[:1000]}"
             )
-            await host.upsert(
-                MemoryDoc(content=content, namespace=session_key)
-            )
+            await host.upsert(MemoryDoc(content=content, namespace=session_key))
             logger.info("agent.memory.stored", session=session_key)
         except Exception as exc:  # noqa: BLE001
             logger.warning("agent.memory.store_failed", error=str(exc))
@@ -6104,9 +5960,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             recent_fn = getattr(host, "recent", None)
             if recent_fn is None:
                 return
-            hits = await recent_fn(
-                session_key, self._memory_recall_config()["recent_turns"]
-            )
+            hits = await recent_fn(session_key, self._memory_recall_config()["recent_turns"])
         except Exception as exc:  # noqa: BLE001 — prefetch is best-effort
             logger.debug("agent.memory.prefetch_failed", error=str(exc))
             return
@@ -6295,10 +6149,15 @@ def _resolve_public_base_url() -> str:
 
 
 def _resolve_data_dir() -> Path:
-    raw = os.environ.get("CORLINMAN_DATA_DIR")
-    if raw:
-        return Path(raw)
-    return Path.home() / ".corlinman"
+    from corlinman_runtime import resolve_data_dir
+
+    return resolve_data_dir()
+
+
+def _resolve_execution_state_dir() -> Path:
+    from corlinman_runtime import resolve_execution_state_dir
+
+    return resolve_execution_state_dir(data_dir=_resolve_data_dir())
 
 
 def _last_user_text(messages: Sequence[Any]) -> str:
@@ -6311,10 +6170,7 @@ def _last_user_text(messages: Sequence[Any]) -> str:
         role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", None)
         if role != "user":
             continue
-        content = (
-            msg.get("content") if isinstance(msg, dict)
-            else getattr(msg, "content", None)
-        )
+        content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
         if isinstance(content, str):
             return content
         if isinstance(content, list):
@@ -6361,10 +6217,12 @@ def _inject_memory_note(messages: list[Any], note: str) -> list[dict[str, Any]]:
         if isinstance(m, dict):
             out.append(dict(m))
         else:
-            out.append({
-                "role": getattr(m, "role", ""),
-                "content": getattr(m, "content", ""),
-            })
+            out.append(
+                {
+                    "role": getattr(m, "role", ""),
+                    "content": getattr(m, "content", ""),
+                }
+            )
     if out and out[0].get("role") == "system" and isinstance(out[0].get("content"), str):
         out[0]["content"] = f"{out[0]['content']}\n\n{note}"
     else:
@@ -6465,9 +6323,7 @@ def _prune_stale_tool_calls(
         if not isinstance(msg, dict):
             out.append(msg)  # type: ignore[arg-type]
             continue
-        if msg.get("role") == "assistant" and isinstance(
-            msg.get("tool_calls"), list
-        ):
+        if msg.get("role") == "assistant" and isinstance(msg.get("tool_calls"), list):
             kept: list[Any] = []
             for tc in msg["tool_calls"]:
                 if not isinstance(tc, dict):
@@ -6510,8 +6366,21 @@ def _prune_stale_tool_calls(
 #: Media suffixes worth registering into the web file store. Anything
 #: else a tool writes (logs, json dumps) stays a local path.
 _MEDIA_SUFFIXES: frozenset[str] = frozenset(
-    {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".mp3", ".wav",
-     ".ogg", ".m4a", ".mp4", ".webm", ".mov"}
+    {
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".webp",
+        ".bmp",
+        ".mp3",
+        ".wav",
+        ".ogg",
+        ".m4a",
+        ".mp4",
+        ".webm",
+        ".mov",
+    }
 )
 
 
@@ -6829,10 +6698,7 @@ async def _pump_inbound(
 
 def _to_agent_start(pb_start: agent_pb2.ChatStart) -> AgentChatStart:
     """Convert a protobuf ``ChatStart`` into the agent's dataclass form."""
-    messages = [
-        {"role": _role_name(m.role), "content": m.content}
-        for m in pb_start.messages
-    ]
+    messages = [{"role": _role_name(m.role), "content": m.content} for m in pb_start.messages]
     attachments = [_to_agent_attachment(a) for a in pb_start.attachments]
     extra: dict[str, Any] = {}
     if pb_start.persona_id:
@@ -6842,6 +6708,9 @@ def _to_agent_start(pb_start: agent_pb2.ChatStart) -> AgentChatStart:
     tenant_id = (getattr(pb_start, "tenant_id", "") or "").strip()
     if tenant_id:
         extra["tenant_id"] = tenant_id
+    runtime_instance_id = (getattr(pb_start, "runtime_instance_id", "") or "").strip()
+    if runtime_instance_id:
+        extra["runtime_instance_id"] = runtime_instance_id
     binding = getattr(pb_start, "binding", None)
     if binding is not None:
         binding_payload = {
@@ -7159,9 +7028,7 @@ def _unregister_active_loop(session_key: str, loop: ReasoningLoop) -> None:
             _ACTIVE_LOOPS_BY_SESSION.pop(session_key)
 
 
-def cancel_session(
-    session_key: str, *, reason: str = "admin_abort"
-) -> tuple[str, str | None]:
+def cancel_session(session_key: str, *, reason: str = "admin_abort") -> tuple[str, str | None]:
     """Look up the active loop for ``session_key`` and cancel it.
 
     Returns ``(status, turn_id)`` where ``status`` is one of:

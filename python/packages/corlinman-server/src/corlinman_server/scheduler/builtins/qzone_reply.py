@@ -93,6 +93,7 @@ from corlinman_server.scheduler.builtins.chat_driver import (
     resolve_default_model,
     resolve_metadata,
     resolve_or_open_persona_stores,
+    resolve_qq_instance_id,
     scheduler_context,
     valid_persona_slug,
 )
@@ -158,14 +159,21 @@ _SEEN_PER_TID_MAX: int = 200
 _SEEN_TIDS_MAX: int = 100
 
 
-def _seen_path(data_dir: Path | None, persona_id: str) -> Path | None:
-    """Resolve ``<DATA_DIR>/qzone_seen_comments/<persona_id>.json`` or
-    ``None`` when no data dir is wired / the slug guard rejects the id
-    (either way the whole dedup feature is skipped for the firing —
-    read-side + write-side both funnel through here)."""
-    if data_dir is None or not valid_persona_slug(persona_id):
+def _seen_path(
+    data_dir: Path | None,
+    persona_id: str,
+    qq_instance_id: str = "default",
+) -> Path | None:
+    """Resolve one account-qualified seen-comments sidecar path."""
+    if (
+        data_dir is None
+        or not valid_persona_slug(qq_instance_id)
+        or not valid_persona_slug(persona_id)
+    ):
         return None
-    return Path(data_dir) / _SEEN_DIR / f"{persona_id}.json"
+    if qq_instance_id == "default":
+        return Path(data_dir) / _SEEN_DIR / f"{persona_id}.json"
+    return Path(data_dir) / _SEEN_DIR / qq_instance_id / f"{persona_id}.json"
 
 
 def _read_seen(path: Path | None) -> dict[str, list[str]]:
@@ -202,6 +210,7 @@ def _record_seen(
     data_dir: Path | None,
     persona_id: str,
     replies: list[tuple[str, str]],
+    qq_instance_id: str = "default",
 ) -> None:
     """Fold this turn's successful ``(tid, uin)`` replies into the sidecar.
 
@@ -211,7 +220,7 @@ def _record_seen(
     updated posts. A ``uin`` already recorded under the tid is not
     duplicated. Atomic ``write tmp + replace`` so a crash mid-write
     can't truncate the sidecar."""
-    path = _seen_path(data_dir, persona_id)
+    path = _seen_path(data_dir, persona_id, qq_instance_id)
     if path is None or not replies:
         return
     seen = _read_seen(path)
@@ -274,10 +283,7 @@ def _seen_block(seen: dict[str, list[str]]) -> str | None:
             lines.append(f"- 说说 {tid}：已回复评论 {'、'.join(rendered)}")
     if not lines:
         return None
-    return (
-        "## 已回复过的评论（这些已经回过了，必须跳过，不要重复回复）\n"
-        + "\n".join(lines)
-    )
+    return "## 已回复过的评论（这些已经回过了，必须跳过，不要重复回复）\n" + "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -296,7 +302,7 @@ def _reply_tail(
     if qq_account:
         feed_hint = (
             f"你的 QQ 号是 {qq_account}。先调用 `qzone_list_feed`"
-            f"（owner_uin=\"{qq_account}\"）拉取自己的说说。"
+            f'（owner_uin="{qq_account}"）拉取自己的说说。'
         )
     else:
         feed_hint = (
@@ -344,10 +350,7 @@ def _compose_system_prompt(
             qq_account=qq_account,
         )
     )
-    return "".join(
-        (f"\n\n{p}" if i and not p.startswith("\n") else p)
-        for i, p in enumerate(parts)
-    )
+    return "".join((f"\n\n{p}" if i and not p.startswith("\n") else p) for i, p in enumerate(parts))
 
 
 # ---------------------------------------------------------------------------
@@ -386,6 +389,7 @@ async def _qzone_reply_comments_action(context: BuiltinContext) -> dict[str, Any
     metadata = resolve_metadata(context, direct_attr="qzone_reply_metadata")
     persona_id = coerce_str(metadata.get("persona_id"))
     qq_account = coerce_optional_str(metadata.get("qq_account"))
+    qq_instance_id = resolve_qq_instance_id(context, metadata)
     max_replies = _clamp_int(
         metadata.get("max_replies"),
         default=_MAX_REPLIES_DEFAULT,
@@ -406,7 +410,11 @@ async def _qzone_reply_comments_action(context: BuiltinContext) -> dict[str, Any
         "tids_scanned": 0,
         "skipped_seen": 0,
     }
+    if coerce_str(metadata.get("qq_instance_id")):
+        base["qq_instance_id"] = qq_instance_id
 
+    if not qq_instance_id:
+        return {**base, "ok": False, "error": "missing_qq_instance_id"}
     if not persona_id:
         return {**base, "ok": False, "error": "missing_persona_id"}
 
@@ -427,14 +435,13 @@ async def _qzone_reply_comments_action(context: BuiltinContext) -> dict[str, Any
                 "scheduler.builtin.qzone_reply.persona_get_failed",
                 extra={"persona_id": persona_id, "error": repr(exc)},
             )
-            return {**base, "ok": False, "error": "persona_store_failed",
-                    "message": str(exc)}
+            return {**base, "ok": False, "error": "persona_store_failed", "message": str(exc)}
 
         if persona is None:
             return {**base, "ok": False, "error": "persona_not_found"}
 
         data_dir = resolve_data_dir(context.app_state)
-        seen = _read_seen(_seen_path(data_dir, persona_id))
+        seen = _read_seen(_seen_path(data_dir, persona_id, qq_instance_id))
         base["skipped_seen"] = sum(len(v) for v in seen.values())
 
         system_prompt = _compose_system_prompt(
@@ -446,16 +453,16 @@ async def _qzone_reply_comments_action(context: BuiltinContext) -> dict[str, Any
         )
         request = build_internal_chat_request(
             model=resolve_default_model(context),
-            session_key=build_session_key(persona_id),
+            session_key=build_session_key(persona_id, qq_instance_id),
             system_prompt=system_prompt,
             user_turn=_USER_TURN,
             persona_id=persona_id,
+            runtime_instance_id=qq_instance_id,
             execution_mode=context.execution_mode,
-            scheduler_context=scheduler_context(context),
+            scheduler_context=scheduler_context(context, qq_instance_id=qq_instance_id),
         )
         if request is None:
-            return {**base, "ok": False,
-                    "error": "internal_chat_request_unavailable"}
+            return {**base, "ok": False, "error": "internal_chat_request_unavailable"}
 
         cancel = asyncio.Event()
         outcome = await drive_chat_turn(
@@ -470,13 +477,10 @@ async def _qzone_reply_comments_action(context: BuiltinContext) -> dict[str, Any
             qq_account=qq_account,
             lookback_posts=lookback_posts,
         )
-        if (
-            context.execution_mode != "shadow"
-            and result.get("ok")
-            and result.get("_replies")
-        ):
+        if context.execution_mode != "shadow" and result.get("ok") and result.get("_replies"):
             _record_seen(
                 data_dir=data_dir,
+                qq_instance_id=qq_instance_id,
                 persona_id=persona_id,
                 replies=result["_replies"],
             )
@@ -542,9 +546,7 @@ def _shape_audit(
             "duration_ms": outcome.duration_ms,
         }
 
-    calls_by_id: dict[str, ToolCallRecord] = {
-        c.call_id: c for c in outcome.calls if c.call_id
-    }
+    calls_by_id: dict[str, ToolCallRecord] = {c.call_id: c for c in outcome.calls if c.call_id}
     replies: list[tuple[str, str]] = []
     for res in outcome.results:
         if res.tool != _QZONE_POST_COMMENT_TOOL or res.is_error:
@@ -574,8 +576,7 @@ def _shape_audit(
         replies.append((tid, identity))
 
     shadow = any(
-        result.tool == _QZONE_POST_COMMENT_TOOL
-        and bool(result.envelope.get("shadow"))
+        result.tool == _QZONE_POST_COMMENT_TOOL and bool(result.envelope.get("shadow"))
         for result in outcome.results
     )
     return {
@@ -620,8 +621,7 @@ def _count_scanned(
         own = [
             item
             for item in feed
-            if isinstance(item, dict)
-            and (not my_uin or str(item.get("uin") or "") == my_uin)
+            if isinstance(item, dict) and (not my_uin or str(item.get("uin") or "") == my_uin)
         ]
         return min(lookback_posts, len(own))
     return 0

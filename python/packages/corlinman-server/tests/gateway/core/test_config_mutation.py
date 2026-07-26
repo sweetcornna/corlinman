@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 from corlinman_server.gateway.core.config_mutation import (
+    merge_resolved_section_into_raw,
     publish_config_mutation,
     write_config_atomic,
 )
@@ -31,6 +32,32 @@ def test_write_config_atomic_reports_serialise_failure(tmp_path: Path) -> None:
 
     assert result is not None
     assert result.status_code == 500
+
+
+def test_merge_resolved_section_preserves_unchanged_env_reference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BOT_TOKEN", "secret")
+
+    merged = merge_resolved_section_into_raw(
+        {"telegram": {"bot_token": {"env": "BOT_TOKEN"}, "enabled": True}},
+        {"telegram": {"bot_token": "secret", "enabled": False}},
+    )
+
+    assert merged == {"telegram": {"bot_token": {"env": "BOT_TOKEN"}, "enabled": False}}
+
+
+def test_merge_resolved_section_allows_explicit_secret_replacement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BOT_TOKEN", "old")
+
+    merged = merge_resolved_section_into_raw(
+        {"telegram": {"bot_token": {"env": "BOT_TOKEN"}}},
+        {"telegram": {"bot_token": "new"}},
+    )
+
+    assert merged["telegram"]["bot_token"] == "new"
 
 
 def test_onboard_reexport_shim_points_at_the_same_callable() -> None:
@@ -99,9 +126,7 @@ async def test_publish_config_mutation_refreshes_provider_registry(
         state.config = next_config
 
     def refresh_chat() -> None:
-        state.chat = ChatService(
-            DirectProviderBackend(state.provider_registry, models_config={})
-        )
+        state.chat = ChatService(DirectProviderBackend(state.provider_registry, models_config={}))
 
     old_registry = build_registry(original_cfg, data_dir=tmp_path)
     state = SimpleNamespace(

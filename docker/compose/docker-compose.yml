@@ -37,6 +37,7 @@ services:
       BIND: 0.0.0.0
       CORLINMAN_PY_ADDR: 127.0.0.1:50051
       CORLINMAN_DATA_DIR: /data
+      CORLINMAN_EXECUTION_STATE_DIR: /data
       # Without this, admin UI toggle-save fails with `config_path_unset`
       # — the gateway can dry-run but can't persist mutations back to disk.
       CORLINMAN_CONFIG: /data/config.toml

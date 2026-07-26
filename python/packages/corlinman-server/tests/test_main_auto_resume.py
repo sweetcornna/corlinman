@@ -56,7 +56,10 @@ async def test_qq_channel_is_skipped_because_inbox_drainer_owns_it(
     scanner must NOT enqueue a duplicate row for it. The chat handler
     will pick the original inbox row up on next dispatch poll."""
     tid = await journal.begin_turn(
-        "qq|self|1|2", "hi from qq", channel="qq"
+        "qq|self|1|2",
+        "hi from qq",
+        channel="qq",
+        runtime_instance_id="bot-a",
     )
     assert tid is not None
 
@@ -72,20 +75,38 @@ async def test_qq_channel_is_skipped_because_inbox_drainer_owns_it(
     assert pending == []
 
     # Diagnostic log fires (channel_owns_drain).
-    skip_logs = [
-        r for r in captured if r.get("event") == "agent.resume.channel_owns_drain"
-    ]
+    skip_logs = [r for r in captured if r.get("event") == "agent.resume.channel_owns_drain"]
     assert len(skip_logs) == 1
     assert skip_logs[0]["channel"] == "qq"
+    assert skip_logs[0]["runtime_instance_id"] == "bot-a"
+    assert report.turns[0].runtime_instance_id == "bot-a"
 
     # The scan_complete log carries the totals.
-    scan_logs = [
-        r for r in captured if r.get("event") == "agent.resume.scan_complete"
-    ]
+    scan_logs = [r for r in captured if r.get("event") == "agent.resume.scan_complete"]
     assert len(scan_logs) == 1
     assert scan_logs[0]["found"] == 1
     assert scan_logs[0]["resumed"] == 0
     assert scan_logs[0]["skipped"] == 1
+
+
+async def test_qq_legacy_turn_without_instance_is_not_treated_as_default(
+    journal: AgentJournal, inbox: Inbox
+) -> None:
+    tid = await journal.begin_turn("qq|legacy", "legacy turn", channel="qq")
+    assert tid is not None
+
+    with structlog.testing.capture_logs() as captured:
+        report = await run_boot_auto_resume(journal, inbox)
+
+    assert report.found == 1
+    assert report.skipped == 1
+    assert report.turns[0].runtime_instance_id == ""
+    assert await inbox.list_pending(channel="qq") == []
+    missing_logs = [
+        row for row in captured if row.get("event") == "agent.resume.qq_instance_missing"
+    ]
+    assert len(missing_logs) == 1
+    assert "runtime_instance_id" not in missing_logs[0]
 
 
 async def test_telegram_channel_enqueues_but_does_not_claim_resumed(
@@ -97,9 +118,7 @@ async def test_telegram_channel_enqueues_but_does_not_claim_resumed(
     ``corlinman_channels.service`` drains the telegram inbox today, so
     the scan must NOT report it as ``resumed``. It is surfaced under the
     honest ``enqueued_no_drain`` count instead, with a warning log."""
-    tid = await journal.begin_turn(
-        "tg|chat:42", "please continue", channel="telegram"
-    )
+    tid = await journal.begin_turn("tg|chat:42", "please continue", channel="telegram")
     assert tid is not None
 
     with structlog.testing.capture_logs() as captured:
@@ -122,16 +141,12 @@ async def test_telegram_channel_enqueues_but_does_not_claim_resumed(
     assert row.message_id == f"resume:{tid}"
 
     # A warning tells operators the message is parked, not resumed.
-    warn = [
-        r for r in captured if r.get("event") == "agent.resume.enqueued_no_drain"
-    ]
+    warn = [r for r in captured if r.get("event") == "agent.resume.enqueued_no_drain"]
     assert len(warn) == 1
     assert warn[0]["channel"] == "telegram"
 
     # The scan_complete totals reflect the honest split.
-    scan = next(
-        r for r in captured if r.get("event") == "agent.resume.scan_complete"
-    )
+    scan = next(r for r in captured if r.get("event") == "agent.resume.scan_complete")
     assert scan["resumed"] == 0
     assert scan["enqueued_no_drain"] == 1
 
@@ -141,9 +156,7 @@ async def test_discord_channel_enqueues_but_does_not_claim_resumed(
 ) -> None:
     """Discord follows the same path as Telegram (no native redelivery
     AND no inbox drainer) — enqueued but not counted as resumed."""
-    tid = await journal.begin_turn(
-        "disc|guild:1|chan:2", "doing the thing", channel="discord"
-    )
+    tid = await journal.begin_turn("disc|guild:1|chan:2", "doing the thing", channel="discord")
     assert tid is not None
 
     report = await run_boot_auto_resume(journal, inbox)
@@ -169,24 +182,16 @@ async def test_http_channel_is_skipped_with_unsupported_log(
     assert report.resumed == 0
     assert report.skipped == 1
 
-    unsupported = [
-        r
-        for r in captured
-        if r.get("event") == "agent.resume.unsupported_channel"
-    ]
+    unsupported = [r for r in captured if r.get("event") == "agent.resume.unsupported_channel"]
     assert len(unsupported) == 1
     assert unsupported[0]["channel"] == "<none>"
 
 
-async def test_mixed_channels_partition_correctly(
-    journal: AgentJournal, inbox: Inbox
-) -> None:
+async def test_mixed_channels_partition_correctly(journal: AgentJournal, inbox: Inbox) -> None:
     """A boot scan over a mix of channel types: each row routes to its
     own outcome (drain / replay / skip)."""
     await journal.begin_turn("qq-sess", "qq-text", channel="qq")
-    tg_tid = await journal.begin_turn(
-        "tg-sess", "tg-text", channel="telegram"
-    )
+    tg_tid = await journal.begin_turn("tg-sess", "tg-text", channel="telegram")
     await journal.begin_turn("http-sess", "http-text")
 
     report = await run_boot_auto_resume(journal, inbox)
@@ -208,22 +213,16 @@ async def test_mixed_channels_partition_correctly(
 # ---------------------------------------------------------------------------
 
 
-async def test_stale_sweep_runs_before_listing(
-    journal: AgentJournal, inbox: Inbox
-) -> None:
+async def test_stale_sweep_runs_before_listing(journal: AgentJournal, inbox: Inbox) -> None:
     """A 25-h-old in_progress row gets swept to errored at boot, so it
     never enters the resume-window scan and never re-delivers."""
     import aiosqlite
 
-    tid = await journal.begin_turn(
-        "tg-stale", "ancient", channel="telegram"
-    )
+    tid = await journal.begin_turn("tg-stale", "ancient", channel="telegram")
     assert tid is not None
     # Backdate 25 hours.
     async with aiosqlite.connect(journal._path) as conn:
-        await conn.execute(
-            "UPDATE turns SET started_at_ms = 0 WHERE turn_id = ?", (tid,)
-        )
+        await conn.execute("UPDATE turns SET started_at_ms = 0 WHERE turn_id = ?", (tid,))
         await conn.commit()
 
     report = await run_boot_auto_resume(journal, inbox)
@@ -245,9 +244,7 @@ async def test_scan_complete_log_carries_window_minutes(
     with structlog.testing.capture_logs() as captured:
         await run_boot_auto_resume(journal, inbox, window_ms=5 * 60_000)
 
-    scan = next(
-        r for r in captured if r.get("event") == "agent.resume.scan_complete"
-    )
+    scan = next(r for r in captured if r.get("event") == "agent.resume.scan_complete")
     assert scan["window_minutes"] == 5
     assert scan["found"] == 1
     # telegram has no drainer -> not resumed, surfaced under no_drain.
@@ -280,9 +277,7 @@ async def test_boot_replay_dispatcher_skips_empty_channel(
     assert await inbox.list_pending() == []
 
 
-async def test_boot_replay_dispatcher_skips_empty_text(
-    journal: AgentJournal, inbox: Inbox
-) -> None:
+async def test_boot_replay_dispatcher_skips_empty_text(journal: AgentJournal, inbox: Inbox) -> None:
     """Empty user_text — nothing to re-deliver."""
     from corlinman_server.agent_journal_backend import InProgressTurn
 
@@ -319,17 +314,11 @@ async def test_service_run_without_inbox_logs_unsupported(
     assert report.resumed == 0
     assert report.skipped == 1
 
-    unsupported = [
-        r
-        for r in captured
-        if r.get("event") == "agent.resume.unsupported_channel"
-    ]
+    unsupported = [r for r in captured if r.get("event") == "agent.resume.unsupported_channel"]
     assert any(r.get("reason") == "no_inbox" for r in unsupported)
 
 
-async def test_service_run_returns_typed_report(
-    journal: AgentJournal, inbox: Inbox
-) -> None:
+async def test_service_run_returns_typed_report(journal: AgentJournal, inbox: Inbox) -> None:
     """The return shape is :class:`ResumeScanReport` with every count
     field populated — admin diag surfaces / future tests can introspect
     instead of parsing logs."""
@@ -350,9 +339,7 @@ async def test_service_run_returns_typed_report(
     assert seen_channels == {"telegram", "qq"}
 
 
-async def test_replay_idempotent_under_double_boot(
-    journal: AgentJournal, inbox: Inbox
-) -> None:
+async def test_replay_idempotent_under_double_boot(journal: AgentJournal, inbox: Inbox) -> None:
     """Booting the scanner twice in a row (e.g. two HA nodes starting
     together) enqueues twice. That's expected — the chat handler's
     ``find_resumable_turn`` collapses duplicates because both arrive
@@ -399,16 +386,16 @@ def test_no_boot_replay_channel_has_a_real_drain_in_channels_service() -> None:
     for channel in CHANNEL_HAS_BOOT_REPLAY_DRAIN:
         # Every channel we claim is drainable must have a matching
         # list_pending poll in the channels service.
-        assert (
-            f'list_pending(channel="{channel}"' in src
-        ), f"{channel} claimed drainable but no drainer in channels.service"
+        assert f'list_pending(channel="{channel}"' in src, (
+            f"{channel} claimed drainable but no drainer in channels.service"
+        )
 
     # And no boot-replay channel we DON'T list as drainable should have a
     # drainer either (otherwise we are under-counting genuine resumes).
     for channel in CHANNEL_NEEDS_BOOT_REPLAY - CHANNEL_HAS_BOOT_REPLAY_DRAIN:
-        assert (
-            f'list_pending(channel="{channel}"' not in src
-        ), f"{channel} has a drainer but is not in CHANNEL_HAS_BOOT_REPLAY_DRAIN"
+        assert f'list_pending(channel="{channel}"' not in src, (
+            f"{channel} has a drainer but is not in CHANNEL_HAS_BOOT_REPLAY_DRAIN"
+        )
 
 
 async def test_genuine_resume_counted_when_channel_has_drainer(
@@ -421,9 +408,7 @@ async def test_genuine_resume_counted_when_channel_has_drainer(
     """
     import corlinman_server.auto_resume as ar
 
-    monkeypatch.setattr(
-        ar, "_CHANNEL_HAS_BOOT_REPLAY_DRAIN", frozenset({"telegram"})
-    )
+    monkeypatch.setattr(ar, "_CHANNEL_HAS_BOOT_REPLAY_DRAIN", frozenset({"telegram"}))
 
     await journal.begin_turn("tg|chat:9", "resume me", channel="telegram")
 
@@ -435,7 +420,5 @@ async def test_genuine_resume_counted_when_channel_has_drainer(
     assert report.enqueued_no_drain == 0
 
     # No false "parked" warning when the channel is genuinely drainable.
-    warn = [
-        r for r in captured if r.get("event") == "agent.resume.enqueued_no_drain"
-    ]
+    warn = [r for r in captured if r.get("event") == "agent.resume.enqueued_no_drain"]
     assert warn == []

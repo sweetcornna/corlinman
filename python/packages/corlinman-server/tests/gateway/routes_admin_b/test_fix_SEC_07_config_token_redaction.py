@@ -14,12 +14,25 @@ POST that echoes the sentinel back is re-merged from the live snapshot
 
 from __future__ import annotations
 
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from corlinman_server.gateway.routes_admin_b.config_admin import config as config_routes
 from corlinman_server.gateway.routes_admin_b.config_admin.config import (
     REDACTED_SENTINEL,
     _has_redacted,
     _merge_secrets_from,
     _redact,
+    _rewrite_py_config,
 )
+from corlinman_server.gateway.routes_admin_b.state import (
+    AdminState,
+    set_admin_state,
+)
+from fastapi import FastAPI
+
+from ._admin_auth import authenticated_test_client, configure_admin_auth
 
 
 def _sample_cfg() -> dict:
@@ -120,7 +133,10 @@ def test_post_roundtrip_remerges_redacted_channel_secrets() -> None:
 
     # Live values are restored verbatim.
     assert merged["channels"]["telegram"]["bot_token"] == base["channels"]["telegram"]["bot_token"]
-    assert merged["channels"]["qq"]["napcat_access_token"] == base["channels"]["qq"]["napcat_access_token"]
+    assert (
+        merged["channels"]["qq"]["napcat_access_token"]
+        == base["channels"]["qq"]["napcat_access_token"]
+    )
     assert merged["channels"]["slack"]["app_token"] == base["channels"]["slack"]["app_token"]
     assert merged["oauth"]["refresh_token"] == base["oauth"]["refresh_token"]
 
@@ -143,3 +159,87 @@ def test_redacted_secret_with_no_base_is_not_written_as_none() -> None:
     assert tg.get("bot_token") is None
     assert "bot_token" not in tg or tg["bot_token"] is not None
     assert not _has_redacted(merged)
+
+
+@pytest.mark.asyncio
+async def test_full_config_rewrite_reconciles_qq_before_sidecar(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[dict, dict, Path]] = []
+
+    class _Registry:
+        async def reconcile_and_write_sidecar(self, channels, *, config, path) -> None:
+            calls.append((channels, config, Path(path)))
+
+    cfg = {
+        "channels": {
+            "qq": {
+                "default_instance": "bot-a",
+                "instances": {"bot-a": {"enabled": False}},
+            }
+        }
+    }
+    state = AdminState(py_config_path=tmp_path / "py-config.json")
+    runtime_state = SimpleNamespace(qq_runtime_registry=_Registry())
+    state.extras["app_state"] = SimpleNamespace(corlinman_state=runtime_state)
+
+    await _rewrite_py_config(state, cfg)
+
+    assert calls == [(cfg["channels"], cfg, state.py_config_path)]
+
+
+def test_post_config_rolls_back_disk_and_snapshot_when_reconcile_fails(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "corlinman.toml"
+    old_cfg = {
+        "channels": {
+            "qq": {
+                "default_instance": "bot-a",
+                "instances": {"bot-a": {"enabled": True}},
+            }
+        }
+    }
+    old_toml = config_routes._toml_dumps(old_cfg)
+    config_path.write_text(old_toml, encoding="utf-8")
+    live = {"value": old_cfg}
+
+    class _Registry:
+        async def reconcile_and_write_sidecar(self, channels, *, config, path) -> None:
+            if config["channels"]["qq"]["instances"]["bot-a"]["enabled"] is False:
+                raise RuntimeError("manager unavailable")
+
+    state = AdminState(
+        config_path=config_path,
+        py_config_path=tmp_path / "py-config.json",
+        config_loader=lambda: live["value"],
+    )
+    state.extras["config_swap_fn"] = lambda cfg: live.update(value=cfg)
+    state.extras["app_state"] = SimpleNamespace(
+        corlinman_state=SimpleNamespace(qq_runtime_registry=_Registry())
+    )
+    configure_admin_auth(state)
+    set_admin_state(state)
+    app = FastAPI()
+    app.include_router(config_routes.router())
+    try:
+        client = authenticated_test_client(app)
+        new_cfg = {
+            "channels": {
+                "qq": {
+                    "default_instance": "bot-a",
+                    "instances": {"bot-a": {"enabled": False}},
+                }
+            }
+        }
+
+        with pytest.raises(RuntimeError, match="manager unavailable"):
+            client.post(
+                "/admin/config",
+                json={"toml": config_routes._toml_dumps(new_cfg)},
+            )
+
+        assert live["value"] == old_cfg
+        assert config_routes._toml_loads(config_path.read_text()) == old_cfg
+    finally:
+        set_admin_state(None)

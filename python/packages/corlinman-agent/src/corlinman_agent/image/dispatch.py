@@ -19,7 +19,7 @@ Pipeline
 3. Encode each ref as a base64 ``data:`` URL and call
    :func:`generate_with_refs`.
 4. Save the returned PNG bytes to
-   ``<DATA_DIR>/workspace/generated/<ulid>.png`` so the existing
+   ``<EXECUTION_STATE_DIR>/workspace/generated/<ulid>.png`` so the existing
    ``send_attachment`` workspace resolver picks it up cleanly.
 5. Return ``{"path": "...", "mime": "image/png", "chars_used": [...]}``.
 
@@ -38,6 +38,7 @@ from typing import Any
 
 import httpx
 import structlog
+from corlinman_runtime import resolve_agent_workspace
 
 from corlinman_agent.image.generate import (
     ImageGenerationError,
@@ -256,17 +257,8 @@ def _ulid_like() -> str:
 
 
 def _resolve_workspace_generated_dir() -> Path:
-    """Resolve ``<DATA_DIR>/workspace/generated``, creating it on first
-    use. The directory lives under the same workspace the channel
-    handler's ``send_attachment`` resolver walks, so the returned path
-    is picked up without any special wiring.
-
-    Mirrors the agent_servicer's ``_resolve_data_dir`` env contract —
-    ``CORLINMAN_DATA_DIR`` overrides; default is ``~/.corlinman``.
-    """
-    raw = os.environ.get("CORLINMAN_DATA_DIR")
-    base = Path(raw) if raw else Path.home() / ".corlinman"
-    target = base / "workspace" / "generated"
+    """Resolve the shared workspace's generated-media directory."""
+    target = resolve_agent_workspace() / "generated"
     target.mkdir(parents=True, exist_ok=True)
     return target
 

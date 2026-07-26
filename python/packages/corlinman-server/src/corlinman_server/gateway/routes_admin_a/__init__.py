@@ -50,6 +50,9 @@ from corlinman_server.gateway.routes_admin_a import (
     password_reset as _password_reset,
 )
 from corlinman_server.gateway.routes_admin_a import (
+    qq_instances as _qq_instances,
+)
+from corlinman_server.gateway.routes_admin_a import (
     sessions as _sessions,
 )
 from corlinman_server.gateway.routes_admin_a.state import (
@@ -103,6 +106,7 @@ def build_router() -> APIRouter:
         _password_reset,
         _personas,
         _profiles,
+        _qq_instances,
         _sessions,
         _tenants,
     ):

@@ -63,6 +63,7 @@ __all__ = [
     "resolve_drive_timeout",
     "resolve_metadata",
     "resolve_or_open_persona_stores",
+    "resolve_qq_instance_id",
     "scheduler_context",
     "valid_persona_slug",
 ]
@@ -73,9 +74,7 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 
-def resolve_metadata(
-    context: BuiltinContext, *, direct_attr: str
-) -> dict[str, Any]:
+def resolve_metadata(context: BuiltinContext, *, direct_attr: str) -> dict[str, Any]:
     """Pull the job's metadata dict off the context.
 
     Convention: scheduler firings stash the job's ``metadata`` (the
@@ -252,24 +251,62 @@ def _probe_asset_store(app_state: Any | None) -> Any | None:
 
 
 def resolve_data_dir(app_state: Any | None) -> Path | None:
+    """Resolve scheduler-owned execution state, preserving flat deployments."""
     if app_state is not None:
-        dd = getattr(app_state, "data_dir", None)
-        if dd is not None:
-            return Path(dd)
+        for name in ("execution_state_dir", "data_dir"):
+            value = getattr(app_state, name, None)
+            if value is not None:
+                return Path(value)
+    execution_env = os.environ.get("CORLINMAN_EXECUTION_STATE_DIR")
+    if execution_env:
+        return Path(execution_env)
     env = os.environ.get("CORLINMAN_DATA_DIR")
     if env:
         return Path(env)
     return None
 
 
-def scheduler_context(context: BuiltinContext) -> dict[str, str]:
-    """Return the trusted source/occurrence identity for an internal turn."""
-    return {
+def resolve_qq_instance_id(context: BuiltinContext, metadata: dict[str, Any]) -> str:
+    """Resolve trusted scheduler transport identity with legacy compatibility.
+
+    Existing jobs without the field may bind to ``default`` only when the
+    effective fleet contains exactly one instance. Multi-account fleets fail
+    closed as unassigned.
+    """
+    explicit = coerce_str(metadata.get("qq_instance_id"))
+    if explicit:
+        return explicit
+    app_state = context.app_state
+    channels = getattr(app_state, "channels_config", None)
+    if channels is None:
+        config = getattr(app_state, "config", None)
+        channels = config.get("channels", {}) if isinstance(config, dict) else {}
+    if not channels:
+        # Pre-multi-account jobs/tests represent the legacy singleton through
+        # the old qq_onebot alias, so retain the historical default binding.
+        return "default"
+    try:
+        from corlinman_server.gateway.qq_instances import normalize_qq_fleet
+
+        fleet = normalize_qq_fleet(channels)
+    except Exception:  # noqa: BLE001 — malformed fleet is unassigned
+        return ""
+    enabled = [str(identity) for identity, item in fleet.instances.items() if item.enabled]
+    if len(enabled) == 1:
+        return enabled[0]
+    return ""
+
+
+def scheduler_context(context: BuiltinContext, *, qq_instance_id: str = "") -> dict[str, str]:
+    """Return trusted source, occurrence, and QQ transport identity."""
+    result = {
         "source_system": context.source_system or "corlinman",
         "source_job_id": context.source_job_id or context.name or "scheduled-job",
-        "occurrence_key": context.occurrence_key
-        or f"manual:{context.run_id or 'unknown'}",
+        "occurrence_key": context.occurrence_key or f"manual:{context.run_id or 'unknown'}",
     }
+    if qq_instance_id:
+        result["qq_instance_id"] = qq_instance_id
+    return result
 
 
 def resolve_default_model(context: BuiltinContext) -> str:
@@ -311,13 +348,14 @@ def resolve_default_model(context: BuiltinContext) -> str:
 # ---------------------------------------------------------------------------
 
 
-def build_session_key(persona_id: str) -> str:
+def build_session_key(persona_id: str, qq_instance_id: str = "") -> str:
     """Per-firing scheduler-scoped key.
 
     Including a fresh uuid means consecutive firings don't accidentally
     inherit the previous turn's per-session memory / approvals.
     """
-    return f"scheduler:qzone:{persona_id}:{uuid.uuid4().hex[:8]}"
+    instance_segment = f"{qq_instance_id}:" if qq_instance_id not in ("", "default") else ""
+    return f"scheduler:qzone:{instance_segment}{persona_id}:{uuid.uuid4().hex[:8]}"
 
 
 def build_internal_chat_request(
@@ -327,6 +365,7 @@ def build_internal_chat_request(
     system_prompt: str,
     user_turn: str,
     persona_id: str | None = None,
+    runtime_instance_id: str = "",
     execution_mode: str = "live",
     scheduler_context: dict[str, str] | None = None,
 ) -> Any | None:
@@ -367,6 +406,7 @@ def build_internal_chat_request(
         attachments=[],
         binding=None,
         persona_id=persona_id,
+        runtime_instance_id=runtime_instance_id,
         scheduler_context={
             **(scheduler_context or {}),
             "execution_mode": execution_mode,
@@ -489,61 +529,42 @@ async def drive_chat_turn(
             kind = event_kind(event)
             if kind == "token_delta":
                 if not bool(event_field(event, "is_reasoning", default=False)):
-                    outcome.final_text += str(
-                        event_field(event, "text", default="") or ""
-                    )
+                    outcome.final_text += str(event_field(event, "text", default="") or "")
             elif kind == "tool_call":
                 plugin = str(event_field(event, "plugin", default="") or "")
                 tool = str(event_field(event, "tool", default="") or "")
                 call_id = str(event_field(event, "call_id", default="") or "")
-                outcome.tools_called.append(
-                    f"{plugin}.{tool}" if plugin else tool
-                )
+                outcome.tools_called.append(f"{plugin}.{tool}" if plugin else tool)
                 outcome.calls.append(
                     ToolCallRecord(
                         plugin=plugin,
                         tool=tool,
                         call_id=call_id,
-                        args=decode_json_args(
-                            event_field(event, "args_json", default=b"")
-                        ),
+                        args=decode_json_args(event_field(event, "args_json", default=b"")),
                     )
                 )
             elif kind == "tool_result":
                 outcome.results.append(
                     ToolResultRecord(
                         tool=str(event_field(event, "tool", default="") or ""),
-                        call_id=str(
-                            event_field(event, "call_id", default="") or ""
-                        ),
-                        is_error=bool(
-                            event_field(event, "is_error", default=False)
-                        ),
-                        error_summary=str(
-                            event_field(event, "error_summary", default="")
-                            or ""
-                        ),
+                        call_id=str(event_field(event, "call_id", default="") or ""),
+                        is_error=bool(event_field(event, "is_error", default=False)),
+                        error_summary=str(event_field(event, "error_summary", default="") or ""),
                         envelope=harvest_envelope(event),
                     )
                 )
             elif kind == "done":
-                outcome.finish_reason = event_field(
-                    event, "finish_reason", default=""
-                )
+                outcome.finish_reason = event_field(event, "finish_reason", default="")
                 return
             elif kind == "error":
                 inner = event_field(event, "error", default=None)
                 outcome.error = "chat_error"
-                outcome.chat_error_reason = str(
-                    getattr(inner, "reason", "unknown")
-                )
+                outcome.chat_error_reason = str(getattr(inner, "reason", "unknown"))
                 outcome.chat_error_message = str(getattr(inner, "message", ""))
                 return
 
     try:
-        await asyncio.wait_for(
-            _consume(), timeout=max(1.0, deadline - time.monotonic())
-        )
+        await asyncio.wait_for(_consume(), timeout=max(1.0, deadline - time.monotonic()))
     except TimeoutError:
         cancel.set()
         outcome.error = "timeout"

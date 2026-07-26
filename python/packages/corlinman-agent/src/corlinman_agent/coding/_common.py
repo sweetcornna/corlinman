@@ -16,8 +16,9 @@ deployment's own source tree.
 The workspace root is, in order:
 
 1. ``$CORLINMAN_AGENT_WORKSPACE`` — explicit override;
-2. ``$CORLINMAN_DATA_DIR/workspace``;
-3. ``~/.corlinman/workspace``.
+2. ``$CORLINMAN_EXECUTION_STATE_DIR/workspace``;
+3. the historical flat ``$CORLINMAN_DATA_DIR/workspace`` fallback;
+4. ``~/.corlinman/workspace``.
 
 ``run_shell`` (see :mod:`.shell`) runs *with the workspace as its cwd*
 but is a real shell — it is not chrooted. That matches hermes-agent's
@@ -31,6 +32,8 @@ import os
 import stat
 from pathlib import Path
 from typing import Any
+
+from corlinman_runtime import resolve_agent_workspace
 
 #: Largest file (chars) ``read_file`` returns in one call.
 MAX_READ_CHARS: int = 60_000
@@ -81,20 +84,10 @@ def decode_args(args_json: bytes | str) -> dict[str, Any]:
 def resolve_workspace(explicit: str | os.PathLike[str] | None = None) -> Path:
     """Resolve (and create) the agent workspace root directory.
 
-    ``explicit`` wins when given (the test seam). Otherwise the env
-    chain ``CORLINMAN_AGENT_WORKSPACE`` → ``CORLINMAN_DATA_DIR/workspace``
-    → ``~/.corlinman/workspace`` is used.
+    ``explicit`` wins when given (the test seam). Otherwise the shared
+    execution-state resolver preserves the historical flat data-root fallback.
     """
-    if explicit is not None:
-        root = Path(explicit)
-    else:
-        env_ws = os.environ.get("CORLINMAN_AGENT_WORKSPACE")
-        if env_ws:
-            root = Path(env_ws)
-        else:
-            data_dir = os.environ.get("CORLINMAN_DATA_DIR")
-            base = Path(data_dir) if data_dir else Path.home() / ".corlinman"
-            root = base / "workspace"
+    root = resolve_agent_workspace(explicit)
     root.mkdir(parents=True, exist_ok=True)
     return root.resolve()
 

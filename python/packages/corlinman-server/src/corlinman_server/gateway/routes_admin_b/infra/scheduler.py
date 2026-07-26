@@ -67,6 +67,8 @@ from ._scheduler_lib import (
     HistoryEntry,
     JobOut,
     NewJobBody,
+    QqInstanceMigrationBody,
+    _assign_enabled_qq_instance,
     _bundled_template_path,
     _history,
     _job_metadata,
@@ -84,7 +86,9 @@ from ._scheduler_lib import (
     _validate_cron,
     _validate_qzone_daily,
     _validate_qzone_reply,
+    list_qzone_instance_references,
     make_history_entry,
+    migrate_qzone_instance_references,
     rehydrate_runtime_jobs_on_boot,
 )
 
@@ -172,6 +176,13 @@ def router() -> APIRouter:
                         "message": err or "",
                     },
                 )
+        if body.action_type in (QZONE_DAILY_BUILTIN_NAME, QZONE_REPLY_BUILTIN_NAME):
+            ok, err = _assign_enabled_qq_instance(state, body)
+            if not ok:
+                return JSONResponse(
+                    status_code=422,
+                    content={"error": "invalid_qq_instance", "message": err or ""},
+                )
         try:
             rj = _store_job(state, body)
         except ValueError as exc:
@@ -201,25 +212,20 @@ def router() -> APIRouter:
         # Compose the post-edit shape so we can re-validate it as a whole
         # (a cron edit must still parse; a qzone job must keep its args).
         new_cron = body.cron if body.cron is not None else rj.cron
-        new_action_type = (
-            body.action_type if body.action_type is not None else rj.action_type
-        )
+        new_action_type = body.action_type if body.action_type is not None else rj.action_type
         merged = NewJobBody(
             name=name,
             cron=new_cron,
             action_type=new_action_type,
             timezone=body.timezone if body.timezone is not None else rj.timezone,
             enabled=body.enabled if body.enabled is not None else rj.enabled,
-            persona_id=(
-                body.persona_id if body.persona_id is not None else rj.persona_id
-            ),
+            persona_id=(body.persona_id if body.persona_id is not None else rj.persona_id),
             prompt_template=(
-                body.prompt_template
-                if body.prompt_template is not None
-                else rj.prompt_template
+                body.prompt_template if body.prompt_template is not None else rj.prompt_template
             ),
-            qq_account=(
-                body.qq_account if body.qq_account is not None else rj.qq_account
+            qq_account=(body.qq_account if body.qq_account is not None else rj.qq_account),
+            qq_instance_id=(
+                body.qq_instance_id if body.qq_instance_id is not None else rj.qq_instance_id
             ),
             # B5 — pass the promoted fields through only when the PATCH sent
             # them (top-level is authoritative). When omitted (None) the
@@ -230,13 +236,9 @@ def router() -> APIRouter:
             # the new ``jitter_secs`` via ``_jitter_secs_from_metadata``.
             image_ref_labels=body.image_ref_labels,
             jitter_minutes=body.jitter_minutes,
-            metadata=(
-                body.metadata if body.metadata is not None else dict(rj.metadata)
-            ),
+            metadata=(body.metadata if body.metadata is not None else dict(rj.metadata)),
             execution_mode=(
-                body.execution_mode
-                if body.execution_mode is not None
-                else rj.execution_mode
+                body.execution_mode if body.execution_mode is not None else rj.execution_mode
             ),
             source_system=rj.source_system,
             source_job_id=rj.source_job_id,
@@ -274,6 +276,13 @@ def router() -> APIRouter:
                         "error": "invalid_qzone_reply_args",
                         "message": err or "",
                     },
+                )
+        if merged.action_type in (QZONE_DAILY_BUILTIN_NAME, QZONE_REPLY_BUILTIN_NAME):
+            ok, err = _assign_enabled_qq_instance(state, merged)
+            if not ok:
+                return JSONResponse(
+                    status_code=422,
+                    content={"error": "invalid_qq_instance", "message": err or ""},
                 )
         updated = _store_job(state, merged)
         return _runtime_job_to_out(updated)
@@ -319,6 +328,46 @@ def router() -> APIRouter:
         _job_metadata(state).pop(name, None)
         return {"ok": True, "deleted": name}
 
+    @r.get("/admin/scheduler/qzone/instances/{instance_id}/references")
+    async def qzone_instance_references(instance_id: str):
+        state = get_admin_state()
+        return {
+            "instance_id": instance_id,
+            "references": list_qzone_instance_references(state, instance_id),
+        }
+
+    @r.post("/admin/scheduler/qzone/instances/{instance_id}/migrate")
+    async def migrate_qzone_instance(
+        instance_id: str,
+        body: QqInstanceMigrationBody,
+    ):
+        state = get_admin_state()
+        if instance_id == body.target_instance_id:
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "error": "same_qq_instance",
+                    "message": "source and target QQ instances must differ",
+                },
+            )
+        try:
+            rows = migrate_qzone_instance_references(
+                state,
+                instance_id,
+                body.target_instance_id,
+            )
+        except ValueError as exc:
+            return JSONResponse(
+                status_code=409,
+                content={"error": "qzone_job_migration_conflict", "message": str(exc)},
+            )
+        return {
+            "ok": True,
+            "source_instance_id": instance_id,
+            "target_instance_id": body.target_instance_id,
+            "jobs": [_runtime_job_to_out(row).model_dump() for row in rows],
+        }
+
     @r.post(
         "/admin/scheduler/qzone/templates/{template_id}/enable",
         response_model=JobOut,
@@ -363,8 +412,7 @@ def router() -> APIRouter:
                 content={
                     "error": "unsupported_template_action_type",
                     "message": (
-                        f"only {QZONE_DAILY_BUILTIN_NAME} templates "
-                        "may be enabled via this route"
+                        f"only {QZONE_DAILY_BUILTIN_NAME} templates may be enabled via this route"
                     ),
                     "got": body.action_type,
                 },
@@ -383,6 +431,12 @@ def router() -> APIRouter:
             return JSONResponse(
                 status_code=422,
                 content={"error": "invalid_cron", "message": err or ""},
+            )
+        ok, err = _assign_enabled_qq_instance(state, body)
+        if not ok:
+            return JSONResponse(
+                status_code=422,
+                content={"error": "invalid_qq_instance", "message": err or ""},
             )
         rj = _store_job(state, body)
         return _runtime_job_to_out(rj)
@@ -453,10 +507,7 @@ def router() -> APIRouter:
             at=now_iso,
             source="manual",
             status="not_wired",
-            message=(
-                "scheduler runtime is not yet wired; trigger attempt "
-                "recorded in history"
-            ),
+            message=("scheduler runtime is not yet wired; trigger attempt recorded in history"),
         )
         history.push(entry)
         return JSONResponse(

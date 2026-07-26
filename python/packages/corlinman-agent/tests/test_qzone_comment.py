@@ -40,11 +40,9 @@ _FEED_HTML = (
     '<li class=\\"comments-item\\" data-tid=\\"c1\\" data-uin=\\"20002\\" '
     'data-nick=\\"好友A\\"><a class=\\"comments-name\\">好友A<\\/a>'
     '&nbsp; : 评论内容<div class=\\"comments-op\\">回复<\\/div><\\/li>'
-    '<\\/li>'
+    "<\\/li>"
 )
-_FEEDS_BODY = (
-    '_Callback({"code":0,"message":"","data":{"data":"' + _FEED_HTML + '"}});'
-)
+_FEEDS_BODY = '_Callback({"code":0,"message":"","data":{"data":"' + _FEED_HTML + '"}});'
 
 
 # ---------------------------------------------------------------------------
@@ -341,9 +339,7 @@ async def test_get_post_found_and_missing() -> None:
 
 
 async def test_get_post_requires_tid() -> None:
-    out = json.loads(
-        await dispatch_qzone_get_post(args_json=_args(), onebot_client=_onebot())
-    )
+    out = json.loads(await dispatch_qzone_get_post(args_json=_args(), onebot_client=_onebot()))
     assert out["error"] == "invalid_args"
 
 
@@ -404,6 +400,8 @@ async def test_post_comment_live_scheduler_records_effect_receipt() -> None:
                 "state": "sent",
                 "receipt": {
                     "owner_uin": _MY_UIN,
+                    "actor_uin": _MY_UIN,
+                    "qq_instance_id": None,
                     "tid": "deadbeef",
                     "is_reply": False,
                     "comment_identity": "id:comment-7",
@@ -412,6 +410,36 @@ async def test_post_comment_live_scheduler_records_effect_receipt() -> None:
             },
         )
     ]
+
+
+async def test_comment_identity_mismatch_does_not_reserve_effect() -> None:
+    client = OneBotClient(
+        base_url="http://napcat.test",
+        instance_id="bot-a",
+        expected_uin="999999",
+        transport=_onebot_transport(),
+    )
+    store = _EffectStore()
+    try:
+        out = json.loads(
+            await dispatch_qzone_post_comment(
+                args_json=_args(
+                    owner_uin=_MY_UIN,
+                    tid="deadbeef",
+                    content="不错",
+                    reply_to_comment_id="comment-7",
+                ),
+                onebot_client=client,
+                http_transport=_qzone_transport(),
+                scheduler_store=store,
+                effect_context={**_EFFECT_CONTEXT, "qq_instance_id": "bot-a"},
+            )
+        )
+    finally:
+        await client.aclose()
+
+    assert out["error"] == "onebot_failed"
+    assert store.prepared == []
 
 
 async def test_scheduled_reply_requires_source_comment_identity() -> None:
@@ -450,9 +478,7 @@ async def test_scheduled_top_level_comment_deduplicates_by_source_post() -> None
     finally:
         await client.aclose()
     assert out["ok"] is True
-    assert store.prepared[0]["effect_target"] == (
-        f"post:{_FRIEND_UIN}:deadbeef:top-level"
-    )
+    assert store.prepared[0]["effect_target"] == (f"post:{_FRIEND_UIN}:deadbeef:top-level")
 
 
 async def test_content_fallback_identity_includes_commenter_uin() -> None:
@@ -542,9 +568,7 @@ async def test_list_friends_with_filter() -> None:
     client = _onebot(friends=friends)
     try:
         out = json.loads(
-            await dispatch_qzone_list_friends(
-                args_json=_args(filter="bob"), onebot_client=client
-            )
+            await dispatch_qzone_list_friends(args_json=_args(filter="bob"), onebot_client=client)
         )
     finally:
         await client.aclose()
@@ -556,9 +580,7 @@ async def test_list_friends_with_filter() -> None:
 async def test_list_friends_empty() -> None:
     client = _onebot(friends=[])
     try:
-        out = json.loads(
-            await dispatch_qzone_list_friends(args_json=_args(), onebot_client=client)
-        )
+        out = json.loads(await dispatch_qzone_list_friends(args_json=_args(), onebot_client=client))
     finally:
         await client.aclose()
     assert out["ok"] is True

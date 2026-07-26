@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from corlinman_server.gateway.lifecycle.py_config import (
     DEFAULT_PY_CONFIG_FILENAME,
     KNOWN_PROVIDER_KINDS,
@@ -118,6 +119,40 @@ def test_write_py_config_sync_produces_parseable_file(tmp_path: Path) -> None:
         os.environ.pop("PY_CONFIG_TEST_KEY", None)
 
 
+def test_write_py_config_sync_applies_shared_group_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    try:
+        cfg = _cfg_with_everything()
+        target = tmp_path / "py-config.json"
+        monkeypatch.setenv("CORLINMAN_PY_CONFIG_GID", str(os.getgid()))
+
+        write_py_config_sync(cfg, target)
+
+        stat = target.stat()
+        assert stat.st_gid == os.getgid()
+        assert stat.st_mode & 0o777 == 0o640
+    finally:
+        os.environ.pop("PY_CONFIG_TEST_KEY", None)
+
+
+def test_write_py_config_sync_rejects_invalid_shared_gid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg_with_everything()
+    target = tmp_path / "py-config.json"
+    monkeypatch.setenv("CORLINMAN_PY_CONFIG_GID", "not-a-gid")
+
+    with pytest.raises(ValueError, match="invalid literal"):
+        write_py_config_sync(cfg, target)
+
+    assert not target.exists()
+    assert not any(tmp_path.glob("*.new"))
+    os.environ.pop("PY_CONFIG_TEST_KEY", None)
+
+
 def test_missing_env_var_leaves_api_key_null() -> None:
     os.environ.pop("PY_CONFIG_TEST_MISSING", None)
     cfg = SimpleNamespace(
@@ -152,7 +187,9 @@ def test_empty_config_renders_empty_sections() -> None:
         "enabled": True,
         "unclassified_media": "deny",
     }
+    assert v["qq_onebot_default_instance"] is None
     assert v["qq_onebot"] is None
+    assert v["qq_onebot_instances"] == {}
 
 
 def test_dict_shaped_config_also_works() -> None:
@@ -200,11 +237,135 @@ def test_render_includes_secret_bearing_agent_onebot_transport() -> None:
 
     v = render_py_config(cfg)
 
+    assert v["qq_onebot_default_instance"] == "default"
     assert v["qq_onebot"] == {
         "ws_url": "ws://127.0.0.1:3001",
         "access_token": "test-token",
     }
+    assert v["qq_onebot_instances"] == {
+        "default": {
+            "ws_url": "ws://127.0.0.1:3001",
+            "access_token": "test-token",
+        }
+    }
     assert v["tencent_safety"]["enabled"] is False
+
+
+def test_canonical_transports_require_verified_runtime_overlay() -> None:
+    cfg = {
+        "providers": {},
+        "models": {"aliases": {}},
+        "embedding": None,
+        "channels": {
+            "qq": {
+                "default_instance": "bot-a",
+                "instances": {
+                    "bot-a": {
+                        "enabled": True,
+                        "ws_url": "ws://bot-a:3001",
+                        "access_token": "token-a",
+                        "expected_uin": 10001,
+                    },
+                    "bot-b": {
+                        "enabled": True,
+                        "ws_url": "ws://bot-b:3001",
+                        "napcat_access_token": "token-b",
+                        "expected_uin": "10002",
+                    },
+                },
+            }
+        },
+    }
+
+    rendered = render_py_config(cfg)
+
+    assert rendered["qq_onebot_default_instance"] == "bot-a"
+    assert rendered["qq_onebot"] is None
+    assert rendered["qq_onebot_instances"] == {}
+
+
+def test_unbound_canonical_transport_is_not_actionable() -> None:
+    rendered = render_py_config(
+        {
+            "providers": {},
+            "models": {"aliases": {}},
+            "channels": {
+                "qq": {
+                    "default_instance": "bot-a",
+                    "instances": {
+                        "bot-a": {
+                            "enabled": True,
+                            "ws_url": "ws://bot-a:3001",
+                            "access_token": "token-a",
+                        }
+                    },
+                }
+            },
+        }
+    )
+
+    assert rendered["qq_onebot"] is None
+    assert rendered["qq_onebot_instances"] == {}
+
+
+def test_disabled_canonical_transport_is_not_actionable() -> None:
+    rendered = render_py_config(
+        {
+            "providers": {},
+            "models": {"aliases": {}},
+            "channels": {
+                "qq": {
+                    "default_instance": "bot-a",
+                    "instances": {
+                        "bot-a": {
+                            "enabled": False,
+                            "ws_url": "ws://bot-a:3001",
+                            "access_token": "token-a",
+                        }
+                    },
+                }
+            },
+        }
+    )
+
+    assert rendered["qq_onebot"] is None
+    assert rendered["qq_onebot_instances"] == {}
+
+
+def test_managed_transport_overlay_supplies_agent_sidecar_without_config_secret() -> None:
+    cfg = {
+        "providers": {},
+        "models": {"aliases": {}},
+        "channels": {
+            "qq": {
+                "default_instance": "bot-a",
+                "instances": {
+                    "bot-a": {
+                        "enabled": True,
+                        "connection_mode": "managed",
+                    }
+                },
+            }
+        },
+    }
+
+    rendered = render_py_config(
+        cfg,
+        qq_transport_overlay={
+            "bot-a": {
+                "ws_url": "ws://managed-bot-a:3001",
+                "access_token": "manager-token",
+                "expected_uin": 10001,
+            }
+        },
+    )
+
+    assert rendered["qq_onebot"] == {
+        "ws_url": "ws://managed-bot-a:3001",
+        "access_token": "manager-token",
+        "expected_uin": "10001",
+    }
+    assert "access_token" not in cfg["channels"]["qq"]["instances"]["bot-a"]
 
 
 def test_render_includes_subagent_section() -> None:

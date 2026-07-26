@@ -42,11 +42,13 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import deque
 from dataclasses import dataclass
 
 __all__ = [
     "GC_INTERVAL",
     "GC_STALE_AFTER",
+    "SlidingWindowCounter",
     "TokenBucket",
 ]
 
@@ -202,3 +204,78 @@ class TokenBucket:
             await asyncio.wait_for(cancel.wait(), timeout=interval)
         except TimeoutError:
             return
+
+
+class SlidingWindowCounter:
+    """Per-key sliding-window event counter (hard cap, not a refill bucket).
+
+    Backs the "at most N messages per M minutes per group" speech cap.
+    Unlike :class:`TokenBucket` (continuous linear refill — a burst
+    budget), this is an exact window: an event at ``t`` stops counting
+    against the key at ``t + window_secs``, so "5 per 10 minutes" means
+    literally that.
+
+    The window/limit are passed per call rather than stored, so callers
+    re-read live config without rebuilding the counter — and when the
+    instance is module-level, the recorded timestamps survive a channel
+    task restart (config saves restart the QQ instance).
+    """
+
+    __slots__ = ("_events",)
+
+    def __init__(self) -> None:
+        self._events: dict[str, deque[float]] = {}
+
+    def count(self, key: str, window_secs: float, now: float | None = None) -> int:
+        """Live event count for ``key`` within the trailing window."""
+        ts = time.monotonic() if now is None else now
+        events = self._events.get(key)
+        if not events:
+            return 0
+        cutoff = ts - window_secs
+        while events and events[0] <= cutoff:
+            events.popleft()
+        if not events:
+            self._events.pop(key, None)
+            return 0
+        return len(events)
+
+    def allow(
+        self,
+        key: str,
+        window_secs: float,
+        max_count: int,
+        *,
+        record: bool = True,
+        now: float | None = None,
+    ) -> bool:
+        """``True`` when ``key`` is under ``max_count`` events in the window.
+
+        ``window_secs <= 0`` or ``max_count <= 0`` disables the cap (always
+        allowed, nothing recorded). ``record=False`` peeks without counting
+        the event — use it to pre-check before doing expensive work, then
+        call :meth:`record` once the message actually goes out.
+        """
+        if window_secs <= 0 or max_count <= 0:
+            return True
+        ts = time.monotonic() if now is None else now
+        if self.count(key, window_secs, now=ts) >= max_count:
+            return False
+        if record:
+            self._events.setdefault(key, deque()).append(ts)
+        return True
+
+    def record(self, key: str, now: float | None = None) -> None:
+        """Record one event against ``key`` (pairs with ``allow(record=False)``)."""
+        ts = time.monotonic() if now is None else now
+        self._events.setdefault(key, deque()).append(ts)
+
+    def tracked_keys(self) -> int:
+        return len(self._events)
+
+    def sweep_stale(self, max_window_secs: float = GC_STALE_AFTER) -> None:
+        """Drop keys whose newest event is older than ``max_window_secs``."""
+        cutoff = time.monotonic() - max_window_secs
+        stale = [k for k, v in self._events.items() if not v or v[-1] < cutoff]
+        for k in stale:
+            self._events.pop(k, None)

@@ -36,7 +36,7 @@ export function TopNav() {
         // Blank the sticky gutter above the bar (top-2/top-4): without this
         // strip, scrolled content slides through the gap over the bar's top
         // edge. Canvas-colored so it reads as part of the page chrome.
-        "before:absolute before:inset-x-0 before:-top-2 before:h-2 before:bg-sg-space-0 before:content-[''] md:before:-top-4 md:before:h-4",
+        "before:pointer-events-none before:absolute before:inset-x-0 before:-top-2 before:h-2 before:bg-sg-space-0 before:content-[''] md:before:-top-4 md:before:h-4",
       )}
     >
       <div className="flex min-w-0 flex-1 items-center gap-2 md:gap-3">

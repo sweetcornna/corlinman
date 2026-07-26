@@ -102,6 +102,7 @@ def grantley_template(admin_state: AdminState) -> Path:
         "timezone": "Asia/Shanghai",
         "enabled": False,
         "qq_account": "1234",
+        "qq_instance_id": "default",
         "prompt_template": "Write today's update in Grantley voice.",
     }
     path = target_dir / "daily_job.json"
@@ -120,9 +121,7 @@ def test_list_jobs_starts_empty(client: TestClient) -> None:
     assert res.json() == []
 
 
-def test_list_jobs_includes_config_jobs(
-    admin_state: AdminState, client: TestClient
-) -> None:
+def test_list_jobs_includes_config_jobs(admin_state: AdminState, client: TestClient) -> None:
     """Config-derived rows still show up alongside the runtime overlay."""
     admin_state.config_loader = lambda: {
         "scheduler": {
@@ -221,7 +220,62 @@ def test_enable_grantley_template_creates_runtime_job(
     row = res.json()
     assert row["name"] == "grantley.daily_qzone"
     assert row["enabled"] is True  # template ships disabled; activation flips it
+    assert row["qq_instance_id"] == "default"
     assert row["source"] == "runtime"
+
+
+def test_enable_template_resolves_omitted_instance_for_single_enabled_fleet(
+    grantley_template: Path,
+    client: TestClient,
+    admin_state: AdminState,
+) -> None:
+    raw = json.loads(grantley_template.read_text(encoding="utf-8"))
+    raw.pop("qq_instance_id")
+    grantley_template.write_text(json.dumps(raw), encoding="utf-8")
+    admin_state.config_loader = lambda: {
+        "channels": {
+            "qq": {
+                "default_instance": "bot-a",
+                "instances": {
+                    "bot-a": {"enabled": True},
+                    "bot-b": {"enabled": False},
+                },
+            }
+        }
+    }
+
+    response = client.post("/admin/scheduler/qzone/templates/grantley/enable")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["qq_instance_id"] == "bot-a"
+    row = admin_state.extras["scheduler_runtime_jobs"]["grantley.daily_qzone"]
+    assert row.metadata["qq_instance_id"] == "bot-a"
+
+
+def test_enable_template_rejects_ambiguous_omitted_instance(
+    grantley_template: Path,
+    client: TestClient,
+    admin_state: AdminState,
+) -> None:
+    raw = json.loads(grantley_template.read_text(encoding="utf-8"))
+    raw.pop("qq_instance_id")
+    grantley_template.write_text(json.dumps(raw), encoding="utf-8")
+    admin_state.config_loader = lambda: {
+        "channels": {
+            "qq": {
+                "default_instance": "bot-a",
+                "instances": {
+                    "bot-a": {"enabled": True},
+                    "bot-b": {"enabled": True},
+                },
+            }
+        }
+    }
+
+    response = client.post("/admin/scheduler/qzone/templates/grantley/enable")
+
+    assert response.status_code == 422
+    assert response.json()["error"] == "invalid_qq_instance"
 
 
 def test_enable_grantley_template_is_idempotent(
@@ -252,9 +306,7 @@ def test_enable_grantley_template_is_idempotent(
 def test_enable_unknown_template_returns_404(client: TestClient, admin_state: AdminState) -> None:
     # No template on disk → 404. Use a name that doesn't exist in the
     # bundled-personas wheel data either, to ensure both candidates miss.
-    res = client.post(
-        "/admin/scheduler/qzone/templates/no-such-persona-abc123/enable"
-    )
+    res = client.post("/admin/scheduler/qzone/templates/no-such-persona-abc123/enable")
     assert res.status_code == 404
     assert res.json()["error"] == "template_not_found"
 
@@ -294,14 +346,10 @@ async def test_trigger_runtime_qzone_job_invokes_builtin(
     register_builtin(QZONE_DAILY_BUILTIN_NAME, _stub_action)
     try:
         # Enable the template so a runtime row exists.
-        enable = client.post(
-            "/admin/scheduler/qzone/templates/grantley/enable"
-        )
+        enable = client.post("/admin/scheduler/qzone/templates/grantley/enable")
         assert enable.status_code == 200, enable.text
         # Fire it.
-        res = client.post(
-            "/admin/scheduler/jobs/grantley.daily_qzone/trigger"
-        )
+        res = client.post("/admin/scheduler/jobs/grantley.daily_qzone/trigger")
         assert res.status_code == 200, res.text
         body = res.json()
         assert body["ok"] is True
@@ -316,9 +364,7 @@ async def test_trigger_runtime_qzone_job_invokes_builtin(
         # (per-job metadata map keyed by job name).
         # A second manual trigger is a distinct occurrence rather than a
         # permanent ``manual:unknown`` duplicate.
-        second = client.post(
-            "/admin/scheduler/jobs/grantley.daily_qzone/trigger"
-        )
+        second = client.post("/admin/scheduler/jobs/grantley.daily_qzone/trigger")
         assert second.status_code == 200, second.text
         assert len(captured) == 2
         assert captured[0].run_id
@@ -328,7 +374,9 @@ async def test_trigger_runtime_qzone_job_invokes_builtin(
         assert captured[1].occurrence_key == f"manual:{captured[1].run_id}"
         ctx = captured[0]
         assert ctx.name == "grantley.daily_qzone"
-        meta_table = getattr(ctx.app_state, "scheduler_job_metadata", None) if ctx.app_state else None
+        meta_table = (
+            getattr(ctx.app_state, "scheduler_job_metadata", None) if ctx.app_state else None
+        )
         # AppState may be absent (no live AppState in this minimal
         # test app); the per-job metadata then lives on the AdminState
         # extras dict the route synced during the upsert.
@@ -414,9 +462,7 @@ async def test_trigger_real_builtin_harvests_qzone_url(
     # route's runtime fallback hands it to the real builtin.
     admin_state.extras["app_state"] = SimpleNamespace(
         chat=chat,
-        persona_store=_FakeStore(
-            {"grantley": _Persona(id="grantley", system_prompt="be a tiger")}
-        ),
+        persona_store=_FakeStore({"grantley": _Persona(id="grantley", system_prompt="be a tiger")}),
         persona_asset_store=None,
     )
 
@@ -445,6 +491,7 @@ async def test_trigger_records_failure_in_history(
 ) -> None:
     """A failed builtin run still records a history entry + flips the
     job row's last_run_ok to False."""
+
     async def _bad(ctx: BuiltinContext) -> dict[str, Any]:
         return {"ok": False, "error": "qzone_not_called", "tools_called": []}
 
@@ -452,9 +499,7 @@ async def test_trigger_records_failure_in_history(
     register_builtin(QZONE_DAILY_BUILTIN_NAME, _bad)
     try:
         client.post("/admin/scheduler/qzone/templates/grantley/enable")
-        res = client.post(
-            "/admin/scheduler/jobs/grantley.daily_qzone/trigger"
-        )
+        res = client.post("/admin/scheduler/jobs/grantley.daily_qzone/trigger")
         assert res.status_code == 200
         body = res.json()
         assert body["ok"] is False
@@ -591,9 +636,7 @@ def test_patch_image_ref_labels_updates_and_keeps_untouched_fields(
     assert meta["jitter_minutes"] == 30
 
 
-def test_patch_jitter_only_preserves_labels(
-    client: TestClient, admin_state: AdminState
-) -> None:
+def test_patch_jitter_only_preserves_labels(client: TestClient, admin_state: AdminState) -> None:
     """PATCH changing only ``jitter_minutes`` keeps the existing labels."""
     client.post(
         "/admin/scheduler/jobs",
@@ -682,9 +725,7 @@ def test_create_rejects_negative_jitter(client: TestClient) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_create_reply_job_round_trips(
-    client: TestClient, admin_state: AdminState
-) -> None:
+def test_create_reply_job_round_trips(client: TestClient, admin_state: AdminState) -> None:
     """POST with action_type=qzone.reply_comments + metadata knobs → 200,
     JobOut echoes the knobs, and metadata is the store of record."""
     body = {
@@ -772,9 +813,7 @@ def test_create_reply_job_rejects_non_int_knob(client: TestClient) -> None:
     assert res.json()["error"] == "invalid_qzone_reply_args"
 
 
-def test_patch_reply_job_revalidates_metadata(
-    client: TestClient, admin_state: AdminState
-) -> None:
+def test_patch_reply_job_revalidates_metadata(client: TestClient, admin_state: AdminState) -> None:
     """PATCH runs the reply validator on the merged shape — a bad knob
     422s without mutating; a good knob lands in metadata + the echo."""
     create = client.post(

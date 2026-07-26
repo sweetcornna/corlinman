@@ -226,9 +226,19 @@ async def _seed_builtin_persona_state(state_store: Any) -> None:
 
 
 async def _wire_c2_handles(
-    app: Any, state: Any, admin_a_state: Any, data_dir: Path, cfg: Any | None
+    app: Any,
+    state: Any,
+    admin_a_state: Any,
+    execution_state_dir: Path,
+    cfg: Any | None,
+    *,
+    control_data_dir: Path | None = None,
 ) -> None:
     """Construct + publish the CONTRACT C2 handles onto ``state``.
+
+    Durable execution state is rooted at ``execution_state_dir``. Executable
+    hooks remain under the gateway-private ``control_data_dir`` and are never
+    discovered from the model-writable execution tree.
 
     Sets (each best-effort, ``None`` on failure so the consumer degrades):
 
@@ -249,7 +259,7 @@ async def _wire_c2_handles(
         from corlinman_memory_host import LocalSqliteHost
 
         if getattr(state, "memory_host", None) is None:
-            mem_path = data_dir / "memory.sqlite"
+            mem_path = execution_state_dir / "memory.sqlite"
             state.memory_host = await LocalSqliteHost.open(
                 "local", str(mem_path)
             )
@@ -269,7 +279,7 @@ async def _wire_c2_handles(
 
         if getattr(state, "memory_kernel", None) is None:
             state.memory_kernel = await MemoryKernel.open(
-                data_dir / "memory.sqlite"
+                execution_state_dir / "memory.sqlite"
             )
             logger.info("gateway.c2.memory_kernel_wired")
     except Exception as exc:  # noqa: BLE001 — kernel-free chat degrades fine
@@ -400,7 +410,7 @@ async def _wire_c2_handles(
         from corlinman_persona.store import PersonaStore as _StateStore
 
         state_store = await _StateStore.open_or_create(
-            data_dir / "agent_state.sqlite"
+            execution_state_dir / "agent_state.sqlite"
         )
         await _seed_builtin_persona_state(state_store)
         resolver = PersonaResolver(state_store)
@@ -429,7 +439,7 @@ async def _wire_c2_handles(
             legacy_default,
         )
 
-        id_path = identity_db_path(data_dir, legacy_default())
+        id_path = identity_db_path(execution_state_dir, legacy_default())
         id_store = await SqliteIdentityStore.open(id_path)
         state.identity_store = id_store
         app.state.corlinman_identity_store = id_store
@@ -477,7 +487,8 @@ async def _wire_c2_handles(
 
         # The agent-level hooks config lives under ``[hooks]`` in the
         # loaded config; file-discovered HOOK.yaml/handler.py hooks load
-        # from CORLINMAN_HOOKS_DIR (falls back to <data_dir>/hooks).
+        # from CORLINMAN_HOOKS_DIR (falls back only to the private control
+        # data root, never to model-writable execution state).
         hooks_cfg: dict[str, Any] = {}
         section = _extract_section(cfg, "hooks")
         if isinstance(section, dict):
@@ -486,9 +497,11 @@ async def _wire_c2_handles(
         hooks_dir: Path | None
         if hooks_dir_env:
             hooks_dir = Path(hooks_dir_env)
-        else:
-            default_hooks_dir = data_dir / "hooks"
+        elif control_data_dir is not None:
+            default_hooks_dir = control_data_dir / "hooks"
             hooks_dir = default_hooks_dir if default_hooks_dir.is_dir() else None
+        else:
+            hooks_dir = None
         # Declarative-hook ``if`` matchers reuse the permission-rule
         # grammar; corlinman-hooks cannot import corlinman-agent, so the
         # grammar is injected here (design-once contract).
