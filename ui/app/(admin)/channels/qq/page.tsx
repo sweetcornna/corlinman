@@ -90,8 +90,11 @@ export default function QqChannelPage() {
 
   const saveMutation = useMutation({
     mutationFn: (next: Record<string, string[]>) => updateQqKeywords(next),
-    onSuccess: () => {
+    onSuccess: (res) => {
       toast.success(t("channels.saveSuccess"));
+      // Adopt the server's echo as the new draft baseline — any backend
+      // normalization is reflected instead of silently diverging.
+      if (res?.group_keywords) setDraft(res.group_keywords);
       qc.invalidateQueries({ queryKey: ["admin", "channels", "qq"] });
     },
     onError: (err) =>
@@ -116,7 +119,9 @@ export default function QqChannelPage() {
 
   // ─── derived ─────────────────────────────────────────────────────────
 
-  const offline = status.isError;
+  // Only fall to the offline block when we have NEVER seen data — a single
+  // failed 10s poll must not unmount the editors and wipe in-flight drafts.
+  const offline = status.isError && !status.data;
   const connection = deriveConnection(status.data);
   const connected = connection === "connected";
   const connectionLabel = t(`channels.qq.tp.state.${connection}`);
@@ -246,7 +251,13 @@ export default function QqChannelPage() {
                 saving={saveMutation.isPending}
                 dirty={dirty}
                 onChange={setDraft}
-                onSave={() => saveMutation.mutate(draft)}
+                onSave={() => {
+                  if (!dirty) {
+                    toast.info(t("channels.noChanges"));
+                    return;
+                  }
+                  saveMutation.mutate(draft);
+                }}
               />
             </section>
 

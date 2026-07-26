@@ -90,6 +90,7 @@ export const CHANNEL_CONFIG_SPEC: Record<ConfigEditableChannel, ChannelConfigSpe
         options: ["mention_or_keyword", "all"],
       },
       { key: "proactive_prompt", input: "textarea", advanced: true },
+      { key: "proactive_timezone", advanced: true },
     ],
     ids: [
       { key: "self_ids", managed: true },
@@ -98,17 +99,24 @@ export const CHANNEL_CONFIG_SPEC: Record<ConfigEditableChannel, ChannelConfigSpe
     ],
     filters: [],
     flags: [
-      { key: "group_replies_enabled" },
+      // Runtime default is ON (router.py group_replies_enabled=True) — the
+      // seed must match or the switch renders the opposite state and
+      // toggling it to the real state produces no diff (dead Save).
+      { key: "group_replies_enabled", defaultValue: true },
       { key: "freeze_risk_topic_blocking", defaultValue: true },
       { key: "proactive_enabled" },
     ],
     numbers: [
+      { key: "group_rate_limit_window_minutes", placeholder: "0" },
+      { key: "group_rate_limit_max_messages", placeholder: "0" },
       { key: "group_reply_cooldown_secs", advanced: true, placeholder: "20" },
       { key: "proactive_min_gap_minutes", advanced: true, placeholder: "45" },
       { key: "proactive_max_gap_minutes", advanced: true, placeholder: "180" },
       { key: "proactive_daily_max", advanced: true, placeholder: "4" },
       { key: "proactive_active_start_hour", advanced: true, placeholder: "9" },
       { key: "proactive_active_end_hour", advanced: true, placeholder: "23" },
+      { key: "proactive_probability", advanced: true, placeholder: "1" },
+      { key: "proactive_context_messages", advanced: true, placeholder: "12" },
     ],
   },
   telegram: {
@@ -324,6 +332,28 @@ export function buildChannelConfigBody(
   if (Object.keys(numbers).length) body.numbers = numbers;
 
   return body;
+}
+
+/**
+ * Number-field edits that would be SILENTLY dropped by
+ * `buildChannelConfigBody` (changed vs initial but blank or non-numeric).
+ * The editor surfaces these instead of letting the operator believe the
+ * value was saved.
+ */
+export function invalidNumberFields(
+  channel: ConfigEditableChannel,
+  draft: ChannelConfigDraft,
+  initial: ChannelConfigDraft,
+): string[] {
+  const spec = CHANNEL_CONFIG_SPEC[channel];
+  const bad: string[] = [];
+  for (const f of spec.numbers) {
+    const raw = (draft.numbers[f.key] ?? "").trim();
+    const before = (initial.numbers[f.key] ?? "").trim();
+    if (raw === before) continue;
+    if (!raw || !Number.isFinite(Number(raw))) bad.push(f.key);
+  }
+  return bad;
 }
 
 /** True when the body carries no changes. */

@@ -90,6 +90,7 @@ _INTERNAL_CHAT_EXTRA_KEYS: frozenset[str] = frozenset(
         "provider_hint",
         "scheduler_context",
         "scheduler_execution_mode",
+        "runtime_instance_id",
     }
 )
 _CODEX_ONLY_CHAT_EXTRA_KEYS: frozenset[str] = frozenset(
@@ -994,9 +995,7 @@ async def _compact_history(
             after = _estimate_tokens(summarized)
             if outcome is not None:
                 outcome["summary_failed"] = False
-                outcome["summary_saved_fraction"] = (
-                    (before - after) / before if before > 0 else 0.0
-                )
+                outcome["summary_saved_fraction"] = (before - after) / before if before > 0 else 0.0
             logger.info(
                 "agent.context.summarized",
                 before=before,
@@ -1902,9 +1901,7 @@ class ReasoningLoop:
                 self._invalidate_token_cache()
                 # Identity change is the "a compaction actually happened"
                 # signal (passthrough keeps the same list).
-                await self._maybe_emit_post_compact(
-                    len(messages_before_compact), len(messages)
-                )
+                await self._maybe_emit_post_compact(len(messages_before_compact), len(messages))
             rounds += 1
             tool_calls_this_round: list[ToolCallEvent] = []
             finish_reason = "stop"
@@ -2682,9 +2679,7 @@ class ReasoningLoop:
                 return
             if outcome.get("summary_failed"):
                 self._summary_failures += 1
-                self._summary_cooldown_until_round = (
-                    rounds + _COMPACT_SUMMARY_COOLDOWN_ROUNDS + 1
-                )
+                self._summary_cooldown_until_round = rounds + _COMPACT_SUMMARY_COOLDOWN_ROUNDS + 1
                 # A failure breaks the low-savings SUCCESS streak too —
                 # anti-thrash must only fire on truly consecutive
                 # low-savings successes (Codex #111).
@@ -2707,16 +2702,12 @@ class ReasoningLoop:
             else:
                 self._summary_low_savings_streak = 0
             if self._summary_low_savings_streak >= _COMPACT_SUMMARY_LOW_SAVINGS_STREAK_LIMIT:
-                self._summary_cooldown_until_round = (
-                    rounds + _COMPACT_SUMMARY_COOLDOWN_ROUNDS + 1
-                )
+                self._summary_cooldown_until_round = rounds + _COMPACT_SUMMARY_COOLDOWN_ROUNDS + 1
                 self._summary_low_savings_streak = 0
         except Exception as exc:  # noqa: BLE001 — bookkeeping must never break the loop
             logger.warning("reasoning_loop.summary_breaker_state_error", error=str(exc))
 
-    async def _maybe_emit_pre_compact(
-        self, estimated_tokens: int, budget: int
-    ) -> bool:
+    async def _maybe_emit_pre_compact(self, estimated_tokens: int, budget: int) -> bool:
         """Fire ``pre_compact`` hooks when compaction is imminent (Dim 9).
 
         Blocking-capable (``_EVENT_DEFAULT_ASYNC`` marks ``pre_compact``
@@ -2748,9 +2739,7 @@ class ReasoningLoop:
             return False
         return True
 
-    async def _maybe_emit_post_compact(
-        self, messages_before: int, messages_after: int
-    ) -> None:
+    async def _maybe_emit_post_compact(self, messages_before: int, messages_after: int) -> None:
         """Fire ``post_compact`` hooks after a real compaction.
 
         Called from BOTH compaction paths — the normal pre-call budget

@@ -456,5 +456,15 @@ def _channel_humanlike_block(
     section = cfg.get(channel)
     if not isinstance(section, dict):
         return {}
+    if channel == "qq" and "instances" in section:
+        instances = section.get("instances")
+        default_instance = section.get("default_instance")
+        section = (
+            instances.get(default_instance)
+            if isinstance(instances, dict) and isinstance(default_instance, str)
+            else None
+        )
+        if not isinstance(section, dict):
+            return {}
     hl = section.get("humanlike")
     return hl if isinstance(hl, dict) else {}

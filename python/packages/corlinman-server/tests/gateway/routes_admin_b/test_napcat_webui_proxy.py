@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+
+import httpx
 from corlinman_server.gateway.routes_admin_b import napcat
 from corlinman_server.gateway.routes_admin_b.state import AdminState, set_admin_state
 from fastapi import FastAPI, Request
@@ -105,10 +108,6 @@ def test_proxy_strips_cookie_and_admin_auth_from_upstream(monkeypatch) -> None:
     # _proxy_napcat_request directly with a hand-built ASGI Request so the
     # admin-auth dependency (which would reject our injected headers) is
     # out of the picture — this is a pure header-allowlist unit test.
-    import asyncio
-
-    import httpx
-
     captured: dict[str, httpx.Headers] = {}
 
     class _FakeResp:
@@ -169,3 +168,120 @@ def test_proxy_strips_cookie_and_admin_auth_from_upstream(monkeypatch) -> None:
     assert "host" not in fwd
     # Allowlisted negotiation header passes through.
     assert fwd.get("accept") == "text/html"
+
+
+def test_proxy_non_success_does_not_expose_upstream_body_or_location(
+    monkeypatch,
+) -> None:
+    secret = "http://user:password@private-napcat:6099/private?token=secret"
+
+    class _ErrorResp:
+        status_code = 401
+        headers = httpx.Headers(
+            {
+                "content-type": "application/json",
+                "location": secret,
+            }
+        )
+        content = f'{{"message":"retry at {secret}"}}'.encode()
+
+    class _ErrorClient:
+        def __init__(self, *args, **kwargs) -> None:
+            del args, kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            del args
+
+        async def request(self, *args, **kwargs):
+            del args, kwargs
+            return _ErrorResp()
+
+    monkeypatch.setattr(napcat.httpx, "AsyncClient", _ErrorClient)
+    monkeypatch.setattr(napcat, "config_snapshot", lambda: {})
+    monkeypatch.setattr(
+        napcat,
+        "_resolve_napcat_url",
+        lambda cfg: (secret, None),
+    )
+
+    async def _no_cred() -> str:
+        return ""
+
+    monkeypatch.setattr(napcat, "_cached_napcat_credential", _no_cred)
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/webui",
+        "query_string": b"",
+        "headers": [],
+    }
+
+    async def _receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    response = asyncio.run(
+        napcat._proxy_napcat_request(Request(scope, _receive), "/webui")
+    )
+
+    assert response.status_code == 502
+    assert response.body == (
+        b'{"error":"napcat_upstream_error",'
+        b'"message":"NapCat returned an error"}'
+    )
+    assert "location" not in response.headers
+    assert secret.encode() not in response.body
+
+
+def test_proxy_transport_error_does_not_expose_upstream_location(monkeypatch) -> None:
+    secret = "http://user:password@private-napcat:6099/private?token=secret"
+
+    class _FailingClient:
+        def __init__(self, *args, **kwargs) -> None:
+            del args, kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            del args
+
+        async def request(self, *args, **kwargs):
+            del args, kwargs
+            request = httpx.Request("GET", secret)
+            raise httpx.ConnectError(f"failed to connect to {secret}", request=request)
+
+    monkeypatch.setattr(napcat.httpx, "AsyncClient", _FailingClient)
+    monkeypatch.setattr(napcat, "config_snapshot", lambda: {})
+    monkeypatch.setattr(
+        napcat,
+        "_resolve_napcat_url",
+        lambda cfg: (secret, None),
+    )
+
+    async def _no_cred() -> str:
+        return ""
+
+    monkeypatch.setattr(napcat, "_cached_napcat_credential", _no_cred)
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/webui",
+        "query_string": b"",
+        "headers": [],
+    }
+
+    async def _receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    response = asyncio.run(
+        napcat._proxy_napcat_request(Request(scope, _receive), "/webui")
+    )
+
+    assert response.status_code == 503
+    assert response.body == (
+        b'{"error":"napcat_unreachable","message":"NapCat is unreachable"}'
+    )
+    assert secret.encode() not in response.body

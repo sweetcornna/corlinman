@@ -148,13 +148,32 @@ def test_should_run_legacy_migration_gates() -> None:
     assert _should_run_legacy_migration(dict_cfg) is True
 
 
+def test_lifespan_exposes_app_state_to_admin_routes_without_scheduler(
+    tmp_path: Path,
+) -> None:
+    app = build_app(config_path=None, data_dir=tmp_path)
+
+    with TestClient(app):
+        admin_b_state = app.state.corlinman_admin_b_state
+        assert admin_b_state.extras["app_state"] is app.state
+        assert admin_b_state.extras["app_state"].corlinman_state is app.state.corlinman_state
+
+
 def test_build_app_degraded_mode_serves_health(tmp_path: Path) -> None:
     """With no sibling modules present, the app should still expose
     ``/health`` so liveness probes succeed."""
     app = build_app(config_path=None, data_dir=tmp_path)
 
-    # State is plumbed through.
+    # With no explicit execution root, the historical flat layout is
+    # preserved byte-for-byte across the app and both admin state bundles.
     assert app.state.corlinman_data_dir == tmp_path
+    assert app.state.corlinman_execution_state_dir == tmp_path
+    assert app.state.corlinman_state.data_dir == tmp_path
+    assert app.state.corlinman_state.execution_state_dir == tmp_path
+    assert app.state.corlinman_admin_a_state.data_dir == tmp_path
+    assert app.state.corlinman_admin_a_state.execution_state_dir == tmp_path
+    assert app.state.corlinman_admin_b_state.data_dir == tmp_path
+    assert app.state.corlinman_admin_b_state.execution_state_dir == tmp_path
     assert app.state.corlinman_config is None
     assert app.state.corlinman_state is not None
 
@@ -174,6 +193,26 @@ def test_build_app_degraded_mode_serves_health(tmp_path: Path) -> None:
         assert body["version"] == resolve_app_version()
 
 
+def test_build_app_honors_separate_execution_state_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_dir = tmp_path / "private"
+    shared_dir = tmp_path / "shared"
+    monkeypatch.setenv("CORLINMAN_EXECUTION_STATE_DIR", str(shared_dir))
+
+    app = build_app(config_path=None, data_dir=private_dir)
+
+    assert app.state.corlinman_data_dir == private_dir
+    assert app.state.corlinman_execution_state_dir == shared_dir
+    assert app.state.corlinman_state.data_dir == private_dir
+    assert app.state.corlinman_state.execution_state_dir == shared_dir
+    assert app.state.corlinman_admin_a_state.data_dir == private_dir
+    assert app.state.corlinman_admin_a_state.execution_state_dir == shared_dir
+    assert app.state.corlinman_admin_b_state.data_dir == private_dir
+    assert app.state.corlinman_admin_b_state.execution_state_dir == shared_dir
+
+
 def test_build_app_defaults_py_config_to_resolved_data_dir(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -186,17 +225,13 @@ def test_build_app_defaults_py_config_to_resolved_data_dir(
     second_data = tmp_path / "second"
 
     first = build_app(config_path=None, data_dir=first_data)
-    assert first.state.corlinman_admin_b_state.py_config_path == (
-        first_data / "py-config.json"
-    )
+    assert first.state.corlinman_admin_b_state.py_config_path == (first_data / "py-config.json")
     import os
 
     assert Path(os.environ["CORLINMAN_PY_CONFIG"]) == first_data / "py-config.json"
 
     second = build_app(config_path=None, data_dir=second_data)
-    assert second.state.corlinman_admin_b_state.py_config_path == (
-        second_data / "py-config.json"
-    )
+    assert second.state.corlinman_admin_b_state.py_config_path == (second_data / "py-config.json")
     assert Path(os.environ["CORLINMAN_PY_CONFIG"]) == second_data / "py-config.json"
 
 

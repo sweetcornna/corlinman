@@ -188,3 +188,71 @@ def test_qq_status_echoes_behavior_fields_for_editor_seeding(tmp_path) -> None:
     assert keys["proactive_enabled"] == "False"
     assert keys["group_reply_cooldown_secs"] == "45"
     assert keys["proactive_daily_max"] == "2"
+
+
+def test_qq_config_keys_project_runtime_bool_defaults() -> None:
+    """Absent-on-disk QQ booleans whose runtime default is ON must echo
+    "true" — otherwise the UI seeds the opposite state and toggling the
+    switch to the real state produces no diff (dead Save)."""
+    from corlinman_server.gateway.routes_admin_a._channels_lib import (
+        _non_secret_config_keys,
+    )
+
+    out = _non_secret_config_keys("qq", {"enabled": True})
+    assert out.get("group_replies_enabled") == "True"
+    assert out.get("freeze_risk_topic_blocking") == "True"
+    # Explicit off round-trips as-is.
+    out = _non_secret_config_keys("qq", {"group_replies_enabled": False})
+    assert out.get("group_replies_enabled") == "False"
+
+
+def test_put_qq_config_accepts_speech_cap_and_proactive_knobs(tmp_path) -> None:
+    """The group speech cap + proactive humanization keys are editable and
+    echo back typed so the editor pre-seeds them."""
+
+    async def writer(cfg: dict[str, Any]) -> None:
+        return None
+
+    state = AdminState(
+        data_dir=tmp_path,
+        admin_username="admin",
+        admin_password_hash=hash_password("rootroot"),
+        session_store=AdminSessionStore(86_400),
+        channels_config={"qq": {"enabled": True, "ws_url": "ws://n:3001"}},
+        channels_writer=writer,
+    )
+    set_admin_state(state)
+    try:
+        app = FastAPI()
+        app.include_router(build_router())
+        with TestClient(app, headers={"Authorization": _basic_auth_header()}) as c:
+            resp = c.put(
+                "/admin/channels/qq/config",
+                json={
+                    "numbers": {
+                        "group_rate_limit_window_minutes": 10,
+                        "group_rate_limit_max_messages": 5,
+                        "proactive_probability": 0.7,
+                        "proactive_context_messages": 8,
+                    },
+                    "urls": {"proactive_timezone": "Asia/Shanghai"},
+                },
+            )
+    finally:
+        set_admin_state(None)
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["wrote"] == [
+        "group_rate_limit_max_messages",
+        "group_rate_limit_window_minutes",
+        "proactive_context_messages",
+        "proactive_probability",
+        "proactive_timezone",
+    ]
+    keys = body["config_keys"]
+    assert keys["group_rate_limit_window_minutes"] == "10"
+    assert keys["group_rate_limit_max_messages"] == "5"
+    assert keys["proactive_probability"] == "0.7"
+    assert keys["proactive_context_messages"] == "8"
+    assert keys["proactive_timezone"] == "Asia/Shanghai"

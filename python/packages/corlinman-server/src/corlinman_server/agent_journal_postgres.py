@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS journal_turns (
     user_text             TEXT,
     user_id               TEXT,
     channel               TEXT   NOT NULL DEFAULT '',
+    runtime_instance_id   TEXT   NOT NULL DEFAULT '',
     tenant_id             TEXT   NOT NULL DEFAULT '',
     pending_question_json TEXT,
     error                 TEXT,
@@ -102,6 +103,7 @@ CREATE TABLE IF NOT EXISTS journal_turns (
 
 ALTER TABLE journal_turns ADD COLUMN IF NOT EXISTS user_id TEXT;
 ALTER TABLE journal_turns ADD COLUMN IF NOT EXISTS channel TEXT NOT NULL DEFAULT '';
+ALTER TABLE journal_turns ADD COLUMN IF NOT EXISTS runtime_instance_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE journal_turns ADD COLUMN IF NOT EXISTS pending_question_json TEXT;
 ALTER TABLE journal_turns ADD COLUMN IF NOT EXISTS elapsed_ms BIGINT;
 ALTER TABLE journal_turns ADD COLUMN IF NOT EXISTS estimated_cost_usd DOUBLE PRECISION;
@@ -121,8 +123,15 @@ CREATE INDEX IF NOT EXISTS journal_turns_session_status_idx
 CREATE INDEX IF NOT EXISTS journal_turns_status_started_idx
     ON journal_turns(status, started_at_ms);
 
-CREATE UNIQUE INDEX IF NOT EXISTS journal_turns_in_progress_uniq
-    ON journal_turns (session_key, user_text, COALESCE(user_id, ''))
+DROP INDEX IF EXISTS journal_turns_in_progress_uniq;
+CREATE UNIQUE INDEX journal_turns_in_progress_uniq
+    ON journal_turns (
+        session_key,
+        user_text,
+        COALESCE(user_id, ''),
+        channel,
+        runtime_instance_id
+    )
     WHERE status = 'in_progress';
 
 CREATE TABLE IF NOT EXISTS journal_turn_messages (
@@ -216,9 +225,7 @@ class PostgresJournalBackend:
     async def _open(self) -> None:
         import asyncpg
 
-        self._pool = await asyncpg.create_pool(
-            self._dsn, min_size=1, max_size=8
-        )
+        self._pool = await asyncpg.create_pool(self._dsn, min_size=1, max_size=8)
         # Apply the schema once on open. ``CREATE ... IF NOT EXISTS`` is
         # idempotent, so re-running across gateway restarts is fine.
         async with self._pool.acquire() as conn:
@@ -233,9 +240,7 @@ class PostgresJournalBackend:
     @property
     def _p(self) -> Any:
         if self._pool is None:
-            raise RuntimeError(
-                "PostgresJournalBackend not opened — call open() first"
-            )
+            raise RuntimeError("PostgresJournalBackend not opened — call open() first")
         return self._pool
 
     # ------------------------------------------------------------------
@@ -249,6 +254,7 @@ class PostgresJournalBackend:
         *,
         user_id: str | None = None,
         channel: str = "",
+        runtime_instance_id: str = "",
         tenant_id: str = "",
         pending_question_json: str | None = None,
     ) -> int | None:
@@ -288,8 +294,8 @@ class PostgresJournalBackend:
             row = await conn.fetchrow(
                 "INSERT INTO journal_turns "
                 "(session_key, status, started_at_ms, user_text, user_id, "
-                "channel, tenant_id, pending_question_json) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) "
+                "channel, runtime_instance_id, tenant_id, pending_question_json) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) "
                 "ON CONFLICT DO NOTHING RETURNING turn_id",
                 session_key or "",
                 TURN_IN_PROGRESS,
@@ -297,6 +303,7 @@ class PostgresJournalBackend:
                 user_text,
                 user_id,
                 channel or "",
+                runtime_instance_id or "",
                 tenant_id or "",
                 pending_question_json,
             )
@@ -376,9 +383,7 @@ class PostgresJournalBackend:
             try:
                 tool_calls_text = json.dumps(tool_calls)
             except (TypeError, ValueError) as exc:
-                logger.warning(
-                    "agent.journal.append_serialize_failed", error=str(exc)
-                )
+                logger.warning("agent.journal.append_serialize_failed", error=str(exc))
                 return
         attachments_text: str | None = None
         if attachments:
@@ -395,8 +400,7 @@ class PostgresJournalBackend:
                 # Lock the parent turn row to serialise concurrent
                 # appenders against the same turn_id.
                 await conn.fetchval(
-                    "SELECT turn_id FROM journal_turns "
-                    "WHERE turn_id = $1 FOR UPDATE",
+                    "SELECT turn_id FROM journal_turns WHERE turn_id = $1 FOR UPDATE",
                     int(turn_id),
                 )
                 next_seq_row = await conn.fetchrow(
@@ -450,9 +454,7 @@ class PostgresJournalBackend:
             if not isinstance(content, str):
                 content = str(content)
             tool_call_id_val = msg.get("tool_call_id")
-            tool_call_id = (
-                str(tool_call_id_val) if tool_call_id_val is not None else None
-            )
+            tool_call_id = str(tool_call_id_val) if tool_call_id_val is not None else None
             tool_calls_val = msg.get("tool_calls")
             tool_calls_text: str | None = None
             if tool_calls_val is not None:
@@ -474,16 +476,13 @@ class PostgresJournalBackend:
                         "agent.journal.append_attachments_serialize_failed",
                         error=str(exc),
                     )
-            prepared.append(
-                (role, content, tool_call_id, tool_calls_text, attachments_text)
-            )
+            prepared.append((role, content, tool_call_id, tool_calls_text, attachments_text))
         if not prepared:
             return
         try:
             async with self._p.acquire() as conn, conn.transaction():
                 await conn.fetchval(
-                    "SELECT turn_id FROM journal_turns "
-                    "WHERE turn_id = $1 FOR UPDATE",
+                    "SELECT turn_id FROM journal_turns WHERE turn_id = $1 FOR UPDATE",
                     int(turn_id),
                 )
                 next_seq_row = await conn.fetchrow(
@@ -491,9 +490,7 @@ class PostgresJournalBackend:
                     "FROM journal_turn_messages WHERE turn_id = $1",
                     int(turn_id),
                 )
-                next_seq = (
-                    int(next_seq_row["next_seq"]) if next_seq_row else 0
-                )
+                next_seq = int(next_seq_row["next_seq"]) if next_seq_row else 0
                 for (
                     role,
                     content,
@@ -528,6 +525,8 @@ class PostgresJournalBackend:
         user_text: str,
         *,
         user_id: str | None = None,
+        channel: str | None = None,
+        runtime_instance_id: str | None = None,
     ) -> ResumeData | None:
         """Return the most-recent in-progress turn for ``session_key``
         whose ``user_text`` matches and that is younger than
@@ -542,32 +541,30 @@ class PostgresJournalBackend:
         if not session_key or not user_text:
             return None
         cutoff = _now_ms() - RESUME_MAX_AGE_MS
+        sql = (
+            "SELECT turn_id, started_at_ms FROM journal_turns "
+            "WHERE session_key = $1 AND status = $2 "
+            "AND user_text = $3 AND started_at_ms >= $4"
+        )
+        params: list[Any] = [
+            session_key,
+            TURN_IN_PROGRESS,
+            user_text,
+            cutoff,
+        ]
+        if user_id is not None:
+            params.append(user_id)
+            sql += f" AND (user_id = ${len(params)} OR user_id IS NULL)"
+        if channel is not None:
+            params.append(channel)
+            sql += f" AND channel = ${len(params)}"
+        if runtime_instance_id is not None:
+            params.append(runtime_instance_id)
+            sql += f" AND runtime_instance_id = ${len(params)}"
+        sql += " ORDER BY started_at_ms DESC, turn_id DESC LIMIT 1"
         try:
             async with self._p.acquire() as conn:
-                if user_id is not None:
-                    row = await conn.fetchrow(
-                        "SELECT turn_id, started_at_ms FROM journal_turns "
-                        "WHERE session_key = $1 AND status = $2 "
-                        "AND user_text = $3 AND started_at_ms >= $4 "
-                        "AND (user_id = $5 OR user_id IS NULL) "
-                        "ORDER BY started_at_ms DESC LIMIT 1",
-                        session_key,
-                        TURN_IN_PROGRESS,
-                        user_text,
-                        cutoff,
-                        user_id,
-                    )
-                else:
-                    row = await conn.fetchrow(
-                        "SELECT turn_id, started_at_ms FROM journal_turns "
-                        "WHERE session_key = $1 AND status = $2 "
-                        "AND user_text = $3 AND started_at_ms >= $4 "
-                        "ORDER BY started_at_ms DESC LIMIT 1",
-                        session_key,
-                        TURN_IN_PROGRESS,
-                        user_text,
-                        cutoff,
-                    )
+                row = await conn.fetchrow(sql, *params)
         except Exception as exc:
             logger.warning("agent.journal.find_resumable_failed", error=str(exc))
             return None
@@ -656,8 +653,10 @@ class PostgresJournalBackend:
             "SELECT t.turn_id, t.session_key, t.started_at_ms, t.channel, "
             "t.tenant_id, t.user_id, m.seq, m.role, m.content "
             "FROM journal_turns t JOIN journal_turn_messages m ON m.turn_id=t.turn_id "
-            "WHERE " + " AND ".join(clauses) +
-            " ORDER BY t.started_at_ms ASC, t.turn_id ASC, m.seq ASC LIMIT " + limit_ref
+            "WHERE "
+            + " AND ".join(clauses)
+            + " ORDER BY t.started_at_ms ASC, t.turn_id ASC, m.seq ASC LIMIT "
+            + limit_ref
         )
         try:
             async with self._p.acquire() as conn:
@@ -684,9 +683,7 @@ class PostgresJournalBackend:
     # T4.4 — Error breadcrumbs
     # ------------------------------------------------------------------
 
-    async def recent_errored_turns(
-        self, session_key: str, limit: int = 5
-    ) -> list[dict[str, Any]]:
+    async def recent_errored_turns(self, session_key: str, limit: int = 5) -> list[dict[str, Any]]:
         """Return the most recent errored turns for ``session_key``."""
         try:
             async with self._p.acquire() as conn:
@@ -700,17 +697,13 @@ class PostgresJournalBackend:
                     max(1, int(limit)),
                 )
         except Exception as exc:
-            logger.warning(
-                "agent.journal.recent_errored_failed", error=str(exc)
-            )
+            logger.warning("agent.journal.recent_errored_failed", error=str(exc))
             return []
         return [
             {
                 "turn_id": int(r["turn_id"]),
                 "started_at_ms": int(r["started_at_ms"]),
-                "ended_at_ms": (
-                    int(r["ended_at_ms"]) if r["ended_at_ms"] is not None else None
-                ),
+                "ended_at_ms": (int(r["ended_at_ms"]) if r["ended_at_ms"] is not None else None),
                 "user_text": r["user_text"],
                 "error": r["error"],
             }
@@ -768,18 +761,12 @@ class PostgresJournalBackend:
                     "           MIN(started_at_ms) AS first_seen, "
                     "           MAX(started_at_ms) AS last_seen, "
                     "           COUNT(*)           AS turn_count "
-                    "    FROM journal_turns "
-                    + guard
-                    + "    GROUP BY session_key "
+                    "    FROM journal_turns " + guard + "    GROUP BY session_key "
                     "), msg_counts AS ( "
                     "    SELECT t.session_key, COUNT(m.turn_id) AS message_count "
                     "    FROM journal_turns t "
                     "    LEFT JOIN journal_turn_messages m ON m.turn_id = t.turn_id "
-                    + (
-                        guard.replace("tenant_id =", "t.tenant_id =")
-                        if guard
-                        else ""
-                    )
+                    + (guard.replace("tenant_id =", "t.tenant_id =") if guard else "")
                     + "    GROUP BY t.session_key "
                     ") "
                     "SELECT a.session_key, a.first_seen, a.last_seen, "
@@ -815,23 +802,15 @@ class PostgresJournalBackend:
                     turn_count=int(r["turn_count"]),
                     message_count=int(r["message_count"] or 0),
                     last_user_text=preview,
-                    last_status=(
-                        str(r["status"]) if r["status"] is not None else None
-                    ),
-                    title=(
-                        str(r["meta_title"])
-                        if r["meta_title"] is not None
-                        else None
-                    ),
+                    last_status=(str(r["status"]) if r["status"] is not None else None),
+                    title=(str(r["meta_title"]) if r["meta_title"] is not None else None),
                     pinned=bool(r["meta_pinned"]),
                     archived=bool(r["meta_archived"]),
                 )
             )
         return out
 
-    async def delete_session(
-        self, session_key: str, *, tenant_id: str | None = None
-    ) -> int:
+    async def delete_session(self, session_key: str, *, tenant_id: str | None = None) -> int:
         """Delete every turn (and its cascading messages) for
         ``session_key``. Returns the count of ``journal_turns`` rows
         actually deleted, computed via ``RETURNING turn_id`` since
@@ -855,15 +834,11 @@ class PostgresJournalBackend:
             async with self._p.acquire() as conn:
                 rows = await conn.fetch(sql, *params)
         except Exception as exc:
-            logger.warning(
-                "agent.journal.delete_session_failed", error=str(exc)
-            )
+            logger.warning("agent.journal.delete_session_failed", error=str(exc))
             return 0
         return len(rows)
 
-    async def session_exists(
-        self, session_key: str, *, tenant_id: str | None = None
-    ) -> bool:
+    async def session_exists(self, session_key: str, *, tenant_id: str | None = None) -> bool:
         """Cheap existence probe — used by ``PATCH /admin/sessions/{key}``
         to short-circuit the upsert with a 404 when the key is unknown.
 
@@ -886,9 +861,7 @@ class PostgresJournalBackend:
             async with self._p.acquire() as conn:
                 row = await conn.fetchrow(sql, *params)
         except Exception as exc:
-            logger.warning(
-                "agent.journal.session_exists_failed", error=str(exc)
-            )
+            logger.warning("agent.journal.session_exists_failed", error=str(exc))
             return False
         return row is not None
 
@@ -941,17 +914,13 @@ class PostgresJournalBackend:
                 session_key=session_key,
             )
             return None
-        summaries = await self.list_session_summaries(
-            limit=10_000, tenant_id=tenant_id
-        )
+        summaries = await self.list_session_summaries(limit=10_000, tenant_id=tenant_id)
         for s in summaries:
             if s.session_key == session_key:
                 return s
         return None
 
-    async def mark_stale_in_progress_as_errored(
-        self, older_than_seconds: int | None = None
-    ) -> int:
+    async def mark_stale_in_progress_as_errored(self, older_than_seconds: int | None = None) -> int:
         """Sweep stale in-progress turns past the cutoff.
 
         ``older_than_seconds=None`` keeps the legacy
@@ -1009,7 +978,7 @@ class PostgresJournalBackend:
             async with self._p.acquire() as conn:
                 rows = await conn.fetch(
                     "SELECT turn_id, session_key, user_id, user_text, "
-                    "started_at_ms, channel FROM journal_turns "
+                    "started_at_ms, channel, runtime_instance_id FROM journal_turns "
                     "WHERE status = $1 AND started_at_ms >= $2 "
                     "ORDER BY started_at_ms ASC",
                     TURN_IN_PROGRESS,
@@ -1027,16 +996,14 @@ class PostgresJournalBackend:
                 InProgressTurn(
                     turn_id=int(r["turn_id"]),
                     session_key=str(r["session_key"] or ""),
-                    user_id=(
-                        str(r["user_id"]) if r["user_id"] is not None else None
-                    ),
+                    user_id=(str(r["user_id"]) if r["user_id"] is not None else None),
                     user_text=str(r["user_text"] or ""),
                     started_at_ms=int(r["started_at_ms"]),
                     channel=str(r["channel"] or ""),
+                    runtime_instance_id=str(r["runtime_instance_id"] or ""),
                 )
             )
         return out
-
 
     # ------------------------------------------------------------------
     # W1.2 — turn events timeline.
@@ -1054,14 +1021,10 @@ class PostgresJournalBackend:
     async def append_event(self, envelope: Any) -> None:  # pragma: no cover
         return None
 
-    async def append_events_batch(
-        self, envelopes: Sequence[Any]
-    ) -> None:  # pragma: no cover
+    async def append_events_batch(self, envelopes: Sequence[Any]) -> None:  # pragma: no cover
         return None
 
-    async def load_events(
-        self, turn_id: str | int
-    ) -> list[dict[str, Any]]:  # pragma: no cover
+    async def load_events(self, turn_id: str | int) -> list[dict[str, Any]]:  # pragma: no cover
         return []
 
     async def iter_events(  # type: ignore[misc]
@@ -1090,9 +1053,7 @@ class PostgresJournalBackend:
     ) -> tuple[int, list[dict[str, Any]]]:  # pragma: no cover
         return int(after_rowid), []
 
-    async def get_session_turn_ids(
-        self, session_key: str, limit: int = 50
-    ) -> list[int]:
+    async def get_session_turn_ids(self, session_key: str, limit: int = 50) -> list[int]:
         """Most-recent turn ids for ``session_key`` (newest first).
 
         Thin SELECT mirroring the SQLite backend's semantics — consumed
@@ -1111,9 +1072,7 @@ class PostgresJournalBackend:
                     int(limit),
                 )
         except Exception as exc:
-            logger.warning(
-                "agent.journal.get_session_turn_ids_failed", error=str(exc)
-            )
+            logger.warning("agent.journal.get_session_turn_ids_failed", error=str(exc))
             return []
         return [int(row["turn_id"]) for row in rows]
 
@@ -1169,28 +1128,20 @@ class PostgresJournalBackend:
             user_text = row["user_text"]
             preview = None
             if isinstance(user_text, str):
-                preview = (
-                    user_text[:200] + "…" if len(user_text) > 200 else user_text
-                )
+                preview = user_text[:200] + "…" if len(user_text) > 200 else user_text
             out.append(
                 {
                     "turn_id": str(row["turn_id"]),
                     "started_at_ms": (
-                        int(row["started_at_ms"])
-                        if row["started_at_ms"] is not None
-                        else None
+                        int(row["started_at_ms"]) if row["started_at_ms"] is not None else None
                     ),
                     "ended_at_ms": (
-                        int(row["ended_at_ms"])
-                        if row["ended_at_ms"] is not None
-                        else None
+                        int(row["ended_at_ms"]) if row["ended_at_ms"] is not None else None
                     ),
                     "status": str(row["status"]) if row["status"] is not None else None,
                     "finish_reason": None,
                     "elapsed_ms": (
-                        int(row["elapsed_ms"])
-                        if row["elapsed_ms"] is not None
-                        else None
+                        int(row["elapsed_ms"]) if row["elapsed_ms"] is not None else None
                     ),
                     "estimated_cost_usd": (
                         float(row["estimated_cost_usd"])
@@ -1198,14 +1149,10 @@ class PostgresJournalBackend:
                         else None
                     ),
                     "cost_status": (
-                        str(row["cost_status"])
-                        if row["cost_status"] is not None
-                        else None
+                        str(row["cost_status"]) if row["cost_status"] is not None else None
                     ),
                     "tool_call_count": int(row["tool_call_count"] or 0),
-                    "reasoning_token_count": int(
-                        row["reasoning_token_count"] or 0
-                    ),
+                    "reasoning_token_count": int(row["reasoning_token_count"] or 0),
                     "user_text_preview": preview,
                 }
             )
@@ -1232,8 +1179,7 @@ class PostgresJournalBackend:
         try:
             async with self._p.acquire() as conn:
                 await conn.execute(
-                    f"UPDATE journal_turns SET {', '.join(sets)} "
-                    f"WHERE turn_id = ${len(params)}",
+                    f"UPDATE journal_turns SET {', '.join(sets)} WHERE turn_id = ${len(params)}",
                     *params,
                 )
         except Exception as exc:

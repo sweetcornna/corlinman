@@ -33,11 +33,11 @@ from __future__ import annotations
 import base64
 import json
 import mimetypes
-import os
 from pathlib import Path
 from typing import Any
 
 import structlog
+from corlinman_runtime import resolve_agent_workspace
 
 from corlinman_agent.coding._common import (
     CodingArgsInvalidError,
@@ -219,10 +219,5 @@ def dispatch_vision_analyze(
 
 
 def _resolve_workspace_default() -> Path:
-    """Return the default workspace path (``CORLINMAN_AGENT_WORKSPACE`` or
-    a fallback temp path). Used only for manual invocations without an
-    explicit workspace kwarg."""
-    raw = os.environ.get("CORLINMAN_AGENT_WORKSPACE")
-    if raw:
-        return Path(raw)
-    return Path.home() / ".corlinman" / "workspace"
+    """Return the shared workspace path for manual invocations."""
+    return resolve_agent_workspace()

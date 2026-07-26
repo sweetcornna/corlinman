@@ -223,6 +223,7 @@ async def serve_agent(
     data_dir: Path | None = None,
     py_config_path: Path | str | None = None,
     hook_runner: Any | None = None,
+    app_state: Any | None = None,
 ) -> None:
     """Bind a ``grpc.aio`` server hosting the ``Agent`` service and serve
     until ``shutdown`` fires.
@@ -310,9 +311,7 @@ async def serve_agent(
         selected_py_config_path = default_py_config_path()
     from corlinman_server.tencent_policy import ReloadingTencentPolicyResolver
 
-    tencent_policy_resolver = ReloadingTencentPolicyResolver(
-        str(selected_py_config_path)
-    )
+    tencent_policy_resolver = ReloadingTencentPolicyResolver(str(selected_py_config_path))
     if os.environ.get("CORLINMAN_TEST_MOCK_PROVIDER") is None:
         try:
             from corlinman_server.main import _ReloadingProviderResolver
@@ -330,18 +329,17 @@ async def serve_agent(
                 "gateway.grpc.agent.provider_resolver_failed",
                 error=str(exc),
             )
-    agent_pb2_grpc.add_AgentServicer_to_server(
-        CorlinmanAgentServicer(
-            provider_resolver=provider_resolver,
-            aliases=aliases,
-            event_emitter=event_emitter,
-            hook_runner=hook_runner,
-            subagent_dispatcher=subagent_dispatcher,
-            subagent_config=subagent_config,
-            tencent_policy_resolver=tencent_policy_resolver,
-        ),
-        server,
+    servicer = CorlinmanAgentServicer(
+        provider_resolver=provider_resolver,
+        aliases=aliases,
+        event_emitter=event_emitter,
+        hook_runner=hook_runner,
+        subagent_dispatcher=subagent_dispatcher,
+        subagent_config=subagent_config,
+        tencent_policy_resolver=tencent_policy_resolver,
     )
+    servicer.set_app_state(app_state)
+    agent_pb2_grpc.add_AgentServicer_to_server(servicer, server)
     try:
         server.add_insecure_port(bind)
         await server.start()
@@ -366,6 +364,10 @@ async def serve_agent(
     finally:
         with contextlib.suppress(Exception):
             await server.stop(grace=5.0)
+        # Gateway-owned state handles are closed by the lifespan, not by the
+        # co-hosted servicer. Detach them before closing servicer-owned stores.
+        servicer.set_app_state(None)
+        await servicer.aclose()
         if bind.startswith("unix://"):
             with contextlib.suppress(FileNotFoundError, OSError):
                 Path(bind[len("unix://") :]).unlink()
@@ -436,6 +438,7 @@ def serve_agent_in_background(
             data_dir=getattr(state, "data_dir", None),
             py_config_path=getattr(state, "py_config_path", None),
             hook_runner=hook_runner,
+            app_state=state,
         ),
         name="gateway.grpc.agent_server",
     )

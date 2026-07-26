@@ -872,6 +872,7 @@ export const en = {
     saving: "Saving...",
     saveSuccess: "Keywords saved",
     saveFailed: "Save failed: {{msg}}",
+    noChanges: "Nothing to save — no changes.",
     noOverrides:
       "No per-group overrides. Add one to bind the bot to a set of keywords per group.",
     addKeywordPlaceholder: "add keyword...",
@@ -3476,10 +3477,22 @@ export const en = {
       self_ids: "Detected from current OneBot / NapCat login events and updated automatically when the account changes. It stays empty until an event arrives; legacy config is server fallback only.",
       group_replies_enabled: "Off = silent in every group; private chat is unaffected.",
       freeze_risk_topic_blocking: "On by default and effective immediately. Blocks sexual, violent, self-harm, illegal, and other Tencent freeze-risk topics across QQ, QQ Official, and QZone. Unclassified images, audio, video, and scheduled QZone artwork are not sent while enabled.",
-      group_whitelist: "Only listed groups get replies; empty mutes all groups.",
+      group_whitelist:
+        "Only listed groups get replies. Note: if this was NEVER saved, no whitelist applies (all groups may be answered); explicitly saving an empty list mutes every group.",
       group_reply_policy: "Default answers only @mentions, commands, and configured keywords.",
       proactive_enabled: "Occasionally posts in groups at a human pace; off by default.",
-      proactive_groups: "Empty falls back to the group whitelist.",
+      proactive_groups:
+        "Empty falls back to the group whitelist; listed groups must also be whitelisted to take effect.",
+      group_rate_limit_window_minutes:
+        "Time window (minutes) for the hard per-group speech cap. Works with \"Max messages per window\"; 0 disables.",
+      group_rate_limit_max_messages:
+        "Max bot messages per group inside the window (replies + proactive posts share the budget; @mentions are NOT exempt, slash commands are). 0 disables.",
+      proactive_probability:
+        "Chance (0-1) of actually posting when a proactive beat fires. Below 1 the bot randomly stays silent — more human.",
+      proactive_timezone:
+        "IANA timezone for the active-hours window (e.g. Asia/Shanghai). Empty uses the server's local time — containers often run UTC, which makes the bot post at night.",
+      proactive_context_messages:
+        "How many recent group messages to show the persona before a proactive post (0 = off). With context it can join the live topic — or decide not to butt in.",
       access_token: "Auth for the OneBot WebSocket (ws_url). The bundled NapCat needs none — only set this for an external NapCat.",
       napcat_access_token: "Auth for the NapCat WebUI (napcat_url), used by QR login and diagnostics. The bundled NapCat needs none.",
       ws_url: "OneBot WebSocket endpoint. Leave blank for the bundled NapCat.",
@@ -3495,6 +3508,8 @@ export const en = {
     saving: "Saving…",
     saved: "Channel config saved ({{count}} field(s))",
     saveFailed: "Save failed: {{msg}}",
+    noChanges: "Nothing to save — no changes.",
+    invalidNumber: "Invalid number: {{field}}. Blank values are not saved; enter a number first.",
     field: {
       access_token: "OneBot WS token",
       bot_token: "Bot token",
@@ -3533,6 +3548,11 @@ export const en = {
       proactive_daily_max: "Daily max per group",
       proactive_active_start_hour: "Active from (hour)",
       proactive_active_end_hour: "Active until (hour)",
+      group_rate_limit_window_minutes: "Speech cap window (min)",
+      group_rate_limit_max_messages: "Max messages per window",
+      proactive_probability: "Proactive probability",
+      proactive_timezone: "Proactive timezone",
+      proactive_context_messages: "Context messages",
     },
   },
 

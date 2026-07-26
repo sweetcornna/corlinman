@@ -146,9 +146,7 @@ async def test_list_session_turns_tenant_cursor_and_metrics(backend) -> None:  #
             foreign,
         )
 
-    page = await backend.list_session_turns(
-        "sess-page", limit=2, tenant_id="tenant-a"
-    )
+    page = await backend.list_session_turns("sess-page", limit=2, tenant_id="tenant-a")
     assert [row["turn_id"] for row in page] == [str(third), str(second)]
     tail = await backend.list_session_turns(
         "sess-page",
@@ -162,9 +160,7 @@ async def test_list_session_turns_tenant_cursor_and_metrics(backend) -> None:  #
     assert tail[0]["cost_status"] == "estimated"
     assert tail[0]["tool_call_count"] == 2
     assert tail[0]["reasoning_token_count"] == 3
-    assert await backend.list_session_turns(
-        "sess-page", tenant_id="tenant-c"
-    ) == []
+    assert await backend.list_session_turns("sess-page", tenant_id="tenant-c") == []
 
 
 async def test_update_turn_cost_round_trip(backend) -> None:  # type: ignore[no-untyped-def]
@@ -421,14 +417,10 @@ async def test_begin_turn_race_returns_none_on_conflict(
     results = [a, b]
     nones = [r for r in results if r is None]
     ids = [r for r in results if isinstance(r, int)]
-    assert len(nones) == 1, (
-        f"C5 violation: expected exactly one None on race; got {results}"
-    )
+    assert len(nones) == 1, f"C5 violation: expected exactly one None on race; got {results}"
     assert len(ids) == 1
     # The surviving row is findable via find_resumable_turn.
-    resume = await backend.find_resumable_turn(
-        "race-1", "same prompt", user_id="alice"
-    )
+    resume = await backend.find_resumable_turn("race-1", "same prompt", user_id="alice")
     assert resume is not None
     assert resume.turn_id == ids[0]
 
@@ -451,12 +443,8 @@ async def test_find_resumable_scopes_by_user_id(
     even with the same session_key + user_text."""
     tid = await backend.begin_turn("g1", "ship it", user_id="alice")
     assert tid is not None
-    assert (
-        await backend.find_resumable_turn("g1", "ship it", user_id="mallory")
-    ) is None
-    found = await backend.find_resumable_turn(
-        "g1", "ship it", user_id="alice"
-    )
+    assert (await backend.find_resumable_turn("g1", "ship it", user_id="mallory")) is None
+    found = await backend.find_resumable_turn("g1", "ship it", user_id="alice")
     assert found is not None
     assert found.turn_id == tid
 
@@ -483,15 +471,11 @@ async def test_status_strings_match_protocol_constants(backend) -> None:  # type
     keeps working."""
     tid = await backend.begin_turn("sess-status", "x")
     async with backend._p.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT status FROM journal_turns WHERE turn_id = $1", tid
-        )
+        row = await conn.fetchrow("SELECT status FROM journal_turns WHERE turn_id = $1", tid)
     assert row["status"] == TURN_IN_PROGRESS
     await backend.complete_turn(tid)
     async with backend._p.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT status FROM journal_turns WHERE turn_id = $1", tid
-        )
+        row = await conn.fetchrow("SELECT status FROM journal_turns WHERE turn_id = $1", tid)
     assert row["status"] == TURN_COMPLETED
 
 
@@ -537,27 +521,65 @@ async def test_pg_begin_turn_persists_channel(backend) -> None:  # type: ignore[
     """The ``channel`` column round-trips through the row so the
     auto-resume scanner can dispatch re-delivery to the right surface.
     """
-    tid_tg = await backend.begin_turn(
-        "sess-tg", "telegram task", channel="telegram"
-    )
+    tid_tg = await backend.begin_turn("sess-tg", "telegram task", channel="telegram")
     tid_qq = await backend.begin_turn(
-        "sess-qq", "qq task", channel="qq"
+        "sess-qq",
+        "qq task",
+        channel="qq",
+        runtime_instance_id="bot-a",
     )
     assert tid_tg is not None and tid_qq is not None
 
     rows = await backend.list_resumable_in_progress()
     by_id = {r.turn_id: r for r in rows}
     assert by_id[tid_tg].channel == "telegram"
+    assert by_id[tid_tg].runtime_instance_id == ""
     assert by_id[tid_qq].channel == "qq"
+    assert by_id[tid_qq].runtime_instance_id == "bot-a"
+
+
+async def test_pg_same_turn_shape_isolated_by_runtime_instance(
+    backend,  # type: ignore[no-untyped-def]
+) -> None:
+    first = await backend.begin_turn(
+        "shared-session",
+        "same text",
+        user_id="sender",
+        channel="qq",
+        runtime_instance_id="bot-a",
+    )
+    second = await backend.begin_turn(
+        "shared-session",
+        "same text",
+        user_id="sender",
+        channel="qq",
+        runtime_instance_id="bot-b",
+    )
+    assert first is not None and second is not None and first != second
+
+    match = await backend.find_resumable_turn(
+        "shared-session",
+        "same text",
+        user_id="sender",
+        channel="qq",
+        runtime_instance_id="bot-b",
+    )
+    wrong = await backend.find_resumable_turn(
+        "shared-session",
+        "same text",
+        user_id="sender",
+        channel="qq",
+        runtime_instance_id="bot-c",
+    )
+    assert match is not None and match.turn_id == second
+    assert wrong is None
 
 
 async def test_pg_list_resumable_in_progress_respects_window(
     backend,  # type: ignore[no-untyped-def]
 ) -> None:
     """Window cutoff matches the SQLite peer."""
-    tid = await backend.begin_turn(
-        "sess-w-pg", "stale", channel="telegram"
-    )
+    tid = await backend.begin_turn("sess-w-pg", "stale", channel="telegram")
     async with backend._p.acquire() as conn:
         await conn.execute(
             "UPDATE journal_turns SET started_at_ms = 0 WHERE turn_id = $1",
@@ -577,9 +599,7 @@ async def test_pg_mark_stale_accepts_older_than_seconds(
 ) -> None:
     """The boot-time sweep passes a multi-hour cutoff; verify the
     Postgres backend honours it rather than the default 5-min window."""
-    tid = await backend.begin_turn(
-        "sess-mid-pg", "mid-age", channel="telegram"
-    )
+    tid = await backend.begin_turn("sess-mid-pg", "mid-age", channel="telegram")
     backdated = int(time.time() * 1000) - 10 * 60 * 1000
     async with backend._p.acquire() as conn:
         await conn.execute(
@@ -588,12 +608,8 @@ async def test_pg_mark_stale_accepts_older_than_seconds(
             tid,
         )
     # 1 h cutoff — row stays (younger than 1 h).
-    swept_long = await backend.mark_stale_in_progress_as_errored(
-        older_than_seconds=3600
-    )
+    swept_long = await backend.mark_stale_in_progress_as_errored(older_than_seconds=3600)
     assert swept_long == 0
     # 1 min cutoff — row flips.
-    swept_short = await backend.mark_stale_in_progress_as_errored(
-        older_than_seconds=60
-    )
+    swept_short = await backend.mark_stale_in_progress_as_errored(older_than_seconds=60)
     assert swept_short == 1

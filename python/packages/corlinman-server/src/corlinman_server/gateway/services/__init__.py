@@ -59,19 +59,25 @@ def bootstrap(state: Any) -> list[Any]:
         try:
             state.chat = build_chat_service(state)
         except Exception as exc:  # noqa: BLE001 — degrade, don't crash boot
-            logger.warning(
-                "gateway.services.chat_bootstrap_failed", error=str(exc)
-            )
+            logger.warning("gateway.services.chat_bootstrap_failed", error=str(exc))
 
     try:
         from corlinman_server.gateway.channels_runtime import (
             bootstrap as _channels_bootstrap,
         )
+        from corlinman_server.gateway.services.channel_bridge import (
+            ChannelChatServiceBridge,
+        )
 
-        tasks = _channels_bootstrap(state)
+        chat = getattr(state, "chat", None)
+        channel_chat = ChannelChatServiceBridge(chat) if chat is not None else None
+        original = chat
+        state.chat = channel_chat
+        try:
+            tasks = _channels_bootstrap(state)
+        finally:
+            state.chat = original
         return list(tasks) if tasks else []
     except Exception as exc:  # noqa: BLE001 — channels are optional
-        logger.warning(
-            "gateway.services.channels_bootstrap_failed", error=str(exc)
-        )
+        logger.warning("gateway.services.channels_bootstrap_failed", error=str(exc))
         return []

@@ -28,7 +28,6 @@ Wire contract
 from __future__ import annotations
 
 import json
-import os
 import time
 import uuid
 from pathlib import Path
@@ -36,6 +35,7 @@ from typing import Any
 
 import httpx
 import structlog
+from corlinman_runtime import resolve_agent_workspace
 
 from corlinman_agent.image.generate import (
     ImageGenerationError,
@@ -128,12 +128,8 @@ def _ulid_like() -> str:
 
 
 def _resolve_workspace_generated_dir() -> Path:
-    """Resolve ``<DATA_DIR>/workspace/generated``, creating it on first
-    use. Shared workspace with ``image_with_refs`` so the same
-    ``send_attachment`` resolver picks up either tool's output."""
-    raw = os.environ.get("CORLINMAN_DATA_DIR")
-    base = Path(raw) if raw else Path.home() / ".corlinman"
-    target = base / "workspace" / "generated"
+    """Resolve the shared workspace's generated-media directory."""
+    target = resolve_agent_workspace() / "generated"
     target.mkdir(parents=True, exist_ok=True)
     return target
 

@@ -70,6 +70,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import structlog
+from corlinman_runtime import resolve_execution_state_dir
 
 from corlinman_server.gateway.lifecycle.admin_seed import (
     ensure_admin_credentials,
@@ -282,9 +283,7 @@ async def refresh_mcp_advertisement(state: Any) -> None:
             # (``register_mcp_tools`` only upserts, so a dropped-out server
             # leaves a dead route otherwise). Always runs — the registry
             # is kept in lockstep with ``after`` on every refresh.
-            removed = await prune_stale_mcp_entries(
-                getattr(state, "plugin_registry", None), after
-            )
+            removed = await prune_stale_mcp_entries(getattr(state, "plugin_registry", None), after)
             if removed:
                 logger.info("gateway.mcp.refresh_pruned", removed=removed)
             # Rebuild the live ChatService so it re-reads the new snapshot.
@@ -328,6 +327,7 @@ def build_app(
 
     cfg = _load_config(config_path)
     resolved_data_dir = data_dir or _resolve_data_dir(None, cfg)
+    execution_state_dir = resolve_execution_state_dir(data_dir=resolved_data_dir)
     # ``default_py_config_path`` is environment-based because the standalone
     # agent process cannot see this function's CLI arguments. Pin the resolved
     # path before rendering so ``--data-dir`` / ``[server].data_dir`` keep the
@@ -336,19 +336,17 @@ def build_app(
     global _MANAGED_PY_CONFIG_ENV
     current_py_config = os.environ.get("CORLINMAN_PY_CONFIG")
     if current_py_config is None or current_py_config == _MANAGED_PY_CONFIG_ENV:
-        _MANAGED_PY_CONFIG_ENV = str(
-            resolved_data_dir / DEFAULT_PY_CONFIG_FILENAME
-        )
+        _MANAGED_PY_CONFIG_ENV = str(resolved_data_dir / DEFAULT_PY_CONFIG_FILENAME)
         os.environ["CORLINMAN_PY_CONFIG"] = _MANAGED_PY_CONFIG_ENV
 
-    # Stamp the boot-resolved dir onto the (stateless) /v1/files route so
-    # the chat file store lives in the SAME tree as the journal / session
-    # stores even when the dir came from --data-dir / [server].data_dir
-    # rather than $CORLINMAN_DATA_DIR (W3 review follow-up).
+    # Stamp the boot-resolved shared root onto the (stateless) /v1/files
+    # route so chat uploads remain available to the gateway and standalone
+    # Agent when the control plane and execution state are split. In the
+    # default flat layout this is still exactly ``resolved_data_dir``.
     try:
         from corlinman_server.gateway.routes import files as files_route
 
-        files_route.configure_data_dir(resolved_data_dir)
+        files_route.configure_data_dir(execution_state_dir)
     except ImportError:  # pragma: no cover — routes are a runtime dep
         pass
 
@@ -369,7 +367,12 @@ def build_app(
     # registry from boot.
     _emit_py_config_drop(cfg)
 
+    # Keep the two-argument builder call for compatibility with embedding
+    # hosts/tests that replace this seam; stamp the independently resolved
+    # execution root onto the returned typed or degraded state afterward.
     state = _build_state(cfg, resolved_data_dir)
+    with suppress(AttributeError, TypeError):
+        state.execution_state_dir = execution_state_dir
 
     # Resolve the on-disk path the admin-seed routine writes to / reads
     # back from. Cached on the FastAPI app so the lifespan handler can
@@ -402,14 +405,57 @@ def build_app(
             admin_a_state.config_path = seeded.config_path
             admin_a_state.must_change_password = seeded.must_change_password
 
+        if admin_a_state is not None:
+            manager_socket = os.environ.get(
+                "CORLINMAN_NAPCAT_MANAGER_SOCKET",
+                "/run/corlinman-napcat/manager.sock",
+            ).strip()
+            if manager_socket:
+                try:
+                    from corlinman_server.system.napcat_manager import (
+                        NapCatManagerClient,
+                    )
+
+                    admin_a_state.napcat_manager = NapCatManagerClient(Path(manager_socket))
+                    app.state.corlinman_napcat_manager = admin_a_state.napcat_manager
+                    runtime_registry = getattr(state, "qq_runtime_registry", None)
+                    if runtime_registry is not None:
+                        runtime_registry.manager = admin_a_state.napcat_manager
+                        admin_a_state.qq_runtime_registry = runtime_registry
+                except Exception as exc:  # pragma: no cover - optional helper
+                    logger.warning(
+                        "gateway.napcat_manager.client_init_failed",
+                        error=str(exc),
+                    )
+
         # SEC-007: mirror the seeded ``must_change_password`` flag onto the
         # admin-B state so the shared ``_auth_shim`` gate fires uniformly
         # across both route bundles. Admin-B's state owns its own copy
         # (rather than reaching back into the admin-A singleton) so test
         # fixtures that mount admin-B in isolation can't accidentally
         # inherit a leftover must_change flag from a sibling test.
-        if admin_b_state is not None and seeded is not None:
-            if hasattr(admin_b_state, "must_change_password"):
+        if admin_b_state is not None:
+            if admin_a_state is not None:
+                admin_a_state.scheduler_admin_state = admin_b_state
+                try:
+                    from corlinman_server.gateway.qq_instances import (
+                        QqInstanceAdminService,
+                    )
+
+                    qq_admin = QqInstanceAdminService(admin_a_state)
+                    admin_a_state.qq_instance_admin = qq_admin
+                    admin_b_state.qq_instance_admin = qq_admin
+                except Exception as exc:  # pragma: no cover - optional control plane
+                    logger.warning(
+                        "gateway.qq_instance.admin_service_init_failed",
+                        error=str(exc),
+                    )
+            # Admin config/scheduler mutations need the production state graph
+            # even when the scheduler is disabled. This exposes no secrets; it
+            # only gives routes access to live runtime handles.
+            with suppress(AttributeError, TypeError):
+                admin_b_state.extras["app_state"] = app.state
+            if seeded is not None and hasattr(admin_b_state, "must_change_password"):
                 admin_b_state.must_change_password = seeded.must_change_password
 
         # R1-001 security fix: open the multi-tenant ``tenants.sqlite``
@@ -467,7 +513,7 @@ def build_app(
                     seed_builtin_personas,
                 )
 
-                _ps = await PersonaStore.open(resolved_data_dir / "personas.sqlite")
+                _ps = await PersonaStore.open(execution_state_dir / "personas.sqlite")
                 await seed_builtin_personas(_ps)
                 admin_a_state.persona_store = _ps
                 app.state.corlinman_persona_store = _ps
@@ -485,8 +531,8 @@ def build_app(
                 from corlinman_server.persona import PersonaAssetStore
 
                 _pas = await PersonaAssetStore.open(
-                    resolved_data_dir / "persona_assets.sqlite",
-                    resolved_data_dir / "personas",
+                    execution_state_dir / "persona_assets.sqlite",
+                    execution_state_dir / "personas",
                 )
                 admin_a_state.persona_asset_store = _pas
                 app.state.corlinman_persona_asset_store = _pas
@@ -507,8 +553,15 @@ def build_app(
         # ``runner_not_registered``, no hooks). Boot never crashes here.
         # The identity sweep task is scheduled later (once ``background``
         # exists) so the lifespan-exit ``finally`` cancels + awaits it.
-        if resolved_data_dir is not None:
-            await _wire_c2_handles(app, state, admin_a_state, resolved_data_dir, cfg)
+        if execution_state_dir is not None:
+            await _wire_c2_handles(
+                app,
+                state,
+                admin_a_state,
+                execution_state_dir,
+                cfg,
+                control_data_dir=resolved_data_dir,
+            )
 
         # W1.3 — task-observability surface. Open the per-turn journal
         # the agent servicer also opens lazily on first chat, and
@@ -528,7 +581,7 @@ def build_app(
         observability_journal: Any | None = None
         observability_emitter: Any | None = None
         live_subagent_registry: Any | None = None
-        if resolved_data_dir is not None:
+        if execution_state_dir is not None:
             try:
                 from corlinman_server.agent_journal import AgentJournal
                 from corlinman_server.gateway.observability import (
@@ -537,7 +590,7 @@ def build_app(
                 )
 
                 observability_journal = await AgentJournal.open_from_env(
-                    resolved_data_dir / "agent_journal.sqlite"
+                    execution_state_dir / "agent_journal.sqlite"
                 )
                 # W2.x — live registry of INLINE subagents, fed off the
                 # emitter's subagent-lifecycle envelopes so the
@@ -594,7 +647,7 @@ def build_app(
 
                 logger.info(
                     "gateway.observability.emitter_installed",
-                    journal=str(resolved_data_dir / "agent_journal.sqlite"),
+                    journal=str(execution_state_dir / "agent_journal.sqlite"),
                 )
             except Exception as exc:  # pragma: no cover — best-effort
                 logger.warning("gateway.observability.init_failed", error=str(exc))
@@ -792,9 +845,7 @@ def build_app(
                     repo_override = os.environ.get("CORLINMAN_UPGRADE_REPO", "").strip()
                     if repo_override:
                         upgrader_extra["repo"] = repo_override
-                    container_override = os.environ.get(
-                        "CORLINMAN_UPGRADE_CONTAINER", ""
-                    ).strip()
+                    container_override = os.environ.get("CORLINMAN_UPGRADE_CONTAINER", "").strip()
                     if container_override:
                         upgrader_extra["container_name"] = container_override
                 upgrader = resolve_upgrader(
@@ -1206,21 +1257,19 @@ def build_app(
 
                 _mcp_specs = load_scoped_server_specs(state.config)
             except Exception as exc:  # pragma: no cover — best-effort
-                logger.warning(
-                    "gateway.mcp.scoped_config_failed", error=str(exc)
-                )
+                logger.warning("gateway.mcp.scoped_config_failed", error=str(exc))
                 from corlinman_mcp_server.client_manager import (
                     load_server_specs,
                 )
 
                 _mcp_specs = load_server_specs(state.config)
-            _mcp_manager = McpClientManager(
-                _mcp_specs, sampling_responder=_sampling
-            )
+            _mcp_manager = McpClientManager(_mcp_specs, sampling_responder=_sampling)
             # Server-pushed tools/list_changed → re-advertise the tool
             # plane (same entrypoint the admin hot-plug uses — issue #108).
             _mcp_manager.on_tools_changed = lambda: refresh_mcp_advertisement(state)
-            _dbg_ms = _mcp_cfg.get("list_changed_debounce_ms") if isinstance(_mcp_cfg, dict) else None
+            _dbg_ms = (
+                _mcp_cfg.get("list_changed_debounce_ms") if isinstance(_mcp_cfg, dict) else None
+            )
             if isinstance(_dbg_ms, int) and _dbg_ms > 0:
                 _mcp_manager._list_changed_debounce_ms = _dbg_ms
 
@@ -1612,21 +1661,19 @@ def build_app(
                 # read the last firing across restarts. Best-effort — a
                 # store-open failure leaves catch-up + history off but the
                 # scheduler still fires on schedule.
-                if (
-                    resolved_data_dir is not None
-                    and getattr(app.state, "scheduler_store", None) is None
-                ):
+                if getattr(app.state, "scheduler_store", None) is None:
                     try:
                         from corlinman_server.scheduler import SchedulerStore
 
+                        scheduler_path = execution_state_dir / "scheduler.sqlite"
                         _sched_store = await SchedulerStore.open(
-                            resolved_data_dir / "scheduler.sqlite",
+                            scheduler_path,
                             reconcile_prepared=True,
                         )
                         app.state.scheduler_store = _sched_store
                         logger.info(
                             "gateway.scheduler.store_opened",
-                            path=str(resolved_data_dir / "scheduler.sqlite"),
+                            path=str(scheduler_path),
                         )
                     except Exception as exc:  # noqa: BLE001 — history optional
                         logger.warning(
@@ -1692,15 +1739,11 @@ def build_app(
             yield
         finally:
             cancel.set()
-            teardown_scheduler_handle = getattr(
-                app.state, "corlinman_scheduler_handle", None
-            )
+            teardown_scheduler_handle = getattr(app.state, "corlinman_scheduler_handle", None)
             if teardown_scheduler_handle is not None:
                 try:
                     async with asyncio.timeout(5.0):
-                        await asyncio.shield(
-                            teardown_scheduler_handle.join_all()
-                        )
+                        await asyncio.shield(teardown_scheduler_handle.join_all())
                 except TimeoutError:
                     for task in teardown_scheduler_handle.tasks:
                         task.cancel()
@@ -1906,6 +1949,7 @@ def build_app(
     app.state.corlinman = state
     app.state.corlinman_config = cfg
     app.state.corlinman_data_dir = resolved_data_dir
+    app.state.corlinman_execution_state_dir = execution_state_dir
 
     _install_cors_middleware(app)
 

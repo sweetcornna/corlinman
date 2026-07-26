@@ -73,6 +73,72 @@ async def test_list_pending_filters_by_channel(inbox: Inbox) -> None:
     assert {e.user_text for e in tg_pending} == {"tg-msg"}
 
 
+async def test_list_pending_isolates_runtime_instances(inbox: Inbox) -> None:
+    await inbox.enqueue(
+        channel="qq",
+        runtime_instance_id="default",
+        session_key="s1",
+        message_id="same-message",
+        user_text="default-msg",
+    )
+    await inbox.enqueue(
+        channel="qq",
+        runtime_instance_id="second-bot",
+        session_key="s2",
+        message_id="same-message",
+        user_text="second-msg",
+    )
+
+    default_rows = await inbox.list_pending(channel="qq", runtime_instance_id="default")
+    second_rows = await inbox.list_pending(channel="qq", runtime_instance_id="second-bot")
+
+    assert [row.user_text for row in default_rows] == ["default-msg"]
+    assert [row.user_text for row in second_rows] == ["second-msg"]
+    assert default_rows[0].message_id == second_rows[0].message_id
+
+
+async def test_existing_schema_migrates_rows_to_default_instance(tmp_path: Path) -> None:
+    path = tmp_path / "legacy-inbox.sqlite"
+    async with aiosqlite.connect(path) as conn:
+        await conn.executescript(
+            """
+            CREATE TABLE inbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel TEXT NOT NULL,
+                session_key TEXT NOT NULL,
+                message_id TEXT,
+                user_text TEXT,
+                payload_json TEXT,
+                status TEXT NOT NULL,
+                received_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                retries INTEGER NOT NULL DEFAULT 0,
+                error TEXT
+            );
+            CREATE INDEX idx_inbox_channel_msg
+                ON inbox(channel, message_id);
+            INSERT INTO inbox (
+                channel, session_key, message_id, user_text, status,
+                received_at_ms, updated_at_ms
+            ) VALUES ('qq', 'legacy', 'm1', 'hello', 'pending', 1, 1);
+            """
+        )
+        await conn.commit()
+
+    migrated = await Inbox.open(path)
+    try:
+        rows = await migrated.list_pending(channel="qq", runtime_instance_id="default")
+        assert len(rows) == 1
+        assert rows[0].runtime_instance_id == "default"
+        indexes = {
+            str(row[1])
+            for row in await (await migrated._c.execute("PRAGMA index_list(inbox)")).fetchall()
+        }
+        assert "idx_inbox_channel_msg" in indexes
+    finally:
+        await migrated.close()
+
+
 async def test_list_pending_orders_oldest_first(inbox: Inbox) -> None:
     a = await inbox.enqueue(channel="qq", session_key="s1", user_text="A")
     await asyncio.sleep(0.01)
@@ -86,9 +152,7 @@ async def test_reset_stale_dispatched_flips_old_rows(inbox: Inbox) -> None:
     await inbox.mark_dispatched(iid)
     # Backdate the row by overriding updated_at_ms so the reset finds it.
     async with aiosqlite.connect(inbox._path) as conn:
-        await conn.execute(
-            "UPDATE inbox SET updated_at_ms = 0 WHERE id = ?", (iid,)
-        )
+        await conn.execute("UPDATE inbox SET updated_at_ms = 0 WHERE id = ?", (iid,))
         await conn.commit()
     n = await inbox.reset_stale_dispatched(older_than_seconds=10)
     assert n == 1
@@ -96,6 +160,32 @@ async def test_reset_stale_dispatched_flips_old_rows(inbox: Inbox) -> None:
     assert len(pending) == 1
     assert pending[0].status == INBOX_PENDING
     assert "stale" in (pending[0].error or "")
+
+
+async def test_reset_stale_dispatched_only_touches_target_instance(
+    inbox: Inbox,
+) -> None:
+    default_id = await inbox.enqueue(channel="qq", runtime_instance_id="default", session_key="s1")
+    second_id = await inbox.enqueue(
+        channel="qq", runtime_instance_id="second-bot", session_key="s2"
+    )
+    await inbox.mark_dispatched(default_id)
+    await inbox.mark_dispatched(second_id)
+    async with aiosqlite.connect(inbox._path) as conn:
+        await conn.execute("UPDATE inbox SET updated_at_ms = 0")
+        await conn.commit()
+
+    reset = await inbox.reset_stale_dispatched(
+        older_than_seconds=10,
+        channel="qq",
+        runtime_instance_id="second-bot",
+    )
+
+    assert reset == 1
+    default_rows = await inbox.list_recent(channel="qq", runtime_instance_id="default")
+    second_rows = await inbox.list_recent(channel="qq", runtime_instance_id="second-bot")
+    assert default_rows[0].status == INBOX_DISPATCHED
+    assert second_rows[0].status == INBOX_PENDING
 
 
 async def test_increment_retry_flips_to_dead_after_max(inbox: Inbox) -> None:
@@ -184,9 +274,7 @@ async def test_stuck_dispatched_count(inbox: Inbox) -> None:
     iid = await inbox.enqueue(channel="qq", session_key="s1", user_text="x")
     await inbox.mark_dispatched(iid)
     async with aiosqlite.connect(inbox._path) as conn:
-        await conn.execute(
-            "UPDATE inbox SET updated_at_ms = 0 WHERE id = ?", (iid,)
-        )
+        await conn.execute("UPDATE inbox SET updated_at_ms = 0 WHERE id = ?", (iid,))
         await conn.commit()
     n = await inbox.stuck_dispatched_count(older_than_seconds=10)
     assert n == 1

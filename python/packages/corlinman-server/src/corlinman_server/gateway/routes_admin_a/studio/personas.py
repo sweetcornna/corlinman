@@ -883,6 +883,19 @@ def router() -> APIRouter:
         writer = _channels_writer(state)
         cfg = state.channels_config or {}
         section = cfg.get(channel)
+        if channel == "qq" and isinstance(section, dict) and "instances" in section:
+            instances = section.get("instances")
+            default_instance = section.get("default_instance")
+            section = (
+                instances.get(default_instance)
+                if isinstance(instances, dict) and isinstance(default_instance, str)
+                else None
+            )
+            if not isinstance(section, dict):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail={"error": "default_instance_not_configured"},
+                )
         # Auto-stub a missing section so an operator can flip the toggle
         # on for a channel they're about to configure — the channel
         # won't actually start until ``enabled=true`` lands on the

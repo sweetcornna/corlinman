@@ -42,6 +42,7 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS inbox (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     channel         TEXT NOT NULL,
+    runtime_instance_id TEXT NOT NULL DEFAULT 'default',
     session_key     TEXT NOT NULL,
     message_id      TEXT,
     user_text       TEXT,
@@ -56,8 +57,6 @@ CREATE TABLE IF NOT EXISTS inbox (
 
 CREATE INDEX IF NOT EXISTS idx_inbox_status_received
     ON inbox(status, received_at_ms);
-CREATE INDEX IF NOT EXISTS idx_inbox_channel_msg
-    ON inbox(channel, message_id);
 """
 
 
@@ -67,6 +66,7 @@ class InboxEntry:
 
     id: int
     channel: str
+    runtime_instance_id: str
     session_key: str
     message_id: str | None
     user_text: str | None
@@ -100,6 +100,18 @@ class Inbox:
         await conn.execute("PRAGMA synchronous = NORMAL")
         await conn.execute("PRAGMA busy_timeout = 5000")
         await conn.executescript(_SCHEMA)
+        columns = {
+            str(row[1]) for row in await (await conn.execute("PRAGMA table_info(inbox)")).fetchall()
+        }
+        if "runtime_instance_id" not in columns:
+            await conn.execute(
+                "ALTER TABLE inbox ADD COLUMN runtime_instance_id TEXT NOT NULL DEFAULT 'default'"
+            )
+        await conn.execute("DROP INDEX IF EXISTS idx_inbox_channel_msg")
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_inbox_channel_msg "
+            "ON inbox(channel, runtime_instance_id, message_id)"
+        )
         await conn.commit()
         self._conn = conn
 
@@ -122,6 +134,7 @@ class Inbox:
         self,
         *,
         channel: str,
+        runtime_instance_id: str = "default",
         session_key: str,
         message_id: str | None = None,
         user_text: str | None = None,
@@ -131,11 +144,12 @@ class Inbox:
         now_ms = int(time.time() * 1000)
         try:
             cur = await self._c.execute(
-                "INSERT INTO inbox (channel, session_key, message_id, "
-                "user_text, payload_json, status, received_at_ms, updated_at_ms) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO inbox (channel, runtime_instance_id, session_key, "
+                "message_id, user_text, payload_json, status, received_at_ms, "
+                "updated_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     channel,
+                    runtime_instance_id or "default",
                     session_key or "",
                     message_id,
                     user_text,
@@ -212,27 +226,33 @@ class Inbox:
             )
             await self._c.commit()
         except aiosqlite.Error as exc:
-            logger.warning(
-                "inbox.set_status_failed", status=status, error=str(exc)
-            )
+            logger.warning("inbox.set_status_failed", status=status, error=str(exc))
 
     # ------------------------------------------------------------------
     # Reads
     # ------------------------------------------------------------------
 
     async def list_pending(
-        self, *, channel: str | None = None, limit: int = 100
+        self,
+        *,
+        channel: str | None = None,
+        runtime_instance_id: str | None = None,
+        limit: int = 100,
     ) -> list[InboxEntry]:
         """List rows in pending or dispatched status (oldest first)."""
         sql = (
-            "SELECT id, channel, session_key, message_id, user_text, "
-            "payload_json, status, received_at_ms, updated_at_ms, retries, error "
+            "SELECT id, channel, runtime_instance_id, session_key, message_id, "
+            "user_text, payload_json, status, received_at_ms, updated_at_ms, "
+            "retries, error "
             "FROM inbox WHERE status IN (?, ?)"
         )
         params: list[Any] = [INBOX_PENDING, INBOX_DISPATCHED]
         if channel is not None:
             sql += " AND channel = ?"
             params.append(channel)
+        if runtime_instance_id is not None:
+            sql += " AND runtime_instance_id = ?"
+            params.append(runtime_instance_id)
         sql += " ORDER BY received_at_ms ASC LIMIT ?"
         params.append(max(1, int(limit)))
         try:
@@ -245,18 +265,29 @@ class Inbox:
         return [_row_to_entry(r) for r in rows]
 
     async def list_recent(
-        self, *, channel: str | None = None, limit: int = 50
+        self,
+        *,
+        channel: str | None = None,
+        runtime_instance_id: str | None = None,
+        limit: int = 50,
     ) -> list[InboxEntry]:
         """List the most-recent rows in any status (newest first)."""
         sql = (
-            "SELECT id, channel, session_key, message_id, user_text, "
-            "payload_json, status, received_at_ms, updated_at_ms, retries, error "
+            "SELECT id, channel, runtime_instance_id, session_key, message_id, "
+            "user_text, payload_json, status, received_at_ms, updated_at_ms, "
+            "retries, error "
             "FROM inbox"
         )
         params: list[Any] = []
+        clauses: list[str] = []
         if channel is not None:
-            sql += " WHERE channel = ?"
+            clauses.append("channel = ?")
             params.append(channel)
+        if runtime_instance_id is not None:
+            clauses.append("runtime_instance_id = ?")
+            params.append(runtime_instance_id)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
         sql += " ORDER BY received_at_ms DESC LIMIT ?"
         params.append(max(1, int(limit)))
         try:
@@ -268,19 +299,25 @@ class Inbox:
             return []
         return [_row_to_entry(r) for r in rows]
 
-    async def stuck_dispatched_count(self, older_than_seconds: int = 600) -> int:
-        """Count rows stuck in ``dispatched`` longer than ``older_than_seconds``.
-
-        Useful for boot-time observability — a healthy gateway shouldn't
-        have any of these once it has been running for a while. The
-        boot drainer logs this number to surface stale work.
-        """
+    async def stuck_dispatched_count(
+        self,
+        older_than_seconds: int = 600,
+        *,
+        channel: str | None = None,
+        runtime_instance_id: str | None = None,
+    ) -> int:
+        """Count rows stuck in ``dispatched`` longer than the cutoff."""
         cutoff = int(time.time() * 1000) - older_than_seconds * 1000
+        sql = "SELECT COUNT(*) FROM inbox WHERE status = ? AND updated_at_ms < ?"
+        params: list[Any] = [INBOX_DISPATCHED, cutoff]
+        if channel is not None:
+            sql += " AND channel = ?"
+            params.append(channel)
+        if runtime_instance_id is not None:
+            sql += " AND runtime_instance_id = ?"
+            params.append(runtime_instance_id)
         try:
-            cur = await self._c.execute(
-                "SELECT COUNT(*) FROM inbox WHERE status = ? AND updated_at_ms < ?",
-                (INBOX_DISPATCHED, cutoff),
-            )
+            cur = await self._c.execute(sql, params)
             row = await cur.fetchone()
             await cur.close()
         except aiosqlite.Error as exc:
@@ -288,26 +325,35 @@ class Inbox:
             return 0
         return int(row[0]) if row else 0
 
-    async def reset_stale_dispatched(self, older_than_seconds: int = 600) -> int:
-        """Boot-time helper: rows still ``dispatched`` after a long stall
-        almost certainly belong to a crashed previous process. Flip them
-        back to ``pending`` so the next live arrival can supersede them
-        (T4.1's resume already gives us the in-flight half-finished
-        turn). Returns the count flipped."""
+    async def reset_stale_dispatched(
+        self,
+        older_than_seconds: int = 600,
+        *,
+        channel: str | None = None,
+        runtime_instance_id: str | None = None,
+    ) -> int:
+        """Reset stale dispatched rows, optionally within one runtime scope."""
         cutoff = int(time.time() * 1000) - older_than_seconds * 1000
+        sql = (
+            "UPDATE inbox SET status = ?, updated_at_ms = ?, "
+            "error = COALESCE(error, ?) "
+            "WHERE status = ? AND updated_at_ms < ?"
+        )
+        params: list[Any] = [
+            INBOX_PENDING,
+            int(time.time() * 1000),
+            "stale: gateway restart left row in dispatched",
+            INBOX_DISPATCHED,
+            cutoff,
+        ]
+        if channel is not None:
+            sql += " AND channel = ?"
+            params.append(channel)
+        if runtime_instance_id is not None:
+            sql += " AND runtime_instance_id = ?"
+            params.append(runtime_instance_id)
         try:
-            cur = await self._c.execute(
-                "UPDATE inbox SET status = ?, updated_at_ms = ?, "
-                "error = COALESCE(error, ?) "
-                "WHERE status = ? AND updated_at_ms < ?",
-                (
-                    INBOX_PENDING,
-                    int(time.time() * 1000),
-                    "stale: gateway restart left row in dispatched",
-                    INBOX_DISPATCHED,
-                    cutoff,
-                ),
-            )
+            cur = await self._c.execute(sql, params)
             await self._c.commit()
             n = cur.rowcount or 0
             await cur.close()
@@ -315,7 +361,12 @@ class Inbox:
             logger.warning("inbox.reset_stale_failed", error=str(exc))
             return 0
         if n:
-            logger.info("inbox.reset_stale_dispatched", count=n)
+            logger.info(
+                "inbox.reset_stale_dispatched",
+                count=n,
+                channel=channel,
+                runtime_instance_id=runtime_instance_id,
+            )
         return int(n)
 
 
@@ -323,15 +374,16 @@ def _row_to_entry(row: Sequence[Any]) -> InboxEntry:
     return InboxEntry(
         id=int(row[0]),
         channel=str(row[1]),
-        session_key=str(row[2]),
-        message_id=row[3],
-        user_text=row[4],
-        payload_json=row[5],
-        status=str(row[6]),
-        received_at_ms=int(row[7]),
-        updated_at_ms=int(row[8]),
-        retries=int(row[9]),
-        error=row[10],
+        runtime_instance_id=str(row[2]),
+        session_key=str(row[3]),
+        message_id=row[4],
+        user_text=row[5],
+        payload_json=row[6],
+        status=str(row[7]),
+        received_at_ms=int(row[8]),
+        updated_at_ms=int(row[9]),
+        retries=int(row[10]),
+        error=row[11],
     )
 
 

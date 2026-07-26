@@ -122,52 +122,65 @@ def _derive_http_from_ws(ws_url: str) -> str:
     return url.rstrip("/")
 
 
-def _resolve_base_url(
-    *, explicit: str | None, ws_url: str | None
-) -> str:
-    """Apply the documented precedence to pick a base URL.
-
-    Precedence: explicit > ``CORLINMAN_NAPCAT_HTTP_URL`` env > derived
-    from ``ws_url``. Returns ``""`` when nothing resolves so the
-    constructor can raise a clear error.
-    """
+def _resolve_base_url(*, explicit: str | None, ws_url: str | None, allow_env: bool = True) -> str:
+    """Resolve an action base URL without crossing instance boundaries."""
     if explicit and explicit.strip():
         return explicit.strip().rstrip("/")
-    env_url = os.environ.get("CORLINMAN_NAPCAT_HTTP_URL", "").strip()
-    if env_url:
-        return env_url.rstrip("/")
+    if allow_env:
+        env_url = os.environ.get("CORLINMAN_NAPCAT_HTTP_URL", "").strip()
+        if env_url:
+            return env_url.rstrip("/")
     if ws_url and ws_url.strip():
         return _derive_http_from_ws(ws_url)
     return ""
 
 
-def _resolve_token(*, explicit: str | None) -> str:
-    """Apply the documented precedence to pick an access token.
-
-    Precedence: explicit > ``CORLINMAN_NAPCAT_ACCESS_TOKEN`` env > "".
-    """
+def _resolve_token(*, explicit: str | None, allow_env: bool = True) -> str:
+    """Resolve a bearer token without singleton fallback when scoped."""
     if explicit and explicit.strip():
         return explicit.strip()
-    return os.environ.get("CORLINMAN_NAPCAT_ACCESS_TOKEN", "").strip()
+    if allow_env:
+        return os.environ.get("CORLINMAN_NAPCAT_ACCESS_TOKEN", "").strip()
+    return ""
 
 
-def _sidecar_onebot_config() -> tuple[str, str]:
-    """Read the gateway-emitted QQ action transport from py-config.json."""
+def _sidecar_onebot_config(
+    instance_id: str | None,
+) -> tuple[str, str, str | None]:
+    """Read one exact gateway-emitted QQ action transport."""
     raw_path = os.environ.get("CORLINMAN_PY_CONFIG", "").strip()
     if not raw_path:
-        return "", ""
+        if instance_id is not None:
+            raise OneBotError(f"QQ instance {instance_id!r} requires CORLINMAN_PY_CONFIG")
+        return "", "", None
     try:
         raw = json.loads(Path(raw_path).read_text(encoding="utf-8"))
-    except (OSError, ValueError, json.JSONDecodeError):
-        return "", ""
-    section = raw.get("qq_onebot") if isinstance(raw, dict) else None
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        if instance_id is not None:
+            raise OneBotError(
+                f"QQ instance {instance_id!r} transport config is unavailable"
+            ) from exc
+        return "", "", None
+    if not isinstance(raw, dict):
+        if instance_id is not None:
+            raise OneBotError(f"QQ instance {instance_id!r} transport config is invalid")
+        return "", "", None
+    if instance_id is not None:
+        instances = raw.get("qq_onebot_instances")
+        section = instances.get(instance_id) if isinstance(instances, dict) else None
+        if not isinstance(section, dict):
+            raise OneBotError(f"QQ instance {instance_id!r} is not configured")
+    else:
+        section = raw.get("qq_onebot")
     if not isinstance(section, dict):
-        return "", ""
+        return "", "", None
     ws_url = section.get("ws_url")
     access_token = section.get("access_token")
+    expected_uin = section.get("expected_uin")
     return (
         ws_url.strip() if isinstance(ws_url, str) else "",
         access_token.strip() if isinstance(access_token, str) else "",
+        str(expected_uin).strip() if expected_uin not in (None, "") else None,
     )
 
 
@@ -213,14 +226,28 @@ class OneBotClient:
         base_url: str | None = None,
         access_token: str | None = None,
         ws_url: str | None = None,
+        instance_id: str | None = None,
+        expected_uin: str | int | None = None,
         timeout: float | None = None,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
-        sidecar_ws_url, sidecar_token = _sidecar_onebot_config()
+        explicit_transport = bool((base_url and base_url.strip()) or (ws_url and ws_url.strip()))
+        if instance_id is not None and explicit_transport:
+            sidecar_ws_url, sidecar_token, sidecar_expected_uin = "", "", None
+        else:
+            sidecar_ws_url, sidecar_token, sidecar_expected_uin = _sidecar_onebot_config(
+                instance_id
+            )
         resolved_ws_url = (ws_url or "").strip() or sidecar_ws_url
         self._ws_url = resolved_ws_url
+        self._instance_id = instance_id
+        self._expected_uin = (
+            str(expected_uin).strip() if expected_uin not in (None, "") else sidecar_expected_uin
+        )
         resolved_base = _resolve_base_url(
-            explicit=base_url, ws_url=resolved_ws_url
+            explicit=base_url,
+            ws_url=resolved_ws_url,
+            allow_env=instance_id is None and not sidecar_ws_url,
         )
         if not resolved_base:
             raise OneBotError(
@@ -230,11 +257,10 @@ class OneBotClient:
             )
         self._base_url: str = resolved_base
         self._token: str = _resolve_token(
-            explicit=access_token or sidecar_token
+            explicit=access_token or sidecar_token,
+            allow_env=instance_id is None and not sidecar_token,
         )
-        self._timeout: float = (
-            timeout if timeout is not None and timeout > 0 else _env_timeout()
-        )
+        self._timeout: float = timeout if timeout is not None and timeout > 0 else _env_timeout()
         headers: dict[str, str] = {"Content-Type": "application/json"}
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
@@ -250,6 +276,16 @@ class OneBotClient:
     def base_url(self) -> str:
         """The resolved OneBot HTTP base URL (no trailing slash)."""
         return self._base_url
+
+    @property
+    def instance_id(self) -> str | None:
+        """Stable configured QQ instance selected by this client."""
+        return self._instance_id
+
+    @property
+    def expected_uin(self) -> str | None:
+        """Bound bot UIN required by :meth:`verify_identity`, when known."""
+        return self._expected_uin
 
     async def aclose(self) -> None:
         """Close the underlying :class:`httpx.AsyncClient`."""
@@ -278,40 +314,26 @@ class OneBotClient:
         try:
             response = await self._client.post(url, json=body)
             if response.status_code >= 400:
-                raise OneBotError(
-                    f"OneBot action {action!r} returned HTTP "
-                    f"{response.status_code}"
-                )
+                raise OneBotError(f"OneBot action {action!r} returned HTTP {response.status_code}")
             payload = response.json()
         except (httpx.HTTPError, ValueError, OneBotError) as exc:
             if not self._ws_url:
-                raise OneBotError(
-                    f"OneBot action {action!r} HTTP transport failed"
-                ) from exc
+                raise OneBotError(f"OneBot action {action!r} HTTP transport failed") from exc
             payload = await self._call_ws(action, body, http_error=exc)
 
         if not isinstance(payload, dict):
-            raise OneBotError(
-                f"OneBot action {action!r} returned a non-object response."
-            )
+            raise OneBotError(f"OneBot action {action!r} returned a non-object response.")
         status = payload.get("status")
         if status != "ok":
             # NapCat surfaces failures with either ``message`` or
             # ``wording``; ``retcode`` is the OneBot v11 numeric code.
-            msg = (
-                payload.get("message")
-                or payload.get("wording")
-                or "unknown error"
-            )
+            msg = payload.get("message") or payload.get("wording") or "unknown error"
             raise OneBotError(
-                f"OneBot action {action!r} failed: {msg} "
-                f"(retcode={payload.get('retcode')})"
+                f"OneBot action {action!r} failed: {msg} (retcode={payload.get('retcode')})"
             )
         data = payload.get("data")
         if data is None:
-            raise OneBotError(
-                f"OneBot action {action!r} returned no data field."
-            )
+            raise OneBotError(f"OneBot action {action!r} returned no data field.")
         return data
 
     async def _call_ws(
@@ -322,11 +344,7 @@ class OneBotClient:
         http_error: Exception,
     ) -> Any:
         echo = f"corlinman-agent:{id(self)}:{next(_ECHO_COUNTER)}:{action}"
-        headers = (
-            [("Authorization", f"Bearer {self._token}")]
-            if self._token
-            else None
-        )
+        headers = [("Authorization", f"Bearer {self._token}")] if self._token else None
         frame = json.dumps(
             {"action": action, "params": params, "echo": echo},
             ensure_ascii=False,
@@ -353,9 +371,7 @@ class OneBotClient:
         except Exception as exc:  # noqa: BLE001 — transport boundary
             # Preserve no upstream body/snippet; callers log only the stable
             # action-level error while retaining the HTTP cause for debugging.
-            raise OneBotError(
-                f"OneBot action {action!r} WebSocket transport failed"
-            ) from exc
+            raise OneBotError(f"OneBot action {action!r} WebSocket transport failed") from exc
         raise OneBotError(
             f"OneBot action {action!r} returned no matching WebSocket response"
         ) from http_error
@@ -373,14 +389,11 @@ class OneBotClient:
         """
         data = await self._call("get_login_info")
         if not isinstance(data, dict):
-            raise OneBotError(
-                "OneBot get_login_info returned a non-object payload."
-            )
+            raise OneBotError("OneBot get_login_info returned a non-object payload.")
         user_id = data.get("user_id")
         if not user_id:
             raise OneBotError(
-                "OneBot get_login_info returned no user_id — the QQ "
-                "client may not be logged in."
+                "OneBot get_login_info returned no user_id — the QQ client may not be logged in."
             )
         # Normalize shape: callers want both a string ``qq`` and the
         # raw numeric ``user_id`` since the OneBot envelope ships the
@@ -391,6 +404,16 @@ class OneBotClient:
             "nickname": data.get("nickname") or "",
             "raw": data,
         }
+
+    async def verify_identity(self) -> dict[str, Any]:
+        """Fetch login identity and fail closed on an expected-UIN mismatch."""
+        info = await self.fetch_login_info()
+        actual = str(info.get("qq") or info.get("user_id") or "").strip()
+        if self._expected_uin and actual != self._expected_uin:
+            raise OneBotError(
+                f"QQ instance identity mismatch: expected {self._expected_uin}, got {actual}"
+            )
+        return info
 
     async def fetch_cookies(self, domain: str = "user.qzone.qq.com") -> str:
         """Return the raw ``k=v; k2=v2`` cookie string for ``domain``.
@@ -426,10 +449,7 @@ class OneBotClient:
             return token
         if isinstance(token, str) and token.strip().isdigit():
             return int(token.strip())
-        raise OneBotError(
-            f"OneBot get_csrf_token returned unexpected token shape: "
-            f"{token!r}"
-        )
+        raise OneBotError(f"OneBot get_csrf_token returned unexpected token shape: {token!r}")
 
     async def fetch_friend_list(self) -> list[dict[str, Any]]:
         """Return the QQ friend list as a list of raw friend dicts.
@@ -449,7 +469,6 @@ class OneBotClient:
             friends = data
         if not isinstance(friends, list):
             raise OneBotError(
-                "OneBot get_friend_list returned an unexpected shape: "
-                f"{type(friends).__name__}"
+                f"OneBot get_friend_list returned an unexpected shape: {type(friends).__name__}"
             )
         return [f for f in friends if isinstance(f, dict)]

@@ -79,9 +79,44 @@ class _FailingHandle(_FakeHandle):
         super().unregister(name)
 
 
+class _SelectiveFailingHandle(_FakeHandle):
+    def __init__(
+        self,
+        *,
+        fail_register: set[str] | None = None,
+        fail_unregister: set[str] | None = None,
+    ) -> None:
+        super().__init__()
+        self.fail_register = fail_register or set()
+        self.fail_unregister = fail_unregister or set()
+
+    def register(self, spec: Any) -> bool:
+        if spec.name in self.fail_register:
+            raise RuntimeError(f"register failed: {spec.name}")
+        return super().register(spec)
+
+    def unregister(self, name: str) -> None:
+        if name in self.fail_unregister:
+            raise RuntimeError(f"unregister failed: {name}")
+        super().unregister(name)
+
+
 @pytest.fixture()
 def admin_state(tmp_path: Path) -> Iterator[AdminState]:
     state = AdminState(data_dir=tmp_path)
+    state.config_loader = lambda: {
+        "channels": {
+            "qq": {
+                "default_instance": "default",
+                "instances": {
+                    "default": {"enabled": True},
+                    "bot-a": {"enabled": True},
+                    "bot-b": {"enabled": True},
+                    "disabled": {"enabled": False},
+                },
+            }
+        }
+    }
     configure_admin_auth(state)
     set_admin_state(state)
     try:
@@ -105,6 +140,7 @@ def _make_qzone_body(name: str = "rt.daily", **over: Any) -> dict[str, Any]:
         "persona_id": "grantley",
         "prompt_template": "say something",
         "qq_account": "9999",
+        "qq_instance_id": "default",
         "timezone": "Asia/Shanghai",
     }
     body.update(over)
@@ -128,8 +164,48 @@ def test_create_persists_to_sidecar(
     assert len(rows) == 1
     assert rows[0]["name"] == "rt.daily"
     assert rows[0]["persona_id"] == "grantley"
+    assert rows[0]["qq_instance_id"] == "default"
+    assert rows[0]["metadata"]["qq_instance_id"] == "default"
     assert rows[0]["enabled"] is True
     assert payload["version"] == 2
+
+
+def test_create_resolves_omitted_instance_when_one_account_is_enabled(
+    admin_state: AdminState,
+    client: TestClient,
+) -> None:
+    admin_state.config_loader = lambda: {
+        "channels": {
+            "qq": {
+                "default_instance": "bot-a",
+                "instances": {
+                    "bot-a": {"enabled": True},
+                    "disabled": {"enabled": False},
+                },
+            }
+        }
+    }
+    body = _make_qzone_body()
+    body.pop("qq_instance_id")
+
+    response = client.post("/admin/scheduler/jobs", json=body)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["qq_instance_id"] == "bot-a"
+    row = admin_state.extras["scheduler_runtime_jobs"]["rt.daily"]
+    assert row.metadata["qq_instance_id"] == "bot-a"
+
+
+def test_create_rejects_omitted_instance_when_multiple_are_enabled(
+    client: TestClient,
+) -> None:
+    body = _make_qzone_body()
+    body.pop("qq_instance_id")
+
+    response = client.post("/admin/scheduler/jobs", json=body)
+
+    assert response.status_code == 422
+    assert response.json()["error"] == "invalid_qq_instance"
 
 
 def test_persisted_job_rehydrates_into_fresh_state(tmp_path: Path) -> None:
@@ -167,6 +243,61 @@ def test_persisted_job_rehydrates_into_fresh_state(tmp_path: Path) -> None:
         # Metadata table was repopulated so the qzone builtin can read it.
         meta = fresh.extras.get("scheduler_job_metadata", {})
         assert meta.get("rt.daily", {}).get("persona_id") == "grantley"
+    finally:
+        set_admin_state(None)
+
+
+def test_rehydrate_disables_job_targeting_removed_instance(tmp_path: Path) -> None:
+    sidecar = tmp_path / "scheduler_runtime_jobs.json"
+    sidecar.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "jobs": [
+                    {
+                        "name": "removed.daily",
+                        "cron": "0 9 * * *",
+                        "action_type": QZONE_DAILY_BUILTIN_NAME,
+                        "persona_id": "grantley",
+                        "prompt_template": "x",
+                        "qq_instance_id": "removed",
+                        "enabled": True,
+                        "metadata": {
+                            "persona_id": "grantley",
+                            "prompt_template": "x",
+                            "qq_instance_id": "removed",
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    state = AdminState(data_dir=tmp_path)
+    state.config_loader = lambda: {
+        "channels": {
+            "qq": {
+                "default_instance": "default",
+                "instances": {"default": {"enabled": True}},
+            }
+        }
+    }
+    handle = _FakeHandle()
+    state.scheduler = handle
+    configure_admin_auth(state)
+    set_admin_state(state)
+    try:
+        app = FastAPI()
+        app.include_router(scheduler_routes.router())
+        response = authenticated_test_client(app).get("/admin/scheduler/jobs")
+
+        assert response.status_code == 200
+        row = response.json()[0]
+        assert row["enabled"] is False
+        assert "does not exist" in row["last_error"]
+        assert handle.registered == []
+        persisted = json.loads(sidecar.read_text())
+        assert persisted["jobs"][0]["enabled"] is False
     finally:
         set_admin_state(None)
 
@@ -213,9 +344,7 @@ def test_malformed_row_does_not_hide_later_valid_jobs(tmp_path: Path) -> None:
 
 
 def test_malformed_sidecar_does_not_crash_listing(tmp_path: Path) -> None:
-    (tmp_path / "scheduler_runtime_jobs.json").write_text(
-        "{ not valid json", encoding="utf-8"
-    )
+    (tmp_path / "scheduler_runtime_jobs.json").write_text("{ not valid json", encoding="utf-8")
     state = AdminState(data_dir=tmp_path)
     configure_admin_auth(state)
     set_admin_state(state)
@@ -304,9 +433,7 @@ def test_pause_persistence_failure_keeps_job_enabled_and_registered(
 # ---------------------------------------------------------------------------
 
 
-def test_create_enabled_registers_loop(
-    admin_state: AdminState, client: TestClient
-) -> None:
+def test_create_enabled_registers_loop(admin_state: AdminState, client: TestClient) -> None:
     handle = _FakeHandle()
     admin_state.scheduler = handle
     res = client.post("/admin/scheduler/jobs", json=_make_qzone_body(enabled=True))
@@ -323,9 +450,7 @@ def test_create_registration_failure_rolls_back_sidecar_and_overlay(
     with pytest.raises(RuntimeError, match="register failed"):
         client.post("/admin/scheduler/jobs", json=_make_qzone_body(enabled=True))
     assert admin_state.extras.get("scheduler_runtime_jobs", {}) == {}
-    payload = json.loads(
-        (tmp_path / "scheduler_runtime_jobs.json").read_text(encoding="utf-8")
-    )
+    payload = json.loads((tmp_path / "scheduler_runtime_jobs.json").read_text(encoding="utf-8"))
     assert payload["jobs"] == []
 
 
@@ -342,9 +467,7 @@ def test_create_imported_shadow_job_persists_source_identity(
     assert res.json()["execution_mode"] == "shadow"
     assert res.json()["source_system"] == "external"
     assert res.json()["source_job_id"] == "source-job-1"
-    payload = json.loads(
-        (tmp_path / "scheduler_runtime_jobs.json").read_text(encoding="utf-8")
-    )
+    payload = json.loads((tmp_path / "scheduler_runtime_jobs.json").read_text(encoding="utf-8"))
     row = payload["jobs"][0]
     assert row["execution_mode"] == "shadow"
     assert row["source_job_id"] == "source-job-1"
@@ -374,22 +497,28 @@ def test_create_same_source_id_upserts_instead_of_duplicating(
 
 
 def test_create_rejects_name_source_identity_collision(client: TestClient) -> None:
-    assert client.post(
-        "/admin/scheduler/jobs",
-        json=_make_qzone_body(
-            name="name-a",
-            source_system="external",
-            source_job_id="source-a",
-        ),
-    ).status_code == 200
-    assert client.post(
-        "/admin/scheduler/jobs",
-        json=_make_qzone_body(
-            name="name-b",
-            source_system="external",
-            source_job_id="source-b",
-        ),
-    ).status_code == 200
+    assert (
+        client.post(
+            "/admin/scheduler/jobs",
+            json=_make_qzone_body(
+                name="name-a",
+                source_system="external",
+                source_job_id="source-a",
+            ),
+        ).status_code
+        == 200
+    )
+    assert (
+        client.post(
+            "/admin/scheduler/jobs",
+            json=_make_qzone_body(
+                name="name-b",
+                source_system="external",
+                source_job_id="source-b",
+            ),
+        ).status_code
+        == 200
+    )
     conflict = client.post(
         "/admin/scheduler/jobs",
         json=_make_qzone_body(
@@ -428,9 +557,7 @@ def test_create_disabled_does_not_register_loop(
 # ---------------------------------------------------------------------------
 
 
-def test_pause_then_resume_cycle(
-    admin_state: AdminState, client: TestClient
-) -> None:
+def test_pause_then_resume_cycle(admin_state: AdminState, client: TestClient) -> None:
     handle = _FakeHandle()
     admin_state.scheduler = handle
     client.post("/admin/scheduler/jobs", json=_make_qzone_body(enabled=True))
@@ -459,9 +586,7 @@ def test_pause_unregister_failure_restores_enabled_sidecar(
     with pytest.raises(RuntimeError, match="unregister failed"):
         client.post("/admin/scheduler/jobs/rt.daily/pause")
     assert admin_state.extras["scheduler_runtime_jobs"]["rt.daily"].enabled is True
-    payload = json.loads(
-        (tmp_path / "scheduler_runtime_jobs.json").read_text(encoding="utf-8")
-    )
+    payload = json.loads((tmp_path / "scheduler_runtime_jobs.json").read_text(encoding="utf-8"))
     assert payload["jobs"][0]["enabled"] is True
 
 
@@ -470,15 +595,11 @@ def test_pause_persists_disabled_state(
 ) -> None:
     client.post("/admin/scheduler/jobs", json=_make_qzone_body(enabled=True))
     client.post("/admin/scheduler/jobs/rt.daily/pause")
-    payload = json.loads(
-        (tmp_path / "scheduler_runtime_jobs.json").read_text(encoding="utf-8")
-    )
+    payload = json.loads((tmp_path / "scheduler_runtime_jobs.json").read_text(encoding="utf-8"))
     assert payload["jobs"][0]["enabled"] is False
 
 
-def test_resume_revalidates_qzone_args(
-    admin_state: AdminState, client: TestClient
-) -> None:
+def test_resume_revalidates_qzone_args(admin_state: AdminState, client: TestClient) -> None:
     """A runtime qzone job that lost its persona_id can't silently resume."""
     client.post("/admin/scheduler/jobs", json=_make_qzone_body(enabled=False))
     # Corrupt the stored job's args directly to simulate a bad edit.
@@ -504,20 +625,73 @@ def test_patch_updates_cron(admin_state: AdminState, client: TestClient) -> None
     handle = _FakeHandle()
     admin_state.scheduler = handle
     client.post("/admin/scheduler/jobs", json=_make_qzone_body(enabled=True))
-    res = client.patch(
-        "/admin/scheduler/jobs/rt.daily", json={"cron": "30 8 * * *"}
-    )
+    res = client.patch("/admin/scheduler/jobs/rt.daily", json={"cron": "30 8 * * *"})
     assert res.status_code == 200, res.text
     assert res.json()["cron"] == "30 8 * * *"
     # Re-registered so the new cron takes effect.
     assert handle.registered[-1] == "rt.daily"
 
 
+def test_patch_preserves_qq_instance_assignment(
+    admin_state: AdminState, client: TestClient
+) -> None:
+    assert (
+        client.post(
+            "/admin/scheduler/jobs",
+            json=_make_qzone_body(qq_instance_id="bot-a"),
+        ).status_code
+        == 200
+    )
+
+    response = client.patch(
+        "/admin/scheduler/jobs/rt.daily",
+        json={"cron": "30 8 * * *"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["qq_instance_id"] == "bot-a"
+    row = admin_state.extras["scheduler_runtime_jobs"]["rt.daily"]
+    assert row.qq_instance_id == "bot-a"
+    assert row.metadata["qq_instance_id"] == "bot-a"
+
+
+def test_create_rejects_invalid_qq_instance_id(client: TestClient) -> None:
+    response = client.post(
+        "/admin/scheduler/jobs",
+        json=_make_qzone_body(qq_instance_id="../other"),
+    )
+    assert response.status_code == 422
+    assert response.json()["error"] == "invalid_qzone_daily_args"
+
+
+@pytest.mark.parametrize("instance_id", ["missing", "disabled"])
+def test_create_rejects_unavailable_qq_instance(
+    client: TestClient,
+    instance_id: str,
+) -> None:
+    response = client.post(
+        "/admin/scheduler/jobs",
+        json=_make_qzone_body(qq_instance_id=instance_id),
+    )
+    assert response.status_code == 422
+    assert response.json()["error"] == "invalid_qq_instance"
+
+
+def test_patch_rejects_unavailable_qq_instance(client: TestClient) -> None:
+    assert client.post("/admin/scheduler/jobs", json=_make_qzone_body()).status_code == 200
+
+    response = client.patch(
+        "/admin/scheduler/jobs/rt.daily",
+        json={"qq_instance_id": "missing"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"] == "invalid_qq_instance"
+
+
 def test_patch_rejects_invalid_cron(client: TestClient) -> None:
     client.post("/admin/scheduler/jobs", json=_make_qzone_body())
-    res = client.patch(
-        "/admin/scheduler/jobs/rt.daily", json={"cron": "not-a-cron"}
-    )
+    res = client.patch("/admin/scheduler/jobs/rt.daily", json={"cron": "not-a-cron"})
     assert res.status_code == 422
     assert res.json()["error"] == "invalid_cron"
 
@@ -537,9 +711,7 @@ def test_patch_disable_unregisters_and_persists(
     assert res.status_code == 200
     assert res.json()["enabled"] is False
     assert handle.unregistered[-1] == "rt.daily"
-    payload = json.loads(
-        (tmp_path / "scheduler_runtime_jobs.json").read_text(encoding="utf-8")
-    )
+    payload = json.loads((tmp_path / "scheduler_runtime_jobs.json").read_text(encoding="utf-8"))
     assert payload["jobs"][0]["enabled"] is False
 
 
@@ -560,9 +732,7 @@ def test_delete_removes_job_and_cancels_loop(
     assert handle.unregistered[-1] == "rt.daily"
     # Gone from the list + the sidecar.
     assert client.get("/admin/scheduler/jobs").json() == []
-    payload = json.loads(
-        (tmp_path / "scheduler_runtime_jobs.json").read_text(encoding="utf-8")
-    )
+    payload = json.loads((tmp_path / "scheduler_runtime_jobs.json").read_text(encoding="utf-8"))
     assert payload["jobs"] == []
 
 
@@ -583,9 +753,7 @@ def test_delete_unregister_failure_restores_sidecar(
     with pytest.raises(RuntimeError, match="unregister failed"):
         client.delete("/admin/scheduler/jobs/rt.daily")
     assert "rt.daily" in admin_state.extras["scheduler_runtime_jobs"]
-    payload = json.loads(
-        (tmp_path / "scheduler_runtime_jobs.json").read_text(encoding="utf-8")
-    )
+    payload = json.loads((tmp_path / "scheduler_runtime_jobs.json").read_text(encoding="utf-8"))
     assert payload["jobs"][0]["name"] == "rt.daily"
 
 
@@ -613,6 +781,181 @@ def test_delete_persistence_failure_keeps_live_row_and_loop(
 
 
 # ---------------------------------------------------------------------------
+# QQ-instance references and migration
+# ---------------------------------------------------------------------------
+
+
+def test_qzone_instance_references_include_paused_jobs(client: TestClient) -> None:
+    client.post(
+        "/admin/scheduler/jobs",
+        json=_make_qzone_body(
+            name="bot-a.grantley.daily_qzone",
+            qq_instance_id="bot-a",
+            enabled=False,
+        ),
+    )
+
+    response = client.get("/admin/scheduler/qzone/instances/bot-a/references")
+
+    assert response.status_code == 200
+    assert response.json()["references"] == [
+        {
+            "name": "bot-a.grantley.daily_qzone",
+            "action_type": QZONE_DAILY_BUILTIN_NAME,
+            "persona_id": "grantley",
+            "enabled": False,
+        }
+    ]
+
+
+def test_qzone_instance_migration_renames_and_rebinds_atomically(
+    admin_state: AdminState, client: TestClient, tmp_path: Path
+) -> None:
+    client.post(
+        "/admin/scheduler/jobs",
+        json=_make_qzone_body(
+            name="bot-a.grantley.daily_qzone",
+            qq_instance_id="bot-a",
+        ),
+    )
+
+    response = client.post(
+        "/admin/scheduler/qzone/instances/bot-a/migrate",
+        json={"target_instance_id": "bot-b"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["jobs"][0]["name"] == "bot-b.grantley.daily_qzone"
+    assert response.json()["jobs"][0]["qq_instance_id"] == "bot-b"
+    table = admin_state.extras["scheduler_runtime_jobs"]
+    assert set(table) == {"bot-b.grantley.daily_qzone"}
+    assert table["bot-b.grantley.daily_qzone"].metadata["qq_instance_id"] == "bot-b"
+    persisted = json.loads((tmp_path / "scheduler_runtime_jobs.json").read_text(encoding="utf-8"))
+    assert persisted["jobs"][0]["name"] == "bot-b.grantley.daily_qzone"
+
+
+@pytest.mark.parametrize("target_instance_id", ["missing", "disabled"])
+def test_qzone_instance_migration_rejects_unavailable_target(
+    client: TestClient,
+    target_instance_id: str,
+) -> None:
+    client.post(
+        "/admin/scheduler/jobs",
+        json=_make_qzone_body(
+            name="bot-a.grantley.daily_qzone",
+            qq_instance_id="bot-a",
+        ),
+    )
+
+    response = client.post(
+        "/admin/scheduler/qzone/instances/bot-a/migrate",
+        json={"target_instance_id": target_instance_id},
+    )
+
+    assert response.status_code == 409
+    rows = client.get("/admin/scheduler/jobs").json()
+    assert [row["name"] for row in rows] == ["bot-a.grantley.daily_qzone"]
+
+
+def test_qzone_instance_migration_registration_failure_rolls_back_every_surface(
+    admin_state: AdminState,
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    handle = _SelectiveFailingHandle()
+    admin_state.scheduler = handle
+    create = client.post(
+        "/admin/scheduler/jobs",
+        json=_make_qzone_body(
+            name="bot-a.grantley.daily_qzone",
+            qq_instance_id="bot-a",
+        ),
+    )
+    assert create.status_code == 200, create.text
+    handle.registered.clear()
+    handle.unregistered.clear()
+    handle.fail_register.add("bot-b.grantley.daily_qzone")
+
+    with pytest.raises(RuntimeError, match="register failed"):
+        client.post(
+            "/admin/scheduler/qzone/instances/bot-a/migrate",
+            json={"target_instance_id": "bot-b"},
+        )
+
+    table = admin_state.extras["scheduler_runtime_jobs"]
+    assert set(table) == {"bot-a.grantley.daily_qzone"}
+    metadata = admin_state.extras["scheduler_job_metadata"]
+    assert set(metadata) == {"bot-a.grantley.daily_qzone"}
+    persisted = json.loads((tmp_path / "scheduler_runtime_jobs.json").read_text())
+    assert [row["name"] for row in persisted["jobs"]] == ["bot-a.grantley.daily_qzone"]
+    assert handle.unregistered == []
+
+
+def test_qzone_instance_migration_unregister_failure_restores_source_loop(
+    admin_state: AdminState,
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    handle = _SelectiveFailingHandle()
+    admin_state.scheduler = handle
+    create = client.post(
+        "/admin/scheduler/jobs",
+        json=_make_qzone_body(
+            name="bot-a.grantley.daily_qzone",
+            qq_instance_id="bot-a",
+        ),
+    )
+    assert create.status_code == 200, create.text
+    handle.registered.clear()
+    handle.unregistered.clear()
+    handle.fail_unregister.add("bot-a.grantley.daily_qzone")
+
+    with pytest.raises(RuntimeError, match="unregister failed"):
+        client.post(
+            "/admin/scheduler/qzone/instances/bot-a/migrate",
+            json={"target_instance_id": "bot-b"},
+        )
+
+    table = admin_state.extras["scheduler_runtime_jobs"]
+    assert set(table) == {"bot-a.grantley.daily_qzone"}
+    persisted = json.loads((tmp_path / "scheduler_runtime_jobs.json").read_text())
+    assert [row["name"] for row in persisted["jobs"]] == ["bot-a.grantley.daily_qzone"]
+    assert handle.registered == ["bot-b.grantley.daily_qzone"]
+    assert handle.unregistered == ["bot-b.grantley.daily_qzone"]
+
+
+def test_qzone_instance_migration_collision_leaves_source_unchanged(
+    client: TestClient,
+) -> None:
+    client.post(
+        "/admin/scheduler/jobs",
+        json=_make_qzone_body(
+            name="bot-a.grantley.daily_qzone",
+            qq_instance_id="bot-a",
+        ),
+    )
+    client.post(
+        "/admin/scheduler/jobs",
+        json=_make_qzone_body(
+            name="bot-b.grantley.daily_qzone",
+            qq_instance_id="bot-b",
+        ),
+    )
+
+    response = client.post(
+        "/admin/scheduler/qzone/instances/bot-a/migrate",
+        json={"target_instance_id": "bot-b"},
+    )
+
+    assert response.status_code == 409
+    names = {row["name"] for row in client.get("/admin/scheduler/jobs").json()}
+    assert names == {
+        "bot-a.grantley.daily_qzone",
+        "bot-b.grantley.daily_qzone",
+    }
+
+
+# ---------------------------------------------------------------------------
 # config jobs are not editable via the runtime routes
 # ---------------------------------------------------------------------------
 
@@ -624,15 +967,11 @@ def test_patch_config_job_404(admin_state: AdminState, client: TestClient) -> No
                 {
                     "name": "system.update_check",
                     "cron": "0 0 */6 * * * *",
-                    "action": {
-                        "run_tool": {"plugin": "system", "tool": "update_check"}
-                    },
+                    "action": {"run_tool": {"plugin": "system", "tool": "update_check"}},
                 }
             ]
         }
     }
-    res = client.patch(
-        "/admin/scheduler/jobs/system.update_check", json={"cron": "0 9 * * *"}
-    )
+    res = client.patch("/admin/scheduler/jobs/system.update_check", json={"cron": "0 9 * * *"})
     assert res.status_code == 404
     assert res.json()["resource"] == "runtime_scheduler_job"

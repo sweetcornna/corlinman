@@ -14,10 +14,11 @@ import json as json_lib
 import os
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit, urlunsplit
 
 import httpx
 from fastapi.responses import JSONResponse
@@ -107,23 +108,90 @@ class NapcatDiagnosticsOut(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+_NAPCAT_PUBLIC_ERRORS: dict[str, tuple[int, str]] = {
+    "napcat_already_logged_in": (
+        409,
+        "QQ is already logged in; a new login QR code is unavailable",
+    ),
+    "napcat_app_error": (502, "NapCat rejected the request"),
+    "napcat_bad_response": (502, "NapCat returned an invalid response"),
+    "napcat_not_logged_in": (409, "NapCat is not logged in"),
+    "napcat_qrcode_refresh_noop": (
+        502,
+        "NapCat could not refresh the login QR code",
+    ),
+    "napcat_unreachable": (503, "NapCat is unreachable"),
+    "napcat_upstream_error": (502, "NapCat request failed"),
+}
+_MANAGER_PUBLIC_STATUSES: dict[str, int] = {
+    "forbidden": 403,
+    "generation_conflict": 409,
+    "instance_conflict": 409,
+    "manager_unavailable": 503,
+    "resource_not_owned": 409,
+    "unsupported_operation": 409,
+}
+
+
 class NapcatError(Exception):
-    """Generic NapCat call failure with optional upstream metadata."""
+    """NapCat failure whose internal detail is never used as a wire message."""
 
     def __init__(self, code: str, message: str = "", status: int | None = None):
         super().__init__(message or code)
         self.code = code
         self.upstream_status = status
 
-    def response(self) -> JSONResponse:
-        status = self.upstream_status if self.upstream_status else 502
+    @property
+    def public_status(self) -> int:
+        return _NAPCAT_PUBLIC_ERRORS.get(self.code, (502, ""))[0]
+
+    @property
+    def public_message(self) -> str:
+        return _NAPCAT_PUBLIC_ERRORS.get(
+            self.code,
+            (502, "NapCat request failed"),
+        )[1]
+
+    def response(
+        self,
+        *,
+        code: str | None = None,
+        message: str | None = None,
+    ) -> JSONResponse:
         return JSONResponse(
-            status_code=status,
+            status_code=self.public_status,
             content={
-                "error": self.code,
-                "message": str(self),
+                "error": code or self.code,
+                "message": message or self.public_message,
             },
         )
+
+
+def _napcat_http_error(
+    error: NapcatError,
+    *,
+    code: str | None = None,
+    message: str | None = None,
+) -> tuple[int, dict[str, str]]:
+    """Return a stable public envelope without upstream bodies or locations."""
+    return error.public_status, {
+        "error": code or error.code,
+        "message": message or error.public_message,
+    }
+
+
+def _manager_http_error(
+    response: Any,
+    *,
+    fallback_code: str,
+    fallback_message: str,
+    fallback_status: int,
+) -> tuple[int, str, str]:
+    """Map manager failures without reflecting privileged helper messages."""
+    code = getattr(response, "error_code", None)
+    if code not in _MANAGER_PUBLIC_STATUSES:
+        return fallback_status, fallback_code, fallback_message
+    return _MANAGER_PUBLIC_STATUSES[code], code, fallback_message
 
 
 def _now_ms() -> int:
@@ -149,6 +217,7 @@ class _NapcatEndpoint:
     access_token: str | None
     url_source: str
     managed: bool
+    generation: int | None = None
 
     @property
     def mode(self) -> str:
@@ -181,6 +250,158 @@ def _resolve_napcat_endpoint(cfg: dict[str, Any]) -> _NapcatEndpoint:
         access_token=access_token,
         url_source=url_source,
         managed=managed,
+    )
+
+
+async def _resolve_napcat_endpoint_for_instance(
+    state: Any,
+    instance_id: str,
+) -> _NapcatEndpoint:
+    """Resolve one exact instance without accepting a browser-supplied URL."""
+    from corlinman_server.gateway.qq_instances import QqAdminError, QqInstanceAdminService
+
+    service = QqInstanceAdminService(state)
+    snapshot = service.get_instance(instance_id)
+    if snapshot.connection_mode == "managed":
+        manager = getattr(state, "napcat_manager", None)
+        if manager is None:
+            raise QqAdminError(
+                503,
+                "manager_unavailable",
+                "managed NapCat manager is unavailable",
+            )
+        response = await manager.request("inspect", instance_id)
+        if not response.ok and response.error_code == "instance_not_found":
+            operation = "adopt" if snapshot.is_default else "provision"
+            response = await manager.request(operation, instance_id)
+            if (
+                operation == "adopt"
+                and not response.ok
+                and response.error_code == "instance_not_found"
+            ):
+                response = await manager.request("provision", instance_id)
+        if not response.ok or response.descriptor is None:
+            error_status, error_code, error_message = _manager_http_error(
+                response,
+                fallback_code="manager_unavailable",
+                fallback_message="managed NapCat instance is unavailable",
+                fallback_status=503,
+            )
+            raise QqAdminError(error_status, error_code, error_message)
+        return _NapcatEndpoint(
+            url=response.descriptor.http_url.rstrip("/"),
+            access_token=response.descriptor.napcat_access_token,
+            url_source="manager",
+            managed=True,
+            generation=response.descriptor.generation,
+        )
+    raw_values = service.resolved_instance_config(instance_id)
+    url = raw_values.get("napcat_url")
+    if not isinstance(url, str) or not url.strip():
+        raise QqAdminError(
+            503,
+            "napcat_not_configured",
+            f"QQ instance {instance_id!r} has no NapCat URL",
+        )
+    return _NapcatEndpoint(
+        url=url.rstrip("/"),
+        access_token=_resolve_secret(raw_values.get("napcat_access_token")),
+        url_source="instance_config",
+        managed=False,
+    )
+
+
+def _safe_diagnostic_url(url: str | None) -> str | None:
+    if not url:
+        return None
+    try:
+        parsed = urlsplit(url)
+        if not parsed.hostname:
+            return None
+        host = parsed.hostname
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        port = f":{parsed.port}" if parsed.port is not None else ""
+        return urlunsplit((parsed.scheme, f"{host}{port}", parsed.path, "", ""))
+    except ValueError:
+        return None
+
+
+def _onebot_websocket_server_from_instance_config(
+    instance_id: str,
+    config: Mapping[str, Any],
+    *,
+    endpoint: _NapcatEndpoint,
+) -> dict[str, Any]:
+    desired = _onebot_websocket_server_from_config(
+        {"channels": {"qq": dict(config)}}
+    )
+    desired["name"] = f"corlinman-{instance_id}"
+    if endpoint.managed:
+        # The manager descriptor owns the actual token. Config snapshots never
+        # carry it, so reconnect leaves the existing managed OneBot token alone
+        # unless the instance runtime supplies one through its private config.
+        desired["token"] = str(config.get("access_token") or "")
+    return desired
+
+
+async def _probe_napcat_diagnostics_for_instance(
+    state: Any,
+    instance_id: str,
+    *,
+    client_factory: Any = None,
+) -> NapcatDiagnosticsOut:
+    endpoint = await _resolve_napcat_endpoint_for_instance(state, instance_id)
+    client_factory = client_factory or _NapcatClient
+    issues: list[str] = []
+    actions: list[str] = []
+    credential = "missing_token" if not endpoint.access_token else "unknown"
+    qrcode_api = "unknown"
+    onebot_config_api = "unknown"
+    if not endpoint.access_token:
+        issues.append("napcat_webui_token_missing")
+        actions.append("set_napcat_webui_token")
+    assert endpoint.url is not None
+    async with client_factory(endpoint.url, endpoint.access_token) as client:
+        if endpoint.access_token:
+            try:
+                credential = "ok" if await client.get_credential() else "missing_token"
+            except Exception:
+                credential = "failed"
+                issues.append("napcat_credential_failed")
+        try:
+            await client._fetch_qrcode()
+        except NapcatError as exc:
+            qrcode_api = "unreachable" if exc.code == "napcat_unreachable" else "failed"
+            _append_unique(issues, exc.code)
+        else:
+            qrcode_api = "ok"
+        try:
+            await client.post(OB11_CONFIG_GET_PATH, {})
+        except NapcatError as exc:
+            onebot_config_api = (
+                "unreachable" if exc.code == "napcat_unreachable" else "failed"
+            )
+            _append_unique(issues, exc.code)
+        else:
+            onebot_config_api = "ok"
+    if "napcat_unreachable" in issues:
+        actions.append(
+            "restart_managed_napcat"
+            if endpoint.managed
+            else "check_external_napcat_url"
+        )
+    return NapcatDiagnosticsOut(
+        mode=endpoint.mode,
+        url=_safe_diagnostic_url(endpoint.url),
+        url_source=endpoint.url_source,
+        managed=endpoint.managed,
+        auth_configured=bool(endpoint.access_token),
+        credential=credential,
+        qrcode_api=qrcode_api,
+        onebot_config_api=onebot_config_api,
+        issues=issues,
+        actions=actions,
     )
 
 
@@ -251,6 +472,23 @@ def _accounts_path(state: AdminState, cfg: dict[str, Any]) -> Path:
     return _resolve_data_dir(state, cfg) / ACCOUNTS_FILE
 
 
+def _accounts_path_for_instance(
+    state: Any,
+    instance_id: str,
+    *,
+    default_instance: bool,
+) -> Path:
+    """Keep legacy singleton history on ``default``; isolate every other ID."""
+    del default_instance
+    data_dir = getattr(state, "data_dir", None)
+    if data_dir is None:
+        data_dir = Path(os.environ.get("CORLINMAN_DATA_DIR") or Path.home() / ".corlinman")
+    root = Path(data_dir)
+    if instance_id == "default":
+        return root / ACCOUNTS_FILE
+    return root / "qq-accounts" / f"{instance_id}.json"
+
+
 def _classify_qr(qr: str) -> tuple[str | None, str | None]:
     trimmed = qr.strip()
     if trimmed.startswith("http://") or trimmed.startswith("https://"):
@@ -266,10 +504,13 @@ def _extract_ok_data(body: Any) -> dict[str, Any]:
         raise NapcatError("napcat_bad_response", "non-object envelope")
     code = body.get("code", -1)
     if code != 0:
-        raise NapcatError(
-            "napcat_app_error",
-            str(body.get("message") or "napcat returned a non-zero code"),
+        message = str(body.get("message") or "napcat returned a non-zero code")
+        error_code = (
+            "napcat_not_logged_in"
+            if "not login" in message.lower()
+            else "napcat_app_error"
         )
+        raise NapcatError(error_code, message)
     if "data" not in body:
         raise NapcatError("napcat_bad_response", "missing data field")
     data = body.get("data")
@@ -732,9 +973,38 @@ def _schedule_onebot_websocket_server_ensure(cfg: dict[str, Any]) -> bool:
 # to a non-admin, even though the gateway also listens on a public port.
 
 _NAPCAT_CRED_TTL_S = 60.0
-#: ``{"value": <cred str>, "exp": <unix ts>}`` — process-global cache so the
-#: per-request auth_request hop doesn't re-exchange against NapCat every time.
-_NAPCAT_CRED_CACHE: dict[str, Any] = {"value": "", "exp": 0.0}
+#: Endpoint/token-fingerprint keyed cache. The ``value``/``exp`` compatibility
+#: keys remain for tests and the singleton default auth_request seam.
+_NAPCAT_CRED_CACHE: dict[str, Any] = {"value": "", "exp": 0.0, "entries": {}}
+
+
+def _credential_cache_key(url: str, token: str) -> str:
+    fingerprint = hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+    return f"{url.rstrip('/')}:{fingerprint}"
+
+
+async def _cached_napcat_credential_for_endpoint(
+    url: str | None,
+    token: str | None,
+) -> str:
+    if not url or not token:
+        return ""
+    now = time.time()
+    entries = _NAPCAT_CRED_CACHE.setdefault("entries", {})
+    if not isinstance(entries, dict):
+        entries = {}
+        _NAPCAT_CRED_CACHE["entries"] = entries
+    key = _credential_cache_key(url, token)
+    cached = entries.get(key)
+    if isinstance(cached, dict) and cached.get("value") and now < cached.get("exp", 0.0):
+        return str(cached["value"])
+    try:
+        async with _NapcatClient(url, token) as client:
+            credential = await client.get_credential() or ""
+    except Exception:  # noqa: BLE001 — proxy auth degrades to the legacy path
+        credential = ""
+    entries[key] = {"value": credential, "exp": now + _NAPCAT_CRED_TTL_S}
+    return credential
 
 
 async def _cached_napcat_credential() -> str:
@@ -751,16 +1021,18 @@ async def _cached_napcat_credential() -> str:
         return str(cached["value"])
     cfg = dict(config_snapshot())
     url, token = _resolve_napcat_url(cfg)
-    cred = ""
+    # The singleton compatibility seam keeps its historical top-level cache
+    # contract. Canonical instance callers use the endpoint-keyed helper above.
+    credential = ""
     if url and token:
         try:
             async with _NapcatClient(url, token) as client:
-                cred = await client.get_credential() or ""
-        except Exception:  # noqa: BLE001 — never fail the proxy over a credential
-            cred = ""
-    cached["value"] = cred
+                credential = await client.get_credential() or ""
+        except Exception:  # noqa: BLE001 — never fail auth_request over a credential
+            credential = ""
+    cached["value"] = credential
     cached["exp"] = now + _NAPCAT_CRED_TTL_S
-    return cred
+    return credential
 
 
 # ---------------------------------------------------------------------------

@@ -128,9 +128,19 @@ def test_resolve_socket_beats_addr(monkeypatch: pytest.MonkeyPatch) -> None:
     assert resolve_agent_target(None).startswith("unix:")
 
 
-def test_resolve_config_endpoint_beats_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Declarative ``config[agent][endpoint]`` has top priority."""
+def test_resolve_deployment_env_beats_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mutable config cannot redirect a deployment-pinned Agent target."""
+    monkeypatch.delenv("CORLINMAN_PY_SOCKET", raising=False)
     monkeypatch.setenv("CORLINMAN_PY_ADDR", "127.0.0.1:9999")
+    state = _State(config={"agent": {"endpoint": "my-agent:7777"}})
+    assert resolve_agent_target(state) == "127.0.0.1:9999"
+
+
+def test_resolve_config_endpoint_without_deployment_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for var in ("CORLINMAN_PY_SOCKET", "CORLINMAN_PY_ADDR", "CORLINMAN_PY_PORT"):
+        monkeypatch.delenv(var, raising=False)
     state = _State(config={"agent": {"endpoint": "my-agent:7777"}})
     assert resolve_agent_target(state) == "my-agent:7777"
 

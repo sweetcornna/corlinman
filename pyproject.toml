@@ -24,6 +24,7 @@ dependencies = [
     "corlinman-agent-brain",
     "corlinman-memory-kernel",
     "corlinman-content-policy",
+    "corlinman-runtime",
 ]
 
 [tool.uv.sources]
@@ -40,6 +41,7 @@ corlinman-goals = { workspace = true }
 corlinman-agent-brain = { workspace = true }
 corlinman-memory-kernel = { workspace = true }
 corlinman-content-policy = { workspace = true }
+corlinman-runtime = { workspace = true }
 
 [tool.uv.workspace]
 members = ["python/packages/*"]

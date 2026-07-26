@@ -111,13 +111,11 @@ QZONE_COMMENT_TOOLS: frozenset[str] = frozenset(
 
 #: Unified 好友动态 feed. Works without a qzonetoken (unlike msglist_v6).
 _QZONE_FEEDS3_URL: str = (
-    "https://user.qzone.qq.com/proxy/domain/ic2.qzone.qq.com"
-    "/cgi-bin/feeds/feeds3_html_more"
+    "https://user.qzone.qq.com/proxy/domain/ic2.qzone.qq.com/cgi-bin/feeds/feeds3_html_more"
 )
 #: Post / reply to a comment. Handles both top-level comments and replies.
 _QZONE_COMMENT_URL: str = (
-    "https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com"
-    "/cgi-bin/emotion_cgi_re_feeds"
+    "https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_re_feeds"
 )
 
 _DEFAULT_LIST_NUM: int = 10
@@ -189,7 +187,8 @@ async def _qzone_auth(client: OneBotClient) -> tuple[str, str, int]:
     :class:`RuntimeError` when the QZone cookie jar lacks ``p_skey`` (login
     is stale / NapCat hasn't been granted QZone access).
     """
-    login_info = await client.fetch_login_info()
+    verify_identity = getattr(client, "verify_identity", client.fetch_login_info)
+    login_info = await verify_identity()
     cookie = await client.fetch_cookies(_QZONE_COOKIE_DOMAIN)
     my_uin = str(login_info.get("qq") or login_info.get("user_id") or "").strip()
     if not my_uin:
@@ -241,9 +240,7 @@ async def _qzone_get(
         "Accept-Language": "zh-CN,zh;q=0.9",
     }
     try:
-        resp = await client.get(
-            url, params=params, headers=headers, timeout=_QZONE_TIMEOUT
-        )
+        resp = await client.get(url, params=params, headers=headers, timeout=_QZONE_TIMEOUT)
     except httpx.TimeoutException as exc:
         raise RuntimeError(f"QZone request timed out: {exc}") from exc
     except httpx.HTTPError as exc:
@@ -268,9 +265,7 @@ async def _qzone_post(
         "User-Agent": _DESKTOP_UA,
     }
     try:
-        resp = await client.post(
-            url, data=form, headers=headers, timeout=_QZONE_TIMEOUT
-        )
+        resp = await client.post(url, data=form, headers=headers, timeout=_QZONE_TIMEOUT)
     except httpx.TimeoutException as exc:
         raise RuntimeError(f"QZone request timed out: {exc}") from exc
     except httpx.HTTPError as exc:
@@ -299,8 +294,16 @@ def _qzone_http_client(http_transport: httpx.BaseTransport | None) -> httpx.Asyn
 _JS_ESCAPE_RE = re.compile(r"""\\(x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|[/"'\\tnrbf0])""")
 
 _SIMPLE_JS_ESCAPES = {
-    "/": "/", '"': '"', "'": "'", "\\": "\\",
-    "t": "\t", "n": "\n", "r": "\r", "b": "", "f": "", "0": "",
+    "/": "/",
+    '"': '"',
+    "'": "'",
+    "\\": "\\",
+    "t": "\t",
+    "n": "\n",
+    "r": "\r",
+    "b": "",
+    "f": "",
+    "0": "",
 }
 
 _FEED_ROOT_RE = re.compile(r'<li class="f-single[^"]*"\s+id="fct_(\d+)_')
@@ -316,11 +319,13 @@ _COMMENT_ITEM_RE = re.compile(
 
 def _unescape_hex(s: str) -> str:
     """Decode the JS string escapes in a feeds3 ``html:'…'`` payload."""
+
     def _repl(m: re.Match[str]) -> str:
         g = m.group(1)
         if g[0] in ("x", "u"):
             return chr(int(g[1:], 16))
         return _SIMPLE_JS_ESCAPES.get(g, g)
+
     return _JS_ESCAPE_RE.sub(_repl, s)
 
 
@@ -381,7 +386,7 @@ def _feed_comments(block: str) -> list[dict[str, str]]:
         cid, cuin, cnick = m.group(1), m.group(2), _html.unescape(m.group(3))
         # Comment text follows the nickname anchor:
         # ``…>nick</a>&nbsp; : TEXT<div class="comments-op"``.
-        after = block[m.end():m.end() + 2000]
+        after = block[m.end() : m.end() + 2000]
         tm = re.search(
             r'</a>\s*(?:&nbsp;)?\s*[:：]\s*(.*?)<div class="comments-op"',
             after,
@@ -412,6 +417,7 @@ def _redact_feeds(
         row[key] = "[内容已按 QQ 风控策略隐藏]"
         for category in decision.category_codes:
             counts[category] = counts.get(category, 0) + 1
+
     for source in feeds:
         feed = dict(source)
         _redact_field(feed, "name")
@@ -524,9 +530,7 @@ async def dispatch_qzone_list_feed(
         fetch_count = num if not owner_uin else min(_MAX_LIST_NUM, max(num * 3, 20))
         async with _qzone_http_client(http_transport) as http_client:
             try:
-                feeds = await _fetch_timeline(
-                    http_client, my_uin, cookie, gtk, fetch_count
-                )
+                feeds = await _fetch_timeline(http_client, my_uin, cookie, gtk, fetch_count)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("qzone_list_feed.read_failed", error=str(exc))
                 return _err("qzone_read_failed", f"QZone feed read failed: {exc}")
@@ -543,6 +547,7 @@ async def dispatch_qzone_list_feed(
         {
             "ok": True,
             "my_uin": my_uin,
+            "qq_instance_id": getattr(client, "instance_id", None),
             "filter_owner_uin": owner_uin or None,
             "returned": len(feeds),
             "feed": feeds,
@@ -584,9 +589,7 @@ async def dispatch_qzone_get_post(
             return _err("onebot_failed", f"could not borrow QQ login state: {exc}")
         async with _qzone_http_client(http_transport) as http_client:
             try:
-                feeds = await _fetch_timeline(
-                    http_client, my_uin, cookie, gtk, _MAX_LIST_NUM
-                )
+                feeds = await _fetch_timeline(http_client, my_uin, cookie, gtk, _MAX_LIST_NUM)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("qzone_get_post.read_failed", error=str(exc))
                 return _err("qzone_read_failed", f"QZone feed read failed: {exc}")
@@ -602,6 +605,8 @@ async def dispatch_qzone_get_post(
                 {
                     "ok": True,
                     "found": True,
+                    "actor_uin": my_uin,
+                    "qq_instance_id": getattr(client, "instance_id", None),
                     "post": clean[0],
                     "policy_redactions": policy_redactions,
                 },
@@ -611,6 +616,8 @@ async def dispatch_qzone_get_post(
         {
             "ok": True,
             "found": False,
+            "actor_uin": my_uin,
+            "qq_instance_id": getattr(client, "instance_id", None),
             "note": (
                 f"tid {tid} 不在当前时间线里(可能太旧或已滚出). list_feed 返回的 "
                 "每条已经带完整 comments, 通常不需要再 get_post."
@@ -637,9 +644,7 @@ async def dispatch_qzone_post_comment(
     if not content:
         return _err("invalid_args", "'content' is required.")
     if len(content) > _MAX_COMMENT_LEN:
-        return _err(
-            "invalid_args", f"'content' must be under {_MAX_COMMENT_LEN} characters."
-        )
+        return _err("invalid_args", f"'content' must be under {_MAX_COMMENT_LEN} characters.")
     tid = (args.get("tid") or "").strip()
     if not tid:
         return _err("invalid_args", "'tid' is required (the 说说 id from list_feed).")
@@ -668,9 +673,7 @@ async def dispatch_qzone_post_comment(
         if not content.startswith(mention.strip()):
             final_content = mention + content
     try:
-        decision = moderate_text(
-            final_content, _policy_config(policy_resolver)
-        ).decision
+        decision = moderate_text(final_content, _policy_config(policy_resolver)).decision
     except Exception:
         decision = classifier_failure_decision(final_content)
     if not decision.allowed:
@@ -693,8 +696,7 @@ async def dispatch_qzone_post_comment(
     if scheduler_store is not None and reply_to_uin and not comment_identity:
         return _err(
             "scheduler_comment_identity_required",
-            "Scheduled QZone replies require reply_to_comment_id or "
-            "reply_to_comment_content.",
+            "Scheduled QZone replies require reply_to_comment_id or reply_to_comment_content.",
         )
     if comment_identity.startswith("sha256:") and reply_to_uin:
         effect_identity = f"uin:{reply_to_uin}:{comment_identity}"
@@ -705,47 +707,33 @@ async def dispatch_qzone_post_comment(
         # already includes owner_uin + tid, so no generated prose enters the
         # identity and a retry cannot create another comment with new wording.
         effect_identity = "top-level"
-    effect, effect_error = await _prepare_effect(
-        scheduler_store,
-        effect_context,
-        effect_kind="qzone.comment",
-        effect_target=f"post:{owner_uin}:{tid}:{effect_identity}",
-    )
-    if effect_error is not None:
-        return _err(effect_error, "QZone comment effect could not be reserved.")
-
     client, own = _onebot_from(onebot_client, onebot_client_factory)
+    effect = None
+    qq_instance_id = str(
+        getattr(client, "instance_id", None) or (effect_context or {}).get("qq_instance_id") or ""
+    ).strip()
     try:
         try:
             my_uin, cookie, gtk = await _qzone_auth(client)
         except OneBotError as exc:
-            if effect is not None:
-                await _complete_effect(
-                    scheduler_store,
-                    effect,
-                    state="failed",
-                    error_code="onebot_failed",
-                )
             return _err("onebot_failed", str(exc))
         except RuntimeError as exc:
-            if effect is not None:
-                await _complete_effect(
-                    scheduler_store,
-                    effect,
-                    state="failed",
-                    error_code="qzone_cookie_stale",
-                )
             return _err("qzone_cookie_stale", str(exc))
         except Exception as exc:  # noqa: BLE001
             logger.exception("qzone_post_comment.auth_unexpected")
-            if effect is not None:
-                await _complete_effect(
-                    scheduler_store,
-                    effect,
-                    state="failed",
-                    error_code="onebot_failed",
-                )
             return _err("onebot_failed", f"could not borrow QQ login state: {exc}")
+
+        effect_target = f"post:{owner_uin}:{tid}:{effect_identity}"
+        if qq_instance_id:
+            effect_target = f"instance:{qq_instance_id}:{effect_target}"
+        effect, effect_error = await _prepare_effect(
+            scheduler_store,
+            effect_context,
+            effect_kind="qzone.comment",
+            effect_target=effect_target,
+        )
+        if effect_error is not None:
+            return _err(effect_error, "QZone comment effect could not be reserved.")
 
         form = {
             "topicId": f"{owner_uin}_{tid}__1",
@@ -817,6 +805,8 @@ async def dispatch_qzone_post_comment(
         state="sent",
         receipt={
             "owner_uin": owner_uin,
+            "actor_uin": my_uin,
+            "qq_instance_id": qq_instance_id or None,
             "tid": tid,
             "is_reply": bool(reply_to_uin),
             "comment_identity": comment_identity,
@@ -832,6 +822,8 @@ async def dispatch_qzone_post_comment(
         {
             "ok": True,
             "owner_uin": owner_uin,
+            "actor_uin": my_uin,
+            "qq_instance_id": qq_instance_id or None,
             "tid": tid,
             "is_reply": bool(reply_to_uin),
             "comment_identity": comment_identity,
@@ -853,6 +845,11 @@ async def dispatch_qzone_list_friends(
     client, own = _onebot_from(onebot_client, onebot_client_factory)
     try:
         try:
+            verify_identity = getattr(
+                client, "verify_identity", getattr(client, "fetch_login_info", None)
+            )
+            login_info = await verify_identity() if callable(verify_identity) else {}
+            actor_uin = str(login_info.get("qq") or login_info.get("user_id") or "").strip()
             friends_raw = await client.fetch_friend_list()
         except OneBotError as exc:
             return _err("onebot_failed", f"OneBot get_friend_list failed: {exc}")
@@ -899,6 +896,8 @@ async def dispatch_qzone_list_friends(
     return json.dumps(
         {
             "ok": True,
+            "actor_uin": actor_uin,
+            "qq_instance_id": getattr(client, "instance_id", None),
             "total": len(out),
             "returned": min(len(out), limit),
             "friends": out[:limit],

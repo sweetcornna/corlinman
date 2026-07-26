@@ -262,20 +262,14 @@ class AgentResumeService:
                 older_than_seconds=self._stale_cutoff_s
             )
         except Exception as exc:  # noqa: BLE001 — never block boot
-            logger.warning(
-                "agent.resume.stale_sweep_failed", error=str(exc)
-            )
+            logger.warning("agent.resume.stale_sweep_failed", error=str(exc))
 
         try:
-            turns: list[InProgressTurn] = (
-                await self._journal.list_resumable_in_progress(
-                    window_ms=self._window_ms
-                )
+            turns: list[InProgressTurn] = await self._journal.list_resumable_in_progress(
+                window_ms=self._window_ms
             )
         except Exception as exc:  # noqa: BLE001 — never block boot
-            logger.warning(
-                "agent.resume.list_failed", error=str(exc)
-            )
+            logger.warning("agent.resume.list_failed", error=str(exc))
             turns = []
 
         resumed = 0
@@ -296,12 +290,25 @@ class AgentResumeService:
                 skipped += 1
                 continue
             if channel in _CHANNEL_HAS_OWN_DRAIN:
-                # QQ-family: the inbox drainer + channel reconnect
-                # already cover re-delivery. Skip without enqueueing.
+                # QQ-family: the inbox drainer + channel reconnect already
+                # cover re-delivery. Multi-account QQ rows must retain an
+                # exact configured target; legacy blank rows are deliberately
+                # unrouteable and never interpreted as ``default``.
+                runtime_instance_id = turn.runtime_instance_id or ""
+                if channel == "qq" and not runtime_instance_id:
+                    logger.warning(
+                        "agent.resume.qq_instance_missing",
+                        session=turn.session_key,
+                        channel=channel,
+                        turn_id=turn.turn_id,
+                    )
+                    skipped += 1
+                    continue
                 logger.info(
                     "agent.resume.channel_owns_drain",
                     session=turn.session_key,
                     channel=channel,
+                    runtime_instance_id=runtime_instance_id,
                     turn_id=turn.turn_id,
                 )
                 skipped += 1

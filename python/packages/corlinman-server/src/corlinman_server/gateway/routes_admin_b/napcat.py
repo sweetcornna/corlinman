@@ -49,11 +49,13 @@ never forwards the browser's ``Cookie`` / ``Authorization`` upstream (see
 from __future__ import annotations
 
 from pathlib import Path
+from typing import NoReturn
 
 import httpx
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
 
+from corlinman_server.gateway.qq_instances import QqAdminError, QqInstanceAdminService
 from corlinman_server.gateway.routes_admin_b._napcat_lib import (
     _NAPCAT_CRED_CACHE,
     NAPCAT_TIMEOUT,
@@ -65,13 +67,22 @@ from corlinman_server.gateway.routes_admin_b._napcat_lib import (
     StatusOut,
     _accounts_path,
     _cached_napcat_credential,
+    _cached_napcat_credential_for_endpoint,
     _ensure_onebot_websocket_server,
     _load_accounts,
+    _napcat_http_error,
     _NapcatClient,
     _onebot_websocket_server_from_config,
     _probe_napcat_diagnostics,
+    _resolve_napcat_endpoint_for_instance,
     _resolve_napcat_url,
     _upsert_account,
+)
+from corlinman_server.gateway.routes_admin_b.napcat_instances import (
+    accounts_for_instance,
+    create_login_attempt,
+    poll_login_attempt,
+    quick_login_instance,
 )
 from corlinman_server.gateway.routes_admin_b.state import (
     AdminState,
@@ -79,6 +90,35 @@ from corlinman_server.gateway.routes_admin_b.state import (
     get_admin_state,
     require_admin,
 )
+
+
+def _raise_qq_admin(error: QqAdminError) -> NoReturn:
+    raise HTTPException(
+        status_code=error.status_code,
+        detail=error.public_detail(),
+    ) from error
+
+
+def _canonical_default_instance(state: AdminState | None = None) -> str | None:
+    """Return the explicit canonical default, or ``None`` for legacy config only."""
+    state = state or get_admin_state()
+    service = getattr(state, "qq_instance_admin", None)
+    if not isinstance(service, QqInstanceAdminService):
+        return None
+    channels = getattr(service.state, "channels_config", None)
+    qq = channels.get("qq") if isinstance(channels, dict) else None
+    if not isinstance(qq, dict) or "instances" not in qq:
+        return None
+    return service.resolve_instance_id(None)
+
+
+async def _canonical_proxy_endpoint(state: AdminState):
+    instance_id = _canonical_default_instance(state)
+    if instance_id is None:
+        return None
+    service = state.qq_instance_admin
+    assert isinstance(service, QqInstanceAdminService)
+    return await _resolve_napcat_endpoint_for_instance(service.state, instance_id)
 
 _PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]
 _HOP_BY_HOP_HEADERS = {
@@ -126,8 +166,19 @@ __all__ = [
 
 
 async def _proxy_napcat_request(request: Request, upstream_path: str) -> Response:
-    cfg = dict(config_snapshot())
-    url, _token = _resolve_napcat_url(cfg)
+    state = get_admin_state()
+    try:
+        canonical = await _canonical_proxy_endpoint(state)
+    except QqAdminError as exc:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=exc.public_detail(),
+        )
+    if canonical is None:
+        cfg = dict(config_snapshot())
+        url, token = _resolve_napcat_url(cfg)
+    else:
+        url, token = canonical.url, canonical.access_token
     if url is None:
         return JSONResponse(
             status_code=503,
@@ -148,7 +199,11 @@ async def _proxy_napcat_request(request: Request, upstream_path: str) -> Respons
         for key, value in request.headers.items()
         if key.lower() in _FORWARD_REQUEST_HEADERS
     }
-    credential = await _cached_napcat_credential()
+    credential = (
+        await _cached_napcat_credential()
+        if canonical is None
+        else await _cached_napcat_credential_for_endpoint(url, token)
+    )
     if credential:
         headers["authorization"] = f"Bearer {credential}"
 
@@ -161,16 +216,29 @@ async def _proxy_napcat_request(request: Request, upstream_path: str) -> Respons
                 headers=headers,
                 follow_redirects=False,
             )
-    except httpx.HTTPError as exc:
+    except httpx.HTTPError:
         return JSONResponse(
             status_code=503,
-            content={"error": "napcat_unreachable", "message": str(exc)},
+            content={
+                "error": "napcat_unreachable",
+                "message": "NapCat is unreachable",
+            },
+        )
+
+    if not 200 <= upstream.status_code < 300:
+        return JSONResponse(
+            status_code=502,
+            content={
+                "error": "napcat_upstream_error",
+                "message": "NapCat returned an error",
+            },
         )
 
     out_headers = {
         key: value
         for key, value in upstream.headers.items()
         if key.lower() not in _RESPONSE_DROP_HEADERS
+        and key.lower() != "location"
     }
     return Response(
         content=b"" if request.method == "HEAD" else upstream.content,
@@ -221,7 +289,21 @@ def router() -> APIRouter:
         proxy fall back to the request's own ``Authorization``. Gated by the
         router's ``require_admin`` dependency.
         """
-        cred = await _cached_napcat_credential()
+        state = get_admin_state()
+        try:
+            endpoint = await _canonical_proxy_endpoint(state)
+        except QqAdminError:
+            endpoint = None
+            cred = ""
+        else:
+            cred = (
+                await _cached_napcat_credential()
+                if endpoint is None
+                else await _cached_napcat_credential_for_endpoint(
+                    endpoint.url,
+                    endpoint.access_token,
+                )
+            )
         headers = {"X-Napcat-Credential": cred} if cred else {}
         return Response(status_code=200, headers=headers)
 
@@ -230,6 +312,22 @@ def router() -> APIRouter:
         response_model=NapcatDiagnosticsOut,
     )
     async def napcat_diagnostics() -> NapcatDiagnosticsOut:
+        state = get_admin_state()
+        try:
+            instance_id = _canonical_default_instance(state)
+            if instance_id is not None:
+                from corlinman_server.gateway.routes_admin_b._napcat_lib import (
+                    _probe_napcat_diagnostics_for_instance,
+                )
+
+                service = state.qq_instance_admin
+                assert isinstance(service, QqInstanceAdminService)
+                return await _probe_napcat_diagnostics_for_instance(
+                    service.state,
+                    instance_id,
+                )
+        except QqAdminError as exc:
+            _raise_qq_admin(exc)
         return await _probe_napcat_diagnostics(dict(config_snapshot()))
 
     # NapCat serves its WebUI at ``<napcat_url>/webui`` (per its startup
@@ -245,8 +343,20 @@ def router() -> APIRouter:
         return await _proxy_napcat_request(request, f"/webui/{path}")
 
     @r.post("/admin/channels/qq/qrcode", response_model=QrcodeOut)
-    async def qrcode():
+    async def qrcode(request: Request):
         state = get_admin_state()
+        try:
+            instance_id = _canonical_default_instance(state)
+            if instance_id is not None:
+                attempt = await create_login_attempt(state, instance_id, request)
+                return QrcodeOut(
+                    token=attempt.attempt_id,
+                    image_base64=attempt.image_base64,
+                    qrcode_url=attempt.qrcode_url,
+                    expires_at=attempt.expires_at,
+                )
+        except QqAdminError as exc:
+            _raise_qq_admin(exc)
         client, err, _path = _build_client(state)
         if err is not None or client is None:
             return err
@@ -258,27 +368,36 @@ def router() -> APIRouter:
 
     @r.post("/api/QQLogin/RefreshQRcode", include_in_schema=False)
     async def napcat_webui_refresh_qrcode():
-        """NapCat WebUI-compatible refresh endpoint.
-
-        The embedded first-party WebUI posts to same-origin
-        ``/api/QQLogin/RefreshQRcode``. Production nginx can exact-match that
-        path to the gateway so corlinman validates that the QR actually rotated
-        and can invoke NapCat's restart fallback when the upstream refresh is a
-        no-op. Other NapCat ``/api/*`` paths still proxy straight to NapCat.
-        """
+        """Refresh the explicit default instance used by the compatibility WebUI."""
         state = get_admin_state()
-        client, err, _path = _build_client(state)
-        if err is not None or client is None:
-            return err
+        try:
+            endpoint = await _canonical_proxy_endpoint(state)
+        except QqAdminError as exc:
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={"code": -1, "message": exc.message, "data": None},
+            )
+        if endpoint is None:
+            client, err, _path = _build_client(state)
+            if err is not None or client is None:
+                return err
+        else:
+            if endpoint.url is None:  # pragma: no cover - resolver fails closed
+                return JSONResponse(
+                    status_code=503,
+                    content={"code": -1, "message": "NapCat URL unavailable", "data": None},
+                )
+            client = _NapcatClient(endpoint.url, endpoint.access_token)
         try:
             async with client:
                 await client.request_qrcode()
         except NapcatError as exc:
+            error_status, detail = _napcat_http_error(exc)
             return JSONResponse(
-                status_code=exc.upstream_status or 502,
+                status_code=error_status,
                 content={
                     "code": -1,
-                    "message": str(exc),
+                    "message": detail["message"],
                     "data": None,
                 },
             )
@@ -329,8 +448,29 @@ def router() -> APIRouter:
         )
 
     @r.get("/admin/channels/qq/qrcode/status", response_model=StatusOut)
-    async def qrcode_status(token: str = Query("")):
+    async def qrcode_status(request: Request, token: str = Query("")):
         state = get_admin_state()
+        try:
+            instance_id = _canonical_default_instance(state)
+            if instance_id is not None:
+                if not token:
+                    raise HTTPException(
+                        status_code=422,
+                        detail={"error": "login_attempt_token_required"},
+                    )
+                attempt = await poll_login_attempt(
+                    state,
+                    instance_id,
+                    token,
+                    request,
+                )
+                return StatusOut(
+                    status=attempt.status,
+                    account=attempt.account,
+                    message=attempt.message,
+                )
+        except QqAdminError as exc:
+            _raise_qq_admin(exc)
         client, err, path = _build_client(state)
         if err is not None or client is None:
             return err
@@ -354,28 +494,40 @@ def router() -> APIRouter:
     @r.get("/admin/channels/qq/accounts", response_model=AccountsOut)
     async def accounts():
         state = get_admin_state()
+        try:
+            instance_id = _canonical_default_instance(state)
+            if instance_id is not None:
+                return await accounts_for_instance(state, instance_id)
+        except QqAdminError as exc:
+            _raise_qq_admin(exc)
         cfg = dict(config_snapshot())
         path = _accounts_path(state, cfg)
         try:
             accts = await _load_accounts(path)
-        except OSError as exc:
+        except OSError:
             return JSONResponse(
                 status_code=500,
                 content={
                     "error": "accounts_read_failed",
-                    "message": f"failed to read {path}: {exc}",
+                    "message": "failed to read QQ login history",
                 },
             )
         return AccountsOut(accounts=accts)
 
     @r.post("/admin/channels/qq/quick-login", response_model=StatusOut)
     async def quick_login(body: QuickLoginBody):
+        state = get_admin_state()
+        try:
+            instance_id = _canonical_default_instance(state)
+            if instance_id is not None:
+                return await quick_login_instance(state, instance_id, body)
+        except QqAdminError as exc:
+            _raise_qq_admin(exc)
         if not body.uin.strip():
             return JSONResponse(
                 status_code=400,
                 content={"error": "invalid_uin", "message": "uin is required"},
             )
-        state = get_admin_state()
         client, err, path = _build_client(state)
         if err is not None or client is None:
             return err

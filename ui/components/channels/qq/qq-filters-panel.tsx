@@ -78,7 +78,8 @@ export function QqFiltersPanel({
         <button
           type="button"
           onClick={onSave}
-          disabled={saving || !dirty}
+          disabled={saving}
+          aria-disabled={saving || !dirty}
           data-testid="qq-save-keywords-btn"
           className={cn(
             "inline-flex shrink-0 items-center gap-2 rounded-lg border px-3 py-2 text-[13px] font-medium",
@@ -86,6 +87,9 @@ export function QqFiltersPanel({
             "transition-colors hover:bg-[color-mix(in_oklch,var(--sg-accent)_22%,transparent)]",
             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/50",
             "disabled:cursor-not-allowed disabled:opacity-60",
+            // Stay CLICKABLE without a diff — the page answers with a
+            // "no changes" toast instead of a silently dead button.
+            !dirty && !saving && "opacity-60",
           )}
         >
           {saving ? t("channels.saving") : t("channels.save")}

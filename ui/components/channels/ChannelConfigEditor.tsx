@@ -36,6 +36,7 @@ import { Switch } from "@/components/ui/switch";
 import {
   CHANNEL_CONFIG_SPEC,
   buildChannelConfigBody,
+  invalidNumberFields,
   isEmptyConfigBody,
   putChannelConfig,
   seedDraft,
@@ -72,10 +73,13 @@ export function ChannelConfigEditor({
 
   // Initial = seeded from the server's current non-secret keys; draft is the
   // editable copy. Re-seed when the upstream config_keys change (after a save
-  // / refetch) so the form reflects what's actually persisted.
+  // / refetch) so the form reflects what's actually persisted. Keyed on the
+  // VALUE signature, not object identity — a parent passing a fresh `?? {}`
+  // literal every render must not wipe in-progress edits.
+  const keysSig = React.useMemo(() => JSON.stringify(configKeys), [configKeys]);
   const initial = React.useMemo(
-    () => seedDraft(channel, configKeys),
-    [channel, configKeys],
+    () => seedDraft(channel, JSON.parse(keysSig) as ChannelConfigKeys),
+    [channel, keysSig],
   );
   const [draft, setDraft] = React.useState<ChannelConfigDraft>(initial);
   React.useEffect(() => setDraft(initial), [initial]);
@@ -102,6 +106,26 @@ export function ChannelConfigEditor({
       );
     },
   });
+
+  // Save stays clickable even without a diff — a silent dead button reads
+  // as "the page is broken". No changes → say so; a number edit that would
+  // be silently dropped (blank / non-numeric) → name the field.
+  const onSaveClick = () => {
+    const badNumbers = invalidNumberFields(channel, draft, initial);
+    if (badNumbers.length > 0) {
+      toast.error(
+        t("channelConfig.invalidNumber", {
+          field: badNumbers.map((k) => fieldLabel(k)).join(", "),
+        }),
+      );
+      return;
+    }
+    if (!dirty) {
+      toast.info(t("channelConfig.noChanges"));
+      return;
+    }
+    mutation.mutate();
+  };
 
   const setField = (
     group: keyof ChannelConfigDraft,
@@ -330,8 +354,8 @@ export function ChannelConfigEditor({
           <Button
             type="button"
             size="sm"
-            onClick={() => mutation.mutate()}
-            disabled={!dirty || mutation.isPending}
+            onClick={onSaveClick}
+            disabled={mutation.isPending}
             data-testid={`channel-config-save-${channel}`}
           >
             {mutation.isPending ? t("channelConfig.saving") : t("channelConfig.save")}

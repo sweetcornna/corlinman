@@ -102,6 +102,7 @@ class InProgressTurn:
     user_text: str
     started_at_ms: int
     channel: str
+    runtime_instance_id: str = ""
 
 
 # Cap for the ``last_user_text`` preview so the wire row never grows
@@ -184,6 +185,7 @@ class JournalBackend(Protocol):
         *,
         user_id: str | None = None,
         channel: str = "",
+        runtime_instance_id: str = "",
         tenant_id: str = "",
         pending_question_json: str | None = None,
     ) -> int | None:
@@ -273,6 +275,8 @@ class JournalBackend(Protocol):
         user_text: str,
         *,
         user_id: str | None = None,
+        channel: str | None = None,
+        runtime_instance_id: str | None = None,
     ) -> ResumeData | None:
         """Return the most-recent in-progress turn matching session+text.
 
@@ -284,15 +288,11 @@ class JournalBackend(Protocol):
         """
         ...
 
-    async def recent_errored_turns(
-        self, session_key: str, limit: int = 5
-    ) -> list[dict[str, Any]]:
+    async def recent_errored_turns(self, session_key: str, limit: int = 5) -> list[dict[str, Any]]:
         """Return the most recent errored turns for diagnostics."""
         ...
 
-    async def mark_stale_in_progress_as_errored(
-        self, older_than_seconds: int | None = None
-    ) -> int:
+    async def mark_stale_in_progress_as_errored(self, older_than_seconds: int | None = None) -> int:
         """Sweep abandoned in-progress turns past the resume window.
 
         ``older_than_seconds`` overrides the default
@@ -356,9 +356,7 @@ class JournalBackend(Protocol):
         """
         ...
 
-    async def delete_session(
-        self, session_key: str, *, tenant_id: str | None = None
-    ) -> int:
+    async def delete_session(self, session_key: str, *, tenant_id: str | None = None) -> int:
         """Wipe every turn (and its cascading messages) for
         ``session_key``. Returns the number of turn rows deleted.
 
@@ -375,9 +373,7 @@ class JournalBackend(Protocol):
         """
         ...
 
-    async def session_exists(
-        self, session_key: str, *, tenant_id: str | None = None
-    ) -> bool:
+    async def session_exists(self, session_key: str, *, tenant_id: str | None = None) -> bool:
         """Return ``True`` when at least one ``turns`` row exists for
         ``session_key``. Used by ``PATCH /admin/sessions/{key}`` to
         decide between 404 (no such session) and an empty-meta upsert.
@@ -456,9 +452,7 @@ class JournalBackend(Protocol):
         :meth:`load_events` dict shape."""
         ...
 
-    async def get_session_turn_ids(
-        self, session_key: str, limit: int = 50
-    ) -> list[int]:
+    async def get_session_turn_ids(self, session_key: str, limit: int = 50) -> list[int]:
         """Most-recent turn ids for ``session_key`` (admin SSE bootstrap)."""
         ...
 
@@ -504,6 +498,7 @@ CREATE TABLE IF NOT EXISTS turns (
     user_text            TEXT,
     user_id              TEXT,
     channel              TEXT    NOT NULL DEFAULT '',
+    runtime_instance_id  TEXT    NOT NULL DEFAULT '',
     tenant_id            TEXT    NOT NULL DEFAULT '',
     pending_question_json TEXT,
     error                TEXT
@@ -541,8 +536,12 @@ _USER_ID_MIGRATION = "ALTER TABLE turns ADD COLUMN user_id TEXT"
 # Same gated-ALTER pattern as ``user_id``. ``NOT NULL DEFAULT ''`` matches
 # the inline schema so a row inserted by an OLD process and read by a NEW
 # one round-trips to the canonical empty string instead of NULL.
-_CHANNEL_MIGRATION = (
-    "ALTER TABLE turns ADD COLUMN channel TEXT NOT NULL DEFAULT ''"
+_CHANNEL_MIGRATION = "ALTER TABLE turns ADD COLUMN channel TEXT NOT NULL DEFAULT ''"
+
+# QQ multi-account routing. Blank means legacy/unknown; it must never be
+# interpreted as the configured ``default`` instance during resume.
+_RUNTIME_INSTANCE_MIGRATION = (
+    "ALTER TABLE turns ADD COLUMN runtime_instance_id TEXT NOT NULL DEFAULT ''"
 )
 
 # W3 (chat attachments) — pre-existing journals lack the per-message
@@ -550,18 +549,14 @@ _CHANNEL_MIGRATION = (
 # attachments (image/file cards) after a reload. Same gated-ALTER
 # pattern as the ``turns`` migrations above, applied to
 # ``turn_messages``.
-_ATTACHMENTS_MIGRATION = (
-    "ALTER TABLE turn_messages ADD COLUMN attachments_json TEXT"
-)
+_ATTACHMENTS_MIGRATION = "ALTER TABLE turn_messages ADD COLUMN attachments_json TEXT"
 
 # Pre-ask_user deployments have no ``pending_question_json`` column.
 # Nullable (defaults to NULL) so legacy rows round-trip cleanly. The
 # column is purely informational — the chat handler does not read it
 # back today; future surfaces (admin UI "session is waiting for an
 # answer" badge) consume it.
-_PENDING_QUESTION_MIGRATION = (
-    "ALTER TABLE turns ADD COLUMN pending_question_json TEXT"
-)
+_PENDING_QUESTION_MIGRATION = "ALTER TABLE turns ADD COLUMN pending_question_json TEXT"
 
 # W8 (tenant isolation) — pre-existing journals have no ``tenant_id``
 # column, which made every journal-backed admin surface cross-tenant
@@ -570,9 +565,7 @@ _PENDING_QUESTION_MIGRATION = (
 # process and read by a new one round-trips to the canonical empty
 # string. ``''`` rows are owned by the default tenant on the read side
 # (see ``_TENANT_GUARD_SQL``).
-_TENANT_MIGRATION = (
-    "ALTER TABLE turns ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''"
-)
+_TENANT_MIGRATION = "ALTER TABLE turns ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''"
 
 # Owner of legacy ``tenant_id = ''`` rows. MUST stay in lockstep with
 # ``corlinman_server.tenancy.DEFAULT_TENANT_ID`` — pinned by
@@ -580,6 +573,7 @@ _TENANT_MIGRATION = (
 # local literal (not an import) so the storage layer stays free of the
 # tenancy package's admin-db dependency chain.
 DEFAULT_TENANT_ID = "default"
+
 
 def _tenant_guard_sql(col: str = "tenant_id") -> str:
     """Reusable WHERE fragment scoping a ``turns`` query to one tenant.
@@ -850,6 +844,13 @@ class SqliteJournalBackend:
                 await conn.execute(_CHANNEL_MIGRATION)
                 await conn.commit()
                 logger.info("agent.journal.migrated", migration="channel_column")
+            if "runtime_instance_id" not in existing:
+                await conn.execute(_RUNTIME_INSTANCE_MIGRATION)
+                await conn.commit()
+                logger.info(
+                    "agent.journal.migrated",
+                    migration="runtime_instance_id_column",
+                )
             # W3 — per-message attachment metadata for session replay.
             cur = await conn.execute("PRAGMA table_info(turn_messages)")
             msg_rows = await cur.fetchall()
@@ -875,12 +876,9 @@ class SqliteJournalBackend:
             if "tenant_id" not in existing:
                 await conn.execute(_TENANT_MIGRATION)
                 await conn.commit()
-                logger.info(
-                    "agent.journal.migrated", migration="tenant_id_column"
-                )
+                logger.info("agent.journal.migrated", migration="tenant_id_column")
             await conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_turns_tenant "
-                "ON turns(tenant_id, session_key)"
+                "CREATE INDEX IF NOT EXISTS idx_turns_tenant ON turns(tenant_id, session_key)"
             )
             await conn.commit()
             # W1.2 — turn_events table + per-turn aggregate columns. The
@@ -926,9 +924,7 @@ class SqliteJournalBackend:
     @property
     def _c(self) -> aiosqlite.Connection:
         if self._conn is None:
-            raise RuntimeError(
-                "SqliteJournalBackend not opened — call open() first"
-            )
+            raise RuntimeError("SqliteJournalBackend not opened — call open() first")
         return self._conn
 
     # ------------------------------------------------------------------
@@ -942,6 +938,7 @@ class SqliteJournalBackend:
         *,
         user_id: str | None = None,
         channel: str = "",
+        runtime_instance_id: str = "",
         tenant_id: str = "",
         pending_question_json: str | None = None,
     ) -> int | None:
@@ -1002,8 +999,8 @@ class SqliteJournalBackend:
                 await conn.execute(
                     "INSERT INTO turns (turn_id, session_key, status, "
                     "started_at_ms, user_text, user_id, channel, "
-                    "tenant_id, pending_question_json) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "runtime_instance_id, tenant_id, pending_question_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         tid,
                         session_key or "",
@@ -1012,6 +1009,7 @@ class SqliteJournalBackend:
                         user_text,
                         user_id,
                         channel or "",
+                        runtime_instance_id or "",
                         tenant_id or "",
                         pending_question_json,
                     ),
@@ -1090,8 +1088,7 @@ class SqliteJournalBackend:
                 # write semantics intact — a caller racing with a parallel
                 # ``error_turn`` still sees one terminal status win.
                 await conn.execute(
-                    "UPDATE turns SET status = ?, ended_at_ms = ? "
-                    "WHERE turn_id = ? AND status = ?",
+                    "UPDATE turns SET status = ?, ended_at_ms = ? WHERE turn_id = ? AND status = ?",
                     (TURN_COMPLETED, ended_at_ms, turn_id, TURN_IN_PROGRESS),
                 )
                 await conn.commit()
@@ -1123,8 +1120,7 @@ class SqliteJournalBackend:
         try:
             # Fetch started_at_ms + ended_at_ms in one round trip.
             cur = await conn.execute(
-                "SELECT started_at_ms, ended_at_ms FROM turns "
-                "WHERE turn_id = ?",
+                "SELECT started_at_ms, ended_at_ms FROM turns WHERE turn_id = ?",
                 (turn_id,),
             )
             row = await cur.fetchone()
@@ -1140,8 +1136,7 @@ class SqliteJournalBackend:
             # Tool call count — replay buffer always writes role='tool'
             # for tool results, which is the canonical signal here.
             cur = await conn.execute(
-                "SELECT COUNT(*) FROM turn_messages "
-                "WHERE turn_id = ? AND role = 'tool'",
+                "SELECT COUNT(*) FROM turn_messages WHERE turn_id = ? AND role = 'tool'",
                 (turn_id,),
             )
             tc_row = await cur.fetchone()
@@ -1179,9 +1174,7 @@ class SqliteJournalBackend:
             )
             await conn.commit()
         except aiosqlite.Error as exc:
-            logger.warning(
-                "agent.journal.populate_aggregates_failed", error=str(exc)
-            )
+            logger.warning("agent.journal.populate_aggregates_failed", error=str(exc))
 
     async def error_turn(self, turn_id: int, error: str) -> None:
         # B3: serialise the bare commit() against in-flight transactions.
@@ -1245,9 +1238,7 @@ class SqliteJournalBackend:
             try:
                 tool_calls_text = json.dumps(tool_calls)
             except (TypeError, ValueError) as exc:
-                logger.warning(
-                    "agent.journal.append_serialize_failed", error=str(exc)
-                )
+                logger.warning("agent.journal.append_serialize_failed", error=str(exc))
                 return
         attachments_text: str | None = None
         if attachments:
@@ -1267,8 +1258,7 @@ class SqliteJournalBackend:
             try:
                 await conn.execute("BEGIN IMMEDIATE")
                 cur = await conn.execute(
-                    "SELECT COALESCE(MAX(seq), -1) + 1 FROM turn_messages "
-                    "WHERE turn_id = ?",
+                    "SELECT COALESCE(MAX(seq), -1) + 1 FROM turn_messages WHERE turn_id = ?",
                     (turn_id,),
                 )
                 row = await cur.fetchone()
@@ -1336,9 +1326,7 @@ class SqliteJournalBackend:
             if not isinstance(content, str):
                 content = str(content)
             tool_call_id_val = msg.get("tool_call_id")
-            tool_call_id = (
-                str(tool_call_id_val) if tool_call_id_val is not None else None
-            )
+            tool_call_id = str(tool_call_id_val) if tool_call_id_val is not None else None
             tool_calls_val = msg.get("tool_calls")
             tool_calls_text: str | None = None
             if tool_calls_val is not None:
@@ -1361,9 +1349,7 @@ class SqliteJournalBackend:
                         "agent.journal.append_attachments_serialize_failed",
                         error=str(exc),
                     )
-            prepared.append(
-                (role, content, tool_call_id, tool_calls_text, attachments_text)
-            )
+            prepared.append((role, content, tool_call_id, tool_calls_text, attachments_text))
         if not prepared:
             return
         # B3: hold the shared-connection write lock for the whole
@@ -1375,8 +1361,7 @@ class SqliteJournalBackend:
             try:
                 await conn.execute("BEGIN IMMEDIATE")
                 cur = await conn.execute(
-                    "SELECT COALESCE(MAX(seq), -1) + 1 FROM turn_messages "
-                    "WHERE turn_id = ?",
+                    "SELECT COALESCE(MAX(seq), -1) + 1 FROM turn_messages WHERE turn_id = ?",
                     (turn_id,),
                 )
                 row = await cur.fetchone()
@@ -1406,9 +1391,7 @@ class SqliteJournalBackend:
                     next_seq += 1
                 await conn.commit()
             except aiosqlite.Error as exc:
-                logger.warning(
-                    "agent.journal.append_batch_failed", error=str(exc)
-                )
+                logger.warning("agent.journal.append_batch_failed", error=str(exc))
                 if conn.in_transaction:
                     try:
                         await conn.rollback()
@@ -1428,6 +1411,8 @@ class SqliteJournalBackend:
         user_text: str,
         *,
         user_id: str | None = None,
+        channel: str | None = None,
+        runtime_instance_id: str | None = None,
     ) -> ResumeData | None:
         """Return the most-recent in-progress turn for ``session_key``
         whose ``user_text`` matches and that is younger than the resume
@@ -1441,35 +1426,31 @@ class SqliteJournalBackend:
         """
         if not session_key or not user_text:
             return None
-        now_ms = int(time.time() * 1000)
-        cutoff = now_ms - RESUME_MAX_AGE_MS
+        cutoff = int(time.time() * 1000) - RESUME_MAX_AGE_MS
+        sql = (
+            "SELECT turn_id, started_at_ms FROM turns "
+            "WHERE session_key = ? AND status = ? AND user_text = ? "
+            "AND started_at_ms >= ?"
+        )
+        params: list[Any] = [
+            session_key,
+            TURN_IN_PROGRESS,
+            user_text,
+            cutoff,
+        ]
+        if user_id is not None:
+            # Preserve the pre-S4 NULL compatibility only for sender scope.
+            sql += " AND (user_id = ? OR user_id IS NULL)"
+            params.append(user_id)
+        if channel is not None:
+            sql += " AND channel = ?"
+            params.append(channel)
+        if runtime_instance_id is not None:
+            sql += " AND runtime_instance_id = ?"
+            params.append(runtime_instance_id)
+        sql += " ORDER BY started_at_ms DESC, turn_id DESC LIMIT 1"
         try:
-            if user_id is not None:
-                # S4: only resume turns started by the same sender, but
-                # tolerate NULL (rows from before the user_id column
-                # existed, or HTTP turns that began without a sender).
-                cur = await self._c.execute(
-                    "SELECT turn_id, started_at_ms FROM turns "
-                    "WHERE session_key = ? AND status = ? AND user_text = ? "
-                    "AND started_at_ms >= ? "
-                    "AND (user_id = ? OR user_id IS NULL) "
-                    "ORDER BY started_at_ms DESC, turn_id DESC LIMIT 1",
-                    (
-                        session_key,
-                        TURN_IN_PROGRESS,
-                        user_text,
-                        cutoff,
-                        user_id,
-                    ),
-                )
-            else:
-                cur = await self._c.execute(
-                    "SELECT turn_id, started_at_ms FROM turns "
-                    "WHERE session_key = ? AND status = ? AND user_text = ? "
-                    "AND started_at_ms >= ? "
-                    "ORDER BY started_at_ms DESC, turn_id DESC LIMIT 1",
-                    (session_key, TURN_IN_PROGRESS, user_text, cutoff),
-                )
+            cur = await self._c.execute(sql, params)
             row = await cur.fetchone()
             await cur.close()
         except aiosqlite.Error as exc:
@@ -1589,9 +1570,7 @@ class SqliteJournalBackend:
     # T4.4 — Error breadcrumbs
     # ------------------------------------------------------------------
 
-    async def recent_errored_turns(
-        self, session_key: str, limit: int = 5
-    ) -> list[dict[str, Any]]:
+    async def recent_errored_turns(self, session_key: str, limit: int = 5) -> list[dict[str, Any]]:
         """Return the most recent errored turns for ``session_key`` so an
         operator (or a future self-heal hook) can see what failed."""
         try:
@@ -1604,9 +1583,7 @@ class SqliteJournalBackend:
             rows = await cur.fetchall()
             await cur.close()
         except aiosqlite.Error as exc:
-            logger.warning(
-                "agent.journal.recent_errored_failed", error=str(exc)
-            )
+            logger.warning("agent.journal.recent_errored_failed", error=str(exc))
             return []
         return [
             {
@@ -1697,9 +1674,7 @@ class SqliteJournalBackend:
                 "               PARTITION BY session_key "
                 "               ORDER BY started_at_ms DESC, turn_id DESC"
                 "           ) AS rn "
-                "    FROM turns "
-                + guard
-                + ") "
+                "    FROM turns " + guard + ") "
                 "SELECT t.session_key, "
                 "       MIN(t.started_at_ms) AS first_seen, "
                 "       MAX(t.started_at_ms) AS last_seen, "
@@ -1750,9 +1725,7 @@ class SqliteJournalBackend:
             )
         return out
 
-    async def delete_session(
-        self, session_key: str, *, tenant_id: str | None = None
-    ) -> int:
+    async def delete_session(self, session_key: str, *, tenant_id: str | None = None) -> int:
         """Wipe every turn (and its cascading turn_messages) for
         ``session_key``. Returns the count of ``turns`` rows deleted.
 
@@ -1786,9 +1759,7 @@ class SqliteJournalBackend:
                 await cur.close()
                 await conn.commit()
             except aiosqlite.Error as exc:
-                logger.warning(
-                    "agent.journal.delete_session_failed", error=str(exc)
-                )
+                logger.warning("agent.journal.delete_session_failed", error=str(exc))
                 if conn.in_transaction:
                     try:
                         await conn.rollback()
@@ -1800,9 +1771,7 @@ class SqliteJournalBackend:
                 return 0
         return int(n)
 
-    async def session_exists(
-        self, session_key: str, *, tenant_id: str | None = None
-    ) -> bool:
+    async def session_exists(self, session_key: str, *, tenant_id: str | None = None) -> bool:
         """Cheap existence probe — used by ``PATCH /admin/sessions/{key}``
         to short-circuit the upsert with a 404 when the key is unknown.
 
@@ -1869,12 +1838,8 @@ class SqliteJournalBackend:
         # so a PATCH that flips back the only changed field can be a
         # no-op without erroring.
         title_param = title  # may be None (== leave alone) or str
-        pinned_param: int | None = (
-            None if pinned is None else (1 if pinned else 0)
-        )
-        archived_param: int | None = (
-            None if archived is None else (1 if archived else 0)
-        )
+        pinned_param: int | None = None if pinned is None else (1 if pinned else 0)
+        archived_param: int | None = None if archived is None else (1 if archived else 0)
         now_ms = int(time.time() * 1000)
         # B3: serialise the bare commit() against in-flight transactions
         # on the shared connection. The surrounding reads
@@ -1921,17 +1886,13 @@ class SqliteJournalBackend:
         # serialisation; for typical (< 200 sessions) the cost is
         # negligible. A future optimisation could push a WHERE clause
         # into the aggregate query.
-        summaries = await self.list_session_summaries(
-            limit=10_000, tenant_id=tenant_id
-        )
+        summaries = await self.list_session_summaries(limit=10_000, tenant_id=tenant_id)
         for s in summaries:
             if s.session_key == session_key:
                 return s
         return None
 
-    async def mark_stale_in_progress_as_errored(
-        self, older_than_seconds: int | None = None
-    ) -> int:
+    async def mark_stale_in_progress_as_errored(self, older_than_seconds: int | None = None) -> int:
         """Sweep stale in-progress turns and stamp them errored.
 
         ``older_than_seconds=None`` keeps the legacy
@@ -2011,9 +1972,7 @@ class SqliteJournalBackend:
                 )
                 await self._c.commit()
             except aiosqlite.Error as exc:
-                logger.warning(
-                    "agent.journal.append_event_failed", error=str(exc)
-                )
+                logger.warning("agent.journal.append_event_failed", error=str(exc))
 
     async def append_events_batch(self, envelopes: Sequence[Any]) -> None:
         """Batch-insert ``envelopes`` in a single transaction.
@@ -2035,9 +1994,7 @@ class SqliteJournalBackend:
             try:
                 prepared.append(_envelope_to_row(env))
             except ValueError as exc:
-                logger.warning(
-                    "agent.journal.append_event_skipped", error=str(exc)
-                )
+                logger.warning("agent.journal.append_event_skipped", error=str(exc))
                 continue
         if not prepared:
             return
@@ -2057,9 +2014,7 @@ class SqliteJournalBackend:
                 )
                 await conn.commit()
             except aiosqlite.Error as exc:
-                logger.warning(
-                    "agent.journal.append_events_batch_failed", error=str(exc)
-                )
+                logger.warning("agent.journal.append_events_batch_failed", error=str(exc))
                 if conn.in_transaction:
                     try:
                         await conn.rollback()
@@ -2160,15 +2115,11 @@ class SqliteJournalBackend:
                 else min(_ITER_EVENTS_PAGE_SIZE, remaining)
             )
             try:
-                cur = await self._c.execute(
-                    sql, (str(turn_id), seq_cursor, page_cap)
-                )
+                cur = await self._c.execute(sql, (str(turn_id), seq_cursor, page_cap))
                 rows = list(await cur.fetchall())
                 await cur.close()
             except aiosqlite.Error as exc:
-                logger.warning(
-                    "agent.journal.iter_events_failed", error=str(exc)
-                )
+                logger.warning("agent.journal.iter_events_failed", error=str(exc))
                 return
             if not rows:
                 return
@@ -2227,9 +2178,7 @@ class SqliteJournalBackend:
             row = await cur.fetchone()
             await cur.close()
         except aiosqlite.Error as exc:
-            logger.warning(
-                "agent.journal.latest_event_rowid_failed", error=str(exc)
-            )
+            logger.warning("agent.journal.latest_event_rowid_failed", error=str(exc))
             return 0
         if not row or row[0] is None:
             return 0
@@ -2274,9 +2223,7 @@ class SqliteJournalBackend:
             rows = list(await cur.fetchall())
             await cur.close()
         except aiosqlite.Error as exc:
-            logger.warning(
-                "agent.journal.load_subagent_events_failed", error=str(exc)
-            )
+            logger.warning("agent.journal.load_subagent_events_failed", error=str(exc))
             return int(after_rowid), []
         out: list[dict[str, Any]] = []
         for r in rows:
@@ -2297,9 +2244,7 @@ class SqliteJournalBackend:
             return int(rows[-1][0]), out
         return high_water, out
 
-    async def get_session_turn_ids(
-        self, session_key: str, limit: int = 50
-    ) -> list[int]:
+    async def get_session_turn_ids(self, session_key: str, limit: int = 50) -> list[int]:
         """Return the most recent turn ids for ``session_key``.
 
         Convenience for the SSE endpoint: when a client opens a session
@@ -2326,9 +2271,7 @@ class SqliteJournalBackend:
             rows = await cur.fetchall()
             await cur.close()
         except aiosqlite.Error as exc:
-            logger.warning(
-                "agent.journal.get_session_turn_ids_failed", error=str(exc)
-            )
+            logger.warning("agent.journal.get_session_turn_ids_failed", error=str(exc))
             return []
         return [int(r[0]) for r in rows]
 
@@ -2434,20 +2377,14 @@ class SqliteJournalBackend:
             rows = await cur.fetchall()
             await cur.close()
         except aiosqlite.Error as exc:
-            logger.warning(
-                "agent.journal.list_session_turns_failed", error=str(exc)
-            )
+            logger.warning("agent.journal.list_session_turns_failed", error=str(exc))
             return []
         out: list[dict[str, Any]] = []
         for r in rows:
             user_text = r[9]
             preview: str | None = None
             if isinstance(user_text, str):
-                preview = (
-                    user_text[:200] + "…"
-                    if len(user_text) > 200
-                    else user_text
-                )
+                preview = user_text[:200] + "…" if len(user_text) > 200 else user_text
             out.append(
                 {
                     "turn_id": str(r[0]),
@@ -2461,16 +2398,10 @@ class SqliteJournalBackend:
                     # into a column to avoid the per-turn event scan.
                     "finish_reason": None,
                     "elapsed_ms": int(r[4]) if r[4] is not None else None,
-                    "estimated_cost_usd": (
-                        float(r[5]) if r[5] is not None else None
-                    ),
+                    "estimated_cost_usd": (float(r[5]) if r[5] is not None else None),
                     "cost_status": str(r[6]) if r[6] is not None else None,
-                    "tool_call_count": (
-                        int(r[7]) if r[7] is not None else 0
-                    ),
-                    "reasoning_token_count": (
-                        int(r[8]) if r[8] is not None else 0
-                    ),
+                    "tool_call_count": (int(r[7]) if r[7] is not None else 0),
+                    "reasoning_token_count": (int(r[8]) if r[8] is not None else 0),
                     "user_text_preview": preview,
                 }
             )
@@ -2511,9 +2442,7 @@ class SqliteJournalBackend:
                 )
                 await self._c.commit()
             except aiosqlite.Error as exc:
-                logger.warning(
-                    "agent.journal.update_turn_cost_failed", error=str(exc)
-                )
+                logger.warning("agent.journal.update_turn_cost_failed", error=str(exc))
 
     async def list_resumable_in_progress(
         self, *, window_ms: int = RESUME_MAX_AGE_MS
@@ -2533,7 +2462,7 @@ class SqliteJournalBackend:
         try:
             cur = await self._c.execute(
                 "SELECT turn_id, session_key, user_id, user_text, "
-                "started_at_ms, channel FROM turns "
+                "started_at_ms, channel, runtime_instance_id FROM turns "
                 "WHERE status = ? AND started_at_ms >= ? "
                 "ORDER BY started_at_ms ASC",
                 (TURN_IN_PROGRESS, cutoff),
@@ -2556,6 +2485,7 @@ class SqliteJournalBackend:
                     user_text=str(r[3] or ""),
                     started_at_ms=int(r[4]),
                     channel=str(r[5] or ""),
+                    runtime_instance_id=str(r[6] or ""),
                 )
             )
         return out
@@ -2598,9 +2528,7 @@ def __getattr__(name: str) -> Any:
     """
     if name == "PostgresJournalBackend":
         return _load_postgres_backend_cls()
-    raise AttributeError(
-        f"module {__name__!r} has no attribute {name!r}"
-    )
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -2658,9 +2586,7 @@ async def open_backend_from_env(
     if kind == "postgres":
         dsn = e.get(ENV_POSTGRES_DSN, "").strip()
         if not dsn:
-            raise RuntimeError(
-                f"{ENV_BACKEND}=postgres requires {ENV_POSTGRES_DSN} to be set"
-            )
+            raise RuntimeError(f"{ENV_BACKEND}=postgres requires {ENV_POSTGRES_DSN} to be set")
         postgres_cls = _load_postgres_backend_cls()
         # Loaded dynamically (``type[Any]``); the postgres backend
         # implements the JournalBackend protocol.
@@ -2668,15 +2594,11 @@ async def open_backend_from_env(
     if kind == "redis":
         url = e.get(ENV_REDIS_URL, "").strip()
         if not url:
-            raise RuntimeError(
-                f"{ENV_BACKEND}=redis requires {ENV_REDIS_URL} to be set"
-            )
+            raise RuntimeError(f"{ENV_BACKEND}=redis requires {ENV_REDIS_URL} to be set")
         # Stub: ``open`` raises NotImplementedError, so this return is a
         # dead path; cast to satisfy the protocol return type.
         return cast("JournalBackend", await RedisJournalBackend.open(url))
-    raise RuntimeError(
-        f"unknown {ENV_BACKEND}={kind!r}; expected one of: sqlite, postgres, redis"
-    )
+    raise RuntimeError(f"unknown {ENV_BACKEND}={kind!r}; expected one of: sqlite, postgres, redis")
 
 
 __all__ = [

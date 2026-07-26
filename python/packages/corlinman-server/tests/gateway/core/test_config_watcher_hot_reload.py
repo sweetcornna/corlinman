@@ -18,11 +18,14 @@ directly covers the reload pipeline end to end.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from corlinman_server.gateway.core.config import load_from_path
 from corlinman_server.gateway.core.config_watcher import ConfigWatcher
+from corlinman_server.gateway.lifecycle.config_loading import _start_config_watcher
 
 _GOOD_TOML = """\
 [server]
@@ -61,9 +64,7 @@ async def test_reload_swaps_snapshot_and_fires_on_reload(tmp_path: Path) -> None
         new_key = new_cfg["providers"]["openai"]["api_key"]
         calls.append((list(report.changed_sections), new_key))
 
-    watcher = ConfigWatcher(
-        cfg_path, initial, parser=load_from_path, on_reload=_on_reload
-    )
+    watcher = ConfigWatcher(cfg_path, initial, parser=load_from_path, on_reload=_on_reload)
 
     # Edit the file, then drive a reload.
     _write(cfg_path, _EDITED_TOML)
@@ -136,9 +137,7 @@ async def test_on_reload_exception_is_caught(tmp_path: Path) -> None:
     def _boom(report, old_cfg, new_cfg) -> None:
         raise RuntimeError("re-apply blew up")
 
-    watcher = ConfigWatcher(
-        cfg_path, initial, parser=load_from_path, on_reload=_boom
-    )
+    watcher = ConfigWatcher(cfg_path, initial, parser=load_from_path, on_reload=_boom)
 
     _write(cfg_path, _EDITED_TOML)
     report = await watcher.trigger_reload()  # must not raise
@@ -158,9 +157,104 @@ async def test_async_on_reload_is_awaited(tmp_path: Path) -> None:
     async def _on_reload(report, old_cfg, new_cfg) -> None:
         awaited.append(new_cfg["providers"]["openai"]["api_key"])
 
-    watcher = ConfigWatcher(
-        cfg_path, initial, parser=load_from_path, on_reload=_on_reload
-    )
+    watcher = ConfigWatcher(cfg_path, initial, parser=load_from_path, on_reload=_on_reload)
     _write(cfg_path, _EDITED_TOML)
     await watcher.trigger_reload()
     assert awaited == ["sk-rotated"]
+
+
+@pytest.mark.asyncio
+async def test_gateway_channel_reload_awaits_qq_reconcile_and_sidecar(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg_path = tmp_path / "corlinman.toml"
+    sidecar = tmp_path / "py-config.json"
+    monkeypatch.setenv("CORLINMAN_CONFIG_HOT_RELOAD", "1")
+    monkeypatch.setenv("CORLINMAN_PY_CONFIG", str(sidecar))
+    _write(
+        cfg_path,
+        "[channels.qq]\n"
+        'default_instance = "bot-a"\n'
+        "[channels.qq.instances.bot-a]\n"
+        "enabled = true\n"
+        'connection_mode = "managed"\n',
+    )
+    initial = load_from_path(cfg_path)
+    calls: list[tuple[dict, dict, Path]] = []
+
+    class _Registry:
+        async def reconcile_and_write_sidecar(self, channels, *, config, path) -> None:
+            calls.append((channels, config, Path(path)))
+
+    state = SimpleNamespace(config=initial, qq_runtime_registry=_Registry())
+    app = SimpleNamespace(state=SimpleNamespace(corlinman_config=initial))
+    task = _start_config_watcher(app, state, cfg_path)
+    assert task is not None
+    try:
+        watcher = state.config_watcher
+        _write(
+            cfg_path,
+            "[channels.qq]\n"
+            'default_instance = "bot-a"\n'
+            "[channels.qq.instances.bot-a]\n"
+            "enabled = false\n"
+            'connection_mode = "managed"\n',
+        )
+
+        report = await watcher.trigger_reload()
+
+        assert report.errors == []
+        assert calls == [(state.config["channels"], state.config, sidecar)]
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.asyncio
+async def test_gateway_channel_reload_restores_snapshot_on_reconcile_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg_path = tmp_path / "corlinman.toml"
+    monkeypatch.setenv("CORLINMAN_CONFIG_HOT_RELOAD", "1")
+    _write(
+        cfg_path,
+        "[channels.qq]\n"
+        'default_instance = "bot-a"\n'
+        "[channels.qq.instances.bot-a]\n"
+        "enabled = true\n"
+        'connection_mode = "managed"\n',
+    )
+    initial = load_from_path(cfg_path)
+
+    class _Registry:
+        async def reconcile_and_write_sidecar(self, channels, *, config, path) -> None:
+            raise RuntimeError("manager unavailable")
+
+    state = SimpleNamespace(config=initial, qq_runtime_registry=_Registry())
+    app = SimpleNamespace(state=SimpleNamespace(corlinman_config=initial))
+    task = _start_config_watcher(app, state, cfg_path)
+    assert task is not None
+    try:
+        watcher = state.config_watcher
+        _write(
+            cfg_path,
+            "[channels.qq]\n"
+            'default_instance = "bot-a"\n'
+            "[channels.qq.instances.bot-a]\n"
+            "enabled = false\n"
+            'connection_mode = "managed"\n',
+        )
+
+        report = await watcher.trigger_reload()
+
+        assert report.errors == ["QQ runtime reconcile failed: manager unavailable"]
+        assert state.config == initial
+        assert app.state.corlinman_config == initial
+        assert watcher.current() == initial
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task

@@ -115,6 +115,28 @@ def test_lifespan_spawns_scheduler_runtime_for_default_jobs(
         assert live, "scheduler tick task is not running"
 
 
+def test_scheduler_store_uses_execution_state_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_dir = tmp_path / "private"
+    shared_dir = tmp_path / "shared"
+    monkeypatch.setenv("CORLINMAN_EXECUTION_STATE_DIR", str(shared_dir))
+    _monkey_loaded_config(
+        monkeypatch,
+        {"system": {"update_check": {"enabled": True, "interval_hours": 6}}},
+    )
+    fake_cfg_path = tmp_path / "config.toml"
+    fake_cfg_path.write_text("# stubbed", encoding="utf-8")
+
+    app = build_app(config_path=fake_cfg_path, data_dir=private_dir)
+
+    with TestClient(app):
+        assert getattr(app.state, "scheduler_store", None) is not None
+        assert (shared_dir / "scheduler.sqlite").is_file()
+        assert not (private_dir / "scheduler.sqlite").exists()
+
+
 def test_effective_scheduler_config_merges_config_and_default_jobs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

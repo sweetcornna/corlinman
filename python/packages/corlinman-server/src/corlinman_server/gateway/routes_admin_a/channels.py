@@ -43,6 +43,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from corlinman_server.gateway.qq_instances import QqAdminError, QqInstanceAdminService
 from corlinman_server.gateway.routes_admin_a._auth_shim import (
     require_admin_dependency,
 )
@@ -81,6 +82,7 @@ from corlinman_server.gateway.routes_admin_a.state import (
 from corlinman_server.gateway.routes_admin_b._napcat_lib import (
     NapcatError,
     _ensure_onebot_websocket_server_for_config,
+    _napcat_http_error,
     _schedule_onebot_websocket_server_ensure,
 )
 
@@ -108,20 +110,34 @@ def router() -> APIRouter:
                 enabled=False,
                 ws_url=None,
             )
-        # Pull the latest NapCat health snapshot (best-effort; the
-        # channels package may not be installed for non-QQ deploys).
         health: dict[str, Any] = {}
-        try:
-            from corlinman_channels.service import QQ_HEALTH
+        canonical = isinstance((state.channels_config or {}).get("qq"), dict) and (
+            "instances" in (state.channels_config or {}).get("qq", {})
+        )
+        if canonical:
+            try:
+                service = QqInstanceAdminService(state)
+                default_id = service.resolve_instance_id(None)
+                registry = state.qq_runtime_registry
+                if registry is not None:
+                    health = registry.health(default_id) or {}
+            except QqAdminError:
+                health = {}
+        else:
+            # Legacy singleton compatibility health.
+            try:
+                from corlinman_channels.service import QQ_HEALTH
 
-            health = dict(QQ_HEALTH)
-        except Exception:  # noqa: BLE001
-            health = {}
+                health = dict(QQ_HEALTH)
+            except Exception:  # noqa: BLE001
+                health = {}
 
-        if bool(qq.get("enabled", False)) and health.get("online") is not True:
-            _schedule_onebot_websocket_server_ensure(
-                {"channels": {"qq": dict(qq)}}
-            )
+        if (
+            not canonical
+            and bool(qq.get("enabled", False))
+            and health.get("online") is not True
+        ):
+            _schedule_onebot_websocket_server_ensure({"channels": {"qq": dict(qq)}})
 
         ws_url = qq.get("ws_url") or os.environ.get("QQ_WS_URL")
         # Runtime mirrors the Telegram semantics: "connected" only when the
@@ -173,6 +189,28 @@ def router() -> APIRouter:
     async def reconnect(
         state: Annotated[AdminState, Depends(get_admin_state)],
     ) -> ReconnectOut:
+        qq_root = (state.channels_config or {}).get("qq")
+        if isinstance(qq_root, dict) and "instances" in qq_root:
+            try:
+                instance_id = QqInstanceAdminService(state).resolve_instance_id(None)
+                registry = state.qq_runtime_registry
+                if registry is None or registry.health(instance_id) is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail={"error": "qq_runtime_unavailable"},
+                    )
+                changed = await registry.restart(instance_id)
+                if not changed:
+                    raise HTTPException(
+                        status_code=status.HTTP_502_BAD_GATEWAY,
+                        detail={"error": "reconnect_failed"},
+                    )
+                return ReconnectOut(status="ok", changed=True)
+            except QqAdminError as exc:
+                raise HTTPException(
+                    status_code=exc.status_code,
+                    detail=exc.public_detail(),
+                ) from exc
         qq = _qq_config(state)
         if qq is None:
             raise HTTPException(
@@ -195,7 +233,7 @@ def router() -> APIRouter:
                 {"channels": {"qq": dict(qq)}}
             )
         except NapcatError as exc:
-            if "not login" in str(exc).lower():
+            if exc.code == "napcat_not_logged_in":
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail={
@@ -206,12 +244,14 @@ def router() -> APIRouter:
                         ),
                     },
                 ) from exc
+            error_status, detail = _napcat_http_error(
+                exc,
+                code="reconnect_failed",
+                message="failed to reconnect the QQ instance",
+            )
             raise HTTPException(
-                status_code=exc.upstream_status or status.HTTP_502_BAD_GATEWAY,
-                detail={
-                    "error": "reconnect_failed",
-                    "message": str(exc),
-                },
+                status_code=error_status,
+                detail=detail,
             ) from exc
         return ReconnectOut(status="ok", changed=changed)
 
@@ -275,7 +315,10 @@ def router() -> APIRouter:
         except Exception as exc:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail={"error": "write_failed", "message": str(exc)},
+                detail={
+                    "error": "write_failed",
+                    "message": "Failed to save QQ configuration",
+                },
             ) from exc
 
         return KeywordsOut(
@@ -324,6 +367,19 @@ def router() -> APIRouter:
                 },
             )
         section = state.channels_config.get(channel)
+        if channel == "qq" and isinstance(section, dict) and "instances" in section:
+            instances = section.get("instances")
+            default_instance = section.get("default_instance")
+            section = (
+                instances.get(default_instance)
+                if isinstance(instances, dict) and isinstance(default_instance, str)
+                else None
+            )
+            if not isinstance(section, dict):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail={"error": "default_instance_not_configured"},
+                )
         if not isinstance(section, dict):
             # Auto-stub so an operator can pre-fill a channel they're about
             # to enable; the channel stays dormant until enabled=true lands.

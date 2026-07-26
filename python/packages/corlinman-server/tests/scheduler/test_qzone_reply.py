@@ -188,7 +188,9 @@ def _comment_events(
     ]
 
 
-def _own_post(tid: str, *, uin: str = "1234", comments: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def _own_post(
+    tid: str, *, uin: str = "1234", comments: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
     return {
         "tid": tid,
         "uin": uin,
@@ -206,10 +208,7 @@ def _own_post(tid: str, *, uin: str = "1234", comments: list[dict[str, Any]] | N
 
 def test_qzone_reply_is_registered_by_name() -> None:
     assert QZONE_REPLY_BUILTIN_NAME in BUILTIN_ACTIONS
-    assert (
-        BUILTIN_ACTIONS[QZONE_REPLY_BUILTIN_NAME]
-        is _qzone_reply_comments_action
-    )
+    assert BUILTIN_ACTIONS[QZONE_REPLY_BUILTIN_NAME] is _qzone_reply_comments_action
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +241,8 @@ async def test_happy_path_counts_replies_and_backfills_seen(
         persona_store=store,
         metadata={"persona_id": "grantley", "qq_account": "1234"},
     )
-    app_state.data_dir = tmp_path
+    app_state.data_dir = tmp_path / "private"
+    app_state.execution_state_dir = tmp_path
     ctx = BuiltinContext(app_state=app_state, name="grantley.qzone_reply")
     out = await _qzone_reply_comments_action(ctx)
 
@@ -274,8 +274,8 @@ async def test_happy_path_counts_replies_and_backfills_seen(
     assert "You are a tiger." in system_prompt
     assert "scheduler·qzone.reply_comments" in system_prompt
     assert 'owner_uin="1234"' in system_prompt
-    assert "最近 5 条" in system_prompt          # lookback default
-    assert "最多回复 3 条" in system_prompt       # max_replies default
+    assert "最近 5 条" in system_prompt  # lookback default
+    assert "最多回复 3 条" in system_prompt  # max_replies default
     assert "不要调用 `qzone_publish`" in system_prompt
     assert req.messages[1].role == "user"
     assert req.session_key.startswith("scheduler:qzone:grantley:")
@@ -287,19 +287,16 @@ async def test_no_new_comments_is_success_with_zero_replies(
 ) -> None:
     """A turn that lists the feed and ends without commenting is a
     success — no error, zero replies, no sidecar file."""
-    store = _FakePersonaStore(
-        {"grantley": _FakePersona(id="grantley", system_prompt="x")}
-    )
+    store = _FakePersonaStore({"grantley": _FakePersona(id="grantley", system_prompt="x")})
     chat = _ScriptedChatService(
         events=[
             *_feed_events(feed=[_own_post("t1")]),
             DoneEvent(finish_reason="stop"),
         ],
     )
-    app_state = _make_app_state(
-        chat=chat, persona_store=store, metadata={"persona_id": "grantley"}
-    )
-    app_state.data_dir = tmp_path
+    app_state = _make_app_state(chat=chat, persona_store=store, metadata={"persona_id": "grantley"})
+    app_state.data_dir = tmp_path / "private"
+    app_state.execution_state_dir = tmp_path
     ctx = BuiltinContext(app_state=app_state, name="grantley.qzone_reply")
     out = await _qzone_reply_comments_action(ctx)
     assert out["ok"] is True, out
@@ -311,9 +308,7 @@ async def test_no_new_comments_is_success_with_zero_replies(
 async def test_shadow_comment_plans_are_not_recorded_as_seen(
     tmp_path: Path,
 ) -> None:
-    store = _FakePersonaStore(
-        {"grantley": _FakePersona(id="grantley", system_prompt="x")}
-    )
+    store = _FakePersonaStore({"grantley": _FakePersona(id="grantley", system_prompt="x")})
     chat = _ScriptedChatService(
         events=[
             *_comment_events(
@@ -343,7 +338,8 @@ async def test_shadow_comment_plans_are_not_recorded_as_seen(
         persona_store=store,
         metadata={"persona_id": "grantley"},
     )
-    app_state.data_dir = tmp_path
+    app_state.data_dir = tmp_path / "private"
+    app_state.execution_state_dir = tmp_path
     out = await _qzone_reply_comments_action(
         BuiltinContext(
             app_state=app_state,
@@ -363,9 +359,7 @@ async def test_failed_comment_result_not_counted_or_recorded(
 ) -> None:
     """An ``ok=false`` comment envelope (and an ``is_error`` result) must
     not count into ``replies_posted`` nor pollute the sidecar."""
-    store = _FakePersonaStore(
-        {"grantley": _FakePersona(id="grantley", system_prompt="x")}
-    )
+    store = _FakePersonaStore({"grantley": _FakePersona(id="grantley", system_prompt="x")})
     chat = _ScriptedChatService(
         events=[
             *_comment_events(call_id="c1", tid="t1", reply_to_uin="5555", ok=False),
@@ -373,10 +367,9 @@ async def test_failed_comment_result_not_counted_or_recorded(
             DoneEvent(finish_reason="stop"),
         ],
     )
-    app_state = _make_app_state(
-        chat=chat, persona_store=store, metadata={"persona_id": "grantley"}
-    )
-    app_state.data_dir = tmp_path
+    app_state = _make_app_state(chat=chat, persona_store=store, metadata={"persona_id": "grantley"})
+    app_state.data_dir = tmp_path / "private"
+    app_state.execution_state_dir = tmp_path
     ctx = BuiltinContext(app_state=app_state, name="grantley.qzone_reply")
     out = await _qzone_reply_comments_action(ctx)
     assert out["ok"] is True
@@ -399,14 +392,11 @@ async def test_seen_entries_surface_in_prompt_and_skipped_count(
         persona_id="grantley",
         replies=[("t1", "5555"), ("t1", "7777"), ("t2", "8888")],
     )
-    store = _FakePersonaStore(
-        {"grantley": _FakePersona(id="grantley", system_prompt="x")}
-    )
+    store = _FakePersonaStore({"grantley": _FakePersona(id="grantley", system_prompt="x")})
     chat = _ScriptedChatService(events=[DoneEvent(finish_reason="stop")])
-    app_state = _make_app_state(
-        chat=chat, persona_store=store, metadata={"persona_id": "grantley"}
-    )
-    app_state.data_dir = tmp_path
+    app_state = _make_app_state(chat=chat, persona_store=store, metadata={"persona_id": "grantley"})
+    app_state.data_dir = tmp_path / "private"
+    app_state.execution_state_dir = tmp_path
     ctx = BuiltinContext(app_state=app_state, name="grantley.qzone_reply")
     out = await _qzone_reply_comments_action(ctx)
     assert out["ok"] is True
@@ -417,30 +407,23 @@ async def test_seen_entries_surface_in_prompt_and_skipped_count(
     assert "说说 t1：已回复评论 5555、7777" in prompt
     assert "说说 t2：已回复评论 8888" in prompt
     # The seen block sits between the persona body and the tail.
-    assert prompt.index("已回复过的评论") < prompt.index(
-        "scheduler·qzone.reply_comments"
-    )
+    assert prompt.index("已回复过的评论") < prompt.index("scheduler·qzone.reply_comments")
 
 
 async def test_seen_backfill_does_not_duplicate_legacy_uin(tmp_path: Path) -> None:
     """Replying again to a commenter already in the sidecar must not
     append a duplicate ``uin:ts`` entry."""
-    _record_seen(
-        data_dir=tmp_path, persona_id="grantley", replies=[("t1", "5555")]
-    )
-    store = _FakePersonaStore(
-        {"grantley": _FakePersona(id="grantley", system_prompt="x")}
-    )
+    _record_seen(data_dir=tmp_path, persona_id="grantley", replies=[("t1", "5555")])
+    store = _FakePersonaStore({"grantley": _FakePersona(id="grantley", system_prompt="x")})
     chat = _ScriptedChatService(
         events=[
             *_comment_events(tid="t1", reply_to_uin="5555"),
             DoneEvent(finish_reason="stop"),
         ],
     )
-    app_state = _make_app_state(
-        chat=chat, persona_store=store, metadata={"persona_id": "grantley"}
-    )
-    app_state.data_dir = tmp_path
+    app_state = _make_app_state(chat=chat, persona_store=store, metadata={"persona_id": "grantley"})
+    app_state.data_dir = tmp_path / "private"
+    app_state.execution_state_dir = tmp_path
     ctx = BuiltinContext(app_state=app_state, name="grantley.qzone_reply")
     out = await _qzone_reply_comments_action(ctx)
     assert out["ok"] is True
@@ -454,9 +437,7 @@ async def test_later_comment_by_same_person_uses_comment_id(tmp_path: Path) -> N
         persona_id="grantley",
         replies=[("t1", "id:first")],
     )
-    store = _FakePersonaStore(
-        {"grantley": _FakePersona(id="grantley", system_prompt="x")}
-    )
+    store = _FakePersonaStore({"grantley": _FakePersona(id="grantley", system_prompt="x")})
     chat = _ScriptedChatService(
         events=[
             *_comment_events(
@@ -472,7 +453,8 @@ async def test_later_comment_by_same_person_uses_comment_id(tmp_path: Path) -> N
         persona_store=store,
         metadata={"persona_id": "grantley"},
     )
-    app_state.data_dir = tmp_path
+    app_state.data_dir = tmp_path / "private"
+    app_state.execution_state_dir = tmp_path
     out = await _qzone_reply_comments_action(
         BuiltinContext(app_state=app_state, name="grantley.qzone_reply")
     )
@@ -490,9 +472,7 @@ async def test_later_comment_by_same_person_uses_comment_id(tmp_path: Path) -> N
 
 
 async def test_chat_error_event_folds_into_audit() -> None:
-    store = _FakePersonaStore(
-        {"grantley": _FakePersona(id="grantley", system_prompt="x")}
-    )
+    store = _FakePersonaStore({"grantley": _FakePersona(id="grantley", system_prompt="x")})
     err = InternalChatError(reason="rate_limit", message="too many requests")
     chat = _ScriptedChatService(events=[ErrorEvent(error=err)])
     ctx = BuiltinContext(
@@ -514,9 +494,7 @@ async def test_chat_service_raising_folds_into_audit() -> None:
         def run(self, req: Any, cancel: asyncio.Event):
             raise RuntimeError("backend down")
 
-    store = _FakePersonaStore(
-        {"grantley": _FakePersona(id="grantley", system_prompt="x")}
-    )
+    store = _FakePersonaStore({"grantley": _FakePersona(id="grantley", system_prompt="x")})
     ctx = BuiltinContext(
         app_state=_make_app_state(
             chat=_Boom(), persona_store=store, metadata={"persona_id": "grantley"}
@@ -542,9 +520,7 @@ async def test_chat_timeout_folds_into_audit(
             return _gen()
 
     monkeypatch.setenv("CORLINMAN_QZONE_REPLY_TIMEOUT_SECS", "1")
-    store = _FakePersonaStore(
-        {"grantley": _FakePersona(id="grantley", system_prompt="x")}
-    )
+    store = _FakePersonaStore({"grantley": _FakePersona(id="grantley", system_prompt="x")})
     ctx = BuiltinContext(
         app_state=_make_app_state(
             chat=_NeverEnding(),
@@ -575,9 +551,7 @@ async def test_persona_not_found_returns_typed_envelope() -> None:
     store = _FakePersonaStore({})
     chat = _ScriptedChatService(events=[])
     ctx = BuiltinContext(
-        app_state=_make_app_state(
-            chat=chat, persona_store=store, metadata={"persona_id": "ghost"}
-        ),
+        app_state=_make_app_state(chat=chat, persona_store=store, metadata={"persona_id": "ghost"}),
         name="grantley.qzone_reply",
     )
     out = await _qzone_reply_comments_action(ctx)
@@ -587,9 +561,7 @@ async def test_persona_not_found_returns_typed_envelope() -> None:
 
 
 async def test_no_chat_service_returns_typed_envelope() -> None:
-    store = _FakePersonaStore(
-        {"grantley": _FakePersona(id="grantley", system_prompt="x")}
-    )
+    store = _FakePersonaStore({"grantley": _FakePersona(id="grantley", system_prompt="x")})
     ctx = BuiltinContext(
         app_state=_make_app_state(
             chat=None, persona_store=store, metadata={"persona_id": "grantley"}
@@ -602,19 +574,16 @@ async def test_no_chat_service_returns_typed_envelope() -> None:
 
 
 async def test_run_builtin_indirection_passes_through(tmp_path: Path) -> None:
-    store = _FakePersonaStore(
-        {"grantley": _FakePersona(id="grantley", system_prompt="x")}
-    )
+    store = _FakePersonaStore({"grantley": _FakePersona(id="grantley", system_prompt="x")})
     chat = _ScriptedChatService(
         events=[
             *_comment_events(tid="t1", reply_to_uin="5555"),
             DoneEvent(finish_reason="stop"),
         ],
     )
-    app_state = _make_app_state(
-        chat=chat, persona_store=store, metadata={"persona_id": "grantley"}
-    )
-    app_state.data_dir = tmp_path
+    app_state = _make_app_state(chat=chat, persona_store=store, metadata={"persona_id": "grantley"})
+    app_state.data_dir = tmp_path / "private"
+    app_state.execution_state_dir = tmp_path
     ctx = BuiltinContext(app_state=app_state, name="grantley.qzone_reply")
     out = await run_builtin(QZONE_REPLY_BUILTIN_NAME, ctx)
     assert out["ok"] is True
@@ -628,19 +597,17 @@ async def test_run_builtin_indirection_passes_through(tmp_path: Path) -> None:
 
 def test_clamp_int_defaults_and_ranges() -> None:
     assert _clamp_int(None, default=3, lo=1, hi=10) == 3
-    assert _clamp_int(True, default=3, lo=1, hi=10) == 3   # bool is not 1
+    assert _clamp_int(True, default=3, lo=1, hi=10) == 3  # bool is not 1
     assert _clamp_int("x", default=3, lo=1, hi=10) == 3
-    assert _clamp_int(99, default=3, lo=1, hi=10) == 10    # clamp high
-    assert _clamp_int(0, default=3, lo=1, hi=10) == 1      # clamp low
+    assert _clamp_int(99, default=3, lo=1, hi=10) == 10  # clamp high
+    assert _clamp_int(0, default=3, lo=1, hi=10) == 1  # clamp low
     assert _clamp_int(7, default=3, lo=1, hi=10) == 7
-    assert _clamp_int("6", default=3, lo=1, hi=10) == 6    # numeric string ok
+    assert _clamp_int("6", default=3, lo=1, hi=10) == 6  # numeric string ok
 
 
 async def test_metadata_knobs_flow_into_tail_clamped() -> None:
     """max_replies=99 / lookback_posts=99 clamp to 10 / 20 in the tail."""
-    store = _FakePersonaStore(
-        {"grantley": _FakePersona(id="grantley", system_prompt="x")}
-    )
+    store = _FakePersonaStore({"grantley": _FakePersona(id="grantley", system_prompt="x")})
     chat = _ScriptedChatService(events=[DoneEvent(finish_reason="stop")])
     ctx = BuiltinContext(
         app_state=_make_app_state(
@@ -663,9 +630,7 @@ async def test_metadata_knobs_flow_into_tail_clamped() -> None:
 
 async def test_per_job_metadata_table_overrides_direct_seam() -> None:
     """The production per-job metadata map wins over the test seam."""
-    store = _FakePersonaStore(
-        {"grantley": _FakePersona(id="grantley", system_prompt="x")}
-    )
+    store = _FakePersonaStore({"grantley": _FakePersona(id="grantley", system_prompt="x")})
     chat = _ScriptedChatService(events=[DoneEvent(finish_reason="stop")])
     app_state = _make_app_state(chat=chat, persona_store=store, metadata={})
     app_state.scheduler_job_metadata = {
@@ -680,6 +645,27 @@ async def test_per_job_metadata_table_overrides_direct_seam() -> None:
 # ---------------------------------------------------------------------------
 # Sidecar hygiene — caps / slug guard / atomicity
 # ---------------------------------------------------------------------------
+
+
+def test_seen_state_isolated_by_qq_instance(tmp_path: Path) -> None:
+    _record_seen(
+        data_dir=tmp_path,
+        persona_id="grantley",
+        qq_instance_id="bot-a",
+        replies=[("t1", "comment-a")],
+    )
+    _record_seen(
+        data_dir=tmp_path,
+        persona_id="grantley",
+        qq_instance_id="bot-b",
+        replies=[("t1", "comment-b")],
+    )
+
+    path_a = tmp_path / "qzone_seen_comments" / "bot-a" / "grantley.json"
+    path_b = tmp_path / "qzone_seen_comments" / "bot-b" / "grantley.json"
+    assert _read_seen(path_a)["t1"][0].startswith("comment-a:")
+    assert _read_seen(path_b)["t1"][0].startswith("comment-b:")
+    assert _seen_path(tmp_path, "grantley", "../evil") is None
 
 
 def test_seen_per_tid_cap(tmp_path: Path) -> None:
@@ -702,9 +688,7 @@ def test_seen_total_tids_cap(tmp_path: Path) -> None:
 
 def test_seen_bad_slug_skips_entirely(tmp_path: Path) -> None:
     assert _seen_path(tmp_path, "../evil") is None
-    _record_seen(
-        data_dir=tmp_path, persona_id="../evil", replies=[("t1", "5555")]
-    )
+    _record_seen(data_dir=tmp_path, persona_id="../evil", replies=[("t1", "5555")])
     seen_dir = tmp_path / "qzone_seen_comments"
     assert not seen_dir.exists() or list(seen_dir.iterdir()) == []
 
@@ -716,9 +700,7 @@ def test_seen_no_data_dir_is_noop() -> None:
 
 
 def test_seen_atomic_write_leaves_no_tmp(tmp_path: Path) -> None:
-    _record_seen(
-        data_dir=tmp_path, persona_id="grantley", replies=[("t1", "5555")]
-    )
+    _record_seen(data_dir=tmp_path, persona_id="grantley", replies=[("t1", "5555")])
     seen_dir = tmp_path / "qzone_seen_comments"
     assert sorted(p.name for p in seen_dir.iterdir()) == ["grantley.json"]
 

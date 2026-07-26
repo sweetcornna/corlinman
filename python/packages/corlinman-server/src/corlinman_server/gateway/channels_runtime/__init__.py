@@ -150,6 +150,10 @@ def _build_qq_params(
     chat_service: Any,
     inbox: Any = None,
     *,
+    instance_id: str = "default",
+    health: dict[str, Any] | None = None,
+    identity_guard: Any = None,
+    identity_ready: Any = None,
     persona_store: Any = None,
     asset_store: Any = None,
 ) -> Any:
@@ -192,6 +196,10 @@ def _build_qq_params(
 
     return QqChannelParams(
         config=cfg,
+        instance_id=instance_id,
+        health=health,
+        identity_guard=identity_guard,
+        identity_ready=identity_ready,
         model=model,
         chat_service=chat_service,
         inbox=inbox,
@@ -361,11 +369,7 @@ def _build_qq_official_params(
 
     cfg: dict[str, Any] = dict(qq_cfg)
     app_id = cfg.get("app_id") or os.environ.get("QQ_OFFICIAL_APP_ID") or ""
-    app_secret = (
-        cfg.get("app_secret")
-        or os.environ.get("QQ_OFFICIAL_APP_SECRET")
-        or ""
-    )
+    app_secret = cfg.get("app_secret") or os.environ.get("QQ_OFFICIAL_APP_SECRET") or ""
     if app_id:
         cfg["app_id"] = app_id
     if app_secret:
@@ -524,17 +528,13 @@ async def _run_channel(
         except asyncio.CancelledError:  # pragma: no cover — defensive
             pass
         except Exception as exc:  # pragma: no cover — adapter-owned
-            logger.warning(
-                "gateway.channels.shutdown_error", channel=name, error=str(exc)
-            )
+            logger.warning("gateway.channels.shutdown_error", channel=name, error=str(exc))
         raise
     except Exception as exc:
         # The channel loop crashed on its own (lost WS, bad token mid-run).
         # Log it; the task ends. The gateway stays up — a dead channel is
         # not a dead gateway.
-        logger.warning(
-            "gateway.channels.channel_crashed", channel=name, error=str(exc)
-        )
+        logger.warning("gateway.channels.channel_crashed", channel=name, error=str(exc))
     else:
         logger.info("gateway.channels.channel_exited", channel=name)
 
@@ -573,12 +573,18 @@ def build_channel_tasks(
 
     # --- QQ / OneBot --------------------------------------------------------
     qq_cfg = _as_mapping(channels_cfg.get("qq"))
-    if _is_enabled(qq_cfg):
+    # Canonical fleets are owned by QqRuntimeRegistry; this factory keeps the
+    # legacy singleton path for old configs and direct unit-test callers.
+    canonical_qq = "instances" in qq_cfg
+    if _is_enabled(qq_cfg) and not canonical_qq:
         try:
             from corlinman_channels import run_qq_channel
 
             params = _build_qq_params(
-                qq_cfg, model, chat_service, inbox=inbox,
+                qq_cfg,
+                model,
+                chat_service,
+                inbox=inbox,
                 persona_store=persona_store,
                 asset_store=asset_store,
             )
@@ -598,10 +604,8 @@ def build_channel_tasks(
                 has_chat_service=chat_service is not None,
             )
         except Exception as exc:
-            logger.warning(
-                "gateway.channels.build_failed", channel="qq", error=str(exc)
-            )
-    elif qq_cfg:
+            logger.warning("gateway.channels.build_failed", channel="qq", error=str(exc))
+    elif qq_cfg and not canonical_qq:
         logger.debug("gateway.channels.disabled", channel="qq")
 
     # --- Telegram -----------------------------------------------------------
@@ -611,7 +615,9 @@ def build_channel_tasks(
             from corlinman_channels import run_telegram_channel
 
             params = _build_telegram_params(
-                tg_cfg, model, chat_service,
+                tg_cfg,
+                model,
+                chat_service,
                 persona_store=persona_store,
                 asset_store=asset_store,
                 on_sender_ready=telegram_on_sender_ready,
@@ -647,7 +653,9 @@ def build_channel_tasks(
             from corlinman_channels import run_discord_channel
 
             params = _build_discord_params(
-                dc_cfg, model, chat_service,
+                dc_cfg,
+                model,
+                chat_service,
                 persona_store=persona_store,
                 asset_store=asset_store,
                 on_sender_ready=discord_on_sender_ready,
@@ -668,9 +676,7 @@ def build_channel_tasks(
                 has_chat_service=chat_service is not None,
             )
         except Exception as exc:
-            logger.warning(
-                "gateway.channels.build_failed", channel="discord", error=str(exc)
-            )
+            logger.warning("gateway.channels.build_failed", channel="discord", error=str(exc))
     elif dc_cfg:
         logger.debug("gateway.channels.disabled", channel="discord")
 
@@ -681,7 +687,9 @@ def build_channel_tasks(
             from corlinman_channels import run_slack_channel
 
             params = _build_slack_params(
-                sl_cfg, model, chat_service,
+                sl_cfg,
+                model,
+                chat_service,
                 persona_store=persona_store,
                 asset_store=asset_store,
                 on_sender_ready=slack_on_sender_ready,
@@ -702,9 +710,7 @@ def build_channel_tasks(
                 has_chat_service=chat_service is not None,
             )
         except Exception as exc:
-            logger.warning(
-                "gateway.channels.build_failed", channel="slack", error=str(exc)
-            )
+            logger.warning("gateway.channels.build_failed", channel="slack", error=str(exc))
     elif sl_cfg:
         logger.debug("gateway.channels.disabled", channel="slack")
 
@@ -715,7 +721,9 @@ def build_channel_tasks(
             from corlinman_channels import run_qq_official_channel
 
             params = _build_qq_official_params(
-                qq_off_cfg, model, chat_service,
+                qq_off_cfg,
+                model,
+                chat_service,
                 persona_store=persona_store,
                 asset_store=asset_store,
                 tencent_policy_cfg=qq_cfg,
@@ -751,7 +759,9 @@ def build_channel_tasks(
             from corlinman_channels import run_feishu_channel
 
             params = _build_feishu_params(
-                fs_cfg, model, chat_service,
+                fs_cfg,
+                model,
+                chat_service,
                 persona_store=persona_store,
                 asset_store=asset_store,
                 on_sender_ready=feishu_on_sender_ready,
@@ -772,9 +782,7 @@ def build_channel_tasks(
                 has_chat_service=chat_service is not None,
             )
         except Exception as exc:
-            logger.warning(
-                "gateway.channels.build_failed", channel="feishu", error=str(exc)
-            )
+            logger.warning("gateway.channels.build_failed", channel="feishu", error=str(exc))
     elif fs_cfg:
         logger.debug("gateway.channels.disabled", channel="feishu")
 
@@ -794,7 +802,9 @@ def build_channel_tasks(
             # qq_official keeps its asset_store — its handler DOES deliver
             # send_attachment (handle_one_qq_official / _SEND_ATTACHMENT_TOOL).
             params = _build_wechat_official_params(
-                wx_cfg, model, chat_service,
+                wx_cfg,
+                model,
+                chat_service,
                 persona_store=persona_store,
                 asset_store=None,
             )
@@ -960,6 +970,46 @@ def bootstrap(state: Any) -> list[asyncio.Task[Any]]:
             slack_on_sender_ready=_sender_attacher("slack_sender"),
             feishu_on_sender_ready=_sender_attacher("feishu_sender"),
         )
+        qq_cfg = _as_mapping(channels_cfg.get("qq"))
+        if qq_cfg and "instances" in qq_cfg:
+            from corlinman_server.gateway.qq_instances import QqRuntimeRegistry
+
+            manager = (
+                getattr(admin_a_state, "napcat_manager", None)
+                if admin_a_state is not None
+                else None
+            )
+            registry = QqRuntimeRegistry(
+                model=model,
+                chat_service=chat_service,
+                manager=manager,
+                persona_store=persona_store,
+                asset_store=asset_store,
+            )
+
+            async def _run_registry() -> None:
+                from corlinman_server.gateway.lifecycle.py_config import (
+                    default_py_config_path,
+                )
+
+                await registry.reconcile_and_write_sidecar(
+                    channels_cfg,
+                    config=getattr(state, "config", None) or {"channels": channels_cfg},
+                    path=os.environ.get("CORLINMAN_PY_CONFIG") or default_py_config_path(),
+                )
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    await registry.stop_all()
+
+            registry_task = asyncio.create_task(
+                _run_registry(),
+                name="channel-qq-registry",
+            )
+            tasks.append(registry_task)
+            state.qq_runtime_registry = registry
+            if admin_a_state is not None:
+                admin_a_state.qq_runtime_registry = registry
     except Exception as exc:  # pragma: no cover — defensive umbrella
         logger.warning("gateway.channels.bootstrap_failed", error=str(exc))
         return []

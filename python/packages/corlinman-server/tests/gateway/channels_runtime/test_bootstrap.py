@@ -123,6 +123,39 @@ async def test_bootstrap_qq_ws_url_env_fallback(
         await _drain(tasks)
 
 
+async def test_bootstrap_canonical_external_qq_uses_runtime_registry(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sidecar = tmp_path / "py-config.json"
+    monkeypatch.setenv("CORLINMAN_PY_CONFIG", str(sidecar))
+    state = _FakeState(
+        config={
+            "channels": {
+                "qq": {
+                    "default_instance": "bot-a",
+                    "instances": {
+                        "bot-a": {
+                            "enabled": True,
+                            "connection_mode": "external",
+                            "ws_url": "ws://127.0.0.1:59999",
+                        }
+                    },
+                }
+            }
+        }
+    )
+
+    tasks = channels_runtime.bootstrap(state)
+    try:
+        assert len(tasks) == 1
+        assert state.qq_runtime_registry is not None
+        await asyncio.sleep(0)
+        assert set(state.qq_runtime_registry.handles()) == {"bot-a"}
+    finally:
+        await _drain(tasks)
+
+
 async def test_bootstrap_qq_missing_ws_url_is_skipped_not_crash(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -328,9 +361,7 @@ async def test_bootstrap_slack_missing_tokens_skipped_not_crash() -> None:
     try:
         # Both tasks created — slack self-terminates with a logged error.
         assert len(tasks) == 2
-        await asyncio.wait_for(
-            asyncio.gather(*tasks, return_exceptions=True), 0.5
-        )
+        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 0.5)
     except TimeoutError:
         pass  # telegram task long-lives; that's fine.
     finally:
@@ -432,18 +463,14 @@ async def test_official_channels_asset_store_threading(
         captured["qq_official_persona_store"] = params.persona_store
         await cancel.wait()
 
-    async def _fake_run_wechat_official(
-        params: Any, cancel: asyncio.Event
-    ) -> None:
+    async def _fake_run_wechat_official(params: Any, cancel: asyncio.Event) -> None:
         captured["wechat_official_asset_store"] = params.asset_store
         captured["wechat_official_persona_store"] = params.persona_store
         await cancel.wait()
 
     import corlinman_channels
 
-    monkeypatch.setattr(
-        corlinman_channels, "run_qq_official_channel", _fake_run_qq_official
-    )
+    monkeypatch.setattr(corlinman_channels, "run_qq_official_channel", _fake_run_qq_official)
     monkeypatch.setattr(
         corlinman_channels,
         "run_wechat_official_channel",

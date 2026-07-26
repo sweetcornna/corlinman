@@ -45,6 +45,7 @@ from corlinman_server.scheduler.builtins import (
     _qzone_daily_publish_action,
     run_builtin,
 )
+from corlinman_server.scheduler.builtins.chat_driver import resolve_qq_instance_id
 from corlinman_server.scheduler.builtins.qzone_daily import (
     QZONE_DAILY_BUILTIN_NAME,
     QZONE_DAILY_DIVERSITY_TAIL,
@@ -227,9 +228,7 @@ async def test_happy_path_records_tid_and_qzone_url() -> None:
         "qq_account": "1234",
     }
     ctx = BuiltinContext(
-        app_state=_make_app_state(
-            chat=chat, persona_store=store, metadata=metadata
-        ),
+        app_state=_make_app_state(chat=chat, persona_store=store, metadata=metadata),
         name="grantley.daily_qzone",
     )
     out = await _qzone_daily_publish_action(ctx)
@@ -264,9 +263,7 @@ async def test_harvest_result_overrides_input_args() -> None:
     harvested result — result fields win. Here the tool published a
     normalized ``text`` different from the raw input, and returns the
     real ``tid`` / ``qzone_url``; all three come from the result."""
-    store = _FakePersonaStore(
-        {"grantley": _FakePersona(id="grantley", system_prompt="x")}
-    )
+    store = _FakePersonaStore({"grantley": _FakePersona(id="grantley", system_prompt="x")})
     chat = _ScriptedChatService(
         events=[
             _qzone_tool_call(args={"text": "draft"}),
@@ -317,17 +314,13 @@ async def test_agent_never_calls_qzone_returns_typed_error() -> None:
         args_json=b'{"question":"who?"}',
         call_id="call-9",
     )
-    chat = _ScriptedChatService(
-        events=[other_call, DoneEvent(finish_reason="stop")]
-    )
+    chat = _ScriptedChatService(events=[other_call, DoneEvent(finish_reason="stop")])
     metadata = {
         "persona_id": "grantley",
         "prompt_template": "Write today's update.",
     }
     ctx = BuiltinContext(
-        app_state=_make_app_state(
-            chat=chat, persona_store=store, metadata=metadata
-        ),
+        app_state=_make_app_state(chat=chat, persona_store=store, metadata=metadata),
         name="grantley.daily_qzone",
     )
     out = await _qzone_daily_publish_action(ctx)
@@ -367,9 +360,7 @@ async def test_qzone_failed_envelope_surfaces_inner_error() -> None:
         "prompt_template": "Write today's update.",
     }
     ctx = BuiltinContext(
-        app_state=_make_app_state(
-            chat=chat, persona_store=store, metadata=metadata
-        ),
+        app_state=_make_app_state(chat=chat, persona_store=store, metadata=metadata),
         name="grantley.daily_qzone",
     )
     out = await _qzone_daily_publish_action(ctx)
@@ -392,9 +383,7 @@ async def test_chat_service_error_event_bubbles_into_audit() -> None:
         "prompt_template": "x",
     }
     ctx = BuiltinContext(
-        app_state=_make_app_state(
-            chat=chat, persona_store=store, metadata=metadata
-        ),
+        app_state=_make_app_state(chat=chat, persona_store=store, metadata=metadata),
         name="grantley.daily_qzone",
     )
     out = await _qzone_daily_publish_action(ctx)
@@ -462,9 +451,7 @@ async def test_persona_not_found_returns_typed_envelope() -> None:
 
 
 async def test_no_chat_service_returns_typed_envelope() -> None:
-    store = _FakePersonaStore(
-        {"grantley": _FakePersona(id="grantley", system_prompt="x")}
-    )
+    store = _FakePersonaStore({"grantley": _FakePersona(id="grantley", system_prompt="x")})
     ctx = BuiltinContext(
         app_state=_make_app_state(
             chat=None,
@@ -486,9 +473,7 @@ async def test_no_chat_service_returns_typed_envelope() -> None:
 async def test_run_builtin_indirection_passes_through() -> None:
     """End-to-end through the registry entry point — the same shape the
     scheduler dispatcher will see in production."""
-    store = _FakePersonaStore(
-        {"grantley": _FakePersona(id="grantley", system_prompt="x")}
-    )
+    store = _FakePersonaStore({"grantley": _FakePersona(id="grantley", system_prompt="x")})
     chat = _ScriptedChatService(
         events=[
             _qzone_tool_call(),
@@ -515,14 +500,50 @@ async def test_run_builtin_indirection_passes_through() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_instance_resolver_uses_only_enabled_unambiguous_account() -> None:
+    app_state = SimpleNamespace(
+        config={
+            "channels": {
+                "qq": {
+                    "default_instance": "disabled",
+                    "instances": {
+                        "disabled": {"enabled": False},
+                        "bot-a": {"enabled": True},
+                    },
+                }
+            }
+        }
+    )
+    context = BuiltinContext(app_state=app_state, name="grantley.daily_qzone")
+
+    assert resolve_qq_instance_id(context, {}) == "bot-a"
+
+
+def test_instance_resolver_rejects_multiple_enabled_accounts() -> None:
+    app_state = SimpleNamespace(
+        config={
+            "channels": {
+                "qq": {
+                    "default_instance": "bot-a",
+                    "instances": {
+                        "bot-a": {"enabled": True},
+                        "bot-b": {"enabled": True},
+                    },
+                }
+            }
+        }
+    )
+    context = BuiltinContext(app_state=app_state, name="grantley.daily_qzone")
+
+    assert resolve_qq_instance_id(context, {}) == ""
+
+
 async def test_per_job_metadata_table_overrides_default() -> None:
     """When ``app_state.scheduler_job_metadata[name]`` is present the
     action prefers it over the bare ``qzone_daily_metadata`` slot. This
     is the production wire-up the admin routes use to support multiple
     qzone jobs at once."""
-    store = _FakePersonaStore(
-        {"grantley": _FakePersona(id="grantley", system_prompt="x")}
-    )
+    store = _FakePersonaStore({"grantley": _FakePersona(id="grantley", system_prompt="x")})
     chat = _ScriptedChatService(
         events=[
             _qzone_tool_call(),
@@ -538,9 +559,7 @@ async def test_per_job_metadata_table_overrides_default() -> None:
             "qq_account": "9999",
         }
     }
-    ctx = BuiltinContext(
-        app_state=app_state, name="grantley.daily_qzone"
-    )
+    ctx = BuiltinContext(app_state=app_state, name="grantley.daily_qzone")
     out = await _qzone_daily_publish_action(ctx)
     assert out["ok"] is True
     assert out["qq_account"] == "9999"
@@ -571,9 +590,7 @@ async def test_chat_timeout_returns_typed_envelope(monkeypatch: pytest.MonkeyPat
 
     monkeypatch.setenv("CORLINMAN_QZONE_DAILY_TIMEOUT_SECS", "1")
 
-    store = _FakePersonaStore(
-        {"grantley": _FakePersona(id="grantley", system_prompt="x")}
-    )
+    store = _FakePersonaStore({"grantley": _FakePersona(id="grantley", system_prompt="x")})
     chat = _NeverEnding()
     ctx = BuiltinContext(
         app_state=_make_app_state(
@@ -628,9 +645,7 @@ async def test_internal_chat_request_carries_persona_id() -> None:
         "prompt_template": "Post daily update.",
     }
     ctx = BuiltinContext(
-        app_state=_make_app_state(
-            chat=chat, persona_store=store, metadata=metadata
-        ),
+        app_state=_make_app_state(chat=chat, persona_store=store, metadata=metadata),
         name="grantley.daily_qzone",
     )
     out = await _qzone_daily_publish_action(ctx)
@@ -781,23 +796,50 @@ def test_post_log_write_then_read_roundtrip(tmp_path: Path) -> None:
     assert len(posts) == 1 and posts[0]["text"] == "今天去了海边"
 
 
+def test_post_log_isolated_by_qq_instance(tmp_path: Path) -> None:
+    _record_post_log(
+        data_dir=tmp_path,
+        persona_id="grantley",
+        qq_instance_id="bot-a",
+        job="bot-a.grantley.daily_qzone",
+        result={"text": "account-a"},
+    )
+    _record_post_log(
+        data_dir=tmp_path,
+        persona_id="grantley",
+        qq_instance_id="bot-b",
+        job="bot-b.grantley.daily_qzone",
+        result={"text": "account-b"},
+    )
+
+    path_a = tmp_path / "qzone_post_log" / "bot-a" / "grantley.json"
+    path_b = tmp_path / "qzone_post_log" / "bot-b" / "grantley.json"
+    assert _read_post_log(path_a)[0]["text"] == "account-a"
+    assert _read_post_log(path_b)[0]["text"] == "account-b"
+    assert _post_log_path(tmp_path, "grantley", "../evil") is None
+
+
 def test_post_log_caps_at_30(tmp_path: Path) -> None:
     """Only the most-recent 30 posts survive; older ones roll off."""
     for i in range(35):
         _record_post_log(
-            data_dir=tmp_path, persona_id="grantley", job="j",
+            data_dir=tmp_path,
+            persona_id="grantley",
+            job="j",
             result={"text": f"post-{i}"},
         )
     posts = _read_post_log(tmp_path / "qzone_post_log" / "grantley.json")
     assert len(posts) == 30
     assert posts[-1]["text"] == "post-34"  # newest kept
-    assert posts[0]["text"] == "post-5"    # posts 0-4 dropped
+    assert posts[0]["text"] == "post-5"  # posts 0-4 dropped
 
 
 def test_post_log_text_capped_at_500(tmp_path: Path) -> None:
     """The stored body is truncated to 500 chars."""
     _record_post_log(
-        data_dir=tmp_path, persona_id="grantley", job="j",
+        data_dir=tmp_path,
+        persona_id="grantley",
+        job="j",
         result={"text": "x" * 900},
     )
     posts = _read_post_log(tmp_path / "qzone_post_log" / "grantley.json")
@@ -810,7 +852,9 @@ def test_post_log_bad_slug_skips_entirely(tmp_path: Path) -> None:
     assert not _valid_persona_slug("../evil")
     assert _post_log_path(tmp_path, "../evil") is None
     _record_post_log(
-        data_dir=tmp_path, persona_id="../evil", job="j",
+        data_dir=tmp_path,
+        persona_id="../evil",
+        job="j",
         result={"text": "nope"},
     )
     log_dir = tmp_path / "qzone_post_log"
@@ -827,9 +871,7 @@ def test_post_log_no_data_dir_is_noop() -> None:
 
 def test_post_log_atomic_write_leaves_no_tmp(tmp_path: Path) -> None:
     """The atomic ``tmp + replace`` dance leaves only the final file."""
-    _record_post_log(
-        data_dir=tmp_path, persona_id="grantley", job="j", result={"text": "a"}
-    )
+    _record_post_log(data_dir=tmp_path, persona_id="grantley", job="j", result={"text": "a"})
     log_dir = tmp_path / "qzone_post_log"
     names = sorted(p.name for p in log_dir.iterdir())
     assert names == ["grantley.json"]  # no leftover .json.new
@@ -843,7 +885,9 @@ def test_post_log_atomic_write_leaves_no_tmp(tmp_path: Path) -> None:
 def test_recent_posts_block_lists_excerpts(tmp_path: Path) -> None:
     for txt in ["第一条说说", "第二条说说", "第三条说说"]:
         _record_post_log(
-            data_dir=tmp_path, persona_id="grantley", job="j",
+            data_dir=tmp_path,
+            persona_id="grantley",
+            job="j",
             result={"text": txt},
         )
     block = _resolve_recent_posts_block(tmp_path, "grantley", 7)
@@ -856,7 +900,9 @@ def test_recent_posts_block_lists_excerpts(tmp_path: Path) -> None:
 def test_recent_posts_block_honors_n(tmp_path: Path) -> None:
     for i in range(10):
         _record_post_log(
-            data_dir=tmp_path, persona_id="grantley", job="j",
+            data_dir=tmp_path,
+            persona_id="grantley",
+            job="j",
             result={"text": f"说说{i}"},
         )
     block = _resolve_recent_posts_block(tmp_path, "grantley", 3)
@@ -881,7 +927,9 @@ async def test_diversity_on_composes_seed_recent_and_tail(tmp_path: Path) -> Non
     tail — in that assembly order — and a post-log entry is appended."""
     # Seed a prior post so the recent-posts block is non-empty.
     _record_post_log(
-        data_dir=tmp_path, persona_id="grantley", job="j",
+        data_dir=tmp_path,
+        persona_id="grantley",
+        job="j",
         result={"text": "昨天在食堂吃饭很无聊"},
     )
     store = _FakePersonaStore(
@@ -897,10 +945,12 @@ async def test_diversity_on_composes_seed_recent_and_tail(tmp_path: Path) -> Non
         ],
     )
     app_state = _make_app_state(
-        chat=chat, persona_store=store,
+        chat=chat,
+        persona_store=store,
         metadata={"persona_id": "grantley", "prompt_template": "写今天的说说。"},
     )
-    app_state.data_dir = tmp_path
+    app_state.data_dir = tmp_path / "private"
+    app_state.execution_state_dir = tmp_path
     ctx = BuiltinContext(app_state=app_state, name="grantley.daily_qzone")
     out = await _qzone_daily_publish_action(ctx)
     assert out["ok"] is True, out
@@ -934,9 +984,7 @@ async def test_shadow_publish_does_not_write_post_log(tmp_path: Path) -> None:
         job="j",
         result={"text": "旧说说"},
     )
-    store = _FakePersonaStore(
-        {"grantley": _FakePersona(id="grantley", system_prompt="x")}
-    )
+    store = _FakePersonaStore({"grantley": _FakePersona(id="grantley", system_prompt="x")})
     chat = _ScriptedChatService(
         events=[
             _qzone_tool_call(),
@@ -957,7 +1005,8 @@ async def test_shadow_publish_does_not_write_post_log(tmp_path: Path) -> None:
         persona_store=store,
         metadata={"persona_id": "grantley", "prompt_template": "x"},
     )
-    app_state.data_dir = tmp_path
+    app_state.data_dir = tmp_path / "private"
+    app_state.execution_state_dir = tmp_path
     out = await _qzone_daily_publish_action(
         BuiltinContext(
             app_state=app_state,
@@ -977,7 +1026,9 @@ async def test_diversity_off_rolls_back_everything(tmp_path: Path) -> None:
     """diversity=False rolls back to pre-B4 behavior: no seed / recent blocks,
     the plain publish tail, and NO post-log write."""
     _record_post_log(
-        data_dir=tmp_path, persona_id="grantley", job="j",
+        data_dir=tmp_path,
+        persona_id="grantley",
+        job="j",
         result={"text": "旧说说"},
     )
     store = _FakePersonaStore(
@@ -993,14 +1044,16 @@ async def test_diversity_off_rolls_back_everything(tmp_path: Path) -> None:
         ],
     )
     app_state = _make_app_state(
-        chat=chat, persona_store=store,
+        chat=chat,
+        persona_store=store,
         metadata={
             "persona_id": "grantley",
             "prompt_template": "x",
             "diversity": False,
         },
     )
-    app_state.data_dir = tmp_path
+    app_state.data_dir = tmp_path / "private"
+    app_state.execution_state_dir = tmp_path
     ctx = BuiltinContext(app_state=app_state, name="grantley.daily_qzone")
     out = await _qzone_daily_publish_action(ctx)
     assert out["ok"] is True
@@ -1073,9 +1126,7 @@ def test_resolve_image_ref_labels_is_total_and_defensive() -> None:
     """The metadata reader cleans the list + tolerates junk (never raises)."""
     assert _resolve_image_ref_labels({"image_ref_labels": ["a", "b"]}) == ["a", "b"]
     # Blank / non-string entries are dropped; surrounding whitespace trimmed.
-    assert _resolve_image_ref_labels(
-        {"image_ref_labels": [" a ", "", 3, None, "b"]}
-    ) == ["a", "b"]
+    assert _resolve_image_ref_labels({"image_ref_labels": [" a ", "", 3, None, "b"]}) == ["a", "b"]
     # Absent / wrong-shaped → empty list (block omitted).
     assert _resolve_image_ref_labels({}) == []
     assert _resolve_image_ref_labels({"image_ref_labels": "not-a-list"}) == []

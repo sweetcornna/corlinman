@@ -143,9 +143,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         tini \
     && rm -rf /var/lib/apt/lists/*
 
-RUN groupadd --system corlinman \
-    && useradd --system --gid corlinman --home-dir /app \
-        --no-create-home --shell /usr/sbin/nologin corlinman
+RUN groupadd --system --gid 10001 corlinman \
+    && groupadd --system --gid 10002 corlinman-agent \
+    && groupadd --system --gid 10003 corlinman-execution \
+    && groupadd --system --gid 10004 corlinman-agent-ipc \
+    && useradd --system --uid 10001 --gid corlinman --home-dir /app \
+        --no-create-home --shell /usr/sbin/nologin corlinman \
+    && useradd --system --uid 10002 --gid corlinman-agent --home-dir /app \
+        --no-create-home --shell /usr/sbin/nologin corlinman-agent \
+    && usermod --append --groups corlinman-execution,corlinman-agent-ipc corlinman \
+    && usermod --append --groups corlinman-execution,corlinman-agent-ipc \
+        corlinman-agent
 
 # Bring across the prebuilt venv and only the source the venv needs.
 # uv's editable .pth files reference absolute paths like
@@ -186,10 +194,19 @@ COPY docker/start.sh /app/start.sh
 # mounted; it swaps the corlinman container from outside so the swap
 # survives the gateway's own restart. Stdlib-only by design.
 COPY docker/upgrade_helper.py /app/upgrade_helper.py
-RUN mkdir -p /data \
+RUN mkdir -p /data /execution-state /run/corlinman-agent/config \
+        /run/corlinman-agent/socket \
     && sed -i 's/\r$//' /app/start.sh \
     && chmod +x /app/start.sh \
-    && chown -R corlinman:corlinman /app /data
+    && chown -R corlinman:corlinman /app /data \
+    && chown corlinman:corlinman-execution /execution-state \
+    && chmod 2770 /execution-state \
+    && chown corlinman-agent:corlinman-agent-ipc /run/corlinman-agent \
+        /run/corlinman-agent/socket \
+    && chmod 2750 /run/corlinman-agent \
+    && chmod 2770 /run/corlinman-agent/socket \
+    && chown corlinman:corlinman-agent-ipc /run/corlinman-agent/config \
+    && chmod 2750 /run/corlinman-agent/config
 
 EXPOSE 6005
 WORKDIR /app

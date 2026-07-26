@@ -242,6 +242,7 @@ _CHANNEL_EDITABLE: dict[str, dict[str, list[str]]] = {
             "napcat_url",
             "group_reply_policy",
             "proactive_prompt",
+            "proactive_timezone",
         ],
         "int_list_keys": ["self_ids", "group_whitelist", "proactive_groups"],
         "str_list_keys": [],
@@ -253,11 +254,15 @@ _CHANNEL_EDITABLE: dict[str, dict[str, list[str]]] = {
         ],
         "number_keys": [
             "group_reply_cooldown_secs",
+            "group_rate_limit_window_minutes",
+            "group_rate_limit_max_messages",
             "proactive_min_gap_minutes",
             "proactive_max_gap_minutes",
             "proactive_daily_max",
             "proactive_active_start_hour",
             "proactive_active_end_hour",
+            "proactive_probability",
+            "proactive_context_messages",
         ],
     },
     "telegram": {
@@ -317,15 +322,20 @@ _CHANNEL_EDITABLE: dict[str, dict[str, list[str]]] = {
 
 
 def _qq_config(state: AdminState) -> dict[str, Any] | None:
-    """Borrow the QQ subsection of the channels config dict. Returns
-    ``None`` when the bootstrapper didn't pre-populate it (the Rust
-    ``cfg.channels.qq.is_none()`` path)."""
+    """Borrow the explicit default instance, preserving singleton compatibility."""
     if state.channels_config is None:
         return None
     qq = state.channels_config.get("qq")
     if not isinstance(qq, dict):
         return None
-    return qq
+    if "instances" not in qq:
+        return qq
+    instances = qq.get("instances")
+    default_instance = qq.get("default_instance")
+    if not isinstance(instances, dict) or not isinstance(default_instance, str):
+        return None
+    default = instances.get(default_instance)
+    return default if isinstance(default, dict) else None
 
 
 def _telegram_config(state: AdminState) -> dict[str, Any] | None:
@@ -409,6 +419,13 @@ _CHANNEL_CONFIG_KEYS: dict[str, dict[str, list[str]]] = {
 }
 
 
+#: QQ booleans whose runtime default is ``True`` (``router.py`` /
+#: ``channels_runtime``). Their absence on disk must echo as "true".
+_QQ_BOOL_DEFAULT_ON = frozenset(
+    {"freeze_risk_topic_blocking", "group_replies_enabled"}
+)
+
+
 def _non_secret_config_keys(
     name: str, section: dict[str, Any]
 ) -> dict[str, str | list[str]]:
@@ -427,9 +444,11 @@ def _non_secret_config_keys(
     for key in spec.get("bool_keys", []):
         if key in section:
             out[key] = str(bool(section.get(key)))
-        elif name == "qq" and key == "freeze_risk_topic_blocking":
-            # Safety is default-on. Project the effective default so an older
-            # config with no key does not render an unchecked opt-out in the UI.
+        elif name == "qq" and key in _QQ_BOOL_DEFAULT_ON:
+            # Project the effective runtime default so an older config with
+            # no key does not render the opposite state in the UI. A widget
+            # showing the wrong default is worse than cosmetic: toggling it
+            # to the real state produces no diff, so Save stays dead.
             out[key] = str(True)
     # Surface the non-secret endpoint overrides (base_url / api_base /
     # gateway_url / rest_base) so a PUT round-trips visibly in the status
@@ -610,7 +629,10 @@ async def _persist_channels(state: AdminState) -> None:
     except Exception as exc:  # noqa: BLE001 — surface as a 500 envelope
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={"error": "write_failed", "message": str(exc)},
+            detail={
+                "error": "write_failed",
+                "message": "Failed to save channel configuration",
+            },
         ) from exc
 
 

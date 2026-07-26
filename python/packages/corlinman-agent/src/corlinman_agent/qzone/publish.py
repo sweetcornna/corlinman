@@ -10,7 +10,7 @@ shape:
   the dispatcher calls :func:`dispatch_image_with_refs` first and
   prepends the generated path to ``images``.
 * Workspace path resolution mirrors ``send_attachment``: relative
-  paths resolve against ``<DATA_DIR>/workspace`` so callers can pass
+  paths resolve against the shared execution workspace so callers can pass
   the same path they used with ``write_file`` / ``image_with_refs``.
 
 QZone wire format
@@ -35,7 +35,6 @@ from __future__ import annotations
 import base64
 import contextlib
 import json
-import os
 import re
 from pathlib import Path
 from typing import Any
@@ -48,6 +47,7 @@ from corlinman_content_policy import (
     moderate_media,
     moderate_text,
 )
+from corlinman_runtime import resolve_agent_workspace
 
 from corlinman_agent.onebot import OneBotClient, OneBotError
 
@@ -69,12 +69,9 @@ QZONE_PUBLISH_TOOL: str = "qzone_publish"
 
 # QZone web endpoints — fixed constants, never built from user input.
 _QZONE_PUBLISH_URL: str = (
-    "https://h5.qzone.qq.com/proxy/domain/taotao.qzone.qq.com"
-    "/cgi-bin/emotion_cgi_publish_v6"
+    "https://h5.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_publish_v6"
 )
-_QZONE_UPLOAD_URL: str = (
-    "https://up.qzone.qq.com/cgi-bin/upload/cgi_upload_image"
-)
+_QZONE_UPLOAD_URL: str = "https://up.qzone.qq.com/cgi-bin/upload/cgi_upload_image"
 
 #: QZone cookie domain to request from OneBot — NapCat / Lagrange return
 #: the *.qq.com cookie jar (uin / skey / p_skey / ...) for this domain.
@@ -202,21 +199,8 @@ def _decode(args_json: bytes | str) -> dict[str, Any]:
 
 
 def _resolve_workspace_root() -> Path:
-    """Resolve the agent workspace root used by ``send_attachment``.
-
-    Kept in lockstep with
-    :func:`corlinman_channels._status._agent_workspace_root` so a path
-    returned by ``image_with_refs`` / ``write_file`` lands on the same
-    filesystem location both lookups walk.
-    """
-    env_ws = os.environ.get("CORLINMAN_AGENT_WORKSPACE")
-    if env_ws:
-        root = Path(env_ws)
-    else:
-        data_dir = os.environ.get("CORLINMAN_DATA_DIR")
-        base = Path(data_dir) if data_dir else Path.home() / ".corlinman"
-        root = base / "workspace"
-    return root.resolve()
+    """Resolve the workspace used by generation and attachment delivery."""
+    return resolve_agent_workspace().resolve()
 
 
 def _resolve_image_path(path_str: str) -> Path | None:
@@ -254,10 +238,7 @@ def _read_image_file(path: Path) -> tuple[bytes, str]:
     """
     ext = path.suffix.lower()
     if ext not in _IMAGE_EXTS:
-        raise QZoneError(
-            f"unsupported image type {ext!r} (allowed: "
-            f"{sorted(_IMAGE_EXTS)})"
-        )
+        raise QZoneError(f"unsupported image type {ext!r} (allowed: {sorted(_IMAGE_EXTS)})")
     try:
         size = path.stat().st_size
     except OSError as exc:
@@ -265,9 +246,7 @@ def _read_image_file(path: Path) -> tuple[bytes, str]:
     if size == 0:
         raise QZoneError("file is empty")
     if size > _MAX_IMAGE_BYTES:
-        raise QZoneError(
-            f"image too large ({size} bytes; max {_MAX_IMAGE_BYTES})"
-        )
+        raise QZoneError(f"image too large ({size} bytes; max {_MAX_IMAGE_BYTES})")
     try:
         return path.read_bytes(), path.name
     except OSError as exc:
@@ -499,9 +478,7 @@ async def _qzone_post(
         "User-Agent": _DESKTOP_UA,
     }
     try:
-        response = await client.post(
-            url, data=form, headers=headers, timeout=timeout
-        )
+        response = await client.post(url, data=form, headers=headers, timeout=timeout)
     except httpx.TimeoutException as exc:
         raise QZoneError(f"QZone request timed out: {exc}") from exc
     except httpx.HTTPError as exc:
@@ -590,6 +567,19 @@ async def _prepare_effect(
     if any(not context.get(key) for key in required):
         return None, "scheduler_effect_context_invalid"
     try:
+        if effect_target.startswith("instance:default:"):
+            get_effect = getattr(store, "get_effect", None)
+            if callable(get_effect):
+                legacy_target = effect_target.removeprefix("instance:default:")
+                existing = await get_effect(
+                    source_system=context["source_system"],
+                    source_job_id=context["source_job_id"],
+                    occurrence_key=context["occurrence_key"],
+                    effect_kind=effect_kind,
+                    effect_target=legacy_target,
+                )
+                if existing is not None:
+                    return None, "scheduler_effect_reservation_blocked"
         return (
             await store.prepare_effect(
                 source_system=context["source_system"],
@@ -689,7 +679,7 @@ async def dispatch_qzone_publish(
 
     # Normalize text + images + generate args.
     text_raw = args.get("text")
-    text = (text_raw.strip() if isinstance(text_raw, str) else "")
+    text = text_raw.strip() if isinstance(text_raw, str) else ""
 
     images_raw = args.get("images") or []
     if isinstance(images_raw, str):
@@ -779,16 +769,8 @@ async def dispatch_qzone_publish(
                 f"image_with_refs returned non-JSON: {exc}",
             )
         if not isinstance(result_obj, dict) or not result_obj.get("ok"):
-            inner_err = (
-                result_obj.get("error")
-                if isinstance(result_obj, dict)
-                else "unknown"
-            )
-            inner_msg = (
-                result_obj.get("message")
-                if isinstance(result_obj, dict)
-                else ""
-            )
+            inner_err = result_obj.get("error") if isinstance(result_obj, dict) else "unknown"
+            inner_msg = result_obj.get("message") if isinstance(result_obj, dict) else ""
             return _err(
                 "image_with_refs_failed",
                 f"image generation failed ({inner_err}): {inner_msg}",
@@ -805,8 +787,7 @@ async def dispatch_qzone_publish(
     if len(images_list) > _MAX_IMAGES:
         return _err(
             "too_many_images",
-            f"QZone说说 supports at most {_MAX_IMAGES} images "
-            f"(received {len(images_list)})",
+            f"QZone说说 supports at most {_MAX_IMAGES} images (received {len(images_list)})",
         )
 
     # Step 2: resolve + read all image files up front so a bad path
@@ -847,7 +828,10 @@ async def dispatch_qzone_publish(
 
     try:
         try:
-            login_info = await onebot_client.fetch_login_info()
+            verify_identity = getattr(
+                onebot_client, "verify_identity", onebot_client.fetch_login_info
+            )
+            login_info = await verify_identity()
             cookie = await onebot_client.fetch_cookies(_QZONE_COOKIE_DOMAIN)
         except OneBotError as exc:
             return _err("onebot_failed", str(exc))
@@ -878,11 +862,19 @@ async def dispatch_qzone_publish(
     skey = _extract_cookie_value(cookie, "skey") or ""
     gtk = _compute_gtk(p_skey)
 
+    qq_instance_id = str(
+        getattr(onebot_client, "instance_id", None)
+        or (effect_context or {}).get("qq_instance_id")
+        or ""
+    ).strip()
+    effect_target = f"account:{uin}"
+    if qq_instance_id:
+        effect_target = f"instance:{qq_instance_id}:{effect_target}"
     effect, effect_error = await _prepare_effect(
         scheduler_store,
         effect_context,
         effect_kind="qzone.publish",
-        effect_target=f"account:{uin}",
+        effect_target=effect_target,
     )
     if effect_error is not None:
         return _err(effect_error, "QZone publish effect could not be reserved.")
@@ -921,9 +913,7 @@ async def dispatch_qzone_publish(
                     f"upload failed for {filename!r}: {exc}",
                 )
             except Exception as exc:
-                logger.exception(
-                    "qzone_publish.upload_unexpected", filename=filename
-                )
+                logger.exception("qzone_publish.upload_unexpected", filename=filename)
                 if effect is not None:
                     await _complete_effect(
                         scheduler_store,
@@ -982,7 +972,12 @@ async def dispatch_qzone_publish(
         scheduler_store,
         effect,
         state="sent",
-        receipt={"tid": tid_str, "qzone_url": qzone_url, "uin": uin},
+        receipt={
+            "tid": tid_str,
+            "qzone_url": qzone_url,
+            "uin": uin,
+            "qq_instance_id": qq_instance_id or None,
+        },
     ):
         return _err(
             "scheduler_effect_receipt_unknown",
@@ -996,6 +991,7 @@ async def dispatch_qzone_publish(
             "tid": tid_str,
             "qzone_url": qzone_url,
             "uin": uin,
+            "qq_instance_id": qq_instance_id or None,
             "images": len(pic_infos),
             "generated": bool(generated_path),
         },

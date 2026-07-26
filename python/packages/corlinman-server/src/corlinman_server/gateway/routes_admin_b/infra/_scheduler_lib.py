@@ -20,6 +20,7 @@ import json
 import re
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -30,6 +31,7 @@ from pydantic import BaseModel, Field
 
 from corlinman_server.gateway.routes_admin_b.state import (
     AdminState,
+    config_snapshot,
     get_admin_state,
 )
 from corlinman_server.scheduler.builtins.qzone_daily import (
@@ -134,6 +136,7 @@ class JobOut(BaseModel):
     persona_id: str | None = None
     prompt_template: str | None = None
     qq_account: str | None = None
+    qq_instance_id: str | None = None
     # B5 — task-level reference-image labels + publish-time jitter promoted
     # to top-level wire fields (read back from job metadata). Absent on
     # config-derived rows (they default to None).
@@ -179,6 +182,7 @@ class NewJobBody(BaseModel):
     persona_id: str | None = None
     prompt_template: str | None = None
     qq_account: str | None = None
+    qq_instance_id: str | None = None
     # B5 — task-level reference-image labels + publish-time jitter. Optional
     # (contract-safe) top-level promotions of the corresponding metadata
     # knobs; when present they authoritatively overwrite the metadata value
@@ -189,6 +193,10 @@ class NewJobBody(BaseModel):
     execution_mode: str = "live"
     source_system: str | None = None
     source_job_id: str | None = None
+
+
+class QqInstanceMigrationBody(BaseModel):
+    target_instance_id: str
 
 
 class EditJobBody(BaseModel):
@@ -207,6 +215,7 @@ class EditJobBody(BaseModel):
     persona_id: str | None = None
     prompt_template: str | None = None
     qq_account: str | None = None
+    qq_instance_id: str | None = None
     # B5 — same top-level promotions as :class:`NewJobBody`; a PATCH that
     # omits them leaves the existing metadata value untouched.
     image_ref_labels: list[str] | None = None
@@ -231,6 +240,7 @@ class _RuntimeJob:
     persona_id: str | None = None
     prompt_template: str | None = None
     qq_account: str | None = None
+    qq_instance_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     execution_mode: str = "live"
     source_system: str | None = None
@@ -302,9 +312,7 @@ def _runtime_jobs_path(state: AdminState) -> Path | None:
     return state.data_dir / _RUNTIME_JOBS_FILE
 
 
-def _rehydrate_runtime_jobs(
-    state: AdminState, table: dict[str, _RuntimeJob]
-) -> None:
+def _rehydrate_runtime_jobs(state: AdminState, table: dict[str, _RuntimeJob]) -> None:
     """Load persisted runtime jobs from the sidecar into ``table``.
 
     Best-effort + fully defensive: a missing / unreadable / malformed
@@ -345,10 +353,9 @@ def _rehydrate_runtime_jobs(
                 persona_id=entry.get("persona_id"),
                 prompt_template=entry.get("prompt_template"),
                 qq_account=entry.get("qq_account"),
+                qq_instance_id=entry.get("qq_instance_id"),
                 metadata=dict(metadata),
-                execution_mode=(
-                    "shadow" if entry.get("execution_mode") == "shadow" else "live"
-                ),
+                execution_mode=("shadow" if entry.get("execution_mode") == "shadow" else "live"),
                 source_system=entry.get("source_system"),
                 source_job_id=entry.get("source_job_id"),
                 last_run_at_ms=entry.get("last_run_at_ms"),
@@ -360,10 +367,24 @@ def _rehydrate_runtime_jobs(
             )
         except (TypeError, ValueError):
             continue
+        if rj.enabled and rj.action_type in (
+            QZONE_DAILY_BUILTIN_NAME,
+            QZONE_REPLY_BUILTIN_NAME,
+        ):
+            resolved, error = _resolve_enabled_qq_instance(state, rj.qq_instance_id)
+            if error is not None:
+                rj.enabled = False
+                rj.last_error = f"invalid_qq_instance: {error}"
+                rj.updated_at_ms = _now_ms()
+            elif resolved is not None:
+                rj.qq_instance_id = resolved
+                rj.metadata = {**rj.metadata, "qq_instance_id": resolved}
         table[name] = rj
         _sync_metadata(state, rj)
         if rj.enabled:
             _register_runtime_loop(state, rj)
+    if table:
+        _persist_runtime_job_rows(state, table)
 
 
 def _persist_runtime_job_rows(
@@ -402,6 +423,7 @@ def _runtime_job_to_dict(rj: _RuntimeJob) -> dict[str, Any]:
         "persona_id": rj.persona_id,
         "prompt_template": rj.prompt_template,
         "qq_account": rj.qq_account,
+        "qq_instance_id": rj.qq_instance_id,
         "metadata": dict(rj.metadata),
         "execution_mode": rj.execution_mode,
         "source_system": rj.source_system,
@@ -558,6 +580,7 @@ def _runtime_job_to_out(rj: _RuntimeJob) -> JobOut:
         persona_id=rj.persona_id,
         prompt_template=rj.prompt_template,
         qq_account=rj.qq_account,
+        qq_instance_id=rj.qq_instance_id,
         # B5 — echo the promoted fields back from metadata (the authoritative
         # store). ``None`` when absent / malformed so the wire stays clean.
         image_ref_labels=_read_image_ref_labels(rj.metadata),
@@ -665,6 +688,81 @@ def _validate_cron(expr: str) -> tuple[bool, str | None]:
     return True, None
 
 
+def _validate_qq_instance_assignment(
+    instance_id: str | None,
+) -> tuple[bool, str | None]:
+    """Validate a scheduler-provided QQ instance slug when present.
+
+    Existing singleton jobs may omit the field and are resolved by the builtin
+    only when the effective fleet has one unambiguous default. Explicit values
+    must always be stable instance IDs.
+    """
+    if instance_id is None:
+        return True, None
+    try:
+        from corlinman_server.gateway.qq_instances import parse_instance_id
+
+        parse_instance_id(instance_id)
+    except (TypeError, ValueError) as exc:
+        return False, str(exc)
+    return True, None
+
+
+def _resolve_enabled_qq_instance(
+    state: AdminState,
+    instance_id: str | None,
+) -> tuple[str | None, str | None]:
+    """Resolve one exact enabled QQ target for a QZone scheduler job."""
+    ok, error = _validate_qq_instance_assignment(instance_id)
+    if not ok:
+        return None, error
+    if state.config_loader is None:
+        # Minimal/degraded route tests and legacy integrations have no
+        # authoritative fleet. Preserve their historical assignment shape.
+        return instance_id, None
+    try:
+        from corlinman_server.gateway.qq_instances import normalize_qq_fleet
+
+        snapshot = config_snapshot(state)
+        channels = snapshot.get("channels") if isinstance(snapshot, Mapping) else None
+        fleet = normalize_qq_fleet(channels if isinstance(channels, Mapping) else {})
+    except (TypeError, ValueError) as exc:
+        return None, f"QQ fleet is invalid: {exc}"
+    if instance_id is not None:
+        instance = fleet.get(instance_id)
+        if instance is None:
+            return None, f"QQ instance {instance_id!r} does not exist"
+        if not instance.enabled:
+            return None, f"QQ instance {instance_id!r} is disabled"
+        return instance_id, None
+    enabled = [str(identity) for identity, item in fleet.instances.items() if item.enabled]
+    if len(enabled) != 1:
+        return None, "qq_instance_id is required unless exactly one QQ instance is enabled"
+    return enabled[0], None
+
+
+def _validate_enabled_qq_instance(
+    state: AdminState,
+    instance_id: str | None,
+) -> tuple[bool, str | None]:
+    resolved, error = _resolve_enabled_qq_instance(state, instance_id)
+    return error is None and (resolved is not None or state.config_loader is None), error
+
+
+def _assign_enabled_qq_instance(
+    state: AdminState,
+    body: NewJobBody,
+) -> tuple[bool, str | None]:
+    """Resolve omitted singleton assignments and persist the trusted ID."""
+    resolved, error = _resolve_enabled_qq_instance(state, body.qq_instance_id)
+    if error is not None:
+        return False, error
+    if resolved is not None:
+        body.qq_instance_id = resolved
+        body.metadata = {**body.metadata, "qq_instance_id": resolved}
+    return True, None
+
+
 def _validate_qzone_daily(body: NewJobBody) -> tuple[bool, str | None]:
     """Type-specific gate for ``qzone.daily_publish`` jobs.
 
@@ -682,6 +780,9 @@ def _validate_qzone_daily(body: NewJobBody) -> tuple[bool, str | None]:
         return False, "persona_id is required for qzone.daily_publish"
     if not body.prompt_template or not body.prompt_template.strip():
         return False, "prompt_template is required for qzone.daily_publish"
+    ok, error = _validate_qq_instance_assignment(body.qq_instance_id)
+    if not ok:
+        return False, error
     labels = body.image_ref_labels
     if labels is not None:
         if len(labels) > _MAX_IMAGE_REF_LABELS:
@@ -692,15 +793,11 @@ def _validate_qzone_daily(body: NewJobBody) -> tuple[bool, str | None]:
         for label in labels:
             if not isinstance(label, str) or not _ASSET_LABEL_RE.match(label):
                 return False, (
-                    f"image_ref_labels entry {label!r} must match "
-                    "[a-z0-9_-], 1-64 chars"
+                    f"image_ref_labels entry {label!r} must match [a-z0-9_-], 1-64 chars"
                 )
     jitter = body.jitter_minutes
     if jitter is not None and (jitter < 0 or jitter > _JITTER_MINUTES_MAX):
-        return False, (
-            f"jitter_minutes must be between 0 and {_JITTER_MINUTES_MAX} "
-            f"(got {jitter})"
-        )
+        return False, (f"jitter_minutes must be between 0 and {_JITTER_MINUTES_MAX} (got {jitter})")
     return True, None
 
 
@@ -720,6 +817,9 @@ def _validate_qzone_reply(body: NewJobBody) -> tuple[bool, str | None]:
     """
     if not body.persona_id or not body.persona_id.strip():
         return False, "persona_id is required for qzone.reply_comments"
+    ok, error = _validate_qq_instance_assignment(body.qq_instance_id)
+    if not ok:
+        return False, error
     metadata = body.metadata or {}
     for key, lo, hi in (
         ("max_replies", _REPLY_MAX_REPLIES_MIN, _REPLY_MAX_REPLIES_MAX),
@@ -731,10 +831,134 @@ def _validate_qzone_reply(body: NewJobBody) -> tuple[bool, str | None]:
         if isinstance(raw, bool) or not isinstance(raw, int):
             return False, f"metadata.{key} must be an integer (got {raw!r})"
         if raw < lo or raw > hi:
-            return False, (
-                f"metadata.{key} must be between {lo} and {hi} (got {raw})"
-            )
+            return False, (f"metadata.{key} must be between {lo} and {hi} (got {raw})")
     return True, None
+
+
+def canonical_qzone_job_name(
+    instance_id: str,
+    persona_id: str,
+    action_type: str,
+) -> str:
+    """Return the collision-free scheduler identity for one QQ account."""
+    suffix = "daily_qzone" if action_type == QZONE_DAILY_BUILTIN_NAME else "qzone_reply"
+    return f"{instance_id}.{persona_id}.{suffix}"
+
+
+def list_qzone_instance_references(
+    state: AdminState,
+    instance_id: str,
+) -> list[dict[str, Any]]:
+    """List enabled and paused runtime QZone jobs bound to an instance."""
+    return [
+        {
+            "name": row.name,
+            "action_type": row.action_type,
+            "persona_id": row.persona_id,
+            "enabled": row.enabled,
+        }
+        for row in _runtime_jobs(state).values()
+        if row.action_type in (QZONE_DAILY_BUILTIN_NAME, QZONE_REPLY_BUILTIN_NAME)
+        and row.qq_instance_id == instance_id
+    ]
+
+
+def migrate_qzone_instance_references(
+    state: AdminState,
+    source_instance_id: str,
+    target_instance_id: str,
+) -> list[_RuntimeJob]:
+    """Rebind QZone jobs while keeping disk, metadata, and loops consistent."""
+    ok, error = _validate_qq_instance_assignment(source_instance_id)
+    if not ok:
+        raise ValueError(error or "invalid source QQ instance")
+    ok, error = _validate_enabled_qq_instance(state, target_instance_id)
+    if not ok:
+        raise ValueError(error or "invalid target QQ instance")
+    table = _runtime_jobs(state)
+    candidate = {name: _RuntimeJob(**_runtime_job_to_dict(row)) for name, row in table.items()}
+    migrated: list[_RuntimeJob] = []
+    renamed: list[tuple[str, _RuntimeJob]] = []
+    for old_name, row in list(candidate.items()):
+        if (
+            row.action_type
+            not in (
+                QZONE_DAILY_BUILTIN_NAME,
+                QZONE_REPLY_BUILTIN_NAME,
+            )
+            or row.qq_instance_id != source_instance_id
+        ):
+            continue
+        if not row.persona_id:
+            raise ValueError(f"QZone job {old_name!r} has no persona_id")
+        new_name = canonical_qzone_job_name(
+            target_instance_id,
+            row.persona_id,
+            row.action_type,
+        )
+        if new_name != old_name and new_name in candidate:
+            raise ValueError(f"QZone job name collision: {new_name}")
+        candidate.pop(old_name)
+        row.name = new_name
+        row.qq_instance_id = target_instance_id
+        row.metadata = {
+            **row.metadata,
+            "qq_instance_id": target_instance_id,
+        }
+        row.updated_at_ms = _now_ms()
+        candidate[new_name] = row
+        migrated.append(row)
+        renamed.append((old_name, row))
+
+    if not migrated:
+        return []
+
+    _persist_runtime_job_rows(state, candidate)
+    registered_new: list[_RuntimeJob] = []
+    removed_old: list[_RuntimeJob] = []
+    try:
+        # Register every replacement before removing any source loop. A failed
+        # registration therefore leaves all source jobs live and only requires
+        # cancelling the replacements already installed in this transaction.
+        for _old_name, row in renamed:
+            if row.enabled:
+                _register_runtime_loop(state, row)
+                registered_new.append(row)
+        for old_name, _row in renamed:
+            old = table[old_name]
+            _unregister_runtime_loop(state, old_name)
+            removed_old.append(old)
+    except Exception as migration_error:
+        rollback_errors: list[Exception] = []
+        for row in reversed(registered_new):
+            try:
+                _unregister_runtime_loop(state, row.name)
+            except Exception as exc:  # noqa: BLE001
+                rollback_errors.append(exc)
+        for old in removed_old:
+            try:
+                if old.enabled:
+                    _register_runtime_loop(state, old)
+            except Exception as exc:  # noqa: BLE001
+                rollback_errors.append(exc)
+        try:
+            _persist_runtime_job_rows(state, table)
+        except Exception as exc:  # noqa: BLE001
+            rollback_errors.append(exc)
+        if rollback_errors:
+            raise RuntimeError(
+                "QZone job migration failed and live rollback was incomplete"
+            ) from migration_error
+        raise
+
+    metadata = _job_metadata(state)
+    for old_name, _row in renamed:
+        metadata.pop(old_name, None)
+    table.clear()
+    table.update(candidate)
+    for row in migrated:
+        _sync_metadata(state, row)
+    return migrated
 
 
 def _find_by_source_identity(
@@ -758,10 +982,7 @@ def _store_job(state: AdminState, body: NewJobBody) -> _RuntimeJob:
     is the contract the qzone-template enable route relies on.
     """
     table = _runtime_jobs(state)
-    candidate = {
-        name: _RuntimeJob(**_runtime_job_to_dict(row))
-        for name, row in table.items()
-    }
+    candidate = {name: _RuntimeJob(**_runtime_job_to_dict(row)) for name, row in table.items()}
     table = candidate
     now = _now_ms()
     by_name = table.get(body.name)
@@ -786,12 +1007,11 @@ def _store_job(state: AdminState, body: NewJobBody) -> _RuntimeJob:
         existing.persona_id = body.persona_id
         existing.prompt_template = body.prompt_template
         existing.qq_account = body.qq_account
+        existing.qq_instance_id = body.qq_instance_id
         # Merge metadata with the per-action_type fields so the
         # dispatcher's metadata resolver sees one consolidated dict.
         existing.metadata = _compose_metadata(body)
-        existing.execution_mode = (
-            "shadow" if body.execution_mode == "shadow" else "live"
-        )
+        existing.execution_mode = "shadow" if body.execution_mode == "shadow" else "live"
         existing.source_system = body.source_system
         existing.source_job_id = body.source_job_id
         existing.updated_at_ms = now
@@ -824,6 +1044,7 @@ def _store_job(state: AdminState, body: NewJobBody) -> _RuntimeJob:
         persona_id=body.persona_id,
         prompt_template=body.prompt_template,
         qq_account=body.qq_account,
+        qq_instance_id=body.qq_instance_id,
         metadata=_compose_metadata(body),
         execution_mode="shadow" if body.execution_mode == "shadow" else "live",
         source_system=body.source_system,
@@ -886,18 +1107,20 @@ def _set_enabled_route(name: str, *, enabled: bool) -> Any:
                 status_code=422,
                 content={"error": "invalid_cron", "message": err or ""},
             )
+        qzone_body: NewJobBody | None = None
         if rj.action_type == QZONE_DAILY_BUILTIN_NAME:
-            ok, err = _validate_qzone_daily(
-                NewJobBody(
-                    name=rj.name,
-                    cron=rj.cron,
-                    action_type=rj.action_type,
-                    persona_id=rj.persona_id,
-                    prompt_template=rj.prompt_template,
-                    image_ref_labels=_read_image_ref_labels(rj.metadata),
-                    jitter_minutes=_read_jitter_minutes(rj.metadata),
-                )
+            qzone_body = NewJobBody(
+                name=rj.name,
+                cron=rj.cron,
+                action_type=rj.action_type,
+                persona_id=rj.persona_id,
+                prompt_template=rj.prompt_template,
+                qq_instance_id=rj.qq_instance_id,
+                image_ref_labels=_read_image_ref_labels(rj.metadata),
+                jitter_minutes=_read_jitter_minutes(rj.metadata),
+                metadata=dict(rj.metadata),
             )
+            ok, err = _validate_qzone_daily(qzone_body)
             if not ok:
                 return JSONResponse(
                     status_code=422,
@@ -907,15 +1130,15 @@ def _set_enabled_route(name: str, *, enabled: bool) -> Any:
                     },
                 )
         elif rj.action_type == QZONE_REPLY_BUILTIN_NAME:
-            ok, err = _validate_qzone_reply(
-                NewJobBody(
-                    name=rj.name,
-                    cron=rj.cron,
-                    action_type=rj.action_type,
-                    persona_id=rj.persona_id,
-                    metadata=dict(rj.metadata),
-                )
+            qzone_body = NewJobBody(
+                name=rj.name,
+                cron=rj.cron,
+                action_type=rj.action_type,
+                persona_id=rj.persona_id,
+                qq_instance_id=rj.qq_instance_id,
+                metadata=dict(rj.metadata),
             )
+            ok, err = _validate_qzone_reply(qzone_body)
             if not ok:
                 return JSONResponse(
                     status_code=422,
@@ -924,7 +1147,17 @@ def _set_enabled_route(name: str, *, enabled: bool) -> Any:
                         "message": err or "",
                     },
                 )
+        if qzone_body is not None:
+            ok, err = _assign_enabled_qq_instance(state, qzone_body)
+            if not ok:
+                return JSONResponse(
+                    status_code=422,
+                    content={"error": "invalid_qq_instance", "message": err or ""},
+                )
     updated = _RuntimeJob(**_runtime_job_to_dict(rj))
+    if enabled and qzone_body is not None:
+        updated.qq_instance_id = qzone_body.qq_instance_id
+        updated.metadata = _compose_metadata(qzone_body)
     updated.enabled = enabled
     updated.updated_at_ms = _now_ms()
     candidate = dict(table)
@@ -959,6 +1192,8 @@ def _compose_metadata(body: NewJobBody) -> dict[str, Any]:
         composed.setdefault("prompt_template", body.prompt_template)
     if body.qq_account is not None:
         composed.setdefault("qq_account", body.qq_account)
+    if body.qq_instance_id is not None:
+        composed["qq_instance_id"] = body.qq_instance_id
     if body.image_ref_labels is not None:
         composed["image_ref_labels"] = list(body.image_ref_labels)
     if body.jitter_minutes is not None:
@@ -987,9 +1222,7 @@ def _bundled_template_path(state: AdminState, template_id: str) -> Path | None:
     candidates: list[Path] = []
     data_dir = state.data_dir
     if data_dir is not None:
-        candidates.append(
-            data_dir / "bundled_personas" / template_id / "daily_job.json"
-        )
+        candidates.append(data_dir / "bundled_personas" / template_id / "daily_job.json")
     # In-wheel fallback for tests / deployments that haven't run the
     # first-boot seeder yet.
     try:
@@ -1029,6 +1262,7 @@ def _load_template_body(path: Path) -> NewJobBody:
         persona_id=obj.get("persona_id"),
         prompt_template=obj.get("prompt_template"),
         qq_account=obj.get("qq_account"),
+        qq_instance_id=obj.get("qq_instance_id"),
         image_ref_labels=obj.get("image_ref_labels"),
         jitter_minutes=obj.get("jitter_minutes"),
         metadata=obj.get("metadata", {}) or {},
@@ -1142,7 +1376,9 @@ def rehydrate_runtime_jobs_on_boot(state: AdminState) -> int:
     return len(table)
 
 
-def make_history_entry(job: str, status: str, source: str = "manual", message: str = "") -> HistoryEntry:
+def make_history_entry(
+    job: str, status: str, source: str = "manual", message: str = ""
+) -> HistoryEntry:
     return HistoryEntry(
         job=job,
         at=datetime.fromtimestamp(time.time(), tz=UTC).isoformat().replace("+00:00", "Z"),

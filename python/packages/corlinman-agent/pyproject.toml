@@ -21,6 +21,7 @@ dependencies = [
     # need persona accounting (unit tests).
     "corlinman-persona",
     "corlinman-content-policy",
+    "corlinman-runtime",
     "websockets>=13",
 ]
 
@@ -30,6 +31,7 @@ corlinman-providers = { workspace = true }
 corlinman-tagmemo = { workspace = true }
 corlinman-persona = { workspace = true }
 corlinman-content-policy = { workspace = true }
+corlinman-runtime = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

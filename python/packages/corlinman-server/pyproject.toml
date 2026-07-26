@@ -60,6 +60,7 @@ dependencies = [
     "corlinman-replay",
     "corlinman-channels",
     "corlinman-content-policy",
+    "corlinman-runtime",
     # corlinman-channels imports ``corlinman_identity`` unconditionally
     # (``corlinman_channels.common`` -> ``from corlinman_identity import
     # UserId``) but deliberately does not declare it (see that package's
@@ -120,6 +121,7 @@ corlinman-hooks = { workspace = true }
 corlinman-replay = { workspace = true }
 corlinman-channels = { workspace = true }
 corlinman-content-policy = { workspace = true }
+corlinman-runtime = { workspace = true }
 corlinman-identity = { workspace = true }
 corlinman-memory-host = { workspace = true }
 corlinman-memory-kernel = { workspace = true }
@@ -136,6 +138,7 @@ corlinman-subagent = { workspace = true }
 corlinman-python-server = "corlinman_server.main:main"
 corlinman = "corlinman_server.cli.main:main"
 corlinman-gateway = "corlinman_server.gateway.lifecycle.entrypoint:main"
+corlinman-napcat-manager = "corlinman_server.system.napcat_manager.server:main"
 # Reliable Markdown → clean (CJK-correct) PDF renderer. Installed on the
 # venv PATH so the agent's run_shell can invoke it from the workspace; the
 # document-generator skill instructs the agent to use it instead of

@@ -101,9 +101,11 @@ class PostConfigResponse(BaseModel):
 def _toml_dumps(cfg: dict[str, Any]) -> str:
     try:
         import tomli_w  # noqa: PLC0415
+
         return tomli_w.dumps(cfg)
     except ImportError:  # pragma: no cover
         import toml  # type: ignore  # noqa: PLC0415
+
         # ``toml`` ships no type stubs; its return is dynamically typed.
         return cast("str", toml.dumps(cfg))
 
@@ -111,9 +113,11 @@ def _toml_dumps(cfg: dict[str, Any]) -> str:
 def _toml_loads(text: str) -> dict[str, Any]:
     try:
         import tomllib  # noqa: PLC0415
+
         return tomllib.loads(text)
     except ImportError:  # pragma: no cover — py<3.11
         import toml  # type: ignore  # noqa: PLC0415
+
         # ``toml`` ships no type stubs; its return is dynamically typed.
         return cast("dict[str, Any]", toml.loads(text))
 
@@ -264,6 +268,18 @@ async def _rewrite_py_config(state: AdminState, cfg: dict[str, Any]) -> None:
         )
     except ImportError:
         return
+    app_state = state.extras.get("app_state")
+    runtime_state = getattr(app_state, "corlinman_state", None) or getattr(
+        app_state, "corlinman", None
+    )
+    registry = getattr(runtime_state or app_state, "qq_runtime_registry", None)
+    if registry is not None:
+        await registry.reconcile_and_write_sidecar(
+            cfg.get("channels") or {},
+            config=cfg,
+            path=state.py_config_path,
+        )
+        return
     res = write_py_config(cfg, state.py_config_path)
     if hasattr(res, "__await__"):
         await res
@@ -366,7 +382,21 @@ def router() -> APIRouter:
                     content={"error": "write_failed", "message": str(exc)},
                 )
             await _publish_snapshot(state, merged)
-            await _rewrite_py_config(state, merged)
+            try:
+                await _rewrite_py_config(state, merged)
+            except Exception:
+                try:
+                    rollback = _toml_dumps(current)
+                    rollback_tmp = path.with_suffix(path.suffix + ".new")
+                    rollback_tmp.write_text(rollback, encoding="utf-8")
+                    rollback_tmp.replace(path)
+                    await _publish_snapshot(state, current)
+                    await _rewrite_py_config(state, current)
+                except Exception as rollback_exc:  # noqa: BLE001
+                    raise RuntimeError(
+                        "config mutation failed and rollback was incomplete"
+                    ) from rollback_exc
+                raise
         version = _hash8(serialised)
         return PostConfigResponse(
             status="ok", issues=[], requires_restart=restart_fields, version=version
@@ -413,10 +443,7 @@ def router() -> APIRouter:
         )
         snap = dict(config_snapshot())
         sections = sorted(set(known_sections) | set(snap.keys()))
-        properties = {
-            name: {"type": "object", "additionalProperties": True}
-            for name in sections
-        }
+        properties = {name: {"type": "object", "additionalProperties": True} for name in sections}
         return {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "title": "CorlinmanConfig",

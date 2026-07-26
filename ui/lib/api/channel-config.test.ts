@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CHANNEL_CONFIG_SPEC,
   buildChannelConfigBody,
+  invalidNumberFields,
   isEmptyConfigBody,
   parseList,
   putChannelConfig,
@@ -88,18 +89,30 @@ describe("CHANNEL_CONFIG_SPEC", () => {
     expect(
       qq.flags.find((f) => f.key === "freeze_risk_topic_blocking")?.defaultValue,
     ).toBe(true);
+    // Runtime default is ON — the seed must agree or toggling the switch
+    // to the real state produces no diff (dead Save).
+    expect(
+      qq.flags.find((f) => f.key === "group_replies_enabled")?.defaultValue,
+    ).toBe(true);
     expect(keys(qq.ids)).toEqual(["self_ids", "group_whitelist", "proactive_groups"]);
     expect(qq.ids.find((f) => f.key === "self_ids")?.managed).toBe(true);
     expect(keys(qq.numbers)).toEqual([
+      "group_rate_limit_window_minutes",
+      "group_rate_limit_max_messages",
       "group_reply_cooldown_secs",
       "proactive_min_gap_minutes",
       "proactive_max_gap_minutes",
       "proactive_daily_max",
       "proactive_active_start_hour",
       "proactive_active_end_hour",
+      "proactive_probability",
+      "proactive_context_messages",
     ]);
-    // Every tuning number is expert-only.
-    expect(qq.numbers.every((f) => f.advanced)).toBe(true);
+    // Speech-cap numbers are operator-facing (basic); tuning numbers are
+    // expert-only.
+    expect(
+      qq.numbers.filter((f) => !f.advanced).map((f) => f.key),
+    ).toEqual(["group_rate_limit_window_minutes", "group_rate_limit_max_messages"]);
     const policy = qq.urls.find((f) => f.key === "group_reply_policy");
     expect(policy?.input).toBe("select");
     expect(policy?.options).toEqual(["mention_or_keyword", "all"]);
@@ -107,6 +120,7 @@ describe("CHANNEL_CONFIG_SPEC", () => {
     const prompt = qq.urls.find((f) => f.key === "proactive_prompt");
     expect(prompt?.input).toBe("textarea");
     expect(prompt?.advanced).toBe(true);
+    expect(qq.urls.find((f) => f.key === "proactive_timezone")?.advanced).toBe(true);
   });
 });
 
@@ -172,6 +186,40 @@ describe("buildChannelConfigBody", () => {
     const draft = seedDraft("discord", {});
     const body = buildChannelConfigBody("discord", draft, initial);
     expect(body.secrets).toBeUndefined();
+  });
+});
+
+describe("invalidNumberFields", () => {
+  it("flags a changed-but-non-numeric or cleared number edit", () => {
+    const initial = seedDraft("qq", { group_rate_limit_window_minutes: "10" });
+    const bad = {
+      ...initial,
+      numbers: {
+        ...initial.numbers,
+        group_rate_limit_window_minutes: "abc",
+        group_rate_limit_max_messages: "5", // valid — not flagged
+      },
+    };
+    expect(invalidNumberFields("qq", bad, initial)).toEqual([
+      "group_rate_limit_window_minutes",
+    ]);
+    const cleared = {
+      ...initial,
+      numbers: { ...initial.numbers, group_rate_limit_window_minutes: "" },
+    };
+    expect(invalidNumberFields("qq", cleared, initial)).toEqual([
+      "group_rate_limit_window_minutes",
+    ]);
+  });
+
+  it("stays quiet on untouched or valid numbers", () => {
+    const initial = seedDraft("qq", {});
+    expect(invalidNumberFields("qq", initial, initial)).toEqual([]);
+    const edited = {
+      ...initial,
+      numbers: { ...initial.numbers, group_rate_limit_max_messages: "3" },
+    };
+    expect(invalidNumberFields("qq", edited, initial)).toEqual([]);
   });
 });
 
