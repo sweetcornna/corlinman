@@ -24,23 +24,11 @@ allowed-tools:
 
 Write the test first. Watch it fail. Write the minimum code to pass.
 
-**Core principle:** If you didn't watch the test fail, you don't know that it tests the right thing.
-
-## The Iron Law
-
-```
-NO PRODUCTION CODE WITHOUT A FAILING TEST FIRST
-```
-
-If you already wrote code before the test: delete it and start over. No exceptions, no "keep it as reference" — implement fresh from the test.
+**Core principle:** if you didn't watch the test fail, you don't know that it tests the right thing. Production code starts from a failing test; if you wrote code before its test, set it aside and let the test drive the implementation — code that never failed a test is unverified.
 
 ## When to use
 
-**Always:** new features, bug fixes, refactors, behavior changes.
-
-**Exceptions (ask the user first):** throwaway prototypes, generated code, configuration files.
-
-Thinking "skip TDD just this once"? That's rationalization. Don't.
+New features, bug fixes, refactors, behavior changes. Skip it for throwaway prototypes, generated code, and configuration files.
 
 ## Red-Green-Refactor cycle
 
