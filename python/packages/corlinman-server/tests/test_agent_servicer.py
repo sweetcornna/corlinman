@@ -2002,6 +2002,54 @@ def test_ensure_system_prompt_appends_env_to_existing() -> None:
     assert msgs[1] == {"role": "user", "content": "hi"}
 
 
+def test_ensure_system_prompt_prepends_baseline_when_not_authored() -> None:
+    """A system message synthesized by the context assembler (always-on
+    skill bodies + catalog) is NOT an authored prompt — the baseline
+    behavioral prompt must be prepended to it, not suppressed by it.
+    Regression: before v1.37 the mere existence of the skill-synthesized
+    message meant seeded deployments never sent the baseline at all."""
+    from corlinman_agent.reasoning_loop import ChatStart
+    from corlinman_server.agent_servicer import (
+        _CODING_SYSTEM_PROMPT,
+        _build_env_block,
+        _ensure_system_prompt,
+    )
+
+    skill_text = "## Skill: document-generator\n\nrecipe body"
+    start = ChatStart(
+        model="m",
+        messages=[
+            {"role": "system", "content": skill_text},
+            {"role": "user", "content": "hi"},
+        ],
+        tools=[],
+        session_key="s",
+    )
+    _ensure_system_prompt(start, authored_system=False)
+
+    msgs = list(start.messages)
+    system_msgs = [m for m in msgs if m.get("role") == "system"]
+    assert len(system_msgs) == 1
+    content = msgs[0]["content"]
+    # Shape: baseline → skill text → env block.
+    assert content.startswith(_CODING_SYSTEM_PROMPT)
+    assert skill_text in content
+    assert content.endswith(_build_env_block())
+    assert content.index(_CODING_SYSTEM_PROMPT[:20]) < content.index(skill_text)
+    assert msgs[1] == {"role": "user", "content": "hi"}
+
+
+def test_has_system_message_detects_dict_and_object_shapes() -> None:
+    from corlinman_server.agent_servicer import _has_system_message
+
+    assert _has_system_message([{"role": "system", "content": "x"}])
+    assert not _has_system_message([{"role": "user", "content": "x"}])
+    assert _has_system_message(
+        [SimpleNamespace(role="system", content="x")]
+    )
+    assert not _has_system_message([])
+
+
 def test_env_block_contains_workspace_and_platform() -> None:
     """The dynamic env block names the workspace path and platform."""
     from corlinman_server.agent_servicer import _build_env_block
@@ -2974,6 +3022,56 @@ class _PausingProvider:
 
 
 @pytest.mark.asyncio
+async def test_chat_baseline_prompt_reaches_model_despite_skill_synthesized_system(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end regression for the baseline-prompt reachability bug:
+    when the context assembler synthesizes a system message out of
+    always-on skill bodies (the seeded-deployment default), the baseline
+    ``_CODING_SYSTEM_PROMPT`` must STILL reach the model, prepended
+    before the skill text. Before the fix, the synthesized message made
+    ``_ensure_system_prompt`` take the append-env-only branch, so no
+    seeded deployment ever sent the behavioral baseline."""
+    from corlinman_server import agent_servicer as srv_mod
+    from corlinman_server.agent_servicer import _CODING_SYSTEM_PROMPT
+
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(srv_mod, "ReasoningLoop", _CapturingLoop)
+    _CapturingLoop.captured_starts = []
+
+    skill_text = "## Skill: document-generator\n\nrecipe body"
+
+    class _SkillSynthesizingAssembler:
+        """Mimics ContextAssembler on a seeded deployment: the incoming
+        context has no system message, so always-on skill injection
+        creates one holding only skill text."""
+
+        async def assemble(
+            self, messages: list[dict[str, Any]], **_kw: Any
+        ) -> SimpleNamespace:
+            return SimpleNamespace(
+                messages=[{"role": "system", "content": skill_text}, *messages]
+            )
+
+    servicer = CorlinmanAgentServicer(
+        provider_resolver=lambda _m: _FakeProvider([]),
+    )
+    servicer._context_assembler = _SkillSynthesizingAssembler()
+
+    await _drive_chat_once(servicer, session_key="s-skills", user_text="hi")
+
+    assert len(_CapturingLoop.captured_starts) == 1
+    msgs = _CapturingLoop.captured_starts[0].messages
+    system_msgs = [m for m in msgs if m.get("role") == "system"]
+    assert len(system_msgs) == 1
+    content = system_msgs[0]["content"]
+    # Baseline first, then the skill text, then the env block.
+    assert content.startswith(_CODING_SYSTEM_PROMPT)
+    assert skill_text in content
+    assert "# Environment" in content
+
+
+@pytest.mark.asyncio
 async def test_concurrent_chat_for_same_session_injects_instead_of_serializing(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3249,18 +3347,22 @@ async def test_ask_user_empty_question_returns_error_envelope() -> None:
     assert "question" in payload["error"]
 
 
-def test_ask_user_system_prompt_clause_present() -> None:
-    """The baseline system prompt must instruct the model on how to use
-    ``ask_user`` — call the tool, then finalise with the question text,
-    then stop. Without this clause models won't reach for the tool."""
+def test_ask_user_protocol_single_sourced_in_tool_description() -> None:
+    """The ``ask_user`` turn-ending protocol (finalize with the question,
+    call no further tools) lives ONLY in the tool description — the
+    baseline system prompt just points at the tool. Restating tool
+    mechanics in the system prompt is the duplication the Claude-5
+    context-engineering rules retire; this pins the single source."""
+    from corlinman_agent.interactive.ask_user import ask_user_tool_schema
     from corlinman_server.agent_servicer import _CODING_SYSTEM_PROMPT
 
+    # The prompt still names the tool so models know it exists...
     assert "ask_user" in _CODING_SYSTEM_PROMPT
-    # Pin the two key behaviours so a future prompt rewrite that drops
-    # them fails this test loudly.
-    assert "finalize" in _CODING_SYSTEM_PROMPT.lower()
-    assert "do not invoke" in _CODING_SYSTEM_PROMPT.lower() or \
-        "do not call" in _CODING_SYSTEM_PROMPT.lower()
+    # ...but the mechanics are pinned in the tool description alone.
+    desc = ask_user_tool_schema()["function"]["description"].lower()
+    assert "finalize" in desc
+    assert "do not call any other tool" in desc
+    assert "finalize" not in _CODING_SYSTEM_PROMPT.lower()
 
 
 # ─── W2.3: explicit agent_id hint in _peek_agent_binding ─────────────

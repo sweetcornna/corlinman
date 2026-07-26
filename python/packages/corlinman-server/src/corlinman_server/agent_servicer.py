@@ -785,12 +785,18 @@ def _provider_supports_tools(provider: Any, model: str) -> bool:
         return True
 
 
-#: Baseline coding-agent system prompt. Injected only when the assembled
-#: context carries no system message of its own (no agent card matched).
-#: Encodes behavioral rules C1–C12 from docs/RESEARCH_AGENT_PARITY.md §C,
+#: Baseline coding-agent system prompt. Injected whenever neither the
+#: caller nor a matched agent card authored a system prompt — including
+#: when the context assembler has already synthesized a system message
+#: out of always-on skill bodies / the skill catalog (those are guidance,
+#: not a behavioral baseline; see ``_ensure_system_prompt``).
+#: Encodes behavioral rules from docs/RESEARCH_AGENT_PARITY.md §C,
 #: adapted for a QQ-chatbot-shaped agent that also operates a real
-#: workspace. A dynamic ``# Environment`` block (see ``_build_env_block``)
-#: is appended at injection time.
+#: workspace. Tool-specific protocols (todo cadence, ``ask_user``
+#: turn-ending mechanics, per-tool path rules) intentionally live ONLY in
+#: the tool descriptions — do not restate them here. A dynamic
+#: ``# Environment`` block (see ``_build_env_block``) is appended at
+#: injection time.
 _CODING_SYSTEM_PROMPT: str = """\
 You are corlinman, an AI assistant that answers chat messages in a QQ \
 client and can operate a real workspace — read, write and edit files, \
@@ -816,13 +822,6 @@ otherwise observe the change behaving the way you described. "It compiles" \
 is not verification. If verification is impossible in this environment, \
 say so and name what the user should run.
 
-# Todo discipline
-For any task with 3+ distinct steps, call `todo_write` first to lay out \
-the plan, then keep it live. Keep exactly one step `in_progress`. Mark a \
-step `completed` the moment it is verified — never batch completions at \
-the end. Skip todos for trivial one-shot requests; do not pad small \
-tasks with ceremonial todos.
-
 # No speculative code
 Do not write defensive code for cases that cannot occur. Do not add \
 helpers for a single call site. Do not design for hypothetical future \
@@ -834,11 +833,9 @@ real contents and surrounding context, then edit. Edits applied to \
 guessed-at text fail and waste a turn.
 
 # Tool hierarchy
-Prefer the dedicated tools — `read_file`, `write_file`, `edit_file`, \
-`apply_patch`, `search_files`, `list_files`, `todo_write` — over \
-`run_shell` for file and search work. Use `run_shell` for running code, \
-tests, and tooling that has no dedicated wrapper. File tools are confined \
-to your workspace directory; paths are workspace-relative.
+Prefer the dedicated file and search tools over `run_shell` when one \
+fits; use `run_shell` for running code, tests, and tooling that has no \
+dedicated wrapper.
 
 # Destructive-action calibration
 Local reversible actions inside the workspace (write, edit, scratch \
@@ -861,14 +858,11 @@ deserialization, leaked credentials, broken access control. Flag the \
 risk; suggest the safer pattern.
 
 # Ask only when blocked
-Make a reasonable choice and proceed. Ask the user when you are truly \
-blocked — ambiguous requirement with materially different solutions, or \
-a destructive action that needs sign-off. Do not ask permission for \
-routine work you are already authorized to do. When you must ask, call \
-the `ask_user` tool with the question (and optional `options` list of \
-canned answers). After calling `ask_user`, finalize your reply with the \
-question text and do NOT invoke any other tool in the same turn — the \
-user's next message will arrive as a new turn.
+Make a reasonable choice and proceed. Ask the user (via the `ask_user` \
+tool) only when you are truly blocked — ambiguous requirement with \
+materially different solutions, or a destructive action that needs \
+sign-off. Do not ask permission for routine work you are already \
+authorized to do.
 
 # Minimal comments
 Add comments only where the code itself does not explain the WHY — \
@@ -902,16 +896,38 @@ def _build_env_block() -> str:
     )
 
 
-def _ensure_system_prompt(start: AgentChatStart) -> None:
+def _has_system_message(messages: Sequence[Any]) -> bool:
+    """True when ``messages`` already carries a system-role entry."""
+    for m in messages:
+        role = m.get("role") if isinstance(m, dict) else getattr(m, "role", None)
+        if role == "system":
+            return True
+    return False
+
+
+def _ensure_system_prompt(
+    start: AgentChatStart, *, authored_system: bool = True
+) -> None:
     """Ensure ``start.messages`` carries a system message with the env block.
 
-    When the assembled context has no system message, inject
-    ``_CODING_SYSTEM_PROMPT`` plus a fresh ``# Environment`` block. When a
-    system message is already present (an agent card matched, or a caller
-    supplied one), preserve its content and append the env block — the
-    env block is fact, not behavior, so it is always added. Mutates
-    ``start`` in place. The CodexProvider lifts the leading system
-    message into the Responses API ``instructions`` field.
+    ``authored_system`` says whether the request brought its own system
+    prompt — the caller supplied a system message, or an agent card
+    matched (its persona expands into the context). When it did, that
+    content is preserved and only a fresh ``# Environment`` block is
+    appended — the env block is fact, not behavior, so it is always
+    added.
+
+    When ``authored_system`` is ``False``, any system message present was
+    synthesized by the context assembler out of always-on skill bodies /
+    the skill catalog. Skills are guidance, not a behavioral baseline, so
+    ``_CODING_SYSTEM_PROMPT`` is PREPENDED to that message (final shape:
+    baseline → skills → catalog → env). Before v1.37 the mere existence
+    of the skill-synthesized message suppressed the baseline entirely, so
+    seeded deployments never sent it. When no system message exists at
+    all, the baseline + env block is injected regardless of the flag.
+
+    Mutates ``start`` in place. The CodexProvider lifts the leading
+    system message into the Responses API ``instructions`` field.
     """
     env_block = _build_env_block()
     msgs = list(start.messages)
@@ -922,10 +938,13 @@ def _ensure_system_prompt(start: AgentChatStart) -> None:
             role = getattr(m, "role", None)
         if role != "system":
             continue
-        # Append the env block to the existing system message and stop.
         if isinstance(m, dict):
             content = m.get("content")
             base = content if isinstance(content, str) else ""
+            if not authored_system:
+                base = f"{_CODING_SYSTEM_PROMPT}\n\n{base}" if base else (
+                    _CODING_SYSTEM_PROMPT
+                )
             new_msg = dict(m)
             new_msg["content"] = f"{base}\n\n{env_block}" if base else env_block
             msgs[idx] = new_msg
@@ -1498,6 +1517,14 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             extra: dict[str, Any] = dict(start.extra or {})
             extra.setdefault("prompt_cache_key", start.session_key)
             start.extra = extra
+        # Snapshot BEFORE assembly whether the request brings its own
+        # system prompt (caller-supplied message or a matched agent
+        # card). The assembler may synthesize a system message out of
+        # always-on skills / the skill catalog, which must not count as
+        # "authored" — see ``_ensure_system_prompt``.
+        authored_system = bound_card is not None or _has_system_message(
+            start.messages
+        )
         start = await self._assemble_context(start)
 
         # Advertise the builtin tools to the model so it can call them.
@@ -1519,9 +1546,11 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         else:
             _inject_builtin_tools(start)
 
-        # Give the model a coding-agent system prompt when no agent card
-        # supplied one — otherwise it operates the tools blind.
-        _ensure_system_prompt(start)
+        # Give the model the baseline coding-agent system prompt when
+        # neither the caller nor an agent card authored one — otherwise
+        # it operates the tools blind. Skill text synthesized during
+        # assembly does not count as an authored prompt.
+        _ensure_system_prompt(start, authored_system=authored_system)
 
         # Capture the user's text before any recall / todo block goes in
         # so it reflects the user's words (used for the post-turn memory
