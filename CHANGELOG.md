@@ -4,6 +4,41 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.37.0] — 2026-07-26 — Claude-5 上下文工程对齐 + 基线提示可达性修复
+
+### Fixed
+- **基线系统提示从未到达模型**（种子部署）：`_ensure_system_prompt` 在上下文装配之后运行，
+  而 always-on skill 注入/skill 目录在请求不带 system 消息时必然合成一条，导致 12 条行为
+  基线（truthful reporting / verify-before-done / destructive-action 校准等）被静默抑制。
+  现在装配前快照"请求是否自带 system prompt"，非自带时把基线前置到合成消息头部
+  （最终形态：基线 → skills → catalog → env）。(#165)
+- bundled skills 正文与 frontmatter 中的点号旧工具名（`file.read`/`shell.run`/`web.search`/
+  `memory.write`）全量替换为真实 wire 名；`memory.md`/`note-taking.md` 中虚构的
+  `memory_write(key/value/tags)` 参数改为真实 `content/tag/namespace` schema；`kb.search`
+  （不存在的工具）改为 `memory_search` + `session_search`；persona 与 nuwa-skill 中的
+  `WebSearch` 改为 `web_search`。此前 skill 会引导模型发出必然失败的工具调用。(#164)
+- 顶层 `skills/` 三个过期副本与 `bundled_skills/` 同步（`web_search.md` 对默认搜索后端的
+  描述此前与 bundled 版直接矛盾）；`memory.md` "引用记忆来源" 与运行时 "不要提及记忆系统"
+  的矛盾消解。(#164)
+
+### Changed
+- 系统提示按"工具说明单一来源"去重：删除 `# Todo discipline` 整节、`# Ask only when
+  blocked` 中的 ask_user 停轮机制句、`# Tool hierarchy` 的工具枚举——这些内容在对应工具
+  描述中已有且以工具描述为准。(#165)
+- `verification-before-completion` / `test-driven-development` / `systematic-debugging`
+  三个 bundled skill 从 "Iron Law" 式绝对化措辞改写为判断式纪律，保留方法论本身。(#164)
+- `document-generator`（always-on）禁令列表压缩为环境约束；文档文件内容的 Markdown 规则
+  与 persona 聊天输出风格解耦。`huashu-design` 的 2177 字符单行 description（在 skill 目录
+  中会被截断成半句）拆为短 description + `when_to_use`，能力清单移入正文。(#164)
+
+### Added
+- 仓库根 `CLAUDE.md`（只记录已知坑与约定，流程指向 CONTRIBUTING/pr-standards）；
+  `.claude/skills/`（verify dev skill）与 `.claude/settings.json` 入库，所有 clone 可见。(#164)
+
+### Removed
+- `docs/dev/build-fast.md` 与 2026-05-15 Rust 构建计划——278+ 行描述已迁移删除的 Rust
+  workspace 的过期文档。(#164)
+
 ## [1.36.1] — 2026-07-21 — automatic QQ login identity
 
 ### Fixed
