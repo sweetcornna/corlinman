@@ -13,8 +13,8 @@ metadata:
       No installation needed. The skill is procedural — a structured
       dialogue ending in a saved design doc under `docs/specs/`.
 allowed-tools:
-  - file.read
-  - file.write
+  - read_file
+  - write_file
 ---
 # Brainstorming Ideas Into Designs
 

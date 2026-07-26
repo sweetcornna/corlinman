@@ -29,7 +29,7 @@ bash scripts/dev-setup.sh
 如果想手动搭，等价命令是：
 
 ```bash
-uv sync --all-packages --dev        # Python workspace（25 个包）+ dev 工具
+uv sync --all-packages --dev        # Python workspace（28 个包）+ dev 工具
 pnpm install --frozen-lockfile      # ui/ 前端依赖
 bash scripts/gen-proto.sh           # 生成 proto stubs（需要 protobuf-compiler）
 ```
@@ -50,7 +50,7 @@ pnpm -C ui typecheck                                      # 前端类型检查
 
 ## 2. 仓库结构
 
-仓库是一个 `uv` workspace：`python/packages/corlinman-*` 下 25 个 Python 包 + `ui/` 前端 + `proto/` 接口。完整的现状模块地图（职责、公开接口、依赖、耦合热点）见 [docs/architecture-modules.md](docs/architecture-modules.md)；模块化路线图见 [docs/modularization-plan.md](docs/modularization-plan.md)。
+仓库是一个 `uv` workspace：`python/packages/corlinman-*` 下 28 个 Python 包 + `ui/` 前端 + `proto/` 接口。完整的现状模块地图（职责、公开接口、依赖、耦合热点）见 [docs/architecture-modules.md](docs/architecture-modules.md)；模块化路线图见 [docs/modularization-plan.md](docs/modularization-plan.md)。
 
 ### 2.1 分层
 

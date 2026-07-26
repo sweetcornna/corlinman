@@ -10,7 +10,7 @@ metadata:
       config: []
       env: []
     install: |
-      1. Works out of the box — `web.search` defaults to the keyless
+      1. Works out of the box — `web_search` defaults to the keyless
          DuckDuckGo backend, so no API key is required. For higher
          volume / quality, optionally configure Brave (see the
          `web_search` skill) or set `CORLINMAN_WEB_SEARCH_BACKEND` /
@@ -19,11 +19,11 @@ metadata:
          fallback), but quality is dramatically higher when the agent
          can fan out via `subagent_spawn_many`.
 allowed-tools:
-  - web.search
-  - web.fetch
-  - kb.search
-  - memory.search
-  - memory.write
+  - web_search
+  - web_fetch
+  - session_search
+  - memory_search
+  - memory_write
   - subagent_spawn
   - subagent_spawn_many
   - blackboard.read
@@ -47,7 +47,7 @@ A question that crosses 3+ sources, requires reconciling conflicting claims, or 
 ## When NOT to use
 
 - The user asked you to reason, not to research — search is offloading thinking.
-- The answer is in the attached files / RAG context / session memory. Search those first via `kb.search` and `memory.search`.
+- The answer is in the attached files / prior conversations / long-term memory. Search those first via `memory_search` and `session_search`.
 - Queries involve sensitive internal terms (customer names, unreleased codenames) that must not leak to third parties.
 
 ## Process
@@ -64,8 +64,8 @@ Example — "Should we adopt postgres logical replication?":
 ### 2. Search internal sources first
 
 ```
-kb.search("logical replication corlinman", top_k=5)
-memory.search("postgres replication previous decision", top_k=3)
+memory_search("postgres replication previous decision", top_k=3)
+session_search("logical replication discussion")
 ```
 
 Anything found here saves a web round-trip *and* surfaces prior decisions that are usually more authoritative than blog posts.
@@ -86,11 +86,11 @@ subagent_spawn_many(
 )
 ```
 
-Without subagents: run the web.search calls sequentially yourself.
+Without subagents: run the web_search calls sequentially yourself.
 
 ### 4. Read primary sources, not just snippets
 
-For each sub-question, pick the 1–2 most authoritative results — official docs, RFCs, release notes, the repo's own README — and `web.fetch` the full page. Do not synthesise from snippet text alone; snippets are designed to *look* relevant, not to *be* complete.
+For each sub-question, pick the 1–2 most authoritative results — official docs, RFCs, release notes, the repo's own README — and `web_fetch` the full page. Do not synthesise from snippet text alone; snippets are designed to *look* relevant, not to *be* complete.
 
 Source hierarchy:
 - official docs / RFCs / standards
@@ -116,7 +116,7 @@ The final answer cites each non-obvious claim inline as `[source](https://...)`.
 If the answer is likely to matter for the rest of the conversation (or a later one), write it to memory:
 
 ```
-memory.write(
+memory_write(
   key="research.logical_replication.verdict",
   value="Recommended for our workload because <one sentence>; main risk = <one sentence>.",
   tags=["research", "postgres", "replication"]
@@ -128,7 +128,7 @@ memory.write(
 - **Snippet-only synthesis** — looks confident, gets details wrong. Fetch the page.
 - **Anchoring on the first source** — fan out *before* reading deeply.
 - **Hidden conflicts** — if every source says the same thing in slightly different words, that's usually one upstream source being recycled. Look for the original.
-- **Rate-limit silent fallback** — if web.search returns nothing, surface that — do not invent a result.
+- **Rate-limit silent fallback** — if web_search returns nothing, surface that — do not invent a result.
 - **Paywall** — note "paywalled; couldn't read body" and move to the next result; do not paraphrase from the snippet.
 
 ## Output shape

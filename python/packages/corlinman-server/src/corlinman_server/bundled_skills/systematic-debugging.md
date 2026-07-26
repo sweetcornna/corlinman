@@ -13,8 +13,8 @@ metadata:
       No installation needed. The skill is procedural; it uses whatever
       read + shell tools the active agent already has.
 allowed-tools:
-  - file.read
-  - shell.run
+  - read_file
+  - run_shell
 ---
 # Systematic Debugging
 
@@ -22,15 +22,7 @@ allowed-tools:
 
 Random fixes waste time and create new bugs. Quick patches mask the underlying issue.
 
-**Core principle:** Find root cause *before* attempting any fix. Symptom fixes are failure.
-
-## The Iron Law
-
-```
-NO FIXES WITHOUT ROOT CAUSE INVESTIGATION FIRST
-```
-
-If you haven't completed Phase 1, you cannot propose a fix.
+**Core principle:** find the root cause *before* attempting any fix — a symptom fix without a root cause is not a fix. Do not propose a fix until Phase 1 (root-cause investigation) is complete.
 
 ## When to use
 

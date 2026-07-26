@@ -1,33 +1,34 @@
 ---
 name: web_search
-description: Search the public web using the Brave Search API and fetch individual pages for follow-up reading.
+description: Search the public web (keyless DuckDuckGo by default; Brave/SerpApi optional) and fetch individual pages for follow-up reading.
 metadata:
   openclaw:
     emoji: "🔍"
     requires:
       bins: []
       anyBins: []
-      config:
-        - "providers.brave.api_key"
+      config: []
       env: []
     install: |
-      1. Create a Brave Search API key at https://brave.com/search/api/ (free tier covers
-         ~2k queries/month).
-      2. Store the key in the config:
+      Works out of the box — `web_search` defaults to the keyless DuckDuckGo
+      backend, so no API key is required.
 
-             corlinman config set providers.brave.api_key '{ env = "BRAVE_API_KEY" }'
-
-      3. Export `BRAVE_API_KEY` in the environment that runs the gateway.
-      4. Restart the gateway (or `corlinman reload` if hot reload is wired for your deployment).
+      Optional higher-volume / higher-quality backends:
+      - Brave: create a key at https://brave.com/search/api/ (free tier ~2k
+        queries/mo), then
+            corlinman config set providers.brave.api_key '{ env = "BRAVE_API_KEY" }'
+        export `BRAVE_API_KEY`, and restart the gateway.
+      - SerpApi: set `CORLINMAN_WEB_SEARCH_API_KEY` (or pick a backend with
+        `CORLINMAN_WEB_SEARCH_BACKEND`).
 allowed-tools:
-  - web.search
-  - web.fetch
+  - web_search
+  - web_fetch
 ---
 # Web Search
 
-Use the `web.search` tool when you need information from the public internet that
+Use the `web_search` tool when you need information from the public internet that
 the model could not have in its training data, or that is likely to have changed.
-For deep reads, chain a `web.fetch` call on the most promising result URL.
+For deep reads, chain a `web_fetch` call on the most promising result URL.
 
 ## When to use
 
@@ -47,11 +48,11 @@ For deep reads, chain a `web.fetch` call on the most promising result URL.
 
 ## How to use
 
-1. Call `web.search` with a focused query (≤ 8 keywords). Prefer concrete
+1. Call `web_search` with a focused query (≤ 8 keywords). Prefer concrete
    nouns over questions — search engines reward keywords, not grammar.
 2. Read the titles and snippets returned. Pick the one or two links that
    look most authoritative (official docs > blog posts > forum answers).
-3. For each chosen URL, call `web.fetch` to retrieve the page body, then
+3. For each chosen URL, call `web_fetch` to retrieve the page body, then
    quote the specific passage that answers the question.
 4. In your final reply, cite the URL inline: `[source](https://...)`.
 
@@ -61,5 +62,5 @@ For deep reads, chain a `web.fetch` call on the most promising result URL.
   fails again, surface the error rather than silently producing a guess.
 - **Empty results**: the query was too narrow. Broaden one keyword and
   retry; do not fabricate a result.
-- **Paywalled pages**: `web.fetch` returns the paywall stub, not the body.
+- **Paywalled pages**: `web_fetch` returns the paywall stub, not the body.
   Note this in your reply and move to the next result.

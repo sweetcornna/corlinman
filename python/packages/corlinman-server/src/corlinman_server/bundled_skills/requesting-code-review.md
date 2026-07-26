@@ -16,8 +16,8 @@ metadata:
          (ruff, eslint, clippy, vet) for the active language stack.
          Missing tools are silently skipped.
 allowed-tools:
-  - file.read
-  - shell.run
+  - read_file
+  - run_shell
   - subagent_spawn
 ---
 # Pre-Commit Code Review

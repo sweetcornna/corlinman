@@ -22,8 +22,12 @@ dist/
 .DS_Store
 *.swp
 
-# Claude Code local workspace (agent worktrees, notes, plans)
-.claude/
+# Claude Code local workspace: ignore transient state but track shared dev
+# skills + project settings so every clone gets them
+.claude/*
+!.claude/skills/
+!.claude/settings.json
+.claude/settings.local.json
 
 # Data (in-place, never commit user data)
 /private/

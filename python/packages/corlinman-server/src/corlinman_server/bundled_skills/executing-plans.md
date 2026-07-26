@@ -14,9 +14,9 @@ metadata:
       plan and uses whatever read + shell + write tools the active agent
       already has.
 allowed-tools:
-  - file.read
-  - file.write
-  - shell.run
+  - read_file
+  - write_file
+  - run_shell
 ---
 # Executing Plans
 
@@ -41,7 +41,7 @@ For each task:
 
 1. Mark as in-progress.
 2. Follow each step exactly — the plan has bite-sized steps for a reason.
-3. Run the verifications the plan specifies (use `shell.run`).
+3. Run the verifications the plan specifies (use `run_shell`).
 4. Mark completed once verifications pass.
 
 ### Step 3 — completion
