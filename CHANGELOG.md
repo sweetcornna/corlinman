@@ -4,6 +4,46 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.38.0] — 2026-07-26 — QQ 多账号实例 + 群发言硬上限 + 拟人化主动发言
+
+### Added
+- **QQ 多账号实例运行时**：`[channels.qq.instances]` fleet 配置 + 期望态/运行态
+  reconciler——每实例独立取消/健康/身份绑定（一实例一 UIN，跨实例重复拒绝）、配置指纹
+  变更精确重启、sidecar transport 发布。实例级扫码登录/历史/诊断路由
+  （`/admin/channels/qq/instances/*`）。(#166)
+- **托管 NapCat 生命周期**（`system/napcat_manager`）：网关代管 NapCat 实例的创建/
+  启停/巡检；`.env.template` 不再内置仓库已知的 WebUI 口令，install.sh 首装生成随机值，
+  托管实例各自持有 0600 密钥。(#166)
+- **群发言频率硬上限**：`group_rate_limit_window_minutes` + `group_rate_limit_max_messages`
+  滑动窗口按群计数，被动回复与主动发言共用预算；@提及不豁免、斜杠命令豁免；在模型调用
+  之前拦截；模块级状态，实例因保存配置重启不清零。(#166)
+- **拟人化主动发言**：主动发言前注入群内最近聊天上下文（`proactive_context_messages`，
+  默认 12 条），模型可回 `SKIP` 主动沉默；`proactive_probability` 到点随机沉默；
+  `proactive_timezone`（IANA）修复 UTC 容器半夜发言；按群最小间隔记忆 + 每日预算跨重启
+  保留。(#166)
+- `corlinman-runtime` 共享路径/执行态包；proto `ChatStart.runtime_instance_id`
+  （仅控制面，模型不可见）；journal Postgres v6 迁移（`runtime_instance_id` 列 +
+  in-progress 唯一索引扩维）。(#166)
+
+### Fixed
+- **保存后不生效**（根因闭环）：channels writer 持久化后自动 reconcile QQ 实例，关键词/
+  回复策略/白名单/冷却/主动发言等配置保存即热生效，无需重启网关。(#166)
+- **保存按钮点击无反应**：`group_replies_enabled` 前后端默认值相反（前端播种 false、
+  运行时 true）导致拨到真实状态无 diff、保存永久禁用——回显投影缺键时输出运行时默认 +
+  前端 `defaultValue: true` 双侧修复；保存按钮改为始终响应（无更改提示 / 非法数字提示）；
+  10s 轮询单次失败不再卸载整块表单丢草稿；关键词面板保存后用服务端回显同步草稿；禁用
+  按钮恢复鼠标反馈；顶栏 sticky 遮罩带不再吞点击。(#166)
+- 主动发言补齐门禁：`proactive_groups` 显式配置时必须 ∩ 群白名单；
+  `group_replies_enabled=false` 紧急静音现在同样静音主动发言；主动发言文本走出站
+  规范化 + `[MSG_BREAK]` 分气泡 + 超长切块（此前 markdown 裸奔、超长被 NapCat 截断）。(#166)
+- channels → chat_service 请求从 duck-typed `SimpleNamespace` 收敛为 typed
+  `ChannelChatRequest` bridge，契约变更不再静默杀渠道。(#166)
+
+### Changed
+- gRPC agent 目标解析优先级反转：部署 env（`CORLINMAN_PY_SOCKET/ADDR/PORT`）高于可变
+  配置 `[agent].endpoint`——持有配置写权限的执行面不能在启动后重定向特权网关。(#166)
+- `docs/config.example.toml` 补齐 `[channels.qq]` 群组行为与 proactive 全键文档。(#166)
+
 ## [1.37.0] — 2026-07-26 — Claude-5 上下文工程对齐 + 基线提示可达性修复
 
 ### Fixed
