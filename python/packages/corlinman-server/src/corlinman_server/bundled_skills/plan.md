@@ -13,8 +13,8 @@ metadata:
       No installation needed. The skill writes a single markdown file under
       `.corlinman/plans/` in the active working directory.
 allowed-tools:
-  - file.read
-  - file.write
+  - read_file
+  - write_file
 ---
 # Plan Mode
 

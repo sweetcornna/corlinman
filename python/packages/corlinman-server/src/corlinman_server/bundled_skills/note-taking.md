@@ -10,14 +10,14 @@ metadata:
       config: []
       env: []
     install: |
-      No installation needed. The skill uses the built-in `memory.*`
-      tools backed by the corlinman vector + KB stores, which are always
+      No installation needed. The skill uses the built-in `memory_*`
+      tools backed by the corlinman vector store, which is always
       available in-process.
 allowed-tools:
-  - memory.write
-  - memory.search
-  - file.read
-  - file.write
+  - memory_write
+  - memory_search
+  - read_file
+  - write_file
 ---
 # Note-Taking
 
@@ -46,60 +46,54 @@ A long working session generates more facts than you can keep in active context:
 
 Corlinman exposes two persistence surfaces; pick by lifespan:
 
-1. **Session/cross-session memory** — `memory.write(key, value, tags)`. Survives the session and is searchable from later sessions via `memory.search`. Use this for almost everything.
+1. **Session/cross-session memory** — `memory_write(content, tag, namespace)`. Survives the session and is searchable from later sessions via `memory_search`. Use this for almost everything.
 
 2. **Profile-level markdown** — `MEMORY.md` and `USER.md` in the active profile root. Human-readable, edited by humans and agents, capped around 2 000 chars. Use for distilled, evergreen facts (user role, preferred tools, hard rules) — *not* for transient session notes.
 
-If you're not sure, use `memory.write`. Profile markdown is curated, not stream-captured.
+If you're not sure, use `memory_write`. Profile markdown is curated, not stream-captured.
 
 ## Anatomy of a good note
 
 ```
-key:   <stable dotted slug>            # e.g. "project.deploy_target"
-value: <one sentence, the fact + why>  # ≤140 chars when possible
-tags:  [<session key>, <topic>, ...]   # makes recall queries selective
+content:   <one sentence, the fact + why>   # standalone; ≤140 chars when possible
+tag:       <category>                       # e.g. "preference", "project"
+namespace: <topic>                          # makes recall queries selective
 ```
 
 **Good**
 
 ```
-memory.write(
-  key="user.preference.code_review_tone",
-  value="Prefers terse, blocker-first reviews — long prose 'suggestions' read as noise.",
-  tags=["session-2026-05-18", "code-review", "tone"]
+memory_write(
+  content="User prefers terse, blocker-first code reviews — long prose 'suggestions' read as noise.",
+  tag="preference",
+  namespace="code-review"
 )
 ```
 
 **Bad**
 
 ```
-memory.write(
-  key="note1",
-  value="They like short reviews",
-  tags=[]
-)
+memory_write(content="They like short reviews")
 ```
 
-The bad version has an unstable key (will collide), no rationale, no tags for recall.
+The bad version has no rationale, no antecedent for "they", and no tag/namespace for recall.
 
 ## Hygiene
 
-- **Overwrite, don't duplicate** — reuse the same `key` when a fact changes. The latest write wins.
 - **One concept per note** — long blobs don't retrieve cleanly.
-- **Tombstone deletes** — if the user says "forget that", `memory.write` the same `key` with an empty value rather than relying on a separate delete path.
-- **Tag with the session key** plus a topic — lets later sessions filter "what came out of session X".
+- **Supersede, don't duplicate** — when a fact changes, write the updated fact phrased to replace the old one ("User now deploys with docker-compose, not k8s").
+- **Corrections** — if the user says "forget that", write a note stating the old fact no longer holds, and stop using it.
+- **Namespace by topic** — lets later recall queries stay selective.
 
 ## Recall pattern
 
 Before answering a question that might depend on prior state:
 
 ```
-memory.search("<natural-language query>", top_k=3)
+memory_search("<natural-language query>", top_k=3)
 ```
 
-If a returned note materially changes your answer, cite it briefly:
-
-> "Based on your earlier note that you deploy to k8s, …"
+If a returned note materially changes your answer, let it shape the reply and refer to what the user previously said when it helps ("既然你们部署在 k8s 上…") — without announcing the memory system itself.
 
 ## Profile markdown editing
 
@@ -107,7 +101,7 @@ If you do touch `MEMORY.md` or `USER.md`:
 
 - Keep it under the configured cap (default ~2 000 chars for MEMORY, ~1 000 for USER).
 - Append-then-distill: write the new fact at the bottom, then re-read the whole file and merge / drop stale lines. Don't let it grow unboundedly.
-- Never paste sensitive data here either — these files sync to the same backing store as `memory.*`.
+- Never paste sensitive data here either — these files sync to the same backing store as the `memory_*` tools.
 
 ## Related skills
 

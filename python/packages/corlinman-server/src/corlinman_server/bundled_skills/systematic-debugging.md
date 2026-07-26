@@ -13,8 +13,8 @@ metadata:
       No installation needed. The skill is procedural; it uses whatever
       read + shell tools the active agent already has.
 allowed-tools:
-  - file.read
-  - shell.run
+  - read_file
+  - run_shell
 ---
 # Systematic Debugging
 

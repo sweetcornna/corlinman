@@ -14,9 +14,9 @@ metadata:
       shell + file tools the active agent already has to run the project's
       existing test command.
 allowed-tools:
-  - file.read
-  - file.write
-  - shell.run
+  - read_file
+  - write_file
+  - run_shell
 ---
 # Test-Driven Development (TDD)
 
@@ -64,7 +64,7 @@ def test_retries_failed_operations_3_times():
 ### Verify RED — run it and watch it fail
 
 ```
-shell.run("pytest tests/test_feature.py::test_specific_behavior -v")
+run_shell("pytest tests/test_feature.py::test_specific_behavior -v")
 ```
 
 Confirm: the failure message is the *expected* one (feature missing), not a typo or import error. If the test passes immediately, you are testing existing behavior — fix the test.
@@ -81,8 +81,8 @@ def add(a, b):
 ### Verify GREEN
 
 ```
-shell.run("pytest tests/test_feature.py::test_specific_behavior -v")
-shell.run("pytest -q")   # whole suite, no regressions
+run_shell("pytest tests/test_feature.py::test_specific_behavior -v")
+run_shell("pytest -q")   # whole suite, no regressions
 ```
 
 ### REFACTOR — clean up

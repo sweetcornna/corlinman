@@ -1,6 +1,7 @@
 ---
 name: huashu-design
-description: 花叔Design（Huashu-Design）——用HTML做高保真原型、交互Demo、幻灯片、动画、设计变体探索+设计方向顾问+专家评审的一体化设计能力。HTML是工具不是媒介，根据任务embody不同专家（UX设计师/动画师/幻灯片设计师/原型师），避免web design tropes。触发词：做原型、设计Demo、交互原型、HTML演示、动画Demo、设计变体、hi-fi设计、UI mockup、prototype、设计探索、做个HTML页面、做个可视化、app原型、iOS原型、移动应用mockup、导出MP4、导出GIF、60fps视频、设计风格、设计方向、设计哲学、配色方案、视觉风格、推荐风格、选个风格、做个好看的、评审、好不好看、review this design、带解说的动画、解说视频、概念解释视频、长视频科普、配音动画、voiceover、narration、TTS+动画、5分钟讲清楚什么是XX。**主干能力**：Junior Designer工作流（先给假设+reasoning+placeholder再迭代）、反AI slop清单、React+Babel最佳实践、Tweaks变体切换、Speaker Notes演示、Starter Components（幻灯片外壳/变体画布/动画引擎/设备边框/解说Stage）、App原型专属守则（默认从Wikimedia/Met/Unsplash取真图、每台iPhone包AppPhone状态管理器可交互、交付前跑Playwright点击测试）、Playwright验证、HTML动画→MP4/GIF视频导出（25fps基础 + 60fps插帧 + palette优化GIF + 6首场景化BGM + 自动fade）、**带解说的长动画pipeline**（豆包TTS生人声+实测时长生timeline.json+NarrationStage驱动画面+ducking混音→交付HTML实播+发布MP4双形态；铁律：整片是一个连续的运动叙事，禁PowerPoint切换）。**需求模糊时的Fallback**：设计方向顾问模式——从5流派×20种设计哲学（Pentagram信息建筑/Field.io运动诗学/Kenya Hara东方极简/Sagmeister实验先锋等）推荐3个差异化方向，展示24个预制showcase（8场景×3风格），并行生成3个视觉Demo让用户选。**交付后可选**：专家级5维度评审（哲学一致性/视觉层级/细节执行/功能性/创新性各打10分+修复清单）。
+description: 花叔Design（Huashu-Design）——用 HTML 做高保真原型、交互 Demo、幻灯片、动画、设计变体探索的一体化设计能力，含设计方向顾问、TTS 解说视频 pipeline、MP4/GIF 导出与专家评审。
+when_to_use: 做原型/交互 Demo/UI mockup/幻灯片/动画 Demo/信息图、导出 MP4/GIF、带解说的概念视频、推荐设计风格或评审视觉稿时用。生产级 Web App 与 SEO 网站不用它（用 frontend-design）。
 ---
 
 # 花叔Design · Huashu-Design
@@ -21,9 +22,16 @@ description: 花叔Design（Huashu-Design）——用HTML做高保真原型、�
 
 不适用场景：生产级Web App、SEO网站、需要后端的动态系统——这些用frontend-design skill。
 
+## 能力总览
+
+- **主干能力**：Junior Designer工作流（先给假设+reasoning+placeholder再迭代）、反AI slop清单、React+Babel最佳实践、Tweaks变体切换、Speaker Notes演示、Starter Components（幻灯片外壳/变体画布/动画引擎/设备边框/解说Stage）、App原型专属守则（默认从Wikimedia/Met/Unsplash取真图、每台iPhone包AppPhone状态管理器可交互、交付前跑Playwright点击测试）、Playwright验证、HTML动画→MP4/GIF视频导出（25fps基础 + 60fps插帧 + palette优化GIF + 6首场景化BGM + 自动fade）。
+- **带解说的长动画pipeline**：豆包TTS生人声 + 实测时长生timeline.json + NarrationStage驱动画面 + ducking混音 → 交付HTML实播+发布MP4双形态；铁律：整片是一个连续的运动叙事，禁PowerPoint切换。
+- **需求模糊时的Fallback**：设计方向顾问模式——从5流派×20种设计哲学（Pentagram信息建筑/Field.io运动诗学/Kenya Hara东方极简/Sagmeister实验先锋等）推荐3个差异化方向，展示24个预制showcase（8场景×3风格），并行生成3个视觉Demo让用户选。
+- **交付后可选**：专家级5维度评审（哲学一致性/视觉层级/细节执行/功能性/创新性各打10分+修复清单）。
+
 ## 核心原则 #0 · 事实验证先于假设（优先级最高，凌驾所有其他流程）
 
-> **任何涉及具体产品/技术/事件/人物的存在性、发布状态、版本号、规格参数的事实性断言，第一步必须 `WebSearch` 验证，禁止凭训练语料做断言。**
+> **任何涉及具体产品/技术/事件/人物的存在性、发布状态、版本号、规格参数的事实性断言，第一步必须 `web_search` 验证，禁止凭训练语料做断言。**
 
 **触发条件（满足任一）**：
 - 用户提到你不熟悉或不确定的具体产品名（如"大疆 Pocket 4"、"Nano Banana Pro"、"Gemini 3 Pro"、某新版 SDK）
@@ -32,7 +40,7 @@ description: 花叔Design（Huashu-Design）——用HTML做高保真原型、�
 - 用户请求给某个具体产品/公司做设计物料
 
 **硬流程（开工前执行，优先于 clarifying questions）**：
-1. `WebSearch` 产品名 + 最新时间词（"2026 latest"、"launch date"、"release"、"specs"）
+1. `web_search` 产品名 + 最新时间词（"2026 latest"、"launch date"、"release"、"specs"）
 2. 读 1-3 条权威结果，确认：**存在性 / 发布状态 / 最新版本号 / 关键规格**
 3. 把事实写进项目的 `product-facts.md`（见工作流 Step 2），不靠记忆
 4. 搜不到或结果模糊 → 问用户，而不是自行假设
@@ -42,7 +50,7 @@ description: 花叔Design（Huashu-Design）——用HTML做高保真原型、�
 - 我：凭记忆说"Pocket 4 还没发布，我们做概念 demo"
 - 真相：Pocket 4 已在 4 天前（2026-04-16）发布，官方 Launch Film + 产品渲染图俱在
 - 后果：基于错误假设做了"概念剪影"动画，违背用户期待，返工 1-2 小时
-- **成本对比：WebSearch 10 秒 << 返工 2 小时**
+- **成本对比：web_search 10 秒 << 返工 2 小时**
 
 **这条原则优先级高于"问 clarifying questions"**——问问题的前提是你对事实已有正确理解。事实错了，问什么都是歪的。
 
@@ -51,7 +59,7 @@ description: 花叔Design（Huashu-Design）——用HTML做高保真原型、�
 - ❌ "X 目前是 vN 版本"（未经搜索的断言）
 - ❌ "X 这个产品可能不存在"
 - ❌ "据我所知 X 的规格是..."
-- ✅ "我 `WebSearch` 一下 X 最新状态"
+- ✅ "我 `web_search` 一下 X 最新状态"
 - ✅ "搜到的权威来源说 X 是 ..."
 
 **与"品牌资产协议"的关系**：本原则是资产协议的**前提**——先确认产品存在且是什么，再去找它的 logo/产品图/色值。顺序不能反。
@@ -123,7 +131,7 @@ description: 花叔Design（Huashu-Design）——用HTML做高保真原型、�
 | **色值** | 官网 inline CSS / Tailwind config / brand guidelines PDF |
 | **字体** | 官网 `<link rel="stylesheet">` 引用 · Google Fonts 追踪 · brand guidelines |
 
-`WebSearch` 兜底关键词：
+`web_search` 兜底关键词：
 - Logo 找不到 → `<brand> logo download SVG`、`<brand> press kit`
 - 产品图找不到 → `<brand> <product> official renders`、`<brand> <product> product photography`
 - UI 找不到 → `<brand> app screenshots`、`<brand> dashboard UI`
@@ -603,7 +611,7 @@ Screen 组件接 callback props（`onEnter`、`onClose`、`onTabChange`、`onOpe
 ### 标准流程（用TaskCreate追踪）
 
 1. **理解需求**：
-   - 🔍 **0. 事实验证（涉及具体产品/技术时必做，优先级最高）**：任务涉及具体产品/技术/事件（DJI Pocket 4、Gemini 3 Pro、Nano Banana Pro、某新 SDK 等）时，**第一个动作**是 `WebSearch` 验证其存在性、发布状态、最新版本、关键规格。把事实写入 `product-facts.md`。详见「核心原则 #0」。**这步做在问 clarifying questions 之前**——事实错了问什么都歪。
+   - 🔍 **0. 事实验证（涉及具体产品/技术时必做，优先级最高）**：任务涉及具体产品/技术/事件（DJI Pocket 4、Gemini 3 Pro、Nano Banana Pro、某新 SDK 等）时，**第一个动作**是 `web_search` 验证其存在性、发布状态、最新版本、关键规格。把事实写入 `product-facts.md`。详见「核心原则 #0」。**这步做在问 clarifying questions 之前**——事实错了问什么都歪。
    - 新任务或模糊任务必须问clarifying questions，详见 `references/workflow.md`。一次focused一轮问题通常够，小修小补跳过。
    - 🛑 **检查点1：问题清单一次性发给用户，等用户批量答完再往下走**。不要边问边做。
    - 🛑 **幻灯片/PPT 任务：HTML 聚合演示版永远是默认基础产物**（不管用户最终要什么格式）：
@@ -801,7 +809,7 @@ Skill 路径引用均采用**相对本 skill 根目录**的形式（`references/
 
 ## 核心提醒
 
-- **事实验证先于假设**（核心原则 #0）：涉及具体产品/技术/事件（DJI Pocket 4、Gemini 3 Pro 等）必须先 `WebSearch` 验证存在性和状态，不凭训练语料断言。
+- **事实验证先于假设**（核心原则 #0）：涉及具体产品/技术/事件（DJI Pocket 4、Gemini 3 Pro 等）必须先 `web_search` 验证存在性和状态，不凭训练语料断言。
 - **Embody专家**：做幻灯片时是幻灯片设计师，做动画时是动画师。不是写Web UI。
 - **Junior先show，再做**：先展示思路，再执行。
 - **Variations不给答案**：3+个变体，让用户选。
