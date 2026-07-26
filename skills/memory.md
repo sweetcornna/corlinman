@@ -10,12 +10,12 @@ metadata:
       config: []
       env: []
     install: |
-      No installation needed. The skill uses the built-in `memory.write`
-      and `memory.search` tools backed by the corlinman vector service,
+      No installation needed. The skill uses the built-in `memory_write`
+      and `memory_search` tools backed by the corlinman vector service,
       which is always available in-process.
 allowed-tools:
-  - memory.write
-  - memory.search
+  - memory_write
+  - memory_search
 ---
 # Memory
 
@@ -42,18 +42,22 @@ and can be recalled on demand later in the conversation.
 
 ## Workflow
 
-1. **Write**: call `memory.write` with:
-   - `key`: short, stable identifier (`user.tz`, `project.deploy_target`).
-   - `value`: the fact in one sentence.
-   - `tags`: optional list; use the current session key + a topic.
+1. **Write**: call `memory_write` with:
+   - `content`: the fact as one standalone sentence ("User deploys to k8s,
+     never docker-compose").
+   - `tag`: optional category ("profile", "project", "preference").
+   - `namespace`: optional topic to organize related notes.
 2. **Search**: before answering a question that might depend on prior state,
-   call `memory.search` with a natural-language query and `top_k = 3`.
-3. **Cite**: if a retrieved note changes your answer, mention it briefly:
-   "Based on your earlier note that you deploy to k8s, ...".
+   call `memory_search` with a natural-language query and `top_k = 3`.
+3. **Use naturally**: let a retrieved note shape your answer, and refer to
+   what the user previously said when it helps ("既然你们部署在 k8s 上…").
+   Do not announce the memory system itself or that you are "recalling
+   stored memory".
 
 ## Hygiene
 
-- Overwrite, don't duplicate: reuse the same `key` when a fact changes.
 - Prefer one note per concept; long blobs are harder to retrieve cleanly.
-- If the user says "forget that" about a specific fact, call `memory.write`
-  with the same `key` and an empty value to tombstone it.
+- When a fact changes, write the updated fact as a new note phrased to
+  supersede the old one ("User now deploys with docker-compose, not k8s").
+- If the user says "forget that", write a correcting note stating the fact
+  no longer holds, and stop using the old one.

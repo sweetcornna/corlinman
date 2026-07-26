@@ -14,8 +14,8 @@ metadata:
       discipline that uses whatever read tools the active agent already
       has to verify the feedback before acting.
 allowed-tools:
-  - file.read
-  - shell.run
+  - read_file
+  - run_shell
 ---
 # Receiving Feedback
 
@@ -82,7 +82,7 @@ If you can't easily verify: say so — "I can't verify this without `<command>`.
 
 ```
 IF reviewer says "implement properly":
-  grep / shell.run "rg <symbol>" — find actual usage.
+  grep / run_shell "rg <symbol>" — find actual usage.
 
   IF unused: "This isn't called anywhere. Remove it (YAGNI)?"
   IF used:   then implement properly.

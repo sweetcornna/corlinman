@@ -13,7 +13,7 @@ metadata:
       No installation needed. The skill relies on the `subagent_spawn`
       tool, which is part of the corlinman runtime.
 allowed-tools:
-  - file.read
+  - read_file
   - subagent_spawn
   - subagent_spawn_many
   - blackboard.read

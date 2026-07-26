@@ -51,4 +51,6 @@ corlinman 是一个从零设计的自托管 LLM 工具箱：单机即可运行�
 
 corlinman 已发布 1.0（2026-05-24），当前版本 v1.27.0。本目录下的 doc 随版本迭代持续维护。
 
+**例外**：`PLAN_*.md` / `PROMPT_*.md` / `RESEARCH_*.md` 以及 `superpowers/` 下的 plans/specs 是**时点性工作产物**（某次任务的计划书或 agent 提示词），完成后不再更新，不代表当前实现——查现状以正文档和代码为准。
+
 任何 doc bug（过时、错漏、不清楚）按普通 bug 对待：开 issue 或直接 PR。

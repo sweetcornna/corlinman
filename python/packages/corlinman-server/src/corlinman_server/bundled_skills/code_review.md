@@ -13,12 +13,12 @@ metadata:
     install: |
       1. Ensure `git` is on PATH (`git --version` must print a version string).
       2. Run the agent from inside the repository you want reviewed, or pass
-         the repo path via the `file.read` tool.
+         the repo path via the `read_file` tool.
       3. No API keys required — the skill uses only local git + in-model
          reasoning. Remote review services would live in a separate skill.
 allowed-tools:
-  - file.read
-  - shell.run
+  - read_file
+  - run_shell
 ---
 # Code Review
 

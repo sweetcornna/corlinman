@@ -13,81 +13,38 @@ metadata:
       No installation needed. The skill enforces a discipline: run the
       command, read the output, then state the result.
 allowed-tools:
-  - shell.run
+  - run_shell
 ---
 # Verification Before Completion
 
-## Overview
-
-Claiming work is complete without verification is dishonesty, not efficiency.
-
-**Core principle:** evidence before claims, always.
-
-## The Iron Law
-
-```
-NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
-```
-
-If you haven't run the verification command *in this message*, you cannot claim it passes.
+**Core principle:** evidence before claims. A status report describes something you observed, not something you expect.
 
 ## The gate
 
-Before claiming any status or expressing satisfaction:
+Before reporting any status ("done", "fixed", "passing", "clean"):
 
-1. **Identify** the command that proves the claim.
-2. **Run** it — full command, fresh, complete output captured.
-3. **Read** the full output — check exit code, count failures.
-4. **Verify** the output actually supports the claim.
-5. **Only then** state the result, with the evidence next to it.
+1. Identify the command whose output would prove the claim.
+2. Run it fresh — a run from before your latest change proves nothing.
+3. Read the full output: exit code, failure counts, warnings.
+4. Report what the output actually shows, with the evidence next to the claim. If it shows a failure, report the failure — that is a useful result, not something to soften.
 
-Skip any step = lying, not verifying.
+If verification is impossible in the current environment, say so explicitly and name the command the user should run.
 
-## Common failures
+## What counts as evidence
 
-| Claim | Requires | Not sufficient |
-|-------|---------|----------------|
-| Tests pass | Test command output, 0 failures | Previous run, "should pass" |
-| Linter clean | Linter output, 0 errors | Partial check, extrapolation |
-| Build succeeds | Build command, exit 0 | Linter passing, logs "look good" |
-| Bug fixed | The original failing test now passes | Code changed, assumed fixed |
-| Regression test works | RED-GREEN cycle verified | Test passes once |
-| Subagent completed | `git status`/`git diff` shows changes | Agent reports "success" |
-| Requirements met | Line-by-line checklist | Tests passing |
+| Claim | Evidence |
+|-------|---------|
+| Tests pass | The test command's output for this change, 0 failures |
+| Build succeeds | Build command exiting 0 — a clean linter is not a build |
+| Bug fixed | The originally-failing case now passing |
+| Regression test works | Red-green verified: test fails without the fix, passes with it |
+| Subagent completed | `git diff`/`git status` showing the change exists — not the agent's own success report |
+| Requirements met | Each requirement checked against the actual diff |
 
-## Red flags — STOP
+## Notes
 
-You are about to violate this rule if you find yourself:
-
-- Using "should", "probably", "seems to".
-- Saying "Done!" / "Perfect!" / "Great!" before running the check.
-- About to commit, push, or open a PR without verification.
-- Trusting a subagent's success report without independent verification.
-- Thinking "just this once" or "I'm tired".
-
-## Rationalisation prevention
-
-| Excuse | Reality |
-|--------|---------|
-| "Should work now" | RUN the verification. |
-| "I'm confident" | Confidence ≠ evidence. |
-| "Linter passed" | Linter ≠ compiler. |
-| "Subagent said success" | Verify independently. |
-| "Partial check is enough" | Partial proves nothing. |
-
-## Key patterns
-
-**Tests** — run the suite, see N/N pass, then say "all tests pass".
-
-**Regression tests (TDD red-green)** — write → run (pass) → revert the fix → run (MUST FAIL) → restore → run (pass). Without the red phase, the test proves nothing.
-
-**Subagent delegation** — agent reports success → check `git diff`/`git status` → verify the change exists → report actual state.
-
-**Requirements** — re-read the plan → build a checklist → tick each item against the diff → report gaps or completion.
-
-## The bottom line
-
-Run the command. Read the output. *Then* claim the result. No shortcuts.
+- Partial checks support partial claims. "Unit tests pass; integration not run here" is a fine report — say exactly that.
+- Confidence, plausibility, and "the change is simple" are reasons to *expect* success, not evidence of it.
 
 ## Related skills
 

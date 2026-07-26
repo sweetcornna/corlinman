@@ -13,9 +13,9 @@ metadata:
       No installation needed. Output is a single markdown file under
       `docs/plans/` (or a path the user specifies).
 allowed-tools:
-  - file.read
-  - file.write
-  - shell.run
+  - read_file
+  - write_file
+  - run_shell
 ---
 # Writing Implementation Plans
 
@@ -93,7 +93,7 @@ Task 3: Create password-hashing utility         (15 lines, 1 file)
 ## Writing process
 
 1. **Understand requirements.** Acceptance criteria, constraints.
-2. **Explore the codebase.** Use `file.read` + `shell.run "rg <pattern>"` to find similar features and existing test patterns.
+2. **Explore the codebase.** Use `read_file` + `run_shell "rg <pattern>"` to find similar features and existing test patterns.
 3. **Design the approach.** Architecture, file organization, dependencies.
 4. **Write tasks in order:** setup → core (TDD per task) → edge cases → integration → cleanup.
 5. **Fill in exact details:** exact paths (not "the config file"), complete code (not "add validation"), exact commands with expected output.

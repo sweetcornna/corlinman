@@ -14,8 +14,8 @@ metadata:
       1. Ensure `git` is on PATH (`git --version` must print a version).
       2. Run the skill from inside the repository you want to branch from.
 allowed-tools:
-  - file.read
-  - shell.run
+  - read_file
+  - run_shell
 ---
 # Using Git Worktrees
 
