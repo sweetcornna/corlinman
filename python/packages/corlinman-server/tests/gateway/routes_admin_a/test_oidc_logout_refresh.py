@@ -87,6 +87,7 @@ def _mint_id_token(
     nonce: str | None,
     email: str = "ops@example.com",
     exp_delta: int = 600,
+    sub: str = "user-1",
 ) -> str:
     """Refresh-grant id_tokens legitimately omit the login nonce —
     ``nonce=None`` leaves the claim out entirely."""
@@ -94,7 +95,7 @@ def _mint_id_token(
     claims: dict[str, Any] = {
         "iss": ISSUER,
         "aud": CLIENT_ID,
-        "sub": "user-1",
+        "sub": sub,
         "email": email,
         "email_verified": True,
         "iat": now,
@@ -118,6 +119,7 @@ def _make_idp(
     login_refresh_token: str | None = "rt-0",
     refresh_status: int = 200,
     refresh_email: str = "ops@example.com",
+    refresh_sub: str | None = None,
     refresh_rotates: bool = True,
     refresh_delay: float = 0.0,
     seen_refresh_tokens: list[str] | None = None,
@@ -158,7 +160,10 @@ def _make_idp(
                     "expires_in": 3600,
                     # No nonce on a refresh-minted id_token (OIDC 12.2).
                     "id_token": _mint_id_token(
-                        rsa_key, nonce=None, email=refresh_email
+                        rsa_key,
+                        nonce=None,
+                        email=refresh_email,
+                        **({"sub": refresh_sub} if refresh_sub else {}),
                     ),
                 }
                 if refresh_rotates:
@@ -596,3 +601,72 @@ def test_admin_logout_semantics_unchanged(
     assert resp.status_code == 204
     assert "Max-Age=0" in resp.headers["set-cookie"]
     assert client.get("/admin/me").status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# W3-review fixes
+# ---------------------------------------------------------------------------
+
+
+def test_refresh_rejects_sub_mismatch(
+    state: AdminState, rsa_key: Any, jwks_doc: dict[str, Any]
+) -> None:
+    """MAJOR review fix (OIDC Core 12.2): the refreshed id_token must
+    prove the SAME subject the session logged in as — a different
+    whitelisted identity's grant must not renew this session."""
+    nonce_holder: dict[str, str] = {}
+    _install(
+        _make_idp(
+            jwks_doc,
+            rsa_key,
+            nonce_holder=nonce_holder,
+            refresh_sub="user-2",  # whitelisted email, DIFFERENT subject
+        )
+    )
+    client = _client()
+    _sso_login(client, nonce_holder)
+    resp = client.post("/auth/oidc/refresh")
+    assert resp.status_code == 401
+    assert resp.json()["detail"]["error"] == "refresh_failed"
+    # The burned grant cannot be replayed.
+    again = client.post("/auth/oidc/refresh")
+    assert again.status_code == 401
+    assert again.json()["detail"]["error"] == "no_refresh_token"
+
+
+def test_admin_logout_burns_sso_tokens(
+    state: AdminState, rsa_key: Any, jwks_doc: dict[str, Any]
+) -> None:
+    """MAJOR review fix: POST /admin/logout (the button the frontend
+    actually calls) must clear the SSO side table — the id/refresh
+    tokens must not outlive the session they belong to."""
+    nonce_holder: dict[str, str] = {}
+    _install(_make_idp(jwks_doc, rsa_key, nonce_holder=nonce_holder))
+    client = _client()
+    token = _sso_login(client, nonce_holder)
+    assert oidc_mod._SSO_TOKENS.get(token) is not None
+
+    out = client.post("/admin/logout")
+    assert out.status_code == 204
+    assert oidc_mod._SSO_TOKENS.get(token) is None
+
+
+def test_transient_refresh_failure_keeps_the_grant(
+    state: AdminState, rsa_key: Any, jwks_doc: dict[str, Any]
+) -> None:
+    """Review fix: an IdP 5xx / network blip is not an identity
+    rejection — the stored grant survives for a later retry (popping it
+    also destroyed the id_token, permanently degrading SSO logout)."""
+    nonce_holder: dict[str, str] = {}
+    _install(
+        _make_idp(
+            jwks_doc, rsa_key, nonce_holder=nonce_holder, refresh_status=503
+        )
+    )
+    client = _client()
+    token = _sso_login(client, nonce_holder)
+    resp = client.post("/auth/oidc/refresh")
+    assert resp.status_code == 503
+    assert oidc_mod._SSO_TOKENS.get(token) is not None
+    row = oidc_mod._SSO_TOKENS.get(token)
+    assert row is not None and row.refresh_token

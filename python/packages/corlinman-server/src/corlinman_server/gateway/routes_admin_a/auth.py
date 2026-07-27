@@ -374,6 +374,20 @@ def router() -> APIRouter:
             except Exception:
                 # Best-effort — the cookie clear below still happens.
                 pass
+        if token:
+            # W3-review fix: an SSO login parks id/refresh tokens in the
+            # OIDC side table keyed by THIS session token — the password
+            # logout route (the only one the frontend calls today) must
+            # burn them too, or they outlive the session they belong to.
+            # Lazy import: oidc imports this module at load time.
+            try:
+                from corlinman_server.gateway.routes_admin_a.oidc import (  # noqa: PLC0415
+                    _SSO_TOKENS,
+                )
+
+                _SSO_TOKENS.pop(token)
+            except Exception:  # noqa: BLE001 — cleanup is best-effort
+                pass
         # 204 NO_CONTENT must not have a body; build the response
         # explicitly so FastAPI doesn't append JSON null.
         out = Response(status_code=status.HTTP_204_NO_CONTENT)

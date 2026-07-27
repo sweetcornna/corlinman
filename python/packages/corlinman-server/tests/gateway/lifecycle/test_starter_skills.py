@@ -567,10 +567,10 @@ def test_current_bundle_hashes_are_in_the_factory_allowlist() -> None:
     """
     import hashlib
 
+    from corlinman_server.gateway.lifecycle import starter_skills as mod
     from corlinman_server.gateway.lifecycle.starter_skills import (
         _FACTORY_SKILL_MD_SHA256,
     )
-    from corlinman_server.gateway.lifecycle import starter_skills as mod
 
     bundle = Path(mod.__file__).resolve().parents[2] / "bundled_skills"
     for name, known in _FACTORY_SKILL_MD_SHA256.items():

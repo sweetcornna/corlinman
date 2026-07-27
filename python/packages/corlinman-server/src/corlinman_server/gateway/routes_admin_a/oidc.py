@@ -118,6 +118,9 @@ _STATE_COOKIE = "corlinman_oidc_state"
 #: Unauthenticated /auth/oidc/login window: max starts per IP per minute.
 _LOGIN_RATE_MAX = 10
 _LOGIN_RATE_WINDOW_S = 60.0
+
+#: Upper bound a queued concurrent refresh waits for the in-flight one.
+_REFRESH_WAIT_MAX_S = 30.0
 _LOGIN_RATE: dict[str, list[float]] = {}
 _LOGIN_RATE_LOCK = threading.Lock()
 
@@ -160,9 +163,19 @@ class OidcError(Exception):
     free of user input and secrets.
     """
 
-    def __init__(self, code: str, message: str | None = None) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str | None = None,
+        *,
+        http_status: int | None = None,
+    ) -> None:
         super().__init__(message or code)
         self.code = code
+        #: Upstream HTTP status when the failure came off the wire —
+        #: lets callers split transient (5xx/network) from definitive
+        #: rejection (4xx) without parsing message strings.
+        self.http_status = http_status
 
 
 # ---------------------------------------------------------------------------
@@ -488,16 +501,22 @@ _SSO_TOKENS_MAX = 256
 class _SsoTokenRow:
     """IdP tokens captured at login for one admin session.
 
-    ``lock`` single-flights refreshes for this session: a refresh_token
-    must never be redeemed twice concurrently (many IdPs rotate it and
-    revoke the grant on replay). It is a ``threading.Lock`` acquired via
-    ``asyncio.to_thread`` so it works across event loops and never
-    blocks the loop itself.
+    ``sub``/``email`` anchor the session's ORIGINAL identity (review
+    fix, OIDC Core 12.2): a refreshed id_token must prove the SAME
+    subject — without the comparison any whitelisted identity's token
+    could renew any session. ``lock`` single-flights refreshes (many
+    IdPs rotate the refresh_token and revoke the grant on replay); an
+    NON-blocking ``threading.Lock`` + asyncio.sleep polling (review
+    fix): cross-event-loop safe (an asyncio.Lock binds to one loop)
+    without parking an executor thread per queued waiter, and the
+    ``try`` begins only after a successful acquire.
     """
 
     id_token: str
     refresh_token: str | None
     expires_at: float
+    sub: str = ""
+    email: str = ""
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -524,6 +543,8 @@ class OidcSsoTokenStore:
         id_token: str,
         refresh_token: str | None,
         ttl: float,
+        sub: str = "",
+        email: str = "",
     ) -> None:
         now = time.monotonic()
         with self._lock:
@@ -537,6 +558,8 @@ class OidcSsoTokenStore:
                 id_token=id_token,
                 refresh_token=refresh_token,
                 expires_at=now + ttl,
+                sub=sub,
+                email=email,
             )
 
     def get(self, session_token: str) -> _SsoTokenRow | None:
@@ -701,14 +724,24 @@ async def _exchange_refresh(
 
     The refresh_token itself never reaches a log line or an error
     message — failures are reported status-code-only, same as the
-    authorization-code exchange.
+    authorization-code exchange. Review fix: a TRANSIENT failure
+    (network / IdP 5xx) raises code ``refresh_transient`` so the caller
+    keeps the grant for a later retry; only a definitive IdP rejection
+    (4xx — invalid_grant and friends) raises ``refresh_rejected`` and
+    burns the stored tokens.
     """
     body = {
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
         "client_id": settings.client_id,
     }
-    return await _post_token_endpoint(token_endpoint, body, settings=settings)
+    try:
+        return await _post_token_endpoint(token_endpoint, body, settings=settings)
+    except OidcError as exc:
+        status_code = getattr(exc, "http_status", None)
+        if isinstance(status_code, int) and 400 <= status_code < 500:
+            raise OidcError("refresh_rejected", str(exc)) from exc
+        raise OidcError("refresh_transient", str(exc)) from exc
 
 
 async def _post_token_endpoint(
@@ -733,7 +766,11 @@ async def _post_token_endpoint(
     if resp.status_code >= 400:
         # Deliberately status-code-only: the error body may echo request
         # parameters we must keep out of logs.
-        raise OidcError("token_exchange_failed", f"token endpoint HTTP {resp.status_code}")
+        raise OidcError(
+            "token_exchange_failed",
+            f"token endpoint HTTP {resp.status_code}",
+            http_status=resp.status_code,
+        )
     try:
         payload = resp.json()
     except ValueError as exc:
@@ -1105,6 +1142,8 @@ def router() -> APIRouter:
                 else None
             ),
             ttl=float(max_age),
+            sub=str(claims.get("sub") or ""),
+            email=email,
         )
 
         resp = RedirectResponse(url=txn.redirect or "/", status_code=status.HTTP_302_FOUND)
@@ -1220,11 +1259,18 @@ def router() -> APIRouter:
                 detail={"error": "sso_unavailable", "message": "IdP discovery failed"},
             )
 
-        # Single-flight (review requirement): a refresh_token must never
-        # be redeemed twice concurrently — IdPs that rotate tokens revoke
-        # the whole grant on replay. threading.Lock via a worker thread
-        # keeps the event loop free and works across loops.
-        await asyncio.to_thread(row.lock.acquire)
+        # Single-flight (review fix): non-blocking acquire + asyncio
+        # polling — cross-event-loop safe (unlike asyncio.Lock), no
+        # executor thread parked per waiter (unlike to_thread(acquire)),
+        # and the try begins only after the acquire succeeded.
+        deadline = time.monotonic() + _REFRESH_WAIT_MAX_S
+        while not row.lock.acquire(blocking=False):
+            if time.monotonic() > deadline:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail={"error": "refresh_in_progress"},
+                )
+            await asyncio.sleep(0.05)
         try:
             # Re-read after acquiring: a concurrent refresh may have
             # rotated the token, a concurrent failure may have cleared it.
@@ -1253,6 +1299,18 @@ def router() -> APIRouter:
                     settings=settings,
                 )
             except OidcError as exc:
+                if exc.code == "refresh_transient":
+                    # Network / IdP 5xx — the grant may still be good.
+                    # Keep the entry so a later retry can succeed
+                    # (review fix: popping here destroyed the id_token
+                    # too, degrading SSO logout permanently).
+                    logger.warning(
+                        "auth.oidc.refresh_transient", error=str(exc)
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail={"error": "sso_unavailable"},
+                    ) from exc
                 raise _reject(exc, "auth.oidc.refresh_exchange_failed") from exc
 
             new_id_token = tokens.get("id_token")
@@ -1268,6 +1326,22 @@ def router() -> APIRouter:
                 email = _authorize_claims(claims, settings)
             except OidcError as exc:
                 raise _reject(exc, "auth.oidc.refresh_identity_rejected") from exc
+
+            # Review fix (MAJOR, OIDC Core 12.2): the refreshed id_token
+            # must prove the SAME subject this session logged in as —
+            # without the anchor comparison, ANY whitelisted identity's
+            # grant could renew any session.
+            new_sub = str(claims.get("sub") or "")
+            if live.sub and new_sub != live.sub:
+                raise _reject(
+                    OidcError("invalid_id_token", "sub mismatch on refresh"),
+                    "auth.oidc.refresh_sub_mismatch",
+                )
+            if live.email and email != live.email:
+                raise _reject(
+                    OidcError("invalid_id_token", "email changed on refresh"),
+                    "auth.oidc.refresh_email_mismatch",
+                )
 
             max_age = (
                 store.ttl_seconds()
