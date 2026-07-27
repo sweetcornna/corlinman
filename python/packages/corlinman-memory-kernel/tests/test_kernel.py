@@ -40,11 +40,13 @@ def _obs(session: str = "s1", **kw: object) -> Observation:
 
 def test_kernel_mode_default_and_values(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("CORLINMAN_MEMORY_KERNEL", raising=False)
-    assert kernel_mode() == "shadow"
+    # Default flipped shadow → on (product decision 2026-07-27).
+    assert kernel_mode() == "on"
     for value in ("off", "shadow", "on", "  ON "):
         monkeypatch.setenv("CORLINMAN_MEMORY_KERNEL", value)
         assert kernel_mode() == value.strip().lower()
-    # A typo cannot silently disable observation accrual.
+    # A typo falls back to SHADOW (not the on default): it must neither
+    # disable observation accrual nor silently enable injection.
     monkeypatch.setenv("CORLINMAN_MEMORY_KERNEL", "onn")
     assert kernel_mode() == "shadow"
 

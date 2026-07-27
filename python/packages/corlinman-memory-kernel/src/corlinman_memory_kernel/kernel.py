@@ -50,14 +50,16 @@ _OBS_PENDING_CAP = 20_000
 
 
 def kernel_mode() -> str:
-    """Resolve the rollout mode (default ``shadow``).
+    """Resolve the rollout mode (default ``on``).
 
     ``shadow``: observations accumulate + recall runs for diff telemetry
-    only. ``on``: recall results are injected (W3+). ``off``: the kernel
-    is never touched. Unknown values fall back to ``shadow`` so a typo'd
-    env var cannot silently disable observation accrual.
+    only. ``on``: recall results are injected (W3+; the default since
+    the 2026-07-27 product decision — engineering shipped in v1.29.0).
+    ``off``: the kernel is never touched. UNKNOWN values fall back to
+    ``shadow``, not ``on`` — a typo'd env var must neither disable
+    observation accrual nor silently enable injection.
     """
-    raw = os.environ.get(_MODE_ENV, "shadow").strip().lower()
+    raw = os.environ.get(_MODE_ENV, "on").strip().lower()
     return raw if raw in _MODES else "shadow"
 
 
