@@ -161,6 +161,15 @@ _REASONING_UNSUPPORTED_PARAMS: tuple[str, ...] = (
     "logit_bias",
 )
 
+# Embeddings endpoint caps. OpenAI accepts at most 2048 inputs per
+# request; larger input lists are split into sequential batches. Each
+# input must also fit the embedding model's token window (8192 tokens for
+# the text-embedding-3 family) — enforced here with a conservative
+# character cap (~4 chars/token with headroom) so we never pull in a
+# tokenizer dependency; over-long chunks are truncated, never errored.
+_EMBED_MAX_BATCH = 2048
+_EMBED_MAX_INPUT_CHARS = 24000
+
 # Vendors whose chat APIs enforce strict user/assistant alternation and
 # reject two consecutive same-role messages (DeepSeek, Qwen / QwQ via
 # DashScope, GLM). For these we merge consecutive same-role ``user`` /
@@ -719,8 +728,74 @@ class OpenAIProvider:
         inputs: Sequence[str],
         extra: dict[str, Any] | None = None,
     ) -> list[list[float]]:
-        # TODO(M3): implement via client.embeddings.create.
-        raise NotImplementedError("OpenAIProvider.embed lands in M3")
+        """Compute embeddings via ``POST /v1/embeddings``.
+
+        Semantics mirror :meth:`chat_stream`:
+
+        * missing credential → :class:`AuthError` naming the env var;
+        * vendor SDK exceptions → :func:`_map_openai_error` taxonomy;
+        * reactive 401 recovery via :func:`with_401_recovery` (env-var
+          key rotation), with the client rebuilt inside the closure so
+          the retry picks up the refreshed key;
+        * the httpx pool is always released (``_safe_close``).
+
+        Inputs are truncated to ``_EMBED_MAX_INPUT_CHARS`` (the embedding
+        families reject over-window inputs with a 400; a conservative
+        char cap avoids a tokenizer dependency) and sent in batches of
+        ``_EMBED_MAX_BATCH`` (the OpenAI per-request input cap). The
+        returned vectors are re-ordered by the response ``index`` field
+        so they align 1:1 with ``inputs``. OpenAI-compatible relays reuse
+        this implementation verbatim — ``_make_client`` already resolves
+        their ``base_url``.
+        """
+        if not self._api_key and not self._default_headers:
+            raise AuthError(
+                f"API key missing for provider {self.name}: set {self._env_key}",
+                provider=self.name,
+                model=model,
+            )
+        if not inputs:
+            return []
+        # The API rejects empty-string inputs outright; a single space
+        # keeps 1:1 list alignment instead of erroring the whole batch.
+        prepared = [(text[:_EMBED_MAX_INPUT_CHARS] or " ") for text in inputs]
+
+        async def _run() -> list[list[float]]:
+            client = self._make_client()
+            out: list[list[float]] = []
+            try:
+                for start in range(0, len(prepared), _EMBED_MAX_BATCH):
+                    batch = prepared[start : start + _EMBED_MAX_BATCH]
+                    kwargs: dict[str, Any] = {"model": model, "input": batch}
+                    if extra:
+                        kwargs.update(extra)
+                    response = await client.embeddings.create(**kwargs)
+                    data = list(getattr(response, "data", None) or [])
+                    if len(data) != len(batch):
+                        raise FormatError(
+                            f"embeddings response carried {len(data)} vectors "
+                            f"for {len(batch)} inputs",
+                            provider=self.name,
+                            model=model,
+                        )
+                    # The API documents order-preservation but keys each
+                    # item with an explicit ``index`` — honour it so a
+                    # shuffling relay can't misalign vector ↔ input.
+                    data.sort(key=lambda item: int(getattr(item, "index", 0) or 0))
+                    for item in data:
+                        vector = getattr(item, "embedding", None) or []
+                        out.append([float(v) for v in vector])
+                return out
+            except CorlinmanError:
+                raise
+            except Exception as exc:
+                raise _map_openai_error(exc, model=model, provider=self.name) from exc
+            finally:
+                await _safe_close(client)
+
+        return await with_401_recovery(
+            _run, refresh=self._refresh_credential, provider=self.name
+        )
 
     @classmethod
     def supports(cls, model: str) -> bool:

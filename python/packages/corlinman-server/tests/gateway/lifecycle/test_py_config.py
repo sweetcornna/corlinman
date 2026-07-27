@@ -480,6 +480,38 @@ def test_absent_agent_runtime_renders_none() -> None:
     assert v["agent_runtime"] is None
 
 
+def test_render_includes_rag_section() -> None:
+    """G2: the [rag] dense-retrieval knobs must ride the sidecar — the
+    agent process retrieves through its own LocalSqliteHost and would
+    otherwise silently stay BM25-only in a dual-process deployment."""
+    v = render_py_config(
+        {
+            "providers": {},
+            "models": {"aliases": {}},
+            "rag": {"dense_enabled": True, "rrf_k": 30, "dense_top_k": 10},
+        }
+    )
+    assert v["rag"] == {"dense_enabled": True, "rrf_k": 30, "dense_top_k": 10}
+
+
+def test_rag_render_drops_malformed_values() -> None:
+    """Bools are rejected where ints are expected (isinstance bool before
+    int) and a non-bool dense_enabled is dropped rather than coerced."""
+    v = render_py_config(
+        {
+            "providers": {},
+            "models": {"aliases": {}},
+            "rag": {"dense_enabled": 1, "rrf_k": True, "dense_top_k": "10"},
+        }
+    )
+    assert v["rag"] is None
+
+
+def test_absent_rag_renders_none() -> None:
+    v = render_py_config({"providers": {}, "models": {"aliases": {}}})
+    assert v["rag"] is None
+
+
 def test_deprecated_approvals_translate_into_permissions() -> None:
     """W3-2: [approvals] renders as LEADING [[permissions.rules]] entries
     (so the explicit [permissions] block wins under last-match-wins) and

@@ -294,51 +294,61 @@ async def _wire_c2_handles(
             admin_a_state.memory_host = getattr(state, "memory_host", None)
             admin_a_state.memory_kernel = getattr(state, "memory_kernel", None)
 
-    # --- memory embed seam (W6) -------------------------------------------
-    # A live-state closure: reads state.provider_registry and
-    # state.config["embedding"] PER CALL, so config-mutation hot swaps
-    # (which rebuild the registry) are picked up without rewiring.
-    # Returns None when no embedding provider is configured/enabled —
-    # consumers (reconcile affect/vector stamping) then simply skip.
-    async def _memory_embed(text: str) -> list[float] | None:
-        registry = getattr(state, "provider_registry", None)
+    # --- memory embed seam (W6 / G2) --------------------------------------
+    # An EmbeddingRouter over live-state getters: reads
+    # state.provider_registry and state.config["embedding"] PER CALL, so
+    # config-mutation hot swaps (which rebuild the registry) are picked up
+    # without rewiring. The seam closures preserve their historic
+    # contract — None when no embedding provider is configured/enabled —
+    # so consumers (reconcile affect/vector stamping) simply skip.
+    from corlinman_providers.embedding_router import EmbeddingRouter
+
+    def _live_registry() -> Any:
+        return getattr(state, "provider_registry", None)
+
+    def _live_embedding_config() -> Any:
         config = getattr(state, "config", None)
-        emb = config.get("embedding") if isinstance(config, dict) else None
-        if registry is None or not isinstance(emb, dict):
+        return config.get("embedding") if isinstance(config, dict) else None
+
+    embedding_router = EmbeddingRouter(
+        registry_getter=_live_registry,
+        config_getter=_live_embedding_config,
+    )
+
+    async def _memory_embed(text: str) -> list[float] | None:
+        if not embedding_router.configured():
             return None
-        if not emb.get("enabled", True):
-            return None
-        provider_name = emb.get("provider")
-        model = emb.get("model")
-        if not provider_name or not model:
-            return None
-        provider = registry.get(str(provider_name))
-        if provider is None:
-            return None
-        vectors = await provider.embed(model=str(model), inputs=[text])
+        vectors = await embedding_router.embed([text])
         return list(vectors[0]) if vectors else None
 
     async def _memory_embed_many(texts: list[str]) -> list[list[float]] | None:
-        registry = getattr(state, "provider_registry", None)
-        config = getattr(state, "config", None)
-        emb = config.get("embedding") if isinstance(config, dict) else None
-        if registry is None or not isinstance(emb, dict):
+        if not embedding_router.configured():
             return None
-        if not emb.get("enabled", True):
-            return None
-        provider_name = emb.get("provider")
-        model = emb.get("model")
-        if not provider_name or not model:
-            return None
-        provider = registry.get(str(provider_name))
-        if provider is None:
-            return None
-        vectors = await provider.embed(model=str(model), inputs=list(texts))
+        vectors = await embedding_router.embed(list(texts))
         return [list(v) for v in vectors] if vectors else None
 
     with suppress(AttributeError, TypeError):
         state.memory_embed_fn = _memory_embed
         state.memory_embed_many_fn = _memory_embed_many
+
+    # --- dense retrieval seam (G2 phase 1) --------------------------------
+    # Stamp the [rag] dense knobs + the router's embed onto the memory
+    # host. Both are live getters, so [rag]/[embedding] hot-reloads take
+    # effect per query. With [rag].dense_enabled off (the default) the
+    # host's retrieval path is byte-identical to the legacy BM25-only
+    # behaviour.
+    def _live_rag_config() -> Any:
+        config = getattr(state, "config", None)
+        return config.get("rag") if isinstance(config, dict) else None
+
+    dense_host = getattr(state, "memory_host", None)
+    if dense_host is not None and hasattr(dense_host, "configure_dense"):
+        with suppress(AttributeError, TypeError):
+            dense_host.configure_dense(
+                embed_many=embedding_router.embed,
+                config_getter=_live_rag_config,
+            )
+            logger.info("gateway.c2.dense_seam_wired")
 
     # --- memory recall config ---------------------------------------------
     # ``[memory.recall]`` TOML knobs for the servicer's conversational

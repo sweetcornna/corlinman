@@ -120,6 +120,60 @@ async def test_c2_embed_closure_reads_live_state(
         await close_c2_handles(state, app)
 
 
+async def test_c2_wires_dense_seam_onto_memory_host(
+    tmp_path: Path, close_c2_handles: Any
+) -> None:
+    """G2: after C2 wiring the memory host carries the dense seam, reads
+    the live [rag] config, and stamps real vectors on ingest."""
+    from corlinman_memory_host import MemoryDoc, MemoryQuery
+    from corlinman_memory_host.dense import unpack_vector
+    from corlinman_server.gateway.core.state import AppState
+    from corlinman_server.gateway.lifecycle.entrypoint import _wire_c2_handles
+
+    class _Reg:
+        def get(self, name: str) -> Any:
+            class _P:
+                async def embed(
+                    self, *, model: str, inputs: Any, extra: Any = None
+                ) -> list[list[float]]:
+                    return [[1.0, 0.5] for _ in inputs]
+
+            return _P()
+
+    state = AppState()
+    state.data_dir = tmp_path
+    app = SimpleNamespace(state=SimpleNamespace())
+    try:
+        await _wire_c2_handles(app, state, None, tmp_path, cfg={})
+        host = state.memory_host
+        assert host is not None
+        assert host._dense_embed_many is not None
+
+        # Live config: dense off by default (no [rag] section) …
+        assert host._dense_settings()[0] is False
+        # … flips on when the config appears — no rewiring needed.
+        state.provider_registry = _Reg()
+        state.config = {
+            "embedding": {"provider": "openai", "model": "emb-3"},
+            "rag": {"dense_enabled": True, "rrf_k": 30},
+        }
+        assert host._dense_settings() == (True, 30, 20)
+
+        doc_id = int(await host.upsert(MemoryDoc(content="dense wiring probe")))
+        async with host.store._conn.execute(
+            "SELECT vector FROM chunks WHERE id = ?", (doc_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        assert row is not None
+        assert unpack_vector(row["vector"]) == pytest.approx([1.0, 0.5])
+
+        # Retrieval path survives with dense on (fusion executes).
+        hits = await host.query(MemoryQuery(text="wiring probe", top_k=3))
+        assert [h.id for h in hits] == [str(doc_id)]
+    finally:
+        await close_c2_handles(state, app)
+
+
 async def test_observe_updates_persona_mood(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

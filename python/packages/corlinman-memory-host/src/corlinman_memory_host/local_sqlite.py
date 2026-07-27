@@ -39,14 +39,22 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import time
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
 
 from corlinman_memory_host.base import MemoryHost
+from corlinman_memory_host.dense import (
+    cosine_similarity,
+    pack_vector,
+    rrf_fuse,
+    unpack_vector,
+)
 from corlinman_memory_host.types import (
     MemoryDoc,
     MemoryHit,
@@ -58,6 +66,29 @@ from corlinman_memory_host.types import (
 # :meth:`LocalSqliteHost.upsert`. Kept stable so downstream tools can
 # filter by it if they need to audit memory-host-originated content.
 _DEFAULT_DIARY_NAME = "memory-host"
+
+# stdlib logging (not structlog): this package deliberately keeps its
+# dependency set to aiosqlite + httpx; structlog-equipped hosts still
+# capture these records through the root handler.
+logger = logging.getLogger(__name__)
+
+# Dense-retrieval defaults (G2 phase 1). ``dense_enabled`` defaults OFF —
+# embeddings cost money, so the pipeline is strictly opt-in via the
+# ``[rag]`` config section; with the flag off every query is byte-identical
+# to the legacy BM25-only path.
+_DENSE_DEFAULT_RRF_K = 60
+_DENSE_DEFAULT_TOP_K = 20
+
+
+def _cfg_int(raw: Any, *, default: int, minimum: int = 1) -> int:
+    """Parse an int config knob. ``bool`` is checked BEFORE ``int`` (bools
+    are ints in Python); anything non-int or below ``minimum`` falls back
+    to ``default``."""
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return default
+    if raw < minimum:
+        return default
+    return raw
 
 
 def _escape_like(value: str) -> str:
@@ -282,6 +313,70 @@ class _SqliteStore:
             await self._conn.commit()
             assert cur.lastrowid is not None
             return int(cur.lastrowid)
+
+    async def update_chunk_vector(self, chunk_id: int, vector: bytes | None) -> None:
+        """Stamp (or clear) a chunk's embedding BLOB. Used by backfill."""
+        async with self._lock:
+            await self._conn.execute(
+                "UPDATE chunks SET vector = ? WHERE id = ?", (vector, chunk_id)
+            )
+            await self._conn.commit()
+
+    async def chunks_missing_vector(
+        self,
+        *,
+        after_id: int,
+        limit: int,
+        namespace: str | None = None,
+    ) -> list[tuple[int, str]]:
+        """Return ``(id, content)`` for up to ``limit`` chunks with no
+        embedding, in ascending id order starting past ``after_id`` — the
+        keyset-pagination shape the backfill loop walks."""
+        if limit <= 0:
+            return []
+        sql = "SELECT id, content FROM chunks WHERE vector IS NULL AND id > ?"
+        params: list[Any] = [after_id]
+        if namespace is not None:
+            sql += " AND namespace = ?"
+            params.append(namespace)
+        sql += " ORDER BY id ASC LIMIT ?"
+        params.append(limit)
+        async with self._conn.execute(sql, params) as cur:
+            rows = await cur.fetchall()
+        return [(int(r["id"]), str(r["content"])) for r in rows]
+
+    async def search_dense(
+        self,
+        query_vector: Sequence[float],
+        top_k: int,
+        namespace: str | None = None,
+    ) -> list[tuple[int, float]]:
+        """Brute-force cosine top-k over the stored embedding BLOBs.
+
+        Phase-1 scan (no ANN — HNSW is phase 2): every non-NULL vector in
+        scope is decoded and scored. Blobs whose dimension doesn't match
+        the query (stale rows from a model swap, corrupt data) are skipped
+        rather than erroring. Returns ``(chunk_id, cosine)`` sorted by
+        score descending with an ascending-id tie-break.
+        """
+        if top_k <= 0 or not query_vector:
+            return []
+        sql = "SELECT id, vector FROM chunks WHERE vector IS NOT NULL"
+        params: tuple[Any, ...] = ()
+        if namespace is not None:
+            sql += " AND namespace = ?"
+            params = (namespace,)
+        async with self._conn.execute(sql, params) as cur:
+            rows = await cur.fetchall()
+        query = list(query_vector)
+        scored: list[tuple[int, float]] = []
+        for r in rows:
+            vector = unpack_vector(r["vector"])
+            if vector is None or len(vector) != len(query):
+                continue
+            scored.append((int(r["id"]), cosine_similarity(query, vector)))
+        scored.sort(key=lambda pair: (-pair[1], pair[0]))
+        return scored[:top_k]
 
     async def delete_chunk_by_id(self, chunk_id: int) -> None:
         async with self._lock:
@@ -751,6 +846,13 @@ class LocalSqliteHost(MemoryHost):
         # ``files.path UNIQUE`` constraint. Lock-free is fine — single
         # event loop owns it.
         self._upsert_counter = 0
+        # Dense-retrieval seam (G2 phase 1) — both unset until the wiring
+        # layer calls :meth:`configure_dense`. With either unset the host
+        # behaves byte-identically to the legacy BM25-only implementation.
+        self._dense_embed_many: (
+            Callable[[list[str]], Awaitable[list[list[float]]]] | None
+        ) = None
+        self._dense_config_getter: Callable[[], Any] | None = None
 
     # ---- construction -----------------------------------------------------
 
@@ -774,6 +876,177 @@ class LocalSqliteHost(MemoryHost):
     async def close(self) -> None:
         """Close the owned aiosqlite connection. Idempotent."""
         await self._store.close()
+
+    # ---- dense retrieval (G2 phase 1) -------------------------------------
+
+    def configure_dense(
+        self,
+        *,
+        embed_many: Callable[[list[str]], Awaitable[list[list[float]]]] | None,
+        config_getter: Callable[[], Any] | None,
+    ) -> None:
+        """Attach the dense-retrieval seam.
+
+        ``embed_many`` is an async ``texts -> vectors`` callable (typically
+        ``EmbeddingRouter.embed`` from corlinman-providers — passed as a
+        plain callable so this package gains no provider dependency).
+        ``config_getter`` returns the live ``[rag]`` section per call
+        (``dense_enabled`` / ``rrf_k`` / ``dense_top_k``), keeping config
+        hot-reloads effective without rewiring. Either being ``None``
+        keeps the host on the legacy BM25-only path.
+        """
+        self._dense_embed_many = embed_many
+        self._dense_config_getter = config_getter
+
+    def _dense_settings(self) -> tuple[bool, int, int]:
+        """Parse ``(enabled, rrf_k, dense_top_k)`` from the live config.
+
+        Malformed values fall back to defaults; ``dense_enabled`` only
+        honours a literal boolean ``True`` (opt-in must be explicit).
+        A raising ``config_getter`` degrades to "off" — config trouble
+        must never take retrieval down.
+        """
+        getter = self._dense_config_getter
+        if getter is None:
+            return False, _DENSE_DEFAULT_RRF_K, _DENSE_DEFAULT_TOP_K
+        try:
+            raw = getter()
+        except Exception:  # noqa: BLE001 — config trouble must not break retrieval
+            raw = None
+        if not isinstance(raw, dict):
+            return False, _DENSE_DEFAULT_RRF_K, _DENSE_DEFAULT_TOP_K
+        enabled = raw.get("dense_enabled") is True
+        rrf_k = _cfg_int(raw.get("rrf_k"), default=_DENSE_DEFAULT_RRF_K)
+        dense_top_k = _cfg_int(raw.get("dense_top_k"), default=_DENSE_DEFAULT_TOP_K)
+        return enabled, rrf_k, dense_top_k
+
+    async def _maybe_embed_vector(self, content: str) -> bytes | None:
+        """Embed one chunk for ingest, or ``None`` when dense is off / the
+        embedding fails. Ingest must never crash on the embedding path —
+        a chunk stored without a vector is still fully BM25-searchable and
+        can be repaired later via :meth:`backfill_vectors`."""
+        enabled, _, _ = self._dense_settings()
+        embed_many = self._dense_embed_many
+        if not enabled or embed_many is None:
+            return None
+        try:
+            vectors = await embed_many([content])
+        except Exception as exc:  # noqa: BLE001 — degrade, never crash ingest
+            logger.warning("memory.dense.ingest_embed_failed: %s", exc)
+            return None
+        if not vectors or not vectors[0]:
+            return None
+        return pack_vector([float(v) for v in vectors[0]])
+
+    async def _maybe_fuse_dense(
+        self, bm25_hits: list[tuple[int, float]], req: MemoryQuery
+    ) -> list[tuple[int, float]]:
+        """RRF-fuse dense cosine hits into the BM25 seed list when enabled.
+
+        Returns ``bm25_hits`` untouched (same object, same scores) unless
+        ``[rag].dense_enabled`` is on AND an embedder is wired AND the
+        dense leg produced hits — so the off path stays byte-identical
+        and every dense-side failure degrades to plain BM25.
+        """
+        enabled, rrf_k, dense_top_k = self._dense_settings()
+        embed_many = self._dense_embed_many
+        if not enabled or embed_many is None:
+            return bm25_hits
+        try:
+            vectors = await embed_many([req.text])
+            query_vector = [float(v) for v in vectors[0]] if vectors else []
+            if not query_vector:
+                return bm25_hits
+            dense_hits = await self._store.search_dense(
+                query_vector, dense_top_k, req.namespace
+            )
+        except Exception as exc:  # noqa: BLE001 — degrade to BM25, never crash
+            logger.warning("memory.dense.query_failed: %s", exc)
+            return bm25_hits
+        if not dense_hits:
+            return bm25_hits
+        fused = rrf_fuse(
+            [
+                [cid for cid, _ in bm25_hits],
+                [cid for cid, _ in dense_hits],
+            ],
+            k=rrf_k,
+        )
+        return fused[: req.top_k]
+
+    async def backfill_vectors(
+        self,
+        *,
+        batch_size: int = 64,
+        max_chunks: int | None = None,
+        namespace: str | None = None,
+    ) -> int:
+        """Embed + stamp vectors for chunks ingested before dense was on.
+
+        Walks ``chunks.vector IS NULL`` rows in id order (keyset
+        pagination), embedding ``batch_size`` contents per provider call.
+        Stops early — returning the count stamped so far — on the first
+        embedding failure so a dead provider can't spin the loop. Requires
+        an embedder wired via :meth:`configure_dense` (returns 0 with a
+        warning otherwise); deliberately does NOT require
+        ``dense_enabled`` so an operator can pre-warm vectors before
+        flipping the retrieval flag.
+        """
+        embed_many = self._dense_embed_many
+        if embed_many is None:
+            logger.warning("memory.dense.backfill_no_embedder")
+            return 0
+        if batch_size <= 0:
+            batch_size = 64
+        done = 0
+        last_id = 0
+        while True:
+            limit = batch_size
+            if max_chunks is not None:
+                remaining = max_chunks - done
+                if remaining <= 0:
+                    break
+                limit = min(limit, remaining)
+            try:
+                rows = await self._store.chunks_missing_vector(
+                    after_id=last_id, limit=limit, namespace=namespace
+                )
+            except aiosqlite.Error as exc:
+                raise MemoryHostError(
+                    f"LocalSqliteHost: backfill scan: {exc}"
+                ) from exc
+            if not rows:
+                break
+            last_id = rows[-1][0]
+            try:
+                vectors = await embed_many([content for _, content in rows])
+            except Exception as exc:  # noqa: BLE001 — stop, report progress
+                logger.warning(
+                    "memory.dense.backfill_embed_failed after %d chunks: %s",
+                    done,
+                    exc,
+                )
+                break
+            if not vectors or len(vectors) != len(rows):
+                logger.warning(
+                    "memory.dense.backfill_count_mismatch: expected %d got %d",
+                    len(rows),
+                    len(vectors or []),
+                )
+                break
+            for (chunk_id, _), vector in zip(rows, vectors, strict=True):
+                if not vector:
+                    continue
+                try:
+                    await self._store.update_chunk_vector(
+                        chunk_id, pack_vector([float(v) for v in vector])
+                    )
+                except aiosqlite.Error as exc:
+                    raise MemoryHostError(
+                        f"LocalSqliteHost: backfill stamp: {exc}"
+                    ) from exc
+                done += 1
+        return done
 
     # ---- MemoryHost surface -----------------------------------------------
 
@@ -802,6 +1075,13 @@ class LocalSqliteHost(MemoryHost):
                 hits = await self._store.search_bm25_with_filter(req.text, req.top_k, None)
         except aiosqlite.Error as exc:
             raise MemoryHostError(f"LocalSqliteHost: BM25 search: {exc}") from exc
+
+        # Dense + RRF fusion (G2 phase 1) — a no-op returning ``hits``
+        # unchanged unless ``[rag].dense_enabled`` is on and an embedder
+        # is wired via :meth:`configure_dense`. Runs BEFORE the empty
+        # check so a semantic-only match (query words absent from the
+        # corpus lexicon) can still surface dense hits.
+        hits = await self._maybe_fuse_dense(hits, req)
 
         if not hits:
             return []
@@ -939,8 +1219,14 @@ class LocalSqliteHost(MemoryHost):
             raise MemoryHostError(f"LocalSqliteHost: insert synthetic file row: {exc}") from exc
 
         namespace = doc.namespace if doc.namespace is not None else "general"
+        # Real embedding into the (previously write-only) ``vector`` BLOB
+        # when dense is enabled; ``None`` — the historic value — otherwise
+        # or on any embedding failure (ingest never crashes on embeddings).
+        vector_blob = await self._maybe_embed_vector(doc.content)
         try:
-            chunk_id = await self._store.insert_chunk(file_id, 0, doc.content, None, namespace)
+            chunk_id = await self._store.insert_chunk(
+                file_id, 0, doc.content, vector_blob, namespace
+            )
         except aiosqlite.Error as exc:
             raise MemoryHostError(f"LocalSqliteHost: insert chunk: {exc}") from exc
 

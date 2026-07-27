@@ -28,6 +28,10 @@ from corlinman_providers.declarative import (
     load_all_specs,
     load_spec_from_toml,
 )
+from corlinman_providers.embedding_router import (
+    EmbeddingNotConfiguredError,
+    EmbeddingRouter,
+)
 from corlinman_providers.failover import (
     AuthError,
     AuthPermanentError,
@@ -63,6 +67,8 @@ __all__ = [
     "DeclarativeProvider",
     "DeclarativeProviderSpec",
     "DeepSeekProvider",
+    "EmbeddingNotConfiguredError",
+    "EmbeddingRouter",
     "EmbeddingSpec",
     "FormatError",
     "GLMProvider",
