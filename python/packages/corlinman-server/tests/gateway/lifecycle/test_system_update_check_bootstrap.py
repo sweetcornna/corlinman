@@ -1,7 +1,7 @@
 """W2.2 — gateway lifecycle registers the default ``system.update_check`` job.
 
 Validates the entrypoint's behaviour matrix from
-``docs/PLAN_AUTO_UPDATE.md`` §2 Wave 2/W2.2:
+``docs/archive/PLAN_AUTO_UPDATE.md`` §2 Wave 2/W2.2:
 
 * Default config (``[system.update_check] enabled = true``) → the
   default scheduler job is registered with the canonical name and a

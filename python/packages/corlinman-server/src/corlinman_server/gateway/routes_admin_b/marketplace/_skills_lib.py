@@ -346,7 +346,7 @@ def _resolve_hub_client(state: AdminState) -> Any | None:
     lifecycle wires ``clawhub_client``, but the W1-TESTS fixture uses
     ``skill_hub_client``; we accept either. Returning ``None`` makes
     the proxy handlers degrade to the offline envelope rather than
-    503 — matches the resolved decision in ``docs/PLAN_SKILL_HUB.md``
+    503 — matches the resolved decision in ``docs/archive/PLAN_SKILL_HUB.md``
     (banner + Retry, not 503).
     """
     for attr in ("clawhub_client", "skill_hub_client"):

@@ -8,7 +8,7 @@ session to a specific persona; long-running children can run detached
 and notify the parent on completion.
 
 This document is the operator-facing deep dive. The implementation plan
-lives at [`docs/PLAN_MULTI_AGENT.md`](PLAN_MULTI_AGENT.md). For the
+lives at [`docs/archive/PLAN_MULTI_AGENT.md`](archive/PLAN_MULTI_AGENT.md). For the
 event-stream contract that backs the live activity panel, see
 [Observability](observability.md).
 
@@ -468,7 +468,7 @@ removed from `$DATA_DIR/agents/` and the registry reloaded.
 
 - **No nested delegation by default.** `max_depth=1` means a child
   cannot spawn its own children. A future role-escalation pass
-  (planned in [`PLAN_MULTI_AGENT.md`](PLAN_MULTI_AGENT.md) §3) will
+  (planned in [`PLAN_MULTI_AGENT.md`](archive/PLAN_MULTI_AGENT.md) §3) will
   add an `orchestrator` role that can re-delegate.
 - **300-second wall.** Even with `max_wall_seconds: 600` on the call,
   the supervisor ceiling is 300s. Long workflows belong in a plugin or
@@ -489,5 +489,5 @@ removed from `$DATA_DIR/agents/` and the registry reloaded.
 - [System updates](system-updates.md) — the one-click upgrade flow
   whose audit log shares the same surface as the subagent dispatch
   entries.
-- [`docs/PLAN_MULTI_AGENT.md`](PLAN_MULTI_AGENT.md) — implementation
+- [`docs/archive/PLAN_MULTI_AGENT.md`](archive/PLAN_MULTI_AGENT.md) — implementation
   plan with the full wave breakdown.

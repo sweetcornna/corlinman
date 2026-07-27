@@ -1,6 +1,6 @@
 """Async ClawHub HTTP client.
 
-W1.1 of ``docs/PLAN_SKILL_HUB.md``. ClawHub's anonymous read API (3000
+W1.1 of ``docs/archive/PLAN_SKILL_HUB.md``. ClawHub's anonymous read API (3000
 req/min for list+search, 1200/min for ``/download``) is exposed by
 ``https://clawhub.ai/api/v1``. This module is the only place inside the
 gateway that talks to that origin — every admin route proxies through

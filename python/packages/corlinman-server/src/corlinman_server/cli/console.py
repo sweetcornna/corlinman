@@ -1,6 +1,6 @@
 """``corlinman console`` — launch the interactive agent console.
 
-See ``docs/PLAN_CLI_CONSOLE.md`` and :mod:`corlinman_server.console`.
+See ``docs/archive/PLAN_CLI_CONSOLE.md`` and :mod:`corlinman_server.console`.
 
 Examples::
 

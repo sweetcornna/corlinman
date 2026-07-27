@@ -2,7 +2,7 @@
 
 /**
  * `/admin/subagents` — live activity panel for background sub-agents
- * (W2.2 of `docs/PLAN_MULTI_AGENT.md`).
+ * (W2.2 of `docs/archive/PLAN_MULTI_AGENT.md`).
  *
  * Layout (Tidepool):
  *   - Header — title + subtitle + "Include completed" toggle.

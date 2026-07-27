@@ -1,6 +1,6 @@
 """Abstract upgrader contract shared by Docker + Native impls.
 
-W1.1 of ``docs/PLAN_ONE_CLICK_UPGRADE.md`` §2 Wave 1/W1.1.
+W1.1 of ``docs/archive/PLAN_ONE_CLICK_UPGRADE.md`` §2 Wave 1/W1.1.
 
 Both impls (``DockerUpgrader`` in W1.1, ``NativeUpgrader`` in W1.2) must
 satisfy :class:`UpgraderProtocol`. The admin route in W1.3 picks the

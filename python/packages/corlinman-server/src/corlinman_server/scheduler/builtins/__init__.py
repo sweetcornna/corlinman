@@ -1,6 +1,6 @@
 """Scheduler builtin actions — process-local callables wired by name.
 
-W2.2 of ``docs/PLAN_AUTO_UPDATE.md`` §2 Wave 2 (``system.update_check``)
+W2.2 of ``docs/archive/PLAN_AUTO_UPDATE.md`` §2 Wave 2 (``system.update_check``)
 landed the registry pattern; later waves stack more entries onto the
 same dict via :func:`register_builtin`. The split-package layout here
 mirrors the convention used elsewhere in the codebase (one submodule

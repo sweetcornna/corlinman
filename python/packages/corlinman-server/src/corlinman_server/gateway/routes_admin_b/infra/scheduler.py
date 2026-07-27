@@ -1,7 +1,7 @@
 """``/admin/scheduler*`` — cron job listing + manual trigger + history.
 
 Port of ``rust/crates/corlinman-gateway/src/routes/admin/scheduler.rs``,
-extended in W6 of ``docs/PLAN_PERSONA_STUDIO.md`` with:
+extended in W6 of ``docs/archive/PLAN_PERSONA_STUDIO.md`` with:
 
 * ``POST /admin/scheduler/jobs`` — operator-created jobs persisted in
   the runtime overlay on :attr:`AdminState.extras` (the config-defined

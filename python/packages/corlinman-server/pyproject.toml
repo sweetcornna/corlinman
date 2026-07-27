@@ -46,7 +46,7 @@ dependencies = [
     "rich>=13.0",
     "prompt-toolkit>=3.0",
     # docker-py SDK — used by the one-click upgrader's DockerUpgrader
-    # (W1.1 of docs/PLAN_ONE_CLICK_UPGRADE.md) to pull new gateway
+    # (W1.1 of docs/archive/PLAN_ONE_CLICK_UPGRADE.md) to pull new gateway
     # images and recreate the container against the mounted
     # /var/run/docker.sock. Imported lazily inside method bodies so this
     # dep is not required at module import time, but is a hard

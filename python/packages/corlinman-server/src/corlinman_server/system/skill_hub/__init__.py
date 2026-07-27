@@ -1,6 +1,6 @@
 """``corlinman_server.system.skill_hub`` — ClawHub client + installer.
 
-W1.1 + W1.2 of ``docs/PLAN_SKILL_HUB.md``. Owns the async HTTP client
+W1.1 + W1.2 of ``docs/archive/PLAN_SKILL_HUB.md``. Owns the async HTTP client
 the gateway uses to proxy ClawHub's anonymous read API, and the
 installer pipeline that materialises a downloaded skill tarball into a
 profile's ``skills/<slug>/`` directory.

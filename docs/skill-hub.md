@@ -9,7 +9,7 @@ profile's `skills/` directory and are picked up by the agent's
 manual unpacking.
 
 This document is the operator-facing deep dive. The implementation plan
-lives at [`docs/PLAN_SKILL_HUB.md`](PLAN_SKILL_HUB.md). For how skills
+lives at [`docs/archive/PLAN_SKILL_HUB.md`](archive/PLAN_SKILL_HUB.md). For how skills
 plug into the wider agent runtime — registry, hot reload, and the
 `SOUL.md` injection point — see [Architecture](architecture.md).
 
@@ -189,7 +189,7 @@ and featured endpoints respond with:
 The UI's `<HubTab>` watches for `offline === true` and renders the
 banner + Retry button described in [Troubleshooting](#troubleshooting).
 This is the locked-in design (see
-[`docs/PLAN_SKILL_HUB.md`](PLAN_SKILL_HUB.md) §"Resolved decisions"):
+[`docs/archive/PLAN_SKILL_HUB.md`](archive/PLAN_SKILL_HUB.md) §"Resolved decisions"):
 no stale-local-cache fallback; the operator gets an honest "couldn't
 reach the hub" state and a one-click Retry.
 
@@ -317,5 +317,5 @@ notice the registry change on the next refresh).
   `skills/` directory and the 30s refresh debounce.
 - [Profiles](profiles.md) — each profile gets its own `skills/`
   directory; the hub installs land in the active one.
-- [`docs/PLAN_SKILL_HUB.md`](PLAN_SKILL_HUB.md) — implementation plan
+- [`docs/archive/PLAN_SKILL_HUB.md`](archive/PLAN_SKILL_HUB.md) — implementation plan
   with the full wave breakdown.

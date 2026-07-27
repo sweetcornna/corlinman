@@ -7,7 +7,7 @@ the wizard can pick the built-in ``grantley`` persona without leaving
 ``routes_admin_b``.
 
 B5 — ``POST /admin/personas/use-default`` (see
-``docs/PLAN_FIRST_RUN_WIZARD.md``):
+``docs/archive/PLAN_FIRST_RUN_WIZARD.md``):
 
 * Idempotent: ensure the built-in ``grantley`` persona row exists. The
   gateway lifecycle already auto-seeds it via

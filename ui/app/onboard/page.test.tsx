@@ -1,7 +1,7 @@
 /**
  * Onboarding page tests — 6-step first-run wizard.
  *
- * Contract: docs/PLAN_FIRST_RUN_WIZARD.md (2026-05-28 reshape). The wizard
+ * Contract: docs/archive/PLAN_FIRST_RUN_WIZARD.md (2026-05-28 reshape). The wizard
  * chains six sequential steps; the indicator gates forward motion and (once
  * the password rotation lands) locks steps 1 + 2.
  *

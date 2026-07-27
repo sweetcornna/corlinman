@@ -1,6 +1,6 @@
 """``/admin/subagents*`` — live activity surface for background subagents.
 
-W1.3 of ``docs/PLAN_MULTI_AGENT.md`` §2 Wave 1/W1.3.
+W1.3 of ``docs/archive/PLAN_MULTI_AGENT.md`` §2 Wave 1/W1.3.
 
 Five endpoints, all admin-gated:
 

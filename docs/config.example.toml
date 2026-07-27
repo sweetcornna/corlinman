@@ -742,7 +742,7 @@ time_decay_half_life_hours = 0.0   # recency re-rank for the notes lane
 # [memory.kernel] — the unified memory kernel (mk_* tables in the same
 # memory.sqlite). mode: "off" = never touched; "shadow" (default) =
 # observations accumulate + recall runs for diff telemetry only, nothing
-# is injected; "on" = reserved for the W3 injection flip. The
+# is injected; "on" = kernel memories are injected into prompts. The
 # CORLINMAN_MEMORY_KERNEL env var overrides this key (ops kill-switch).
 [memory.kernel]
 mode = "shadow"

@@ -1,7 +1,7 @@
 """``corlinman_server.system.audit`` — append-only JSONL system-audit log.
 
 Sibling of :mod:`corlinman_server.system.update_checker`; first consumed
-by the one-click upgrade surface (W1.3 of ``docs/PLAN_ONE_CLICK_UPGRADE.md``).
+by the one-click upgrade surface (W1.3 of ``docs/archive/PLAN_ONE_CLICK_UPGRADE.md``).
 
 Design contract
 ---------------

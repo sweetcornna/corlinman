@@ -120,7 +120,7 @@ Capability(三类)
 | M5 | Home Assistant 桥 + MQTT 直连 + 白名单策略 | M |
 | M6 | 场景 DSL + 自愈预案 | L |
 
-前置依赖:`service` 型插件支持与 MCP 工具面接线(见 `docs/PROMPT_ZERO_BUG_PARITY.md`
+前置依赖:`service` 型插件支持与 MCP 工具面接线(见 `docs/archive/PROMPT_ZERO_BUG_PARITY.md`
 阶段一/二)必须先行,否则长连接采集与工具暴露无处落地。
 
 ## 5. 风险与对策

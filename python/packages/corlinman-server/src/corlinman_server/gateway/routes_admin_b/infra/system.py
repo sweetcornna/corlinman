@@ -12,7 +12,7 @@ Endpoint inventory, all admin-gated:
 
 Scheduler wiring lives in W2.2; this module owns the synchronous HTTP
 surface for both the legacy update-check trio (W1.1) and the new
-one-click upgrade quartet (W1.3 of ``docs/PLAN_ONE_CLICK_UPGRADE.md``).
+one-click upgrade quartet (W1.3 of ``docs/archive/PLAN_ONE_CLICK_UPGRADE.md``).
 
 The actual upgrader (Docker vs native) lives in
 ``corlinman_server.system.upgrader`` (W1.1/W1.2 of the same plan). This

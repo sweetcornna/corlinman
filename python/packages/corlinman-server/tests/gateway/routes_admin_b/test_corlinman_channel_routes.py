@@ -1,6 +1,6 @@
 """Tests for :mod:`corlinman_server.gateway.routes_admin_b.corlinman_channel`.
 
-Wave 3 of ``docs/PLAN_IN_APP_CHAT.md``. Covers:
+Wave 3 of ``docs/archive/PLAN_IN_APP_CHAT.md``. Covers:
 
 * ``POST /api/channels/corlinman/send`` happy path + 503 (no channel wired) +
   400 (bad attachment kind / bad base64).

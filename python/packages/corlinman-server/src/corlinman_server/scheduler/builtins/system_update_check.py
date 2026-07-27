@@ -1,4 +1,4 @@
-"""``system.update_check`` builtin — W2.2 of ``docs/PLAN_AUTO_UPDATE.md``.
+"""``system.update_check`` builtin — W2.2 of ``docs/archive/PLAN_AUTO_UPDATE.md``.
 
 Wraps :meth:`corlinman_server.system.UpdateChecker.poll` (with
 ``force=False`` so it honours the checker's own TTL). The admin UI's

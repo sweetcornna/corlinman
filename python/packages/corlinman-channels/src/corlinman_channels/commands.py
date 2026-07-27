@@ -16,7 +16,7 @@ A :class:`CommandSpec` may carry one or both. When both are present
 the router prefers the handler (no LLM cost), while the web playground
 falls back to the prelude (it does not have a direct-send surface).
 
-See ``docs/PLAN_PERSONA_STUDIO.md`` for the prelude lineage and
+See ``docs/archive/PLAN_PERSONA_STUDIO.md`` for the prelude lineage and
 ``docs/PLAN_COMMAND_SYSTEM.md`` (TBD) for the handler extension.
 
 Two surfaces consume this module:
@@ -832,7 +832,7 @@ COMMAND_REGISTRY: tuple[CommandSpec, ...] = (
         args_hint="[revoke]",
         handler=_render_status,
     ),
-    # First-run-wizard surface (W3 / docs/PLAN_FIRST_RUN_WIZARD.md
+    # First-run-wizard surface (W3 / docs/archive/PLAN_FIRST_RUN_WIZARD.md
     # Agent D's slice). ``/sethome`` records the current channel
     # binding as the user's "main" thread; restart broadcasts and
     # other important system pings are sent only there.
@@ -849,7 +849,7 @@ COMMAND_REGISTRY: tuple[CommandSpec, ...] = (
     # Session commands — shared across every surface (channels, web
     # playground, CLI console). Backed by the per-binding prefs store
     # (corlinman_server.binding_prefs_store) via the soft-dep shim in
-    # binding_prefs.py; see docs/PLAN_CLAUDECODE_PARITY.md.
+    # binding_prefs.py; see docs/archive/PLAN_CLAUDECODE_PARITY.md.
     CommandSpec(
         name="new",
         aliases=("/new", "/新会话", "/重新开始"),

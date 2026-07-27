@@ -178,7 +178,7 @@ iteration:
 - **P10** — Channel breadth (Discord, Slack, et al., per hermes/openclaw baseline).
 - **P11** — `core.config` hot-reload wiring + placeholder engine replacement.
 
-These are tracked in `docs/PLAN_PORT_COMPLETION.md` §3 Wave 2 for
+These are tracked in `docs/archive/PLAN_PORT_COMPLETION.md` §3 Wave 2 for
 future dispatch.
 
 ## Branch / tag

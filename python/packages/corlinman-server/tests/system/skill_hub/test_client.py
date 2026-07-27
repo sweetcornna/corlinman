@@ -1,6 +1,6 @@
 """Tests for :class:`corlinman_server.system.skill_hub.ClawHubClient`.
 
-W1.4 of ``docs/PLAN_SKILL_HUB.md``. Covers the public surface the admin
+W1.4 of ``docs/archive/PLAN_SKILL_HUB.md``. Covers the public surface the admin
 routes proxy:
 
 * ``search(q, limit)`` — substring search.

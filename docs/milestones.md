@@ -115,7 +115,7 @@ Rust→Python 移植「最后一公里」。Python 网关从**降级模式**（`
 转为**完全接通**（`mode:ok`）。release notes:
 [`docs/release-notes-ap1.0.0.md`](release-notes-ap1.0.0.md)。
 
-计划: [`docs/PLAN_PORT_COMPLETION.md`](PLAN_PORT_COMPLETION.md)（4 个 Wave，13 个 Parcel）。
+计划: [`docs/archive/PLAN_PORT_COMPLETION.md`](archive/PLAN_PORT_COMPLETION.md)（4 个 Wave，13 个 Parcel）。
 
 **关键 evidence**（`pytest python/packages -q`：**2586 passed**）：
 
