@@ -4,6 +4,47 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.40.0] — 2026-07-26 — 语音配置真正生效 + 模型能力绑定
+
+### Fixed
+- **`[voice]` 配置此前只影响试听，不影响渠道实际发出的语音**（v1.39.0 引入）。
+  `text_to_speech` 跑在 agent 进程里，看不到网关的配置快照——只读
+  `provider_params` 与环境变量。于是在 `/voice` 选了 gemini + Kore，试听正确，
+  渠道发出去的仍是内置默认的 openai + alloy。现在 `[voice]` 经
+  `py-config.json` sidecar 下发到 agent 进程，并随 sidecar 每次重写重新应用，
+  **保存即生效、无需重启 agent**。in-process 与双进程两条启动路径共用同一个
+  `apply_voice_config`，不会漂移。(#168)
+- `uv sync --extra voice` 在仓库根目录不可用（extra 只定义在 `corlinman-agent`
+  上），而 `docs/voice.md` 正是这么写的。根 pyproject 补转发 extra。(#168)
+
+### Added
+- **全局图片生成绑定** `[models].image_provider` / `image_model`。此前根本没有
+  这个设置：`image_generate` 取第一个标了 `image_capable` 的 provider，否则退回
+  对话 provider，模型页无从展示也无从配置。agent 在「persona 绑定 → 全局绑定 →
+  对话 provider」之间消费。(#168)
+- **`/models` 新增「能力」标签页**：对话（只读，链到路由页）、图片生成（可直接
+  编辑）、语音（显示 `[voice]` 摘要，链回 `/voice` 做逐音色试听）。语音的写入口
+  仍只有一处，避免两条写路径改同一份配置。新增
+  `GET /admin/models/capabilities` 与 `PUT /admin/models/capabilities/image`。(#168)
+- **GPT-Live WebRTC 回环测试**：真实 aiortc 对端应答 SDP offer、开 `oai-events`
+  数据通道、推音轨，被测对象即出货的 `synthesize_gpt_live`，断言录出可播放音频。
+  已验证该用例能捕获 v1.39.0 修掉的录音器时序 bug。(#168)
+
+### Changed
+- 语音解析优先级明确为：**调用参数 → persona 绑定 → `[voice]` 配置 →
+  `CORLINMAN_TTS_*` 环境变量 → 后端内置默认**。配置刻意排在环境变量之上：环境
+  变量早于设置页存在，界面上改的值不该被宿主机一条陈旧 export 悄悄盖掉。(#168)
+
+### Known issues
+- **GPT-Live 仍受网关 attestation 阻塞**，且这是 Sub2API 的**编译期**分支
+  （`liveattestation/attestation_darwin.go` vs `attestation_unsupported.go`），
+  不是可配置项。三条同时满足才能用：Sub2API 跑在 **macOS**、**Apple Silicon**、
+  且该机器装有官方 **ChatGPT.app**（attestation 取自其 Apple DeviceCheck 凭证）。
+  部署在 Linux VPS 上的 Sub2API 永远无法提供 GPT-Live。corlinman 侧的 WebRTC
+  链路已由回环测试覆盖，剩下的唯一变量就是网关。
+- 该回环测试在 CI 上被 `pytest.importorskip("aiortc")` 跳过（CI 不安装 `voice`
+  extra），目前只在本地运行。
+
 ## [1.39.0] — 2026-07-26 — 数据驱动 TTS 后端注册表 + GPT-Live + 七渠道语音投递
 
 ### Added
