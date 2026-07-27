@@ -166,3 +166,34 @@ export function completePasswordReset(
     body: req,
   });
 }
+
+// ---------------------------------------------------------------------------
+// Inbound OIDC SSO (G3). The login page probes `/auth/oidc/status` and
+// shows the "Sign in with SSO" button only when the gateway reports the
+// feature enabled AND IdP discovery succeeded. The actual flow is a full
+// browser navigation to `/auth/oidc/login` (not an XHR) — the gateway
+// 302s to the IdP and the callback sets the same session cookie as the
+// password login.
+// ---------------------------------------------------------------------------
+
+export interface OidcStatus {
+  enabled: boolean;
+  available: boolean;
+}
+
+/**
+ * GET `/auth/oidc/status`. Never throws — any transport/HTTP failure
+ * degrades to `{ enabled: false, available: false }` so the login page
+ * simply hides the SSO button.
+ */
+export async function getOidcStatus(): Promise<OidcStatus> {
+  try {
+    const res = await apiFetch<OidcStatus>("/auth/oidc/status");
+    return {
+      enabled: res?.enabled === true,
+      available: res?.available === true,
+    };
+  } catch {
+    return { enabled: false, available: false };
+  }
+}

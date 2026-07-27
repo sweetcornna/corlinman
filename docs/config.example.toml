@@ -46,6 +46,31 @@ username = "admin"
 # password_hash = "$argon2id$v=19$m=19456,t=2,p=1$..."
 
 # ---------------------------------------------------------------------------
+# [auth.oidc] — 入站 OIDC SSO 登录（Authorization Code + PKCE）。
+# 纯网关侧配置：登录页在 enabled 且 discovery 成功时显示"使用 SSO 登录"按钮，
+# 回调校验 id_token（JWKS 签名 / iss / aud / exp / nonce）并检查邮箱白名单，
+# 通过后复用与密码登录完全相同的 admin session cookie。
+#
+# 安全提示：
+# * allowed_emails / allowed_domains 至少配置一个 —— 两者都为空时
+#   OIDC 登录会 fail-closed 拒绝所有人（并打 WARN），不会放行。
+# * client_secret 永不写入日志；建议用环境变量注入后引用，或直接留空
+#   （公有客户端 + PKCE）。
+# * 密码登录路径不受本节任何配置影响。
+# ---------------------------------------------------------------------------
+# [auth.oidc]
+# enabled = true
+# issuer = "https://accounts.example.com"      # 提供 /.well-known/openid-configuration
+# client_id = "corlinman-admin"
+# client_secret = ""                            # 机密客户端才需要；PKCE 公有客户端留空
+# scopes = ["openid", "email", "profile"]       # 默认值，可省略
+# allowed_emails = ["ops@example.com"]          # 精确邮箱白名单（小写比较）
+# allowed_domains = ["example.com"]             # 或按邮箱域名放行
+# # 反代后网关看到的 Host 与公网不一致时，显式指定回调地址
+# # （必须与 IdP 侧注册的 redirect URI 完全一致）：
+# # redirect_url = "https://corlinman.example.com/auth/oidc/callback"
+
+# ---------------------------------------------------------------------------
 # [providers.*] — free-form named provider entries. The map key (the bit
 # after `providers.`) is operator-chosen: pick whatever name reads well in
 # logs and in `[models.aliases.*].provider`. At least one entry must have

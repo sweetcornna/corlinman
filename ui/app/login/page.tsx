@@ -20,11 +20,13 @@ import { motion } from "framer-motion";
 
 import {
   completePasswordReset,
+  getOidcStatus,
   getSession,
   login,
   requestPasswordReset,
+  type OidcStatus,
 } from "@/lib/auth";
-import { CorlinmanApiError } from "@/lib/api";
+import { CorlinmanApiError, GATEWAY_BASE_URL } from "@/lib/api";
 import { useMotionVariants } from "@/lib/motion";
 import { BrandMark } from "@/components/layout/brand-mark";
 import { PresenceOrb } from "@/components/ui/presence-orb";
@@ -101,6 +103,20 @@ function LoginForm() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [shakeKey, setShakeKey] = useState(0);
+  const [oidc, setOidc] = useState<OidcStatus | null>(null);
+  // `?oidc_error=` is set by the gateway's /auth/oidc/callback when the
+  // SSO round-trip fails — surface it as a visible inline error.
+  const oidcErrorCode = params.get("oidc_error");
+
+  useEffect(() => {
+    let cancelled = false;
+    getOidcStatus().then((status) => {
+      if (!cancelled) setOidc(status);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -205,6 +221,25 @@ function LoginForm() {
           {submitting ? t("auth.submitting") : t("auth.submit")}
         </Button>
       </form>
+      {oidcErrorCode ? (
+        <p
+          role="alert"
+          className="text-sm text-sg-err"
+          data-testid="oidc-error"
+        >
+          {t([`auth.oidcErrors.${oidcErrorCode}`, "auth.oidcFailed"])}
+        </p>
+      ) : null}
+      {oidc?.enabled && oidc?.available ? (
+        <Button asChild variant="outline" className="w-full">
+          <a
+            href={`${GATEWAY_BASE_URL}/auth/oidc/login?redirect=${encodeURIComponent(redirect)}`}
+            data-testid="oidc-login"
+          >
+            {t("auth.ssoSignIn")}
+          </a>
+        </Button>
+      ) : null}
       <ForgotPasswordPanel />
 
       <p className="text-center text-[11px] text-sg-ink-5">

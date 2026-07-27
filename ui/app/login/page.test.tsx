@@ -93,8 +93,13 @@ describe("LoginPage", () => {
     await waitFor(() => expect(replaceMock).toHaveBeenCalledWith("/"));
     const fetchCalls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock
       .calls;
-    expect(fetchCalls[0][0]).toContain("/admin/login");
-    expect(fetchCalls[0][1]).toMatchObject({
+    // The OIDC status probe may fire first on mount — find the login
+    // call by URL rather than assuming it is call #0.
+    const loginCall = fetchCalls.find(([url]) =>
+      String(url).includes("/admin/login"),
+    );
+    expect(loginCall).toBeDefined();
+    expect(loginCall![1]).toMatchObject({
       method: "POST",
       body: JSON.stringify({ username: "admin", password: "secret" }),
     });
@@ -149,4 +154,63 @@ describe("LoginPage", () => {
       expect(replaceMock).not.toHaveBeenCalledWith("/agents");
     },
   );
+
+  it("shows the SSO button when /auth/oidc/status reports available", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url.includes("/auth/oidc/status")) {
+          return new Response(
+            JSON.stringify({ enabled: true, available: true }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        return new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }),
+    );
+
+    render(<LoginPage />);
+    const link = await screen.findByTestId("oidc-login");
+    expect(link).toHaveTextContent("使用 SSO 登录");
+    expect(link.getAttribute("href")).toContain("/auth/oidc/login");
+  });
+
+  it("hides the SSO button when OIDC is disabled or discovery failed", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url.includes("/auth/oidc/status")) {
+          return new Response(
+            JSON.stringify({ enabled: true, available: false }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        return new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }),
+    );
+
+    render(<LoginPage />);
+    // Let the status probe settle, then assert absence.
+    await waitFor(() =>
+      expect(
+        (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.some(
+          ([url]) => String(url).includes("/auth/oidc/status"),
+        ),
+      ).toBe(true),
+    );
+    expect(screen.queryByTestId("oidc-login")).toBeNull();
+  });
+
+  it("surfaces ?oidc_error= from a failed SSO callback", async () => {
+    searchParams = new URLSearchParams({ oidc_error: "email_not_allowed" });
+    render(<LoginPage />);
+    const alert = await screen.findByTestId("oidc-error");
+    expect(alert).toHaveTextContent("该账号不在 SSO 白名单内。");
+  });
 });

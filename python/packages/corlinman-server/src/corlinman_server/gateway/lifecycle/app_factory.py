@@ -910,6 +910,21 @@ def _mount_routes(app: Any, state: Any, *, admin_config_path: Path | None = None
                     logger.warning(
                         "gateway.approvals.store_init_failed", error=str(exc)
                     )
+                # G3: inbound OIDC SSO — resolve [auth.oidc] once at boot.
+                # Gateway-side only (no agent sidecar involvement).
+                # Best-effort: a failed resolve leaves OIDC disabled and
+                # the login page simply hides the SSO button.
+                oidc_settings: Any | None = None
+                try:
+                    from corlinman_server.gateway.routes_admin_a.oidc import (  # noqa: PLC0415
+                        resolve_oidc_settings,
+                    )
+
+                    oidc_settings = resolve_oidc_settings(config_snapshot)
+                except Exception as exc:  # pragma: no cover — degraded boot
+                    logger.warning(
+                        "gateway.oidc.settings_resolve_failed", error=str(exc)
+                    )
                 admin_a_state = admin_a_state_cls(
                     data_dir=data_dir,
                     execution_state_dir=execution_state_dir,
@@ -924,6 +939,7 @@ def _mount_routes(app: Any, state: Any, *, admin_config_path: Path | None = None
                     agent_registry_reload=_agent_registry_reload,
                     approval_store=approval_store,
                     approval_queue=approval_queue,
+                    oidc_settings=oidc_settings,
                 )
                 set_admin_a(admin_a_state)
                 # Wire the channels-config write-back. Without this every
