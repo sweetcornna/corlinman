@@ -4,6 +4,40 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.42.0] — 2026-07-27 — 语音接官方 Realtime API（attestation 阻塞解除）
+
+### Fixed
+- **`gpt_live` 此前只会说 Sub2API 的私有 JSON 方言**（`POST /v1/live` +
+  `/backend-api/codex/realtime/calls`），而那条路被中转自身的 Live attestation
+  挡死——那是编译期分支，要求中转跑在装有 ChatGPT.app 的 Apple Silicon macOS 上，
+  凭据来自 Apple DeviceCheck。结果是任何 Linux VPS 部署都永远拿不到实时语音，
+  v1.39.0 / v1.40.0 把它记成了"已知问题"。**这条已知问题就此解除**：官方
+  Realtime API 本来就有服务端 WebRTC 入口，标准 API key 即可调用，不需要任何
+  macOS 伪装。协商器改为先发官方 multipart 契约
+  （`POST /v1/realtime/calls`，`sdp` + `session` 两个表单字段，201 回裸 answer
+  SDP），仅当该路由缺失（404/405）才回退旧 Sub2API JSON 方言；其余状态码原样
+  上报，不被"再试下一条路径"糊成 `live_endpoint_missing`。(#171)
+- **目录里的模型与音色是 ChatGPT 产品名，公共 API 一律会拒**：模型换成
+  `gpt-realtime-2.1` / `gpt-realtime-2.1-mini`，音色换成 API 侧记录在案的 10 个
+  （`marin` / `cedar` 为官方推荐，默认 `marin`），原来的 cove/juniper/… 九个下线。
+  给用户递一份必然被拒的选项，比不给更糟。(#171)
+
+### Changed
+- `[voice.backends.gpt_live].base_url` 默认 `https://api.openai.com/v1`（原为空串，
+  逼用户必须自己填一个中转）。指向实现同一协议的中转仍然可用。(#171)
+- 管理界面的试听探测承认"官方端点对占位 SDP 回 400/422"就是可用证明——路由与
+  鉴权都已通过，只有 SDP 本身是假的。401/403、网络错误以及旧 Sub2API 的
+  attestation 503 仍原样显示。(#171)
+- 回环测试（真实 aiortc 对端）按官方 multipart 请求解包并回 201，端到端仍录出
+  可播放音频；新增两条用例分别钉住官方 multipart 与旧 JSON 契约互不误伤。(#171)
+
+### Notes
+- corlinman **不绕过 attestation**：伪造 User-Agent、`runtime.GOOS` 或系统字段都
+  无效，凭据由 Apple DeviceCheck 签发。仍在用旧 Sub2API 的部署应升级中转到官方
+  Realtime 协议，或直接给 `gpt_live` 配一把标准 OpenAI API key。
+- 回环测试在 CI 上仍被 `pytest.importorskip("aiortc")` 跳过（CI 不装 `voice`
+  extra），只在本地运行。
+
 ## [1.41.0] — 2026-07-27 — 联网搜索可配置 + CI 挂死根治
 
 ### Fixed
