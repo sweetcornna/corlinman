@@ -4,6 +4,33 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.50.0] — 2026-07-27 — 台账收官：HNSW ANN / OIDC 登出与刷新 / skill 种子出厂刷新
+
+### Added
+- **纯 Python HNSW ANN**(RAG 二期):`[rag].ann_enabled`(默认 off)+
+  `ann_min_chunks`(默认 1000);后台线程构建、构建期间一律精确暴力
+  (用户查询永不等索引)、候选按活 BLOB 重打分与暴力逐位一致、
+  array('f') 内存与 BLOB 同量级、单全局索引(namespaced 查询保持暴力);
+  recall@10 实测 1.0。零新依赖。(#189)
+- **OIDC 二期**:RP 发起登出(`/auth/oidc/logout`,end_session +
+  id_token_hint,一切异常降级仅本地登出)+ token 刷新
+  (`/auth/oidc/refresh`,新 id_token 走与登录同一校验闸 **并绑定会话
+  原始 sub**——别人的 grant 续不了你的会话;refresh_token 仅
+  `request_offline_access=true` 时申请);`/admin/logout` 同步烧 SSO
+  token;瞬态失败保留 grant 重试。(#188)
+- **skill 种子出厂刷新**:与出厂内容(当前 bundle 或 12+4 个历史哈希)
+  逐字节相同的已播种 skill 自动升级到新 bundle(含 references/,保留
+  usage);操作员改过的照旧不动;无 SKILL.md 的目录只在纯出厂残留时
+  自愈;哈希清单带 CI 守卫(bundle 编辑不追加哈希即红)。(#187)
+- oauth 长文案清零(P3 第 1 项收口)+ FieldHint/InfoTip 扩面(第 6 项
+  收口)。(#187)
+
+### Notes
+- **2026-07-27 单日弧线至此完整收官:v1.43.0 → v1.50.0,17 个功能 PR
+  (#173-#189)** ——路线图清账、P4 统一授权模型四波、P6 三大件、全部
+  二期遗留。仓内在案初始化项仅剩 Flutter 原生客户端与模块化 Phase 2
+  (独立立项,未开工)。
+
 ## [1.49.0] — 2026-07-27 — P6 三大件：稠密向量 RAG / OIDC SSO / 巨型 skill 拆分
 
 ### Added
