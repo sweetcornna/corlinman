@@ -151,7 +151,9 @@ class ApprovalBroker:
             from corlinman_providers.plugins import ApprovalDecision  # noqa: PLC0415
 
             decision = ApprovalDecision.ALLOW if approved else ApprovalDecision.DENY
-            await store.decide(key[1], decision, reason=reason or None)
+            await store.decide(
+                key[1], decision, reason=reason or None, session_key=key[0]
+            )
         except Exception as exc:  # noqa: BLE001
             log.warning(
                 "approval_broker.persist_decision_failed call_id=%s err=%s",
@@ -169,7 +171,12 @@ class ApprovalBroker:
 
             # ``decide`` only touches rows whose decision is still NULL, so
             # a row already decided by a human is never downgraded.
-            await store.decide(key[1], ApprovalDecision.TIMEOUT, reason=reason)
+            await store.decide(
+                key[1],
+                ApprovalDecision.TIMEOUT,
+                reason=reason,
+                session_key=key[0],
+            )
         except Exception as exc:  # noqa: BLE001
             log.warning(
                 "approval_broker.persist_timeout_failed call_id=%s err=%s",
@@ -186,8 +193,17 @@ class ApprovalBroker:
             with self._lock:
                 self._insert_tasks[key] = task
 
-            def _drop_insert_task(_t: asyncio.Task[Any], k: tuple[str, str] = key) -> None:
-                self._insert_tasks.pop(k, None)
+            def _drop_insert_task(
+                done: asyncio.Task[Any],
+                k: tuple[str, str] = key,
+            ) -> None:
+                # Identity-checked: a re-registration of the same key
+                # replaced the entry with a NEWER insert task — popping
+                # blindly would remove that barrier and re-open the
+                # UPDATE-before-INSERT race (W3-4 review fix).
+                with self._lock:
+                    if self._insert_tasks.get(k) is done:
+                        self._insert_tasks.pop(k, None)
 
             task.add_done_callback(_drop_insert_task)
 

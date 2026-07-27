@@ -901,6 +901,11 @@ def _mount_routes(app: Any, state: Any, *, admin_config_path: Path | None = None
                     )
                     approval_queue = ApprovalQueue(store=approval_store)
                     get_approval_broker().attach_store(approval_store)
+                    # Boot-time orphan sweep happens in the LIFESPAN (this
+                    # function is sync): rows left pending by a hard stop
+                    # have no stream that could ever consume a decision —
+                    # see the reconcile_orphaned call in entrypoint's
+                    # _lifespan (W3-4 review fix).
                 except Exception as exc:  # pragma: no cover — degraded boot
                     logger.warning(
                         "gateway.approvals.store_init_failed", error=str(exc)

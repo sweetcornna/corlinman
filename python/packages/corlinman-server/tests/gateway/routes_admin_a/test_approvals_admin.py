@@ -138,23 +138,26 @@ def test_decide_persists_reason_and_bridges_to_broker(
     assert frame.approval.approved is True
 
 
-def test_decide_without_live_stream_still_persists(
+def test_decide_without_live_stream_marks_expired(
     client: TestClient, store: ApprovalStore
 ) -> None:
-    """Post-restart shape: the durable row exists, no broker entry. The
-    decision must still be recorded (and the route must not 404/500)."""
+    """W3-4 review fix: a pending row with NO broker entry (its stream is
+    gone) must not be recorded as a successful approve/deny nothing will
+    ever execute — the route answers 410 and sweeps the row to timeout.
+    (Boot-time reconcile_orphaned handles the restart bulk; this covers
+    the in-process stream-just-ended race.)"""
     asyncio.run(store.insert(_request("call_stale")))
 
     resp = client.post(
         "/admin/approvals/call_stale/decide",
         json={"approve": False, "reason": "too late anyway"},
     )
-    assert resp.status_code == 200
-    assert resp.json()["decision"] == "denied"
+    assert resp.status_code == 410
+    assert resp.json()["detail"]["error"] == "approval_expired"
     rec = asyncio.run(store.get("call_stale"))
     assert rec is not None
-    assert rec.decision is ApprovalDecision.DENY
-    assert rec.decision_reason == "too late anyway"
+    assert rec.decision is ApprovalDecision.TIMEOUT
+    assert "no live stream" in (rec.decision_reason or "")
 
 
 def test_decide_unknown_call_id_is_404(client: TestClient) -> None:

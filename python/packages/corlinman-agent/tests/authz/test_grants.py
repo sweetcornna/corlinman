@@ -174,3 +174,23 @@ def test_cross_process_new_grant_reaches_a_warm_store(tmp_path: Path) -> None:
 
     GrantStore(tmp_path).record(_S1, "run_shell", {"command": "ls"}, "always")
     assert agent.is_granted(_S1, "run_shell", {"command": "ls"})
+
+
+def test_record_does_not_resurrect_external_revocation(tmp_path: Path) -> None:
+    """W3-4 review fix: recording a NEW always grant advances the change
+    token — it must first merge disk state, or an admin revocation that
+    landed since the last load would be silently resurrected."""
+    agent = GrantStore(tmp_path)
+    agent.record(_S1, "run_shell", {"command": "ls"}, "always")
+    assert agent.is_granted(_S1, "run_shell", {"command": "ls"})
+
+    # Admin process revokes grant A while the agent store is warm.
+    admin = GrantStore(tmp_path)
+    admin.revoke_always(_S1, "run_shell", {"command": "ls"})
+
+    # Agent records an UNRELATED always grant before its next check…
+    agent.record(_S1, "web_search", {"query": "x"}, "always")
+    # …and the revocation must still be visible (not shadowed by the
+    # token advance in _persist_always).
+    assert not agent.is_granted(_S1, "run_shell", {"command": "ls"})
+    assert agent.is_granted(_S1, "web_search", {"query": "x"})

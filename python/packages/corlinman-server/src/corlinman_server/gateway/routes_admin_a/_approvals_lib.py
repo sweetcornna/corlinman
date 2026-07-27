@@ -66,6 +66,10 @@ class DecideBody(BaseModel):
 
     approve: bool
     reason: str | None = None
+    #: Disambiguates when the same provider call_id is parked by MORE
+    #: than one concurrent stream (index-style ids collide). Optional —
+    #: required only when the route reports 409 ambiguous.
+    session_key: str | None = None
 
 
 #: Store-internal decision values → the wire vocabulary the UI renders.

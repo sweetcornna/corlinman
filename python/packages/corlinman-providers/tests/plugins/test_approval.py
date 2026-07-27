@@ -183,13 +183,15 @@ async def test_is_first_use_policy() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _req(call_id: str = "call_w34") -> ApprovalRequest:
+def _req(
+    call_id: str = "call_w34", *, session_key: str = "acme::s1"
+) -> ApprovalRequest:
     return ApprovalRequest(
         call_id=call_id,
         plugin="github",
         tool="create_issue",
         args_preview='{"title": "hi"}',
-        session_key="acme::s1",
+        session_key=session_key,
         reason="permission rule requires approval",
     )
 
@@ -297,3 +299,37 @@ def test_default_path_is_a_real_file_under_data_dir(tmp_path, monkeypatch) -> No
     assert default_approvals_db_path() == tmp_path / "authz" / "approvals.sqlite3"
     store = ApprovalStore()
     assert store.path == str(tmp_path / "authz" / "approvals.sqlite3")
+
+
+@pytest.mark.asyncio
+async def test_composite_key_disambiguates_call_id_collisions(tmp_path) -> None:
+    """W3-4 review fix: rows key on (session_key, call_id) — index-style
+    provider ids (``call_0``) parked by two concurrent streams must not
+    clobber each other, and a scoped decide touches only its own row."""
+    store = ApprovalStore(tmp_path / "authz" / "approvals.sqlite3")
+    await store.insert(_req("call_0", session_key="t::a"))
+    await store.insert(_req("call_0", session_key="t::b"))
+
+    both = await store.pending_for_call("call_0")
+    assert {r.session_key for r in both} == {"t::a", "t::b"}
+
+    assert await store.decide(
+        "call_0", ApprovalDecision.ALLOW, session_key="t::b"
+    )
+    remaining = await store.pending_for_call("call_0")
+    assert [r.session_key for r in remaining] == ["t::a"]
+
+
+@pytest.mark.asyncio
+async def test_reconcile_orphaned_sweeps_only_pending(tmp_path) -> None:
+    store = ApprovalStore(tmp_path / "authz" / "approvals.sqlite3")
+    await store.insert(_req("call_a", session_key="t::a"))
+    await store.insert(_req("call_b", session_key="t::b"))
+    await store.decide("call_b", ApprovalDecision.ALLOW, session_key="t::b")
+
+    swept = await store.reconcile_orphaned(reason="gateway restart")
+    assert swept == 1
+    a = await store.get("call_a")
+    b = await store.get("call_b")
+    assert a is not None and a.decision is ApprovalDecision.TIMEOUT
+    assert b is not None and b.decision is ApprovalDecision.ALLOW  # untouched

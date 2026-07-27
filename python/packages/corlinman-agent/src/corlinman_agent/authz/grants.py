@@ -145,15 +145,18 @@ class GrantStore:
     agent process share the SQLite file but hold *separate* in-memory
     mirrors, so a revocation written by the gateway must become visible to
     the agent without a restart. Strategy: every :meth:`is_granted` /
-    :meth:`list_always` call re-stats the DB file and reloads the mirror
-    when ``st_mtime_ns`` changed. Trade-offs, deliberately accepted:
+    :meth:`list_always` (and :meth:`record`, which advances the token)
+    compares a change token — ``(st_mtime_ns, size, SQLite
+    file-change-counter)`` — and reloads the mirror when it moved.
+    Trade-offs, deliberately accepted:
 
-    * cost — one ``os.stat`` per permission check (~µs); tool dispatch is
-      already a millisecond-plus operation, so no throttle is needed and
-      revocations take effect at the *next permission check* (≤ next turn).
-    * mtime granularity — ``st_mtime_ns`` is nanosecond-precise on APFS
-      and ext4; a same-instant writer pair could in theory be missed, but
-      grants change at human speed, not write-storm speed.
+    * cost — one ``os.stat`` + a 28-byte header read per permission
+      check (~µs); tool dispatch is already a millisecond-plus operation,
+      so no throttle is needed and revocations take effect at the *next
+      permission check* (≤ next turn).
+    * the header counter increments on every committed transaction, so
+      two writes inside one filesystem timestamp tick are still seen
+      (mtime alone missed them — W3-4 review fix).
     * memory-only rows — grants that failed to persist (unwritable DB)
       are tracked separately and survive a reload; they remain invisible
       to (and irrevocable from) other processes, which is exactly the
@@ -173,9 +176,9 @@ class GrantStore:
         self._always_unpersisted: set[tuple[str, str, str, str, str]] = set()
         self._db_loaded = False
         self._db_failed = False
-        #: ``st_mtime_ns`` of the DB file at the last successful load —
+        #: Change token of the DB file at the last successful load —
         #: the cross-process invalidation watermark.
-        self._db_mtime_ns: int | None = None
+        self._db_token: tuple[int, int, int] | None = None
 
     # -- paths ----------------------------------------------------------
 
@@ -200,9 +203,25 @@ class GrantStore:
                 )
             return None
 
-    def _stat_mtime_ns(self) -> int | None:
+    def _db_change_token(self) -> tuple[int, int, int] | None:
+        """Cross-process change token: (mtime_ns, size, header counter).
+
+        mtime alone flakes when two writes land inside one filesystem
+        timestamp tick (W3-4 review fix), so the token also folds in the
+        file size and SQLite's file-change-counter (header bytes 24-27,
+        big-endian) — the counter increments on every committed write
+        transaction. Valid because this store never enables WAL (in WAL
+        mode the main-file header only advances on checkpoint).
+        """
         try:
-            return os.stat(self.db_path()).st_mtime_ns
+            path = self.db_path()
+            st = os.stat(path)
+            counter = 0
+            with open(path, "rb") as fh:
+                header = fh.read(28)
+            if len(header) >= 28:
+                counter = int.from_bytes(header[24:28], "big")
+            return (st.st_mtime_ns, st.st_size, counter)
         except OSError:
             return None
 
@@ -218,7 +237,7 @@ class GrantStore:
         conn = self._connect()
         if conn is None:
             return
-        mtime = self._stat_mtime_ns()
+        token = self._db_change_token()
         fresh: set[tuple[str, str, str, str, str]] = set()
         try:
             rows = conn.execute(
@@ -235,7 +254,7 @@ class GrantStore:
             return
         conn.close()
         self._always = fresh | self._always_unpersisted
-        self._db_mtime_ns = mtime
+        self._db_token = token
 
     def _reload_if_changed(self) -> None:
         """Cross-process invalidation: reload when the DB file changed.
@@ -250,7 +269,7 @@ class GrantStore:
         if not self._db_loaded:
             self._load_db()
             return
-        if self._stat_mtime_ns() != self._db_mtime_ns:
+        if self._db_change_token() != self._db_token:
             self._reload_db()
 
     def _persist_always(self, key: tuple[str, str, str, str, str]) -> bool:
@@ -270,7 +289,7 @@ class GrantStore:
             return False
         finally:
             conn.close()
-        self._db_mtime_ns = self._stat_mtime_ns()
+        self._db_token = self._db_change_token()
         return True
 
     def _delete_always(self, key: tuple[str, str, str, str, str]) -> None:
@@ -288,7 +307,7 @@ class GrantStore:
             logger.warning("agent.authz.grant_store_delete_failed", error=str(exc))
         finally:
             conn.close()
-        self._db_mtime_ns = self._stat_mtime_ns()
+        self._db_token = self._db_change_token()
 
     # -- public API ------------------------------------------------------
 
@@ -321,7 +340,11 @@ class GrantStore:
             surface = _surface_of(subject) if scope_surface else ""
             user = str(getattr(subject, "user_id", None) or "") if scope_user else ""
             key = (tenant, surface, user, tool, digest)
-            self._load_db()
+            # Reload-if-changed, NOT load-once: _persist_always advances
+            # the change token past whatever is on disk, so an external
+            # revocation that landed since the last load must be merged
+            # HERE or it would be silently resurrected (review fix).
+            self._reload_if_changed()
             self._always.add(key)
             if not self._persist_always(key):
                 self._always_unpersisted.add(key)
@@ -476,7 +499,7 @@ class GrantStore:
             self._always_unpersisted.clear()
             self._db_loaded = False
             self._db_failed = False
-            self._db_mtime_ns = None
+            self._db_token = None
 
 
 # ---------------------------------------------------------------------------

@@ -405,6 +405,27 @@ def build_app(
             admin_a_state.config_path = seeded.config_path
             admin_a_state.must_change_password = seeded.must_change_password
 
+        # W3-4 review fix: sweep approval rows orphaned by the previous
+        # process. Their streams died with it — no decision can ever be
+        # consumed, so leaving them pending would show phantom actionable
+        # entries and let the decide route record an "approved" nothing
+        # ever executes. Runs ONLY at gateway boot (not per store open —
+        # a second in-process open must never sweep live rows).
+        _approval_store = getattr(admin_a_state, "approval_store", None)
+        if _approval_store is not None:
+            try:
+                _swept = await _approval_store.reconcile_orphaned(
+                    reason="gateway restart (stream lost)"
+                )
+                if _swept:
+                    logger.info(
+                        "gateway.approvals.orphans_reconciled", count=_swept
+                    )
+            except Exception as exc:  # pragma: no cover — sweep is best-effort
+                logger.warning(
+                    "gateway.approvals.orphan_sweep_failed", error=str(exc)
+                )
+
         if admin_a_state is not None:
             manager_socket = os.environ.get(
                 "CORLINMAN_NAPCAT_MANAGER_SOCKET",

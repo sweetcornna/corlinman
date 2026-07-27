@@ -80,7 +80,7 @@ class ApprovalRecord(ApprovalRequest):
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS pending_approvals (
-    call_id          TEXT PRIMARY KEY,
+    call_id          TEXT NOT NULL,
     plugin           TEXT NOT NULL,
     tool             TEXT NOT NULL,
     args_preview     TEXT NOT NULL,
@@ -89,7 +89,12 @@ CREATE TABLE IF NOT EXISTS pending_approvals (
     created_at       REAL NOT NULL,
     decision         TEXT,
     decided_at       REAL,
-    decision_reason  TEXT
+    decision_reason  TEXT,
+    -- Composite on purpose (mirrors ApprovalBroker._key): provider
+    -- tool-call ids are NOT globally unique — index-style ``call_0``
+    -- collides across concurrent streams, and a bare call_id PK would
+    -- let one stream's row clobber another's.
+    PRIMARY KEY (session_key, call_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_pending_approvals_session
@@ -119,10 +124,30 @@ async def _apply_migrations(conn: aiosqlite.Connection) -> None:
     check, safe to run on every connection bootstrap.
     """
     cur = await conn.execute("PRAGMA table_info(pending_approvals)")
-    columns = {row[1] for row in await cur.fetchall()}
+    rows = await cur.fetchall()
+    columns = {row[1] for row in rows}
     if "decision_reason" not in columns:
         await conn.execute(
             "ALTER TABLE pending_approvals ADD COLUMN decision_reason TEXT"
+        )
+    # W3-4 review fix: rows must key on (session_key, call_id) — rebuild a
+    # legacy table whose sole PK was call_id (pk flag on exactly that row).
+    pk_cols = [row[1] for row in rows if row[5]]
+    if pk_cols == ["call_id"]:
+        await conn.executescript(
+            """
+            ALTER TABLE pending_approvals RENAME TO pending_approvals_old;
+            """
+            + _SCHEMA
+            + """
+            INSERT OR IGNORE INTO pending_approvals
+                (call_id, plugin, tool, args_preview, session_key, reason,
+                 created_at, decision, decided_at, decision_reason)
+            SELECT call_id, plugin, tool, args_preview, session_key, reason,
+                   created_at, decision, decided_at, decision_reason
+              FROM pending_approvals_old;
+            DROP TABLE pending_approvals_old;
+            """
         )
 
 
@@ -224,23 +249,75 @@ class ApprovalStore:
         decision: ApprovalDecision,
         *,
         reason: str | None = None,
+        session_key: str | None = None,
     ) -> bool:
         """Record an operator decision against ``call_id``. Returns ``True``
         when a row was updated, ``False`` otherwise (unknown id or already
         decided). ``reason`` (W3-4) is the decider's rationale and lands in
-        the ``decision_reason`` column for the audit trail.
+        the ``decision_reason`` column for the audit trail. ``session_key``
+        narrows to the composite key; ``None`` updates every pending row of
+        that call_id (callers that already resolved ambiguity).
+        """
+        async with self._conn() as conn:
+            if session_key is None:
+                cur = await conn.execute(
+                    """
+                    UPDATE pending_approvals
+                       SET decision = ?, decided_at = ?, decision_reason = ?
+                     WHERE call_id = ? AND decision IS NULL
+                    """,
+                    (decision.value, time.time(), reason, call_id),
+                )
+            else:
+                cur = await conn.execute(
+                    """
+                    UPDATE pending_approvals
+                       SET decision = ?, decided_at = ?, decision_reason = ?
+                     WHERE call_id = ? AND session_key = ? AND decision IS NULL
+                    """,
+                    (decision.value, time.time(), reason, call_id, session_key),
+                )
+            await conn.commit()
+            return cur.rowcount > 0
+
+    async def pending_for_call(self, call_id: str) -> list[ApprovalRecord]:
+        """Every still-pending row for ``call_id`` (any session).
+
+        The admin decide route uses this to detect ambiguity: provider
+        call ids collide across concurrent streams, so a bare call_id
+        may name more than one parked approval.
+        """
+        async with self._conn() as conn:
+            cur = await conn.execute(
+                """
+                SELECT * FROM pending_approvals
+                 WHERE call_id = ? AND decision IS NULL
+              ORDER BY created_at ASC
+                """,
+                (call_id,),
+            )
+            return [_row_to_record(row) for row in await cur.fetchall()]
+
+    async def reconcile_orphaned(self, *, reason: str = "gateway restart") -> int:
+        """Mark every still-pending row ``timeout`` (boot-time sweep).
+
+        A durable queue re-opened after a crash/restart holds rows whose
+        streams died with the old process — no decision can ever reach
+        them, so leaving them pending would show phantom entries forever
+        and let ``decide`` report success for calls nothing consumes
+        (W3-4 review fix). Returns the number of rows swept.
         """
         async with self._conn() as conn:
             cur = await conn.execute(
                 """
                 UPDATE pending_approvals
                    SET decision = ?, decided_at = ?, decision_reason = ?
-                 WHERE call_id = ? AND decision IS NULL
+                 WHERE decision IS NULL
                 """,
-                (decision.value, time.time(), reason, call_id),
+                (ApprovalDecision.TIMEOUT.value, time.time(), reason),
             )
             await conn.commit()
-            return cur.rowcount > 0
+            return cur.rowcount
 
     async def get(self, call_id: str) -> ApprovalRecord | None:
         async with self._conn() as conn:
@@ -387,10 +464,14 @@ class ApprovalQueue:
         decision: ApprovalDecision,
         *,
         reason: str | None = None,
+        session_key: str | None = None,
     ) -> bool:
         """Persist the decision (+ optional rationale) then wake any
-        in-process waiter."""
-        wrote = await self.store.decide(call_id, decision, reason=reason)
+        in-process waiter. ``session_key`` narrows to the composite row
+        key (provider call ids collide across streams)."""
+        wrote = await self.store.decide(
+            call_id, decision, reason=reason, session_key=session_key
+        )
         async with self._waiters_lock:
             fut = self._waiters.get(call_id)
         if fut is not None and not fut.done():
