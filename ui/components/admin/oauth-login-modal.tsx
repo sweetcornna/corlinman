@@ -381,7 +381,17 @@ export function OAuthLoginModal({
 
           {phase === "awaiting-code" && start && (
             <div className="flex flex-col gap-3">
-              <p className="text-sm text-sg-ink-2">{t(copy.awaitingCode)}</p>
+              {/* Re-surface the flow detail here: the "dead localhost
+                  callback page is expected" guidance matters MOST in this
+                  phase, and the idle-phase Collapsible is long gone. */}
+              <p className="flex items-center gap-1 text-sm text-sg-ink-2">
+                {t(copy.awaitingCode)}
+                <InfoTip
+                  label={t("oauth.detailSummary")}
+                  content={t(copy.detail)}
+                  data-testid="oauth-awaiting-detail-tip"
+                />
+              </p>
               <a
                 href={start.auth_url}
                 target="_blank"

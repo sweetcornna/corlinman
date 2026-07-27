@@ -11,6 +11,7 @@ export const zhCN = {
     saving: "保存中…",
     cancel: "取消",
     close: "关闭",
+    details: "详情",
     confirm: "确认",
     delete: "删除",
     remove: "移除",

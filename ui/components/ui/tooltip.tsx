@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 
 import { Info } from "@/components/icons";
 import { cn } from "@/lib/utils";
@@ -51,12 +52,26 @@ export function Tooltip({
   const hide = React.useCallback(() => setVisible(false), []);
   const show = React.useCallback(() => setVisible(true), []);
 
-  const onKeyDown = React.useCallback(
-    (e: React.KeyboardEvent) => {
+  // Document-level listener so Escape also dismisses the hover-opened
+  // bubble (focus may be nowhere near the wrapper on the hover path).
+  React.useEffect(() => {
+    if (!visible) return;
+    const onDocKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") hide();
-    },
-    [hide],
-  );
+    };
+    document.addEventListener("keydown", onDocKeyDown);
+    return () => document.removeEventListener("keydown", onDocKeyDown);
+  }, [visible, hide]);
+
+  // aria-describedby must sit on the focusable trigger itself, not the
+  // inline wrapper — screen readers only announce the description of
+  // the focused element. Clone-inject when the child is a lone element;
+  // arbitrary child trees keep the (weaker) wrapper-level fallback.
+  const child = React.isValidElement(children)
+    ? React.cloneElement(children as React.ReactElement<Record<string, unknown>>, {
+        "aria-describedby": visible ? id : undefined,
+      })
+    : children;
 
   return (
     <span
@@ -65,11 +80,12 @@ export function Tooltip({
       onMouseLeave={hide}
       onFocus={show}
       onBlur={hide}
-      onKeyDown={onKeyDown}
-      aria-describedby={visible ? id : undefined}
+      aria-describedby={
+        React.isValidElement(children) ? undefined : visible ? id : undefined
+      }
       data-testid={testId}
     >
-      {children}
+      {child}
       {visible ? (
         <span
           role="tooltip"
@@ -109,12 +125,13 @@ export interface InfoTipProps {
  */
 export function InfoTip({
   content,
-  label = "详情",
+  label,
   side = "top",
   className,
   contentClassName,
   "data-testid": testId,
 }: InfoTipProps) {
+  const { t } = useTranslation();
   return (
     <Tooltip
       content={content}
@@ -125,7 +142,7 @@ export function InfoTip({
     >
       <button
         type="button"
-        aria-label={label}
+        aria-label={label ?? t("common.details")}
         className={cn(
           "inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full",
           "align-middle text-sg-ink-4 transition-colors hover:text-sg-ink-2",

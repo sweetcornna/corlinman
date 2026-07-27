@@ -11,6 +11,7 @@ export const en = {
     saving: "Saving…",
     cancel: "Cancel",
     close: "Close",
+    details: "Details",
     confirm: "Confirm",
     delete: "Delete",
     remove: "Remove",

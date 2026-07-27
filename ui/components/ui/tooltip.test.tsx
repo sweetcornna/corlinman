@@ -31,15 +31,33 @@ describe("Tooltip", () => {
       </Tooltip>,
     );
 
-    fireEvent.focus(screen.getByRole("button", { name: "trigger" }));
+    const trigger = screen.getByRole("button", { name: "trigger" });
+    fireEvent.focus(trigger);
     expect(screen.getByRole("tooltip")).toBeTruthy();
-    // aria-describedby links trigger wrapper to the bubble while visible.
-    const wrapper = screen.getByTestId("tip");
-    expect(wrapper.getAttribute("aria-describedby")).toBe(
+    // aria-describedby sits on the focusable TRIGGER (clone-injected) —
+    // wrapper-level describedby is never announced by screen readers.
+    expect(trigger.getAttribute("aria-describedby")).toBe(
       screen.getByRole("tooltip").id,
     );
 
-    fireEvent.keyDown(wrapper, { key: "Escape" });
+    fireEvent.keyDown(trigger, { key: "Escape" });
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    // Cleared once hidden so stale ids never dangle.
+    expect(trigger.getAttribute("aria-describedby")).toBeNull();
+  });
+
+  it("Escape dismisses the hover-opened bubble without focus", () => {
+    render(
+      <Tooltip content="hover contract" data-testid="tip">
+        <button type="button">trigger</button>
+      </Tooltip>,
+    );
+
+    fireEvent.mouseEnter(screen.getByTestId("tip"));
+    expect(screen.getByRole("tooltip")).toBeTruthy();
+    // Focus is elsewhere (document.body) — the document-level listener
+    // must still close the bubble.
+    fireEvent.keyDown(document.body, { key: "Escape" });
     expect(screen.queryByRole("tooltip")).toBeNull();
   });
 });
