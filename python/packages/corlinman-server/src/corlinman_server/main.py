@@ -328,6 +328,16 @@ def _apply_agent_config_from_sidecar(path: str | None) -> None:
     except Exception as exc:  # noqa: BLE001 — never fatal
         logger.warning("web_search.config_apply_failed", error=str(exc))
 
+    try:
+        from corlinman_agent.runtime_defaults import apply_agent_runtime_config
+
+        runtime = apply_agent_runtime_config(_block("agent_runtime"))
+        configured = runtime.as_dict()
+        if configured:
+            logger.info("agent_runtime.config_applied", **configured)
+    except Exception as exc:  # noqa: BLE001 — never fatal
+        logger.warning("agent_runtime.config_apply_failed", error=str(exc))
+
 
 def _load_config(
     path: str | None = None,

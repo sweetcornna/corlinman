@@ -208,6 +208,11 @@ def render_py_config(
         # so CORLINMAN_WEB_SEARCH_* is unreachable there and every native
         # deployment silently fell back to the keyless DuckDuckGo scrape.
         "web_search": _render_web_search(_attr(cfg, "web_search", None)),
+        # The whole `CORLINMAN_*` knob surface the agent reads — round
+        # budgets, compaction thresholds, the execute_code opt-in, the shell
+        # sandbox backend — has the same reachability problem, so it rides
+        # the sidecar too.
+        "agent_runtime": _render_agent_runtime(_attr(cfg, "agent_runtime", None)),
         "embedding": embedding,
         "subagent": subagent,
         "tencent_safety": tencent_safety,
@@ -248,6 +253,82 @@ def _render_web_search(section: Any) -> dict[str, Any] | None:
     api_key = _resolve_secret(_attr(section, "api_key", None))
     if api_key not in (None, ""):
         out["api_key"] = api_key
+    return out or None
+
+
+#: Keys of the ``[agent_runtime]`` block, grouped by wire type. The
+#: renderer is explicit rather than pass-through so a typo in ``config.toml``
+#: is dropped here instead of reaching the agent as a silently-ignored key.
+_AGENT_RUNTIME_INT_KEYS: tuple[str, ...] = (
+    "max_rounds",
+    "tool_result_cap",
+    "tool_result_spill",
+    "turn_output_budget",
+    "context_budget",
+    "context_reserve_cap",
+    "context_reserve_tokens",
+    "compact_summary_cooldown_rounds",
+    "compact_summary_breaker_limit",
+    "shell_tasks_max",
+    "shell_task_max_lifetime_s",
+    "shell_task_max_log_bytes",
+    "shell_task_read_max_bytes",
+    "mailbox_maxsize",
+    "skill_refresh_interval_ms",
+)
+_AGENT_RUNTIME_FLOAT_KEYS: tuple[str, ...] = (
+    "context_reserve_fraction",
+    "compact_summary_threshold",
+)
+_AGENT_RUNTIME_BOOL_KEYS: tuple[str, ...] = (
+    "enable_execute_code",
+    "web_fetch_allow_private",
+    "require_read_before_edit",
+    "strict_mode",
+)
+_AGENT_RUNTIME_STR_KEYS: tuple[str, ...] = (
+    "sandbox_backend",
+    "sandbox_image",
+    "sandbox_user",
+    "python",
+)
+
+
+def _render_agent_runtime(section: Any) -> dict[str, Any] | None:
+    """Render the ``[agent_runtime]`` block for the agent-process sidecar.
+
+    Only keys the operator actually set are emitted. An absent key must
+    stay absent rather than being rendered as its built-in default —
+    ``AgentRuntimeDefaults`` uses ``None`` to mean "not configured", which
+    is what lets the legacy env layer still apply per knob.
+    """
+    if section is None:
+        return None
+    out: dict[str, Any] = {}
+    for key in _AGENT_RUNTIME_INT_KEYS:
+        value = _attr(section, key, None)
+        if value is None or isinstance(value, bool):
+            continue
+        try:
+            out[key] = int(value)
+        except (TypeError, ValueError):
+            continue
+    for key in _AGENT_RUNTIME_FLOAT_KEYS:
+        value = _attr(section, key, None)
+        if value is None or isinstance(value, bool):
+            continue
+        try:
+            out[key] = float(value)
+        except (TypeError, ValueError):
+            continue
+    for key in _AGENT_RUNTIME_BOOL_KEYS:
+        value = _attr(section, key, None)
+        if isinstance(value, bool):
+            out[key] = value
+    for key in _AGENT_RUNTIME_STR_KEYS:
+        value = _attr(section, key, None)
+        if isinstance(value, str) and value.strip():
+            out[key] = value.strip()
     return out or None
 
 

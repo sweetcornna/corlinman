@@ -70,6 +70,8 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, cast
 
+from corlinman_agent import runtime_defaults as _limits
+
 #: POSIX resource limits applied to every spawned child. Tuned for a
 #: build/test workload (running ``pytest``, ``npm``, ``cargo`` etc.)
 #: while still bounding the blast radius of a runaway command.
@@ -471,9 +473,7 @@ class LocalEnvironment(Environment):
     async def spawn_repl(self, *, workspace: Path) -> SpawnedProcess:
         # Interpreter resolution stays live per spawn: an operator override
         # (or a test) takes effect on the next respawn without a restart.
-        python_executable = (
-            os.environ.get("CORLINMAN_PYTHON") or sys.executable or "python3"
-        )
+        python_executable = _limits.python_executable() or sys.executable or "python3"
         spawn_kwargs: dict[str, Any] = {
             "cwd": str(workspace),
             "stdin": asyncio.subprocess.PIPE,
@@ -518,7 +518,7 @@ class DockerEnvironment(Environment):
     ) -> SpawnedProcess:
         self._require_docker()
         name = _container_name()
-        image = os.environ.get(ENV_SANDBOX_IMAGE) or _DEFAULT_SANDBOX_IMAGE
+        image = _limits.sandbox_image() or _DEFAULT_SANDBOX_IMAGE
         argv = _docker_run_argv(
             name=name,
             workspace=workspace,
@@ -528,7 +528,7 @@ class DockerEnvironment(Environment):
             # foreground shell leaves stdin inheriting (stdin is None).
             interactive=stdin is not None,
             env=os.environ,
-            user=os.environ.get(ENV_SANDBOX_USER) or None,
+            user=_limits.sandbox_user() or None,
         )
         spawn_kwargs: dict[str, Any] = {
             "stdout": asyncio.subprocess.PIPE,
@@ -559,7 +559,7 @@ class DockerEnvironment(Environment):
     async def spawn_repl(self, *, workspace: Path) -> SpawnedProcess:
         self._require_docker()
         name = _container_name()
-        image = os.environ.get(ENV_SANDBOX_IMAGE) or _DEFAULT_SANDBOX_IMAGE
+        image = _limits.sandbox_image() or _DEFAULT_SANDBOX_IMAGE
         # The interpreter lives in the image — ``CORLINMAN_PYTHON`` (which the
         # local backend honours) is intentionally ignored here. ``-i`` keeps
         # it reading the stdin pipe; ``-q`` drops the banner; ``-u`` keeps
@@ -572,7 +572,7 @@ class DockerEnvironment(Environment):
             exec_argv=["python3", "-u", "-i", "-q"],
             interactive=True,
             env=os.environ,
-            user=os.environ.get(ENV_SANDBOX_USER) or None,
+            user=_limits.sandbox_user() or None,
         )
         spawn_kwargs: dict[str, Any] = {
             "stdin": asyncio.subprocess.PIPE,
@@ -617,8 +617,11 @@ def get_environment(env: dict[str, str] | None = None) -> Environment:
     :class:`DaemonUnavailableError` when the client binary is absent — rather
     than silently falling back to running on the host.
     """
-    e = env if env is not None else os.environ
-    kind = (e.get(ENV_SANDBOX_BACKEND) or "local").strip().lower()
+    if env is not None:
+        # An explicitly injected mapping is a test seam — honour it verbatim.
+        kind = (env.get(ENV_SANDBOX_BACKEND) or "local").strip().lower()
+    else:
+        kind = _limits.sandbox_backend() or "local"
     if kind in ("", "local"):
         return LocalEnvironment()
     if kind == "docker":

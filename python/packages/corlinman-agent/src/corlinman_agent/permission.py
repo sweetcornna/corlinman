@@ -66,6 +66,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+from corlinman_agent import runtime_defaults as _limits
+
 ALLOW: str = "allow"
 DENY: str = "deny"
 LOG: str = "log"
@@ -720,8 +722,9 @@ class PermissionGate:
         the default (allow-all) — never raises into agent boot.
         """
         rules = parse_rule_list(os.environ.get("CORLINMAN_AGENT_PERMISSIONS", ""))
-        strict_raw = os.environ.get("CORLINMAN_AGENT_STRICT_MODE", "").strip().lower()
-        strict = strict_raw in ("1", "true", "yes", "on")
+        # ``[agent_runtime].strict_mode`` outranks the env var; the rest of
+        # the permission surface is still env-only (audit W3).
+        strict = _limits.strict_mode_enabled()
         mode = PermissionMode.coerce(
             os.environ.get("CORLINMAN_AGENT_PERMISSION_MODE", "")
         )

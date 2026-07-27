@@ -41,6 +41,11 @@ from typing import Any
 
 import structlog
 
+# Every budget knob below is read through ``_limits``, always at call time.
+# Binding one to a module constant would re-freeze it at import — the
+# sidecar that carries ``[agent_runtime]`` is loaded afterwards, so the
+# operator's value would land in a variable nobody reads again.
+from corlinman_agent import runtime_defaults as _limits
 from corlinman_agent.events import (
     BlockStart,
     BlockStop,
@@ -447,11 +452,8 @@ Event = TokenEvent | ToolCallEvent | DoneEvent | ErrorEvent
 # low and left the agent out of rounds before its final answer. Codex /
 # Claude Code style agents need a high ceiling; the doom-loop guard
 # (``_is_awaiting_placeholder``) is the real runaway protection.
-# Override with ``$CORLINMAN_AGENT_MAX_ROUNDS``.
-try:
-    _MAX_ROUNDS = max(8, int(os.environ.get("CORLINMAN_AGENT_MAX_ROUNDS", "60")))
-except ValueError:
-    _MAX_ROUNDS = 60
+# Configured via ``[agent_runtime].max_rounds`` (or the legacy
+# ``$CORLINMAN_AGENT_MAX_ROUNDS``) — see :func:`_limits.max_rounds`.
 
 
 # gap empty-answer-recovery: injected (once) when a turn finishes with no
@@ -475,11 +477,7 @@ _EMPTY_ANSWER_NUDGE = (
 #
 # We keep a head slice (the prompt / first error / file header) and a
 # heavier tail slice (stack traces and the latest exit status live at
-# the tail). Override with ``$CORLINMAN_TOOL_RESULT_CAP``.
-try:
-    _TOOL_RESULT_CAP = max(1_000, int(os.environ.get("CORLINMAN_TOOL_RESULT_CAP", "8000")))
-except ValueError:
-    _TOOL_RESULT_CAP = 8_000
+# the tail). Configured via ``[agent_runtime].tool_result_cap``.
 
 # Head/tail split for the head+tail truncation strategy. The tail is
 # weighted heavier because shell errors and `pytest` failure summaries
@@ -493,90 +491,28 @@ _TOOL_RESULT_TAIL_CHARS = 5_000
 # ``role="tool"`` payloads to a ``_ELIDED_TOOL_PREFIX`` one-liner
 # (kept under-budget for natural idempotence). The most-recent
 # 3 assistant rounds plus the seed system/user messages stay verbatim.
-# Override with ``$CORLINMAN_CONTEXT_BUDGET``; floor mirrors
-# ``_TOOL_RESULT_CAP``'s pattern.
+# Configured via ``[agent_runtime].context_budget``; floor mirrors
+# ``tool_result_cap``'s pattern.
 # Flat fallback budget when neither an operator override nor a
 # model-declared context window is available.
 _CONTEXT_BUDGET_DEFAULT = 120_000
-
-# Operator override. When ``$CORLINMAN_CONTEXT_BUDGET`` is set it PINS the
-# budget for every model (model-aware sizing is skipped); unset → derive
-# per-model from the provider's declared context window (see
-# :func:`_resolve_context_budget`).
-_CONTEXT_BUDGET_ENV_RAW = os.environ.get("CORLINMAN_CONTEXT_BUDGET")
-try:
-    _CONTEXT_BUDGET_OVERRIDE: int | None = (
-        max(8_000, int(_CONTEXT_BUDGET_ENV_RAW)) if _CONTEXT_BUDGET_ENV_RAW is not None else None
-    )
-except ValueError:
-    _CONTEXT_BUDGET_OVERRIDE = None
-
-# Back-compat alias: the resolved flat budget (override if set, else the
-# default). Kept because tests and other modules import this symbol; the
-# live loop now sizes per-model via :func:`_resolve_context_budget`.
-_CONTEXT_BUDGET = _CONTEXT_BUDGET_OVERRIDE or _CONTEXT_BUDGET_DEFAULT
-
-
-# When deriving the budget from a model's full context window, reserve a
-# slice for the response + safety margin. Default: a fraction, capped in
-# absolute terms so a 1M window doesn't reserve an absurd amount. All three
-# knobs are operator-overridable (ABSORB_MATRIX Dim 2 — claude-code exposes a
-# tunable auto-compact buffer). Read at import so they pin per process.
-def _env_positive_float(name: str, default: float) -> float:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        value = float(raw)
-    except ValueError:
-        return default
-    return value if value > 0 else default
-
-
-def _env_positive_int(name: str, default: int, *, floor: int = 1) -> int:
-    """Parse an int env knob, clamped up to ``floor``; bad/absent → ``default``.
-
-    Integer sibling of :func:`_env_positive_float` for the summary
-    cooldown / breaker knobs. A missing or non-integer value falls back to
-    ``default`` (itself already ≥ ``floor`` by construction); a valid but
-    too-small value is floored so a misconfigured ``0`` can't disable the
-    mechanism outright.
-    """
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        value = int(raw)
-    except ValueError:
-        return default
-    return max(floor, value)
-
-
-_CONTEXT_OUTPUT_RESERVE_FRACTION = _env_positive_float("CORLINMAN_CONTEXT_RESERVE_FRACTION", 0.15)
-_CONTEXT_OUTPUT_RESERVE_CAP = int(_env_positive_float("CORLINMAN_CONTEXT_RESERVE_CAP", 48_000))
-# When set, reserve a FIXED number of tokens (claude-code ``AUTOCOMPACT_BUFFER``
-# semantics: ``window - buffer``) instead of the proportional fraction/cap.
-_CONTEXT_RESERVE_TOKENS_RAW = os.environ.get("CORLINMAN_CONTEXT_RESERVE_TOKENS")
-try:
-    _CONTEXT_RESERVE_TOKENS: int | None = (
-        max(0, int(_CONTEXT_RESERVE_TOKENS_RAW))
-        if _CONTEXT_RESERVE_TOKENS_RAW is not None
-        else None
-    )
-except ValueError:
-    _CONTEXT_RESERVE_TOKENS = None
 
 
 def _context_output_reserve(window: int) -> int:
     """Tokens to reserve out of a model's ``window`` for the response margin.
 
-    A fixed ``$CORLINMAN_CONTEXT_RESERVE_TOKENS`` (claude-code-style buffer)
-    wins; otherwise the proportional ``min(window*fraction, cap)``. Clamped so
-    the reserve can never exceed the window.
+    A fixed reserve (``[agent_runtime].context_reserve_tokens``,
+    claude-code ``AUTOCOMPACT_BUFFER`` semantics) wins; otherwise the
+    proportional ``min(window*fraction, cap)``. Clamped so the reserve can
+    never exceed the window.
     """
-    if _CONTEXT_RESERVE_TOKENS is not None:
-        return min(_CONTEXT_RESERVE_TOKENS, window)
-    return min(int(window * _CONTEXT_OUTPUT_RESERVE_FRACTION), _CONTEXT_OUTPUT_RESERVE_CAP)
+    fixed = _limits.context_reserve_tokens()
+    if fixed is not None:
+        return min(fixed, window)
+    return min(
+        int(window * _limits.context_reserve_fraction()),
+        _limits.context_reserve_cap(),
+    )
 
 
 def _resolve_context_budget(provider: Any, model: str | None) -> int:
@@ -584,7 +520,7 @@ def _resolve_context_budget(provider: Any, model: str | None) -> int:
 
     Precedence:
 
-    1. ``$CORLINMAN_CONTEXT_BUDGET`` operator override — pins every model;
+    1. ``[agent_runtime].context_budget`` operator override — pins every model;
     2. the provider's declared context window for ``model`` minus a
        reserved-output margin (model-aware sizing — a 1M-token model no
        longer compacts at a flat 120k, and a 32k model no longer overflows);
@@ -594,8 +530,9 @@ def _resolve_context_budget(provider: Any, model: str | None) -> int:
     accessor, or one returning a non-positive / non-int value, falls
     through to the default.
     """
-    if _CONTEXT_BUDGET_OVERRIDE is not None:
-        return _CONTEXT_BUDGET_OVERRIDE
+    override = _limits.context_budget_override()
+    if override is not None:
+        return override
     accessor = getattr(provider, "context_window", None)
     if accessor is not None and model:
         try:
@@ -647,20 +584,13 @@ _COMPACT_RECENT_ROUNDS = 3
 
 
 # Claude-Code-style summarization threshold. When ``_estimate_tokens``
-# crosses ``budget * _COMPACT_SUMMARY_THRESHOLD`` we fire a dedicated
+# crosses ``budget * compact_summary_threshold()`` we fire a dedicated
 # sub-provider call to compress the older messages into a single
 # system-message summary. Below that, the cheaper tool-result elision
-# fast path runs. Tunable via ``$CORLINMAN_COMPACT_SUMMARY_THRESHOLD``;
-# clamped to ``(0.5, 1.0]`` so a misconfigured value can't disable
-# elision entirely or fire the heavyweight path on every round.
-try:
-    _COMPACT_SUMMARY_THRESHOLD = float(
-        os.environ.get("CORLINMAN_COMPACT_SUMMARY_THRESHOLD", "0.95")
-    )
-except ValueError:
-    _COMPACT_SUMMARY_THRESHOLD = 0.95
-if _COMPACT_SUMMARY_THRESHOLD <= 0.5 or _COMPACT_SUMMARY_THRESHOLD > 1.0:
-    _COMPACT_SUMMARY_THRESHOLD = 0.95
+# fast path runs. Configured via
+# ``[agent_runtime].compact_summary_threshold`` and clamped to
+# ``(0.5, 1.0]`` there, so a misconfigured value can't disable elision
+# entirely or fire the heavyweight path on every round.
 
 
 # Lower threshold for the cheap elision path. Triggers compaction
@@ -683,20 +613,14 @@ _COMPACT_SUMMARY_MAX_TOKENS = 1_500
 # ABSORB_MATRIX Dim 2 (d)/(e) — summary-LLM cooldown / anti-thrash + a
 # consecutive-failure circuit breaker, mirroring the console compactor's
 # breaker (``corlinman_server...console.compaction.Compactor``) at
-# reasoning-loop scope. Read at import so they pin per process; each is
-# floored at 1 so a misconfigured ``0`` can't disable the cooldown or trip
-# the breaker on the very first attempt.
+# reasoning-loop scope. Both live in ``[agent_runtime]`` and are floored at
+# 1 there, so a misconfigured ``0`` can't disable the cooldown or trip the
+# breaker on the very first attempt:
 #
-# ``_COMPACT_SUMMARY_COOLDOWN_ROUNDS`` — how many rounds the slow
+# ``compact_summary_cooldown_rounds`` — how many rounds the slow
 # summarization path is skipped after a failure (or a low-savings streak).
-# ``_COMPACT_SUMMARY_BREAKER_LIMIT`` — consecutive summary failures before
+# ``compact_summary_breaker_limit`` — consecutive summary failures before
 # the slow path is disabled for the rest of the turn.
-_COMPACT_SUMMARY_COOLDOWN_ROUNDS = _env_positive_int(
-    "CORLINMAN_COMPACT_SUMMARY_COOLDOWN_ROUNDS", 5, floor=1
-)
-_COMPACT_SUMMARY_BREAKER_LIMIT = _env_positive_int(
-    "CORLINMAN_COMPACT_SUMMARY_BREAKER_LIMIT", 3, floor=1
-)
 
 # A summary that shrinks the estimate by less than this fraction is barely
 # worth its sub-call cost; a run of
@@ -871,7 +795,7 @@ async def _compact_history(
     Two strategies, picked by token pressure:
 
     1. **Fast path — informative tool-result elision.** Below the
-       summary threshold (``budget * _COMPACT_SUMMARY_THRESHOLD``,
+       summary threshold (``budget * compact_summary_threshold()``,
        default 95% of budget) we replace older ``role="tool"`` payloads
        with the :func:`_elided_tool_summary` one-liner (tool name +
        args hint + original size behind the stable
@@ -943,7 +867,7 @@ async def _compact_history(
     # under pressure (>= threshold * budget) AND we have a provider to
     # call AND the caller hasn't forced fast-only AND the caller-side
     # cooldown / breaker (``summary_allowed``) permits it.
-    summary_threshold = int(budget * _COMPACT_SUMMARY_THRESHOLD)
+    summary_threshold = int(budget * _limits.compact_summary_threshold())
     if (
         not fast_path_only
         and summary_allowed
@@ -1285,25 +1209,15 @@ async def _summarize_old_messages(
 # written to a temp file and replaced in-history with a short handle +
 # head/tail preview, so a runaway ``read_file`` / ``run_shell`` blob
 # never sits verbatim in the context window across every subsequent
-# round. Distinct from ``_TOOL_RESULT_CAP``: the cap head/tail-truncates
+# round. Distinct from the tool-result cap: the cap head/tail-truncates
 # in-place; the spill offloads the FULL payload to disk and leaves a
-# pointer. Override with ``$CORLINMAN_TOOL_RESULT_SPILL``.
-try:
-    _TOOL_RESULT_SPILL_CAP = max(
-        16_000, int(os.environ.get("CORLINMAN_TOOL_RESULT_SPILL", "65536"))
-    )
-except ValueError:
-    _TOOL_RESULT_SPILL_CAP = 65_536
-
-# Per-turn cumulative tool-output budget (chars). Once a single turn's
-# tool results cross this, every subsequent oversized result spills
-# regardless of its individual size, protecting against many medium
-# results that each clear the per-result truncate cap but sum to a
-# context blowout. Override with ``$CORLINMAN_TURN_OUTPUT_BUDGET``.
-try:
-    _TURN_OUTPUT_BUDGET = max(50_000, int(os.environ.get("CORLINMAN_TURN_OUTPUT_BUDGET", "400000")))
-except ValueError:
-    _TURN_OUTPUT_BUDGET = 400_000
+# pointer. Configured via ``[agent_runtime].tool_result_spill``.
+#
+# Per-turn cumulative tool-output budget (chars) lives beside it as
+# ``[agent_runtime].turn_output_budget``. Once a single turn's tool
+# results cross it, every subsequent oversized result spills regardless of
+# its individual size, protecting against many medium results that each
+# clear the per-result truncate cap but sum to a context blowout.
 
 # Preview kept inline when a result is spilled to disk.
 _SPILL_PREVIEW_HEAD = 1_500
@@ -1345,7 +1259,7 @@ def _spill_tool_result(content: str, call_id: str) -> str:
 
 
 def _truncate_tool_result(content: str) -> str:
-    """Cap a tool result at ``_TOOL_RESULT_CAP`` chars, keeping head + tail.
+    """Cap a tool result at ``tool_result_cap()`` chars, keeping head + tail.
 
     Strings at or below the cap pass through unchanged. Otherwise the
     return value is ``head + notice + tail`` where ``head`` is the first
@@ -1354,7 +1268,7 @@ def _truncate_tool_result(content: str) -> str:
     ``\\n…[N chars elided]…\\n``. The final length is therefore strictly
     less than the original ``len(content)`` and bounded by
     ``_TOOL_RESULT_HEAD_CHARS + _TOOL_RESULT_TAIL_CHARS + len(notice)``,
-    which sits under ``_TOOL_RESULT_CAP`` for the default config.
+    which sits under the cap for the default config.
 
     This helper is intentionally pure and idempotent — apply it once at
     history-extension time and freeze the result there.
@@ -1365,7 +1279,8 @@ def _truncate_tool_result(content: str) -> str:
         # tool results are at risk of blowing the budget.
         return content  # type: ignore[return-value]
     n = len(content)
-    if n <= _TOOL_RESULT_CAP:
+    cap = _limits.tool_result_cap()
+    if n <= cap:
         return content
     head = content[:_TOOL_RESULT_HEAD_CHARS]
     tail = content[-_TOOL_RESULT_TAIL_CHARS:]
@@ -1448,7 +1363,7 @@ class ReasoningLoop:
         # naturally per construction and are re-zeroed in ``run()`` too
         # (mirroring ``_auto_continue_count``) for reused instances.
         # ``_summary_failures`` counts consecutive slow-path failures; at
-        # ``_COMPACT_SUMMARY_BREAKER_LIMIT`` the summarizer is disabled for
+        # ``compact_summary_breaker_limit()`` the summarizer is disabled for
         # the rest of the turn (``_summary_disabled``).
         # ``_summary_cooldown_until_round`` is the earliest round the slow
         # path may fire again. ``_summary_low_savings_streak`` counts
@@ -1804,7 +1719,7 @@ class ReasoningLoop:
         # WP11: effective model — may switch to a fallback on ModelNotFoundError.
         effective_model: str = start.model
         # Cumulative chars of tool output appended to history this turn.
-        # Crossing ``_TURN_OUTPUT_BUDGET`` flips subsequent oversized
+        # Crossing ``turn_output_budget()`` flips subsequent oversized
         # results to spill-to-disk (see ``_extend_with_tool_round``).
         turn_output_spent: int = 0
         # gap empty-answer-recovery: did THIS turn ever stream visible
@@ -1816,7 +1731,7 @@ class ReasoningLoop:
         turn_saw_reasoning = False
         empty_answer_nudged = False
 
-        while rounds < _MAX_ROUNDS:
+        while rounds < _limits.max_rounds():
             if self._cancelled.is_set():
                 await self._emit(
                     TurnErrored(
@@ -2006,7 +1921,7 @@ class ReasoningLoop:
                         if isinstance(_limit, int) and _limit > 0:
                             _input_est = self.messages_total_token_estimate(messages)
                             _buffer = max(
-                                int(_limit * _CONTEXT_OUTPUT_RESERVE_FRACTION),
+                                int(_limit * _limits.context_reserve_fraction()),
                                 2_000,
                             )
                             tighter_budget = max(8_000, _limit - _buffer)
@@ -2660,11 +2575,11 @@ class ReasoningLoop:
 
         * A FAILED summary sub-call increments the consecutive-failure
           count and parks the slow path for exactly
-          ``_COMPACT_SUMMARY_COOLDOWN_ROUNDS`` rounds — the ``+ 1`` in the
+          ``compact_summary_cooldown_rounds()`` rounds — the ``+ 1`` in the
           assignment makes the knob mean "N whole rounds are skipped"
           against the caller's ``rounds >= until`` gate, so ``=1`` skips
           one round instead of retrying immediately (Codex #111). At
-          ``_COMPACT_SUMMARY_BREAKER_LIMIT`` failures it is disabled for
+          ``compact_summary_breaker_limit()`` failures it is disabled for
           the rest of the turn (one warning log).
         * A SUCCESSFUL summary re-arms the failure count. A run of
           low-savings successes (each shrinking the window by less than
@@ -2679,19 +2594,21 @@ class ReasoningLoop:
                 return
             if outcome.get("summary_failed"):
                 self._summary_failures += 1
-                self._summary_cooldown_until_round = rounds + _COMPACT_SUMMARY_COOLDOWN_ROUNDS + 1
+                self._summary_cooldown_until_round = (
+                    rounds + _limits.compact_summary_cooldown_rounds() + 1
+                )
                 # A failure breaks the low-savings SUCCESS streak too —
                 # anti-thrash must only fire on truly consecutive
                 # low-savings successes (Codex #111).
                 self._summary_low_savings_streak = 0
-                if self._summary_failures >= _COMPACT_SUMMARY_BREAKER_LIMIT and (
+                if self._summary_failures >= _limits.compact_summary_breaker_limit() and (
                     not self._summary_disabled
                 ):
                     self._summary_disabled = True
                     logger.warning(
                         "reasoning_loop.summary_breaker_tripped",
                         failures=self._summary_failures,
-                        limit=_COMPACT_SUMMARY_BREAKER_LIMIT,
+                        limit=_limits.compact_summary_breaker_limit(),
                     )
                 return
             # Success — re-arm the failure streak.
@@ -2702,7 +2619,9 @@ class ReasoningLoop:
             else:
                 self._summary_low_savings_streak = 0
             if self._summary_low_savings_streak >= _COMPACT_SUMMARY_LOW_SAVINGS_STREAK_LIMIT:
-                self._summary_cooldown_until_round = rounds + _COMPACT_SUMMARY_COOLDOWN_ROUNDS + 1
+                self._summary_cooldown_until_round = (
+                    rounds + _limits.compact_summary_cooldown_rounds() + 1
+                )
                 self._summary_low_savings_streak = 0
         except Exception as exc:  # noqa: BLE001 — bookkeeping must never break the loop
             logger.warning("reasoning_loop.summary_breaker_state_error", error=str(exc))
@@ -3093,9 +3012,9 @@ def _extend_with_tool_round(
     already seen in ``messages`` to prevent context bloat from repeated
     identical tool calls.
 
-    Spill (gap-fill): a result larger than ``_TOOL_RESULT_SPILL_CAP`` — or
+    Spill (gap-fill): a result larger than ``tool_result_spill()`` — or
     any result once the turn's cumulative tool output (``turn_output_spent``,
-    supplied by the caller) crosses ``_TURN_OUTPUT_BUDGET`` — is written to
+    supplied by the caller) crosses ``turn_output_budget()`` — is written to
     a temp file and replaced in-history with a short handle + preview,
     instead of the per-result head/tail truncation. ``turn_output_spent``
     defaults to ``0`` so legacy call sites (and direct unit tests) keep the
@@ -3136,8 +3055,9 @@ def _extend_with_tool_round(
             # Spill when this single result is huge, OR the turn's
             # cumulative tool output has crossed the budget and this
             # result is itself non-trivial.
-            if len(r.content) >= _TOOL_RESULT_SPILL_CAP or (
-                _running_spent >= _TURN_OUTPUT_BUDGET and len(r.content) > _TOOL_RESULT_CAP
+            if len(r.content) >= _limits.tool_result_spill() or (
+                _running_spent >= _limits.turn_output_budget()
+                and len(r.content) > _limits.tool_result_cap()
             ):
                 tool_content = _spill_tool_result(r.content, r.call_id)
             else:

@@ -25,6 +25,7 @@ from typing import Any
 import structlog
 import yaml  # type: ignore[import-untyped]
 
+from corlinman_agent import runtime_defaults as _limits
 from corlinman_agent.skills.card import Skill, SkillRequirements
 
 _log = structlog.get_logger(__name__)
@@ -44,13 +45,7 @@ _DEFAULT_SKILL_REFRESH_INTERVAL_MS: int = 30_000
 
 
 def _default_refresh_interval_ms() -> int:
-    raw = os.environ.get("CORLINMAN_SKILL_REFRESH_INTERVAL_MS")
-    if raw is None or raw == "":
-        return _DEFAULT_SKILL_REFRESH_INTERVAL_MS
-    try:
-        return max(0, int(raw))
-    except ValueError:
-        return _DEFAULT_SKILL_REFRESH_INTERVAL_MS
+    return _limits.skill_refresh_interval_ms()
 
 
 @dataclass(frozen=True)

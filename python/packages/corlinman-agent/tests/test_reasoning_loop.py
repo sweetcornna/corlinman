@@ -23,8 +23,28 @@ from corlinman_agent import (
     ToolCallEvent,
     ToolResult,
 )
+from corlinman_agent import runtime_defaults as limits
 from corlinman_providers.base import ProviderChunk
 from corlinman_providers.specs import ProviderKind
+
+#: Lowest budget the resolver will honour — a smaller one would compact on
+#: every round, so ``context_budget`` is floored there whether it arrives
+#: from config or from the env var.
+_MIN_CONTEXT_BUDGET = 8_000
+
+
+def _configure(**values: Any) -> None:
+    """Install an ``[agent_runtime]`` block for one test.
+
+    Drives the same seam the sidecar does, so these tests fail if the
+    config→behaviour path breaks — which patching a module constant could
+    never catch. The repo-root autouse fixture resets it afterwards.
+
+    **Replaces**, never merges: that is the sidecar's own semantic (a key
+    an operator deletes must go back to unconfigured), so pass every knob a
+    test needs in one call.
+    """
+    limits.apply_agent_runtime_config(values)
 
 
 class _FakeProvider:
@@ -513,10 +533,8 @@ async def test_attachment_image_bytes_become_data_url() -> None:
 
 def test_truncate_tool_result_keeps_head_and_tail() -> None:
     """A 20k-char string is capped under the limit and keeps head+tail."""
-    from corlinman_agent.reasoning_loop import (
-        _TOOL_RESULT_CAP,
-        _truncate_tool_result,
-    )
+    from corlinman_agent.reasoning_loop import _truncate_tool_result
+    from corlinman_agent.runtime_defaults import tool_result_cap
 
     head_chunk = "H" * 1_000
     middle_chunk = "M" * 15_000
@@ -527,8 +545,8 @@ def test_truncate_tool_result_keeps_head_and_tail() -> None:
     out = _truncate_tool_result(original)
 
     # Capped under the limit; the elision notice + head + tail fit
-    # comfortably inside _TOOL_RESULT_CAP.
-    assert len(out) < _TOOL_RESULT_CAP
+    # comfortably inside the cap.
+    assert len(out) < tool_result_cap()
     # The first 1k chars of the original are at the start of the result
     # (the head slice is 2k chars so the leading 'H' block is fully
     # preserved).
@@ -551,10 +569,8 @@ def test_truncate_tool_result_passthrough_under_cap() -> None:
 
 def test_extend_with_tool_round_truncates_long_result() -> None:
     """``_extend_with_tool_round`` caps each result before history-append."""
-    from corlinman_agent.reasoning_loop import (
-        _TOOL_RESULT_CAP,
-        _extend_with_tool_round,
-    )
+    from corlinman_agent.reasoning_loop import _extend_with_tool_round
+    from corlinman_agent.runtime_defaults import tool_result_cap
 
     call = ToolCallEvent(
         call_id="call_1",
@@ -575,7 +591,7 @@ def test_extend_with_tool_round_truncates_long_result() -> None:
     capped = tool_msg["content"]
     assert isinstance(capped, str)
     # Strictly below the configured cap.
-    assert len(capped) < _TOOL_RESULT_CAP
+    assert len(capped) < tool_result_cap()
     # Carries the elision notice — proves truncation actually fired.
     assert "elided" in capped
 
@@ -1356,19 +1372,21 @@ async def test_summary_pressure_prefers_elide_when_it_saves_enough() -> None:
     must NOT fire.
     """
     from corlinman_agent.reasoning_loop import (
-        _COMPACT_SUMMARY_THRESHOLD,
         _ELIDED_TOOL_PREFIX,
         _compact_history,
         _estimate_tokens,
     )
+    from corlinman_agent.runtime_defaults import compact_summary_threshold
+
+    threshold = compact_summary_threshold()
 
     messages = _huge_tool_history(rounds=6, char_count=1_000)
     before = _estimate_tokens(messages)
     # Budget bracketing: original estimate ≥ 95% of budget (summary
     # pressure), but the post-elide estimate (recent 3 rounds verbatim ≈
     # half the payload) lands well under it.
-    budget = int(before / _COMPACT_SUMMARY_THRESHOLD)
-    assert before >= int(budget * _COMPACT_SUMMARY_THRESHOLD), "bracket invariant"
+    budget = int(before / threshold)
+    assert before >= int(budget * threshold), "bracket invariant"
 
     class _NeverCalledProvider:
         async def chat_stream(self, **_: Any) -> AsyncIterator[ProviderChunk]:  # type: ignore[override]
@@ -1382,7 +1400,7 @@ async def test_summary_pressure_prefers_elide_when_it_saves_enough() -> None:
         model="x",
     )
     after = _estimate_tokens(out)
-    assert after < int(budget * _COMPACT_SUMMARY_THRESHOLD)
+    assert after < int(budget * threshold)
     tool_msgs = [m for m in out if m.get("role") == "tool"]
     assert any(m["content"].startswith(_ELIDED_TOOL_PREFIX) for m in tool_msgs)
 
@@ -1917,7 +1935,6 @@ def test_resolve_context_budget_uses_model_window_minus_reserve(
     from corlinman_agent import reasoning_loop as rl
 
     monkeypatch.delenv("CORLINMAN_CONTEXT_BUDGET", raising=False)
-    monkeypatch.setattr(rl, "_CONTEXT_BUDGET_OVERRIDE", None)
 
     class _P:
         def context_window(self, model: str) -> int | None:
@@ -1935,14 +1952,13 @@ def test_resolve_context_budget_reserve_is_capped(
     from corlinman_agent import reasoning_loop as rl
 
     monkeypatch.delenv("CORLINMAN_CONTEXT_BUDGET", raising=False)
-    monkeypatch.setattr(rl, "_CONTEXT_BUDGET_OVERRIDE", None)
 
     class _P:
         def context_window(self, model: str) -> int | None:
             return 1_000_000
 
     budget = rl._resolve_context_budget(_P(), "m")
-    assert budget == 1_000_000 - rl._CONTEXT_OUTPUT_RESERVE_CAP
+    assert budget == 1_000_000 - limits.context_reserve_cap()
 
 
 def test_resolve_context_budget_fixed_reserve_buffer(
@@ -1954,8 +1970,7 @@ def test_resolve_context_budget_fixed_reserve_buffer(
     from corlinman_agent import reasoning_loop as rl
 
     monkeypatch.delenv("CORLINMAN_CONTEXT_BUDGET", raising=False)
-    monkeypatch.setattr(rl, "_CONTEXT_BUDGET_OVERRIDE", None)
-    monkeypatch.setattr(rl, "_CONTEXT_RESERVE_TOKENS", 13_000)
+    _configure(context_reserve_tokens=13_000)
 
     class _P:
         def context_window(self, model: str) -> int | None:
@@ -1971,10 +1986,7 @@ def test_resolve_context_budget_reserve_fraction_and_cap_overridable(
     from corlinman_agent import reasoning_loop as rl
 
     monkeypatch.delenv("CORLINMAN_CONTEXT_BUDGET", raising=False)
-    monkeypatch.setattr(rl, "_CONTEXT_BUDGET_OVERRIDE", None)
-    monkeypatch.setattr(rl, "_CONTEXT_RESERVE_TOKENS", None)
-    monkeypatch.setattr(rl, "_CONTEXT_OUTPUT_RESERVE_FRACTION", 0.25)
-    monkeypatch.setattr(rl, "_CONTEXT_OUTPUT_RESERVE_CAP", 100_000)
+    _configure(context_reserve_fraction=0.25, context_reserve_cap=100_000)
 
     class _P:
         def context_window(self, model: str) -> int | None:
@@ -2057,19 +2069,24 @@ async def test_summary_failure_sets_cooldown(monkeypatch: pytest.MonkeyPatch) ->
     re-attempted until ``_COMPACT_SUMMARY_COOLDOWN_ROUNDS`` rounds later —
     counted via the provider's summary sub-calls.
     """
-    from corlinman_agent import reasoning_loop as rl_mod
 
-    # Tight budget so any non-trivial history clears the summary threshold;
-    # small cooldown; breaker high so it can't interfere with this test.
-    monkeypatch.setattr(rl_mod, "_CONTEXT_BUDGET_OVERRIDE", 200)
-    monkeypatch.setattr(rl_mod, "_COMPACT_SUMMARY_COOLDOWN_ROUNDS", 3)
-    monkeypatch.setattr(rl_mod, "_COMPACT_SUMMARY_BREAKER_LIMIT", 99)
+    # Budget at its floor, and per-round tool output far above it, so the
+    # summary threshold is cleared every round even after elision (the 3
+    # most recent rounds stay verbatim). The truncate cap is lifted so the
+    # payload reaches history at full size.
+    _configure(
+        context_budget=_MIN_CONTEXT_BUDGET,
+        tool_result_cap=1_000_000,
+        tool_result_spill=1_000_000,
+        compact_summary_cooldown_rounds=3,
+        compact_summary_breaker_limit=99,
+    )
 
     prov = _SummaryFailProvider(tool_rounds=5)
     loop = ReasoningLoop(prov, tool_result_timeout=1.0)
-    start = ChatStart(model="x", messages=_huge_tool_history(rounds=6, char_count=1_000))
+    start = ChatStart(model="x", messages=_huge_tool_history(rounds=6, char_count=8_000))
 
-    await asyncio.wait_for(_drive(loop, start, tool_content="Z" * 4_000), timeout=3.0)
+    await asyncio.wait_for(_drive(loop, start, tool_content="Z" * 40_000), timeout=3.0)
 
     # Compaction rounds r=0..5. Attempts: r=0 (fail → cooldown_until=0+3+1=4,
     # i.e. exactly 3 rounds skipped), suppressed r=1,2,3, re-attempt r=4
@@ -2085,19 +2102,22 @@ async def test_summary_breaker_disables_after_limit(monkeypatch: pytest.MonkeyPa
     disabled for the rest of the turn — no further attempts even once the
     cooldown would have elapsed (ABSORB_MATRIX Dim 2 (e)).
     """
-    from corlinman_agent import reasoning_loop as rl_mod
 
-    monkeypatch.setattr(rl_mod, "_CONTEXT_BUDGET_OVERRIDE", 200)
     # Cooldown of 1 so a would-be re-attempt is allowed every round; only
     # the breaker keeps the summarizer off.
-    monkeypatch.setattr(rl_mod, "_COMPACT_SUMMARY_COOLDOWN_ROUNDS", 1)
-    monkeypatch.setattr(rl_mod, "_COMPACT_SUMMARY_BREAKER_LIMIT", 3)
+    _configure(
+        context_budget=_MIN_CONTEXT_BUDGET,
+        tool_result_cap=1_000_000,
+        tool_result_spill=1_000_000,
+        compact_summary_cooldown_rounds=1,
+        compact_summary_breaker_limit=3,
+    )
 
     prov = _SummaryFailProvider(tool_rounds=6)
     loop = ReasoningLoop(prov, tool_result_timeout=1.0)
-    start = ChatStart(model="x", messages=_huge_tool_history(rounds=6, char_count=1_000))
+    start = ChatStart(model="x", messages=_huge_tool_history(rounds=6, char_count=8_000))
 
-    await asyncio.wait_for(_drive(loop, start, tool_content="Z" * 4_000), timeout=3.0)
+    await asyncio.wait_for(_drive(loop, start, tool_content="Z" * 40_000), timeout=3.0)
 
     # r=0 fail (cd=1), r=1 fail (cd=2), r=2 fail → breaker trips. r=3+ are
     # never re-attempted despite the 1-round cooldown having elapsed.
@@ -2115,8 +2135,10 @@ async def test_summary_success_resets_failure_count(monkeypatch: pytest.MonkeyPa
     """
     from corlinman_agent import reasoning_loop as rl_mod
 
-    monkeypatch.setattr(rl_mod, "_COMPACT_SUMMARY_COOLDOWN_ROUNDS", 1)
-    monkeypatch.setattr(rl_mod, "_COMPACT_SUMMARY_BREAKER_LIMIT", 99)
+    _configure(
+        compact_summary_cooldown_rounds=1,
+        compact_summary_breaker_limit=99,
+    )
 
     prov = _MultiRoundProvider([_tool_round(f"c{i}") for i in range(4)])
     loop = ReasoningLoop(prov, tool_result_timeout=1.0)
@@ -2167,8 +2189,10 @@ async def test_summary_low_savings_streak_trips_cooldown(monkeypatch: pytest.Mon
     """
     from corlinman_agent import reasoning_loop as rl_mod
 
-    monkeypatch.setattr(rl_mod, "_COMPACT_SUMMARY_COOLDOWN_ROUNDS", 3)
-    monkeypatch.setattr(rl_mod, "_COMPACT_SUMMARY_BREAKER_LIMIT", 99)
+    _configure(
+        compact_summary_cooldown_rounds=3,
+        compact_summary_breaker_limit=99,
+    )
 
     allowed_seen: list[bool] = []
 
@@ -2211,8 +2235,10 @@ async def test_summary_failure_resets_low_savings_streak(monkeypatch: pytest.Mon
     """
     from corlinman_agent import reasoning_loop as rl_mod
 
-    monkeypatch.setattr(rl_mod, "_COMPACT_SUMMARY_COOLDOWN_ROUNDS", 2)
-    monkeypatch.setattr(rl_mod, "_COMPACT_SUMMARY_BREAKER_LIMIT", 99)
+    _configure(
+        compact_summary_cooldown_rounds=2,
+        compact_summary_breaker_limit=99,
+    )
 
     # Scripted per-attempt outcomes: low-savings success, then failure,
     # then low-savings success — the third must NOT trip the streak
@@ -2350,37 +2376,34 @@ async def test_compact_outcome_records_summary_failure() -> None:
     assert outcome["summary_saved_fraction"] == 0.0
 
 
-def test_env_positive_int_parses_and_floors(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``_env_positive_int``: default when unset/garbage, override when
-    valid, floored when below the floor.
+def test_cooldown_breaker_knobs_parse_and_floor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Config wins over env; both are floored at 1.
+
+    A ``0`` must not disable the cooldown or trip the breaker on the very
+    first attempt, whichever layer it came from.
     """
-    from corlinman_agent import reasoning_loop as rl
+    monkeypatch.delenv("CORLINMAN_COMPACT_SUMMARY_COOLDOWN_ROUNDS", raising=False)
+    assert limits.compact_summary_cooldown_rounds() == 5  # built-in default
 
-    name = "CORLINMAN_TEST_POSITIVE_INT_XYZ"
-    monkeypatch.delenv(name, raising=False)
-    assert rl._env_positive_int(name, 5, floor=1) == 5  # default
-    monkeypatch.setenv(name, "8")
-    assert rl._env_positive_int(name, 5, floor=1) == 8  # override
-    monkeypatch.setenv(name, "garbage")
-    assert rl._env_positive_int(name, 5, floor=1) == 5  # bad → default
-    monkeypatch.setenv(name, "0")
-    assert rl._env_positive_int(name, 5, floor=1) == 1  # below floor → floored
-    monkeypatch.setenv(name, "-4")
-    assert rl._env_positive_int(name, 5, floor=1) == 1  # negative → floored
+    monkeypatch.setenv("CORLINMAN_COMPACT_SUMMARY_COOLDOWN_ROUNDS", "8")
+    assert limits.compact_summary_cooldown_rounds() == 8  # env override
+    monkeypatch.setenv("CORLINMAN_COMPACT_SUMMARY_COOLDOWN_ROUNDS", "garbage")
+    assert limits.compact_summary_cooldown_rounds() == 5  # bad → default
+    monkeypatch.setenv("CORLINMAN_COMPACT_SUMMARY_COOLDOWN_ROUNDS", "0")
+    assert limits.compact_summary_cooldown_rounds() == 1  # floored
 
-
-def test_compact_summary_cooldown_breaker_knob_defaults() -> None:
-    """The import-time cooldown / breaker knobs land at their floored defaults."""
-    from corlinman_agent import reasoning_loop as rl
-
-    assert rl._COMPACT_SUMMARY_COOLDOWN_ROUNDS >= 1
-    assert rl._COMPACT_SUMMARY_BREAKER_LIMIT >= 1
+    _configure(compact_summary_cooldown_rounds=3, compact_summary_breaker_limit=0)
+    assert limits.compact_summary_cooldown_rounds() == 3  # config beats env
+    assert limits.compact_summary_breaker_limit() == 1  # floored
 
 
-def test_env_positive_float_rejects_bad_values() -> None:
-    from corlinman_agent import reasoning_loop as rl
-
-    assert rl._env_positive_float("CORLINMAN_NO_SUCH_ENV_XYZ", 0.15) == 0.15
+def test_reserve_fraction_rejects_bad_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CORLINMAN_CONTEXT_RESERVE_FRACTION", raising=False)
+    assert limits.context_reserve_fraction() == 0.15
+    monkeypatch.setenv("CORLINMAN_CONTEXT_RESERVE_FRACTION", "not-a-number")
+    assert limits.context_reserve_fraction() == 0.15
+    monkeypatch.setenv("CORLINMAN_CONTEXT_RESERVE_FRACTION", "-1")
+    assert limits.context_reserve_fraction() == 0.15
 
 
 def test_resolve_context_budget_falls_back_without_accessor(
@@ -2390,7 +2413,6 @@ def test_resolve_context_budget_falls_back_without_accessor(
     from corlinman_agent import reasoning_loop as rl
 
     monkeypatch.delenv("CORLINMAN_CONTEXT_BUDGET", raising=False)
-    monkeypatch.setattr(rl, "_CONTEXT_BUDGET_OVERRIDE", None)
 
     budget = rl._resolve_context_budget(object(), "anything")
     assert budget == rl._CONTEXT_BUDGET_DEFAULT
@@ -2402,7 +2424,7 @@ def test_resolve_context_budget_override_pins_every_model(
     """An explicit operator override wins over the model window."""
     from corlinman_agent import reasoning_loop as rl
 
-    monkeypatch.setattr(rl, "_CONTEXT_BUDGET_OVERRIDE", 50_000)
+    _configure(context_budget=50_000)
 
     class _P:
         def context_window(self, model: str) -> int | None:
@@ -2418,7 +2440,6 @@ def test_resolve_context_budget_bad_accessor_value_falls_back(
     from corlinman_agent import reasoning_loop as rl
 
     monkeypatch.delenv("CORLINMAN_CONTEXT_BUDGET", raising=False)
-    monkeypatch.setattr(rl, "_CONTEXT_BUDGET_OVERRIDE", None)
 
     class _Zero:
         def context_window(self, model: str) -> int:

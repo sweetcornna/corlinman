@@ -24,6 +24,7 @@ from typing import Any
 
 import structlog
 
+from corlinman_agent import runtime_defaults as _limits
 from corlinman_agent.coding._common import (
     MAX_READ_CHARS,
     MAX_WRITE_BYTES,
@@ -54,12 +55,7 @@ def _require_read_before_edit() -> bool:
     produced out-of-band. Read at call time so tests/operators can flip
     it via the environment.
     """
-    return os.environ.get("CORLINMAN_REQUIRE_READ_BEFORE_EDIT", "1").strip().lower() not in {
-        "0",
-        "false",
-        "no",
-        "",
-    }
+    return _limits.require_read_before_edit()
 
 
 logger = structlog.get_logger(__name__)

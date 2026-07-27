@@ -26,6 +26,10 @@ from pathlib import Path
 
 import pytest
 from corlinman_agent.image.defaults import get_image_defaults, reset_image_defaults
+from corlinman_agent.runtime_defaults import (
+    get_agent_runtime_defaults,
+    reset_agent_runtime_defaults,
+)
 from corlinman_agent.voice import get_voice_defaults, reset_voice_defaults
 from corlinman_agent.web.defaults import (
     get_web_search_defaults,
@@ -47,6 +51,11 @@ _CONFIG = {
     },
     "voice": {"backend": "gemini", "voice": "Kore"},
     "web_search": {"backend": "serpapi", "api_key": "k-1"},
+    "agent_runtime": {
+        "max_rounds": 24,
+        "enable_execute_code": True,
+        "sandbox_backend": "docker",
+    },
 }
 
 
@@ -56,14 +65,16 @@ def _clean() -> Iterator[None]:
         reset_voice_defaults()
         reset_image_defaults()
         reset_web_search_defaults()
+        reset_agent_runtime_defaults()
 
     _reset()
     yield
     _reset()
 
 
-def _installed() -> dict[str, str]:
+def _installed() -> dict[str, object]:
     """The agent-visible state each path is supposed to produce."""
+    runtime = get_agent_runtime_defaults()
     return {
         "voice_backend": get_voice_defaults().backend,
         "voice": get_voice_defaults().voice,
@@ -71,6 +82,9 @@ def _installed() -> dict[str, str]:
         "image_model": get_image_defaults().model,
         "search_backend": get_web_search_defaults().backend,
         "search_key": get_web_search_defaults().api_key,
+        "max_rounds": runtime.max_rounds,
+        "execute_code": runtime.enable_execute_code,
+        "sandbox_backend": runtime.sandbox_backend,
     }
 
 
@@ -81,6 +95,9 @@ _EXPECTED = {
     "image_model": "gpt-image-2",
     "search_backend": "serpapi",
     "search_key": "k-1",
+    "max_rounds": 24,
+    "execute_code": True,
+    "sandbox_backend": "docker",
 }
 
 
@@ -106,6 +123,7 @@ def test_the_two_paths_agree(tmp_path: Path) -> None:
     reset_voice_defaults()
     reset_image_defaults()
     reset_web_search_defaults()
+    reset_agent_runtime_defaults()
 
     sidecar = tmp_path / "py-config.json"
     sidecar.write_text(json.dumps(render_py_config(_CONFIG)), encoding="utf-8")
@@ -118,7 +136,9 @@ def test_every_section_the_hook_reads_is_a_hot_reload_trigger() -> None:
     """``_config_swap_fn`` re-runs the hook only for sections in this set;
     a block read by the hook but missing here would land in config.toml
     and stop there until the next restart."""
-    assert _AGENT_CONFIG_SECTIONS == frozenset({"voice", "models", "web_search"})
+    assert _AGENT_CONFIG_SECTIONS == frozenset(
+        {"voice", "models", "web_search", "agent_runtime"}
+    )
 
 
 def test_one_bad_block_does_not_stop_the_others(
@@ -166,7 +186,12 @@ def test_unreadable_sidecar_is_survivable(tmp_path: Path) -> None:
 def test_malformed_blocks_do_not_raise(tmp_path: Path) -> None:
     """Both paths are best-effort: a bad block must not take the process
     down at boot."""
-    broken = {"voice": "not-a-table", "models": 7, "web_search": []}
+    broken = {
+        "voice": "not-a-table",
+        "models": 7,
+        "web_search": [],
+        "agent_runtime": "nope",
+    }
     _apply_agent_side_config(broken)
 
     sidecar = tmp_path / "py-config.json"

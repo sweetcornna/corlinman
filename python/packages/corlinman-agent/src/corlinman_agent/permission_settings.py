@@ -44,6 +44,7 @@ from typing import Any
 
 import structlog
 
+from corlinman_agent import runtime_defaults as _limits
 from corlinman_agent.permission import PermissionGate, PermissionMode
 
 logger = structlog.get_logger(__name__)
@@ -138,8 +139,13 @@ def build_permission_gate(
 
     env_rules_raw = os.environ.get("CORLINMAN_AGENT_PERMISSIONS", "")
 
+    # Config outranks the env var, which in turn outranks the settings
+    # files — same order the rest of the agent uses.
+    cfg_strict = _limits.get_agent_runtime_defaults().strict_mode
     strict_env = os.environ.get("CORLINMAN_AGENT_STRICT_MODE", "").strip().lower()
-    if strict_env:
+    if cfg_strict is not None:
+        strict = cfg_strict
+    elif strict_env:
         strict = strict_env in ("1", "true", "yes", "on")
     elif proj_strict is not None:
         strict = proj_strict

@@ -46,9 +46,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import time
 from typing import TypedDict
+
+from corlinman_agent import runtime_defaults as _limits
 
 logger = logging.getLogger(__name__)
 
@@ -71,14 +72,7 @@ def _resolve_maxsize() -> int:
     unbounded queue is never allowed here — that is the bug we are
     fixing).
     """
-    raw = os.environ.get("CORLINMAN_MAILBOX_MAXSIZE")
-    if raw is None:
-        return 1024
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        return 1024
-    return value if value > 0 else 1024
+    return _limits.mailbox_maxsize()
 
 
 #: Bounded capacity of each mailbox queue.  Resolved once at import time

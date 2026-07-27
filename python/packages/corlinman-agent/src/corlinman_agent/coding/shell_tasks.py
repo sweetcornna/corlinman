@@ -55,7 +55,6 @@ import asyncio
 import atexit
 import contextlib
 import json
-import os
 import time
 import uuid
 from collections import deque
@@ -65,6 +64,7 @@ from typing import Any
 
 import structlog
 
+from corlinman_agent import runtime_defaults as _limits
 from corlinman_agent.coding._common import (
     CodingArgsInvalidError,
     decode_args,
@@ -138,48 +138,27 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+# Each knob resolves ``[agent_runtime]`` config first, then the legacy
+# ``CORLINMAN_SHELL_TASK*`` env var, then the built-in default — and does
+# so per call, so a config change takes effect on the next spawn without a
+# restart. Clamping lives in :mod:`corlinman_agent.runtime_defaults` so a
+# value cannot mean one thing from config and another from the env.
+
+
 def _env_max_concurrent() -> int:
-    raw = os.environ.get("CORLINMAN_SHELL_TASKS_MAX")
-    if raw:
-        try:
-            return max(1, int(raw))
-        except ValueError:
-            pass
-    return _DEFAULT_MAX_CONCURRENT
+    return _limits.shell_tasks_max()
 
 
 def _env_max_lifetime_s() -> float:
-    raw = os.environ.get("CORLINMAN_SHELL_TASK_MAX_LIFETIME_S")
-    if raw:
-        try:
-            # Floor at a small positive value so a misconfigured 0 can't
-            # disable the watchdog entirely (or divide-by-zero a caller).
-            return max(0.1, float(raw))
-        except ValueError:
-            pass
-    return _DEFAULT_MAX_LIFETIME_S
+    return _limits.shell_task_max_lifetime_s()
 
 
 def _env_max_log_bytes() -> int:
-    raw = os.environ.get("CORLINMAN_SHELL_TASK_MAX_LOG_BYTES")
-    if raw:
-        try:
-            # Floor so a misconfigured tiny cap still leaves room for a pump
-            # chunk + the marker line rather than truncating to nothing.
-            return max(_MIN_MAX_LOG_BYTES, int(raw))
-        except ValueError:
-            pass
-    return _DEFAULT_MAX_LOG_BYTES
+    return _limits.shell_task_max_log_bytes()
 
 
 def _env_read_max_bytes() -> int:
-    raw = os.environ.get("CORLINMAN_SHELL_TASK_READ_MAX_BYTES")
-    if raw:
-        try:
-            return max(_MIN_READ_MAX_BYTES, int(raw))
-        except ValueError:
-            pass
-    return _DEFAULT_READ_MAX_BYTES
+    return _limits.shell_task_read_max_bytes()
 
 
 def _unlink_quietly(path: Path | None) -> None:
