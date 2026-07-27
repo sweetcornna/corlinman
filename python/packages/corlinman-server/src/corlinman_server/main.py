@@ -220,7 +220,7 @@ class _ReloadingProviderResolver:
             return
         is_first_load = self._mtime is None
         specs, aliases, subagent_config = _load_config(self._path)
-        _apply_voice_config_from_sidecar(self._path)
+        _apply_agent_config_from_sidecar(self._path)
         self._registry = ProviderRegistry(specs, data_dir=self._data_dir)
         self._aliases = aliases
         self._subagent_config = subagent_config
@@ -258,35 +258,46 @@ class _ReloadingProviderResolver:
         )
 
 
-def _apply_voice_config_from_sidecar(path: str | None) -> None:
-    """Push the sidecar's ``voice`` + ``image`` blocks into the agent process.
+def _apply_agent_config_from_sidecar(path: str | None) -> None:
+    """Push the agent-facing sidecar blocks into *this* process.
 
-    ``text_to_speech`` resolves its backend inside *this* process and never
-    touches the gateway's admin routes, so without this the operator's
-    ``[voice]`` choices would only ever affect the admin audition — the UI
-    would look wired while channels kept using the built-in default.
+    ``text_to_speech`` / ``image_generate`` / ``web_search`` all resolve
+    their backend inside the agent process and never touch the gateway's
+    admin routes or its config snapshot. Without this bridge an operator's
+    choices would only ever affect the admin preview — the UI would look
+    wired while channels kept using the built-in default. (The agent's
+    systemd unit deliberately carries no ``EnvironmentFile``, so the
+    ``CORLINMAN_*`` env layer is not reachable there either: the sidecar is
+    the only channel that works.)
 
     Runs on every sidecar reload, so a change saved in the UI takes effect
     without restarting the agent. Never raises: a malformed custom backend
     must not take the agent process down.
+
+    Mirrored by ``gateway.lifecycle.app_factory._apply_agent_side_config``
+    for the in-process boot mode; both call the same ``apply_*_config``
+    helpers so the two cannot drift.
     """
     if not path:
         return
     try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 — never fatal
+        logger.warning("agent.config_read_failed", error=str(exc))
+        return
+    if not isinstance(data, dict):
+        return
+
+    def _block(key: str) -> dict[str, Any] | None:
+        value = data.get(key)
+        return value if isinstance(value, dict) else None
+
+    # One try per block: a malformed custom voice backend must not stop the
+    # search binding from being installed.
+    try:
         from corlinman_agent.voice import apply_voice_config
 
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-        section = data.get("voice")
-        defaults = apply_voice_config(section if isinstance(section, dict) else None)
-
-        from corlinman_agent.image.defaults import apply_image_config
-
-        image_section = data.get("image")
-        img = apply_image_config(image_section if isinstance(image_section, dict) else None)
-        if img.configured:
-            logger.info(
-                "image.config_applied", provider=img.provider or None, model=img.model or None
-            )
+        defaults = apply_voice_config(_block("voice"))
         if defaults.backend or defaults.voice:
             logger.info(
                 "voice.config_applied",
@@ -296,6 +307,26 @@ def _apply_voice_config_from_sidecar(path: str | None) -> None:
             )
     except Exception as exc:  # noqa: BLE001 — never fatal
         logger.warning("voice.config_apply_failed", error=str(exc))
+
+    try:
+        from corlinman_agent.image.defaults import apply_image_config
+
+        img = apply_image_config(_block("image"))
+        if img.configured:
+            logger.info(
+                "image.config_applied", provider=img.provider or None, model=img.model or None
+            )
+    except Exception as exc:  # noqa: BLE001 — never fatal
+        logger.warning("image.config_apply_failed", error=str(exc))
+
+    try:
+        from corlinman_agent.web.defaults import apply_web_search_config
+
+        search = apply_web_search_config(_block("web_search"))
+        if search.backend or search.api_key:
+            logger.info("web_search.config_applied", **search.as_dict())
+    except Exception as exc:  # noqa: BLE001 — never fatal
+        logger.warning("web_search.config_apply_failed", error=str(exc))
 
 
 def _load_config(

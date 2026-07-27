@@ -5,7 +5,14 @@ import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { ArrowUpRight, Image as ImageIcon, Mic, Save, Zap } from "@/components/icons";
+import {
+  ArrowUpRight,
+  Image as ImageIcon,
+  Mic,
+  Save,
+  Search,
+  Zap,
+} from "@/components/icons";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -15,6 +22,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import {
   getModelCapabilities,
   putImageCapability,
+  putSearchCapability,
   type ModelCapabilities,
 } from "@/lib/api/model-capabilities";
 import { listVoiceBackends, type VoiceBackendsResponse } from "@/lib/api/voice";
@@ -46,12 +54,17 @@ export function CapabilitiesSection() {
 
   const [imgProvider, setImgProvider] = React.useState<string | null>(null);
   const [imgModel, setImgModel] = React.useState<string | null>(null);
+  const [searchBackend, setSearchBackend] = React.useState<string | null>(null);
+  // `null` = untouched, so the PUT omits `api_key` and the stored key
+  // survives. The read model never echoes it, so we cannot seed this.
+  const [searchKey, setSearchKey] = React.useState<string | null>(null);
 
   // Seed once so a background refetch never clobbers an in-progress edit.
   React.useEffect(() => {
     if (imgProvider === null && caps.data) setImgProvider(caps.data.image.provider);
     if (imgModel === null && caps.data) setImgModel(caps.data.image.model);
-  }, [caps.data, imgProvider, imgModel]);
+    if (searchBackend === null && caps.data) setSearchBackend(caps.data.search.backend);
+  }, [caps.data, imgProvider, imgModel, searchBackend]);
 
   const dirty =
     caps.data != null &&
@@ -69,6 +82,30 @@ export function CapabilitiesSection() {
       await qc.invalidateQueries({ queryKey: ["admin", "models"] });
       setImgProvider(null);
       setImgModel(null);
+    },
+    onError: (err: Error) =>
+      toast.error(t("modelHub.capabilities.saveFailed", "Save failed"), {
+        description: err.message,
+      }),
+  });
+
+  const searchDirty =
+    caps.data != null &&
+    ((searchBackend ?? "") !== caps.data.search.backend || searchKey !== null);
+
+  const saveSearch = useMutation({
+    mutationFn: () =>
+      putSearchCapability({
+        backend: (searchBackend ?? "").trim(),
+        // Omitted entirely when untouched — sending "" would delete the
+        // stored key on every unrelated save.
+        ...(searchKey === null ? {} : { api_key: searchKey.trim() }),
+      }),
+    onSuccess: async () => {
+      toast.success(t("modelHub.capabilities.searchSaved", "Search binding saved"));
+      await qc.invalidateQueries({ queryKey: ["admin", "models"] });
+      setSearchBackend(null);
+      setSearchKey(null);
     },
     onError: (err: Error) =>
       toast.error(t("modelHub.capabilities.saveFailed", "Save failed"), {
@@ -192,6 +229,76 @@ export function CapabilitiesSection() {
             onClick={() => save.mutate()}
             disabled={!dirty || save.isPending}
             data-testid="capability-image-save"
+          >
+            <Save className="h-4 w-4" aria-hidden="true" />
+            {t("modelHub.capabilities.save", "Save")}
+          </Button>
+        </div>
+      </div>
+
+      {/* ── Web search ───────────────────────────────────────────── */}
+      <div
+        className="rounded-sg-md border border-sg-border bg-sg-card p-4"
+        data-testid="capability-search"
+      >
+        <div className="mb-3 flex items-center gap-2">
+          <Search className="h-4 w-4 text-sg-ink-3" aria-hidden="true" />
+          <span className="text-sm text-sg-ink">
+            {t("modelHub.capabilities.search", "Web search")}
+          </span>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="space-y-1.5">
+            <Label htmlFor="cap-search-backend">
+              {t("modelHub.capabilities.backend", "Backend")}
+            </Label>
+            <select
+              id="cap-search-backend"
+              value={searchBackend ?? ""}
+              onChange={(e) => setSearchBackend(e.target.value)}
+              className="h-10 w-full rounded-sg-sm border border-sg-border bg-sg-inset px-3 text-sm text-sg-ink"
+              data-testid="capability-search-backend"
+            >
+              <option value="">
+                {t("modelHub.capabilities.searchDefault", "DuckDuckGo (no key)")}
+              </option>
+              {caps.data.search.backends.map((b) => (
+                <option key={b} value={b}>
+                  {b}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="cap-search-key">
+              {t("modelHub.capabilities.apiKey", "API key")}
+            </Label>
+            <Input
+              id="cap-search-key"
+              type="password"
+              value={searchKey ?? ""}
+              onChange={(e) => setSearchKey(e.target.value)}
+              placeholder={
+                caps.data.search.api_key_set
+                  ? t("modelHub.capabilities.keyStored", "configured — leave blank to keep")
+                  : t("modelHub.capabilities.keyNone", "not set")
+              }
+              data-testid="capability-search-key"
+            />
+          </div>
+        </div>
+        <div className="mt-3 flex items-center justify-between gap-3">
+          <p className="text-xs text-sg-ink-3">
+            {t(
+              "modelHub.capabilities.searchHint",
+              "Without a key the agent scrapes DuckDuckGo HTML, which is rate-limited and can break.",
+            )}
+          </p>
+          <Button
+            size="sm"
+            onClick={() => saveSearch.mutate()}
+            disabled={!searchDirty || saveSearch.isPending}
+            data-testid="capability-search-save"
           >
             <Save className="h-4 w-4" aria-hidden="true" />
             {t("modelHub.capabilities.save", "Save")}

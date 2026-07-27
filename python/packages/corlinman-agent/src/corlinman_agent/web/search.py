@@ -3,15 +3,22 @@
 The default backend is **keyless**: the DuckDuckGo HTML endpoint
 (``https://html.duckduckgo.com/html/``), so the tool works out of the
 box on a fresh install with no API key configured. If an operator wires
-up a key-based provider (e.g. via ``CORLINMAN_WEB_SEARCH_*`` env vars),
-that takes precedence.
+up a key-based provider — the ``[web_search]`` config block, or the
+``CORLINMAN_WEB_SEARCH_*`` env vars — that takes precedence.
 
 Backend selection (highest precedence first):
 
-1. ``CORLINMAN_WEB_SEARCH_BACKEND`` env var — explicit override
+1. ``[web_search].backend`` — what the operator picked in the UI, carried
+   into this process by the ``py-config.json`` sidecar (see
+   :mod:`corlinman_agent.web.defaults`).
+2. ``CORLINMAN_WEB_SEARCH_BACKEND`` env var — explicit override
    (``ddg`` or ``serpapi``).
-2. ``CORLINMAN_WEB_SEARCH_API_KEY`` present → SerpApi backend.
-3. otherwise → keyless DuckDuckGo HTML backend.
+3. an API key from either layer (config first) → SerpApi backend.
+4. otherwise → keyless DuckDuckGo HTML backend.
+
+Config outranks the env vars deliberately: the agent's systemd unit
+carries no ``EnvironmentFile``, so in a native deployment the env layer
+is not even reachable — the sidecar is the only channel that works.
 
 Wire contract (identical to the other builtin tools):
 
@@ -51,6 +58,7 @@ from corlinman_agent.web._common import (
     make_client,
     pin_transport,
 )
+from corlinman_agent.web.defaults import get_web_search_defaults
 from corlinman_agent.web.external_content import (
     detect_suspicious_patterns,
     wrap_external_content,
@@ -121,13 +129,24 @@ def _parse_args(args_json: bytes | str) -> tuple[str, int]:
     return query.strip(), min(max_results, MAX_RESULTS_CEILING)
 
 
+def _resolve_api_key() -> str:
+    """Operator config first, then the env layer. See module docstring."""
+    configured = get_web_search_defaults().api_key
+    if configured:
+        return configured
+    return os.environ.get("CORLINMAN_WEB_SEARCH_API_KEY", "").strip()
+
+
 def _select_backend() -> str:
     """Resolve the active search backend name. See module docstring for
     the precedence rules."""
+    configured = get_web_search_defaults().backend
+    if configured:
+        return configured
     explicit = os.environ.get("CORLINMAN_WEB_SEARCH_BACKEND", "").strip().lower()
     if explicit:
         return explicit
-    if os.environ.get("CORLINMAN_WEB_SEARCH_API_KEY", "").strip():
+    if _resolve_api_key():
         return "serpapi"
     return "ddg"
 
@@ -222,11 +241,11 @@ async def _search_ddg(
 async def _search_serpapi(
     query: str, max_results: int, client: httpx.AsyncClient
 ) -> list[dict[str, str]]:
-    api_key = os.environ.get("CORLINMAN_WEB_SEARCH_API_KEY", "").strip()
+    api_key = _resolve_api_key()
     if not api_key:
         raise WebArgsInvalidError(
-            "serpapi backend selected but "
-            "CORLINMAN_WEB_SEARCH_API_KEY is not set"
+            "serpapi backend selected but no API key is configured "
+            "([web_search].api_key or CORLINMAN_WEB_SEARCH_API_KEY)"
         )
     response = await client.get(
         _SERPAPI_ENDPOINT,

@@ -204,6 +204,10 @@ def render_py_config(
         "voice": _render_voice(_attr(cfg, "voice", None)),
         # Global image-generation binding; same rationale as "voice".
         "image": _render_image(_attr(cfg, "models", None)),
+        # Ditto for `web_search`: the agent unit carries no EnvironmentFile,
+        # so CORLINMAN_WEB_SEARCH_* is unreachable there and every native
+        # deployment silently fell back to the keyless DuckDuckGo scrape.
+        "web_search": _render_web_search(_attr(cfg, "web_search", None)),
         "embedding": embedding,
         "subagent": subagent,
         "tencent_safety": tencent_safety,
@@ -224,6 +228,26 @@ def _render_image(models: Any) -> dict[str, Any] | None:
         value = _attr(models, key, None)
         if value not in (None, ""):
             out[key] = value
+    return out or None
+
+
+def _render_web_search(section: Any) -> dict[str, Any] | None:
+    """Render the ``[web_search]`` block for the agent-process sidecar.
+
+    ``api_key`` goes through :func:`_resolve_secret` so an operator can
+    write ``api_key = { env = "SERPAPI_KEY" }`` and keep the literal out of
+    ``config.toml`` — the gateway *does* load an ``EnvironmentFile``, so the
+    env lookup resolves here even though it never would in the agent.
+    """
+    if section is None:
+        return None
+    out: dict[str, Any] = {}
+    backend = _attr(section, "backend", None)
+    if backend not in (None, ""):
+        out["backend"] = str(backend).strip().lower()
+    api_key = _resolve_secret(_attr(section, "api_key", None))
+    if api_key not in (None, ""):
+        out["api_key"] = api_key
     return out or None
 
 

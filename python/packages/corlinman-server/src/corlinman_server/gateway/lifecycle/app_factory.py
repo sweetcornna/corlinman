@@ -453,32 +453,51 @@ def _make_config_swap_fn(app: Any, state: Any) -> Any:
         if changed:
             with suppress(Exception):
                 _reapply_hot_reloadable(state, changed)
-        if "voice" in changed:
-            _register_voice_backends(new_cfg)
+        # Every section the agent-facing hook reads has to be a trigger, or
+        # a UI save lands in config.toml and stops there.
+        if any(key in _AGENT_CONFIG_SECTIONS for key in changed):
+            _apply_agent_side_config(new_cfg)
 
     return _config_swap_fn
 
 
-def _register_voice_backends(cfg: Any) -> None:
-    """Fold ``[voice.backends.*]`` into the process-wide TTS registry.
+#: Config sections :func:`_apply_agent_side_config` reads. A change to any
+#: of them must re-run the hook — see the comment in ``_config_swap_fn``.
+_AGENT_CONFIG_SECTIONS: frozenset[str] = frozenset({"voice", "models", "web_search"})
 
-    Called at boot and again whenever the ``voice`` config section
-    changes. The admin routes re-apply this per request so UI edits show
-    up immediately there, but the ``text_to_speech`` tool resolves its
-    backend inside the agent loop and never touches those routes — without
-    this hook an operator-defined provider would stay invisible to the
-    model until someone happened to open the settings page.
+
+def _apply_agent_side_config(cfg: Any) -> None:
+    """Install the agent-facing config blocks for the **in-process** agent.
+
+    The mirror of ``corlinman_server.main._apply_agent_config_from_sidecar``:
+    that one feeds the separate agent process from ``py-config.json``, this
+    one feeds the agent that runs inside the gateway. Both call the same
+    ``apply_*_config`` helpers so the two boot modes cannot drift — an
+    earlier version of this hook covered only ``voice``, which left
+    ``[models].image_*`` working in the two-process deployment and silently
+    dead in-process.
+
+    Called at boot and again whenever a covered section changes. The admin
+    routes re-apply their own slice per request so UI edits show up
+    immediately *there*, but ``text_to_speech`` / ``image_generate`` /
+    ``web_search`` resolve their backend inside the agent loop and never
+    touch those routes — without this hook an operator-defined provider
+    would stay invisible to the model until someone happened to open the
+    settings page.
 
     Never fatal: a malformed custom backend must not take the gateway down.
     """
+    def _block(key: str) -> dict[str, Any] | None:
+        value = cfg.get(key) if isinstance(cfg, dict) else None
+        return value if isinstance(value, dict) else None
+
     try:
         from corlinman_agent.voice import apply_voice_config
 
-        voice_cfg = cfg.get("voice") if isinstance(cfg, dict) else None
         # Applies custom backends *and* the operator's default
         # backend/voice/model, so the in-process agent path matches what
         # the two-process sidecar path installs.
-        defaults = apply_voice_config(voice_cfg if isinstance(voice_cfg, dict) else None)
+        defaults = apply_voice_config(_block("voice"))
         if defaults.backend or defaults.voice:
             logger.info(
                 "gateway.voice.defaults",
@@ -487,6 +506,28 @@ def _register_voice_backends(cfg: Any) -> None:
             )
     except Exception as exc:  # pragma: no cover — never fatal
         logger.warning("gateway.voice.backend_registration_failed", error=str(exc))
+
+    try:
+        from corlinman_agent.image.defaults import apply_image_config
+
+        img = apply_image_config(_block("models"))
+        if img.configured:
+            logger.info(
+                "gateway.image.defaults",
+                provider=img.provider or None,
+                model=img.model or None,
+            )
+    except Exception as exc:  # pragma: no cover — never fatal
+        logger.warning("gateway.image.config_failed", error=str(exc))
+
+    try:
+        from corlinman_agent.web.defaults import apply_web_search_config
+
+        search = apply_web_search_config(_block("web_search"))
+        if search.backend or search.api_key:
+            logger.info("gateway.web_search.defaults", **search.as_dict())
+    except Exception as exc:  # pragma: no cover — never fatal
+        logger.warning("gateway.web_search.config_failed", error=str(exc))
 
 
 def _make_chat_refresh_fn(state: Any) -> Any:
@@ -636,7 +677,7 @@ def _mount_routes(app: Any, state: Any, *, admin_config_path: Path | None = None
         except Exception as exc:  # pragma: no cover — sibling-owned
             logger.warning("gateway.routes_voice.mount_failed", error=str(exc))
 
-    _register_voice_backends(getattr(state, "config", None))
+    _apply_agent_side_config(getattr(state, "config", None))
 
     admin_a_state: Any | None = None
     admin_a = _lazy_import("corlinman_server.gateway.routes_admin_a")

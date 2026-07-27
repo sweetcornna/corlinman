@@ -34,10 +34,20 @@ export interface VoiceCapability {
   voice: string;
 }
 
+export interface SearchCapability {
+  /** Empty = unbound, which resolves to the keyless DuckDuckGo backend. */
+  backend: string;
+  /** The key itself is never sent to the client — only whether one exists. */
+  api_key_set: boolean;
+  /** Backends the agent knows how to drive. */
+  backends: string[];
+}
+
 export interface ModelCapabilities {
   text: TextCapability;
   image: ImageCapability;
   voice: VoiceCapability;
+  search: SearchCapability;
   /** Alias names, offered as image-model suggestions. */
   aliases: string[];
 }
@@ -52,6 +62,23 @@ export function putImageCapability(body: {
   model: string;
 }): Promise<{ status: string; provider: string; model: string }> {
   return apiFetch("/admin/models/capabilities/image", {
+    method: "PUT",
+    body,
+  });
+}
+
+/**
+ * Bind the web-search backend.
+ *
+ * `backend: ""` clears the binding. Omit `api_key` to keep the stored key
+ * — the read model never echoes it, so sending `""` unconditionally would
+ * wipe a working key on every save.
+ */
+export function putSearchCapability(body: {
+  backend: string;
+  api_key?: string;
+}): Promise<{ status: string; backend: string; api_key_set: boolean }> {
+  return apiFetch("/admin/models/capabilities/search", {
     method: "PUT",
     body,
   });

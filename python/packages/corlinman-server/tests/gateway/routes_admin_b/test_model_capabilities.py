@@ -163,6 +163,111 @@ def test_image_write_preserves_aliases_and_default(
     assert models_cfg["image_model"] == "img-1"
 
 
+# ---------------------------------------------------------------------------
+# Search binding
+# ---------------------------------------------------------------------------
+
+
+def test_search_reports_unset_by_default(client: TestClient) -> None:
+    body = client.get("/admin/models/capabilities").json()
+    assert body["search"]["backend"] == ""
+    assert body["search"]["api_key_set"] is False
+    assert body["search"]["backends"] == ["ddg", "serpapi"]
+
+
+def test_get_never_echoes_the_search_key(
+    client: TestClient, admin_state: AdminState
+) -> None:
+    _set(admin_state, {"web_search": {"backend": "serpapi", "api_key": "super-secret"}})
+    resp = client.get("/admin/models/capabilities")
+    assert "super-secret" not in resp.text
+    assert resp.json()["search"]["api_key_set"] is True
+
+
+def test_secret_ref_counts_as_configured(
+    client: TestClient, admin_state: AdminState
+) -> None:
+    """``api_key = { env = "..." }`` is resolved gateway-side, so the UI
+    must show it as set even though no literal is in config.toml."""
+    _set(admin_state, {"web_search": {"api_key": {"env": "SERPAPI_KEY"}}})
+    assert client.get("/admin/models/capabilities").json()["search"]["api_key_set"]
+
+
+def test_put_search_binding_persists(
+    client: TestClient, admin_state: AdminState
+) -> None:
+    resp = client.put(
+        "/admin/models/capabilities/search",
+        json={"backend": "serpapi", "api_key": "k-1"},
+    )
+    assert resp.status_code == 200
+    _reload(admin_state)
+    on_disk = tomllib.loads(admin_state.config_path.read_text(encoding="utf-8"))
+    assert on_disk["web_search"] == {"backend": "serpapi", "api_key": "k-1"}
+
+
+def test_omitting_api_key_preserves_the_stored_one(
+    client: TestClient, admin_state: AdminState
+) -> None:
+    """The GET never echoes the key, so a UI round-trip that leaves the
+    field untouched must not wipe it."""
+    client.put(
+        "/admin/models/capabilities/search",
+        json={"backend": "serpapi", "api_key": "k-1"},
+    )
+    _reload(admin_state)
+    client.put("/admin/models/capabilities/search", json={"backend": "serpapi"})
+    _reload(admin_state)
+    on_disk = tomllib.loads(admin_state.config_path.read_text(encoding="utf-8"))
+    assert on_disk["web_search"]["api_key"] == "k-1"
+
+
+def test_explicit_empty_api_key_clears_it(
+    client: TestClient, admin_state: AdminState
+) -> None:
+    client.put(
+        "/admin/models/capabilities/search",
+        json={"backend": "serpapi", "api_key": "k-1"},
+    )
+    _reload(admin_state)
+    resp = client.put(
+        "/admin/models/capabilities/search", json={"backend": "", "api_key": ""}
+    )
+    assert resp.status_code == 200
+    _reload(admin_state)
+    on_disk = tomllib.loads(admin_state.config_path.read_text(encoding="utf-8"))
+    # Section removed entirely rather than left as an empty stub table.
+    assert "web_search" not in on_disk
+
+
+def test_serpapi_without_a_key_is_rejected(client: TestClient) -> None:
+    """Persisting a keyless serpapi binding would make every search fail
+    at dispatch time; refuse it at the edge instead."""
+    resp = client.put("/admin/models/capabilities/search", json={"backend": "serpapi"})
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "api_key_required"
+
+
+def test_unknown_search_backend_is_rejected(client: TestClient) -> None:
+    resp = client.put("/admin/models/capabilities/search", json={"backend": "bing"})
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "unknown_backend"
+
+
+def test_search_write_preserves_other_sections(
+    client: TestClient, admin_state: AdminState
+) -> None:
+    _set(admin_state, {"models": {"default": "gpt-5.2"}, "server": {"port": 6005}})
+    client.put(
+        "/admin/models/capabilities/search",
+        json={"backend": "serpapi", "api_key": "k-1"},
+    )
+    _reload(admin_state)
+    on_disk = tomllib.loads(admin_state.config_path.read_text(encoding="utf-8"))
+    assert on_disk["models"]["default"] == "gpt-5.2"
+    assert on_disk["server"]["port"] == 6005
+
+
 def test_capabilities_requires_auth(admin_state: AdminState) -> None:
     app = FastAPI()
     app.include_router(model_routes.router())
