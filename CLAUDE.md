@@ -11,7 +11,9 @@
 
 ## 已知坑
 
-- **CI `py-test` 会间歇性挂死到 6 小时上限**,`main` 上也会发生,与你的 diff 无关。处理方式:rerun 该 job,不要对着自己的改动 debug。
+- **CI 跑 Python 3.12,本地默认 3.13**——版本差异真的会咬人。曾有测试桩留了条不关的连接,3.12 起 `Server.wait_closed()` 会等在途连接,于是 CI 必挂、本地必过(#170)。CI 红而本地绿时,先用 3.12 复现再怀疑环境。
+- 别用 inode 号当"文件被替换了"的判据:Linux tmpfs 会把刚释放的 inode 立刻发回来,macOS APFS 不会(同样是 #170 的坑)。断言语义本身(能不能连上),不要断言分配细节。
+- `timeout_method` 现在是 `signal`:测试卡死会**带 traceback 失败并归因到具体那行**,其余测试照常跑完。所以 py-test 红了就去看它报了哪个测试——不要再无脑 rerun(旧的 `thread` 方式会直接杀进程、整个 job 无结果,那才是"间歇性挂死"的真相)。
 - CI `gate` 绿 ≠ 全绿:`proto-sync` 与 `swift-mac` 不汇入 `gate`,要单独看。
 - 没有 CODEOWNERS——跨 owner 区域的改动要手动请 review(区域地图在 docs/pr-standards.md §7)。
 - `.importlinter` 只覆盖 4 包核心分层(`corlinman_server → corlinman_agent → corlinman_providers → corlinman_grpc`),其余包不设防,别以为 lint-imports 绿就没有跨层引用。
