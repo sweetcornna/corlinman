@@ -463,6 +463,11 @@ dependencies = [
     { name = "corlinman-user-model" },
 ]
 
+[package.optional-dependencies]
+voice = [
+    { name = "corlinman-agent", extra = ["voice"] },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "grpcio-tools" },
@@ -482,6 +487,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "corlinman-agent", editable = "python/packages/corlinman-agent" },
+    { name = "corlinman-agent", extras = ["voice"], marker = "extra == 'voice'", editable = "python/packages/corlinman-agent" },
     { name = "corlinman-agent-brain", editable = "python/packages/corlinman-agent-brain" },
     { name = "corlinman-content-policy", editable = "python/packages/corlinman-content-policy" },
     { name = "corlinman-episodes", editable = "python/packages/corlinman-episodes" },
@@ -496,6 +502,7 @@ requires-dist = [
     { name = "corlinman-tagmemo", editable = "python/packages/corlinman-tagmemo" },
     { name = "corlinman-user-model", editable = "python/packages/corlinman-user-model" },
 ]
+provides-extras = ["voice"]
 
 [package.metadata.requires-dev]
 dev = [

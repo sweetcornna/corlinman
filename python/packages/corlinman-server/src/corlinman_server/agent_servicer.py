@@ -2900,6 +2900,50 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             return f"model_alias_invalid: {model!r}"
         return None
 
+    def _global_capability_binding(
+        self,
+        kind: str,
+        fallback_provider: CorlinmanProvider,
+    ) -> tuple[CorlinmanProvider, str | None, dict[str, Any]]:
+        """Fall back to the operator's global binding for ``kind``.
+
+        Sits between "this persona bound a model" and "just use the chat
+        provider". Without it, ``[models].image_model`` chosen in the model
+        hub would never reach ``image_generate`` — the setting would look
+        wired but do nothing.
+
+        Voice needs no entry here: ``corlinman_agent.voice`` resolves its own
+        backend/model/voice defaults inside the synthesiser, so returning the
+        fallback provider is already correct for that kind.
+        """
+        if kind != "image":
+            return fallback_provider, None, {}
+        try:
+            from corlinman_agent.image.defaults import get_image_defaults
+
+            defaults = get_image_defaults()
+        except Exception:  # noqa: BLE001 — never break a tool dispatch
+            return fallback_provider, None, {}
+        if not defaults.configured:
+            return fallback_provider, None, {}
+        try:
+            bound_provider, upstream_model, params = _call_resolver(
+                self._resolve,
+                defaults.model or "",
+                self._aliases,
+                provider_hint=defaults.provider or None,
+            )
+        except (KeyError, ValueError) as exc:
+            logger.warning(
+                "agent.global_capability_binding.resolve_failed",
+                kind=kind,
+                provider_hint=defaults.provider,
+                model=defaults.model,
+                error=str(exc),
+            )
+            return fallback_provider, None, {}
+        return bound_provider, upstream_model, params
+
     async def _resolve_persona_tool_provider(
         self,
         start: AgentChatStart,
@@ -2908,11 +2952,11 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
     ) -> tuple[CorlinmanProvider, str | None, dict[str, Any]]:
         persona_id = _bound_persona_id_from_start(start)
         if persona_id is None:
-            return fallback_provider, None, {}
+            return self._global_capability_binding(kind, fallback_provider)
 
         persona_store = await self._get_persona_store()
         if persona_store is None:
-            return fallback_provider, None, {}
+            return self._global_capability_binding(kind, fallback_provider)
 
         try:
             persona = await persona_store.get(persona_id)
@@ -2925,11 +2969,11 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             )
             return fallback_provider, None, {}
         if persona is None:
-            return fallback_provider, None, {}
+            return self._global_capability_binding(kind, fallback_provider)
 
         provider_hint, model = _persona_model_binding_for(persona, kind)
         if model is None:
-            return fallback_provider, None, {}
+            return self._global_capability_binding(kind, fallback_provider)
 
         try:
             bound_provider, upstream_model, params = _call_resolver(

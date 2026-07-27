@@ -135,6 +135,12 @@ enabled = false
 # enabled = false
 # params = { tts_backend = "fish", reference_id = "your-fish-reference-id", format = "mp3" }
 
+# 全局图片生成绑定。留空则沿用对话 provider（历史行为）。persona 的 image
+# 绑定优先级更高。可在管理界面 /models → 能力 页编辑。
+# [models]
+# image_provider = "openai"
+# image_model = "gpt-image-2"
+
 # ---------------------------------------------------------------------------
 # [voice] — 语音合成（TTS）。决定 `text_to_speech` 工具、管理界面 /voice 的
 # 试听、以及各渠道语音消息用哪个后端和音色。整节可省略：不配置时用
