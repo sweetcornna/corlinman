@@ -59,6 +59,7 @@ def test_converts_complete_channel_contract() -> None:
         provider_hint="relay",
         provider_params={"reasoning_effort": "high"},
         tenant_id="tenant-a",
+        approval_capable=True,
     )
 
     converted = to_internal_chat_request(request)
@@ -81,6 +82,12 @@ def test_converts_complete_channel_contract() -> None:
     assert converted.provider_hint == "relay"
     assert converted.provider_params == {"reasoning_effort": "high"}
     assert converted.tenant_id == "tenant-a"
+    # W3-3 contract pin: the bridge reads every optional field via
+    # getattr-with-default, so a typo'd/missing field is silently
+    # swallowed — this explicit assertion is what proves the capability
+    # flag actually crosses the package boundary instead of "looking
+    # wired" while every channel stays fail-closed.
+    assert converted.approval_capable is True
 
 
 def test_bridge_passes_validated_request_and_cancel() -> None:
@@ -117,3 +124,5 @@ def test_legacy_minimal_request_uses_safe_defaults() -> None:
     assert converted.scheduler_context == {}
     assert converted.provider_params == {}
     assert converted.tenant_id is None
+    # Legacy duck-typed producers never set the capability → fail-closed.
+    assert converted.approval_capable is False

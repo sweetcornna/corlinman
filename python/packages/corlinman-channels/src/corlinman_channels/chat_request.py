@@ -28,3 +28,9 @@ class ChannelChatRequest:
     provider_hint: str | None = None
     provider_params: dict[str, Any] = field(default_factory=dict)
     tenant_id: str | None = None
+    # W3-3 — this surface implements the approval reply loop (it renders
+    # AwaitingApproval events and can send the decision back through the
+    # gateway approval broker). Optional-with-default so every existing
+    # construction site keeps working (slots dataclass: adding a REQUIRED
+    # field here would crash cross-package constructors at call time).
+    approval_capable: bool = False

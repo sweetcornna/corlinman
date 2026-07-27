@@ -146,7 +146,8 @@ async def test_ask_verdict_fail_closed_via_dispatch(
     monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An ``ask`` permission verdict with no approval resolver wired
-    fail-closes to an ``approval_denied`` envelope."""
+    fail-closes; W3-3 makes the envelope the diagnosable
+    ``authz_no_channel`` (there is no prompt channel on this surface)."""
     monkeypatch.setenv(
         "CORLINMAN_AGENT_PERMISSIONS",
         '[{"tool": "run_shell", "action": "ask"}]',
@@ -158,4 +159,4 @@ async def test_ask_verdict_fail_closed_via_dispatch(
         _FakeProvider(),
     )
     payload = json.loads(out)
-    assert "approval_denied" in payload["error"]
+    assert "authz_no_channel" in payload["error"]

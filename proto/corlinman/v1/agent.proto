@@ -69,6 +69,11 @@ message ChatStart {
   // This is control-plane context: never model-visible and never inferred from
   // persona/model fields. "" preserves the legacy/default runtime.
   string runtime_instance_id = 15;
+  // W3-3 — whether the calling surface can answer an `AwaitingApproval`
+  // frame with an `ApprovalDecision` client frame. When false (legacy
+  // callers, --print / attach modes) an `ask` permission verdict stays
+  // fail-closed instead of parking the turn on a prompt nobody can see.
+  bool approval_capable = 16;
 }
 
 // Non-text input attached to a chat turn. Mirrors the Rust

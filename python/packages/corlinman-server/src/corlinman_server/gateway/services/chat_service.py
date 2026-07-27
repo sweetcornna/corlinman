@@ -13,11 +13,14 @@ test backends don't have to inherit anything. The production backend
 Python agent over gRPC, exactly mirroring how the Rust gateway used to
 proxy the HTTP request into the Python plane.
 
-Scope mirrors the Rust M5 surface: ``TokenDelta``,
-``ToolCall``, ``Done``, ``Error`` are surfaced as the corresponding
-:class:`corlinman_server.gateway_api.InternalChatEvent` variants;
-``AwaitingApproval`` and standalone ``Usage`` frames are silently
-skipped (they land with the approval pipeline in M6+).
+Scope: ``TokenDelta``, ``ToolCall``, ``Done``, ``Error`` are surfaced as
+the corresponding :class:`corlinman_server.gateway_api.InternalChatEvent`
+variants. ``AwaitingApproval`` (W3-3) is forwarded as
+:class:`AwaitingApprovalEvent` AND registered with the process-global
+:class:`~corlinman_server.gateway.services.approval_broker.ApprovalBroker`
+so out-of-band deciders (the web approve route, channel reply loops) can
+feed the matching ``ApprovalDecision`` client frame back into this
+stream's ``tx`` queue. Standalone ``Usage`` frames remain skipped.
 """
 
 from __future__ import annotations
@@ -60,7 +63,12 @@ from corlinman_server.gateway.services._proto_converters import (
     _reason_from_proto,
     _role_to_proto,
 )
+from corlinman_server.gateway.services.approval_broker import (
+    PendingApproval,
+    get_approval_broker,
+)
 from corlinman_server.gateway_api import (
+    AwaitingApprovalEvent,
     ChatEventStream,
     ChatServiceBase,
     DoneEvent,
@@ -277,6 +285,10 @@ async def _run_chat(
     # ``asyncio.wait`` so a fired cancel unblocks the loop even when
     # the backend has nothing pending.
     cancel_task = asyncio.create_task(cancel.wait())
+    # W3-3: approvals this stream parked with the broker — force-cleared
+    # in the ``finally`` so a stream that dies mid-ask can't leak its tx
+    # queue into the registry (a later decide() would feed a dead queue).
+    registered_approvals: set[str] = set()
     try:
         while True:
             if cancel.is_set():
@@ -451,11 +463,51 @@ async def _run_chat(
                 )
                 return
 
-            # ``awaiting`` and ``usage`` are not surfaced in this milestone
-            # — pull the next frame. ``None`` (unset oneof) is treated
-            # the same way.
+            if kind == "awaiting":
+                # W3-3: park the approval with the broker so out-of-band
+                # deciders (web approve route / channel reply loop) can
+                # answer through this stream's tx queue, then surface the
+                # event so channel handlers can render a prompt.
+                aw = frame.awaiting
+                try:
+                    preview = (
+                        bytes(aw.args_preview_json).decode("utf-8", "replace")
+                        if aw.args_preview_json
+                        else ""
+                    )
+                except Exception:  # noqa: BLE001 — preview is cosmetic
+                    preview = ""
+                get_approval_broker().register(
+                    PendingApproval(
+                        call_id=aw.call_id,
+                        tx=tx,
+                        plugin=aw.plugin,
+                        tool=aw.tool,
+                        args_preview_json=preview,
+                        reason=aw.reason,
+                        # Scopes who may decide (and disambiguates
+                        # index-style call ids across concurrent streams).
+                        session_key=req.session_key or "",
+                    )
+                )
+                registered_approvals.add(aw.call_id)
+                yield AwaitingApprovalEvent(
+                    call_id=aw.call_id,
+                    plugin=aw.plugin,
+                    tool=aw.tool,
+                    args_preview_json=preview,
+                    reason=aw.reason,
+                )
+                continue
+
+            # ``usage`` frames are not surfaced in this milestone — pull
+            # the next frame. ``None`` (unset oneof) is treated the same
+            # way.
             continue
     finally:
+        broker = get_approval_broker()
+        for call_id in registered_approvals:
+            broker.unregister(call_id, session_key=req.session_key or "")
         cancel_task.cancel()
         with _suppress_cancelled():
             await cancel_task
@@ -504,6 +556,9 @@ def _build_chat_start(
         # scoped → ""), the HTTP paths stamp the authenticated tenant.
         tenant_id=getattr(req, "tenant_id", None) or "",
         runtime_instance_id=getattr(req, "runtime_instance_id", None) or "",
+        # W3-3 — surfaces that can answer an AwaitingApproval frame set
+        # this; the agent keeps `ask` fail-closed for everyone else.
+        approval_capable=bool(getattr(req, "approval_capable", False)),
     )
     if binding is not None:
         start.binding.CopyFrom(binding)

@@ -57,6 +57,7 @@ class ChatStart(_message.Message):
         "persona_id",
         "tenant_id",
         "runtime_instance_id",
+        "approval_capable",
     )
     class PlaceholdersEntry(_message.Message):
         __slots__ = ("key", "value")
@@ -83,6 +84,7 @@ class ChatStart(_message.Message):
     PERSONA_ID_FIELD_NUMBER: _ClassVar[int]
     TENANT_ID_FIELD_NUMBER: _ClassVar[int]
     RUNTIME_INSTANCE_ID_FIELD_NUMBER: _ClassVar[int]
+    APPROVAL_CAPABLE_FIELD_NUMBER: _ClassVar[int]
     model: str
     messages: _containers.RepeatedCompositeFieldContainer[_common_pb2.Message]
     tools_json: bytes
@@ -98,6 +100,7 @@ class ChatStart(_message.Message):
     persona_id: str
     tenant_id: str
     runtime_instance_id: str
+    approval_capable: bool
     def __init__(
         self,
         model: _Optional[str] = ...,
@@ -115,6 +118,7 @@ class ChatStart(_message.Message):
         persona_id: _Optional[str] = ...,
         tenant_id: _Optional[str] = ...,
         runtime_instance_id: _Optional[str] = ...,
+        approval_capable: bool = ...,
     ) -> None: ...
 
 class Attachment(_message.Message):

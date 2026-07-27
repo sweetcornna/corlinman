@@ -337,9 +337,18 @@ export async function cancelChatSession(
 /* ------------------------------------------------------------------ */
 
 export interface ApprovalRequest {
+  /** Required by the route — the AwaitingApproval event's call_id. */
+  call_id: string;
   approved: boolean;
   scope?: "once" | "session" | "always";
+  /** Required by the route when approved=false. */
   deny_message?: string;
+  /**
+   * The chat session the approval belongs to. The broker scopes its
+   * lookup by (session, call_id) — without it the decision reads as
+   * expired.
+   */
+  session_key?: string;
 }
 
 /** Mirrors the existing `/v1/chat/completions/{turn_id}/approve` route. */

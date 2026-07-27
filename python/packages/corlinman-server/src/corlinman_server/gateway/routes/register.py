@@ -98,9 +98,14 @@ def build_app_router(state: GatewayState) -> APIRouter:
     parent.include_router(health.router(state.health))
     parent.include_router(metrics.router(state.metrics_registry))
 
-    # /v1 chat surface
+    # /v1 chat surface. The approve sub-route defaults to the gateway
+    # approval-broker resolver (W3-3) so web-chat decisions reach the
+    # parked agent turn without any explicit wiring; passing an explicit
+    # ChatApproveState still overrides (tests / custom gates).
     parent.include_router(chat.router(state.chat))
-    parent.include_router(chat_approve.router(state.chat_approve))
+    parent.include_router(
+        chat_approve.router(state.chat_approve or chat_approve.broker_backed_state())
+    )
 
     # /v1 ancillary
     parent.include_router(models.router(state.models_source))

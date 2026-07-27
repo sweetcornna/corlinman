@@ -34,18 +34,32 @@ from corlinman_agent.authz.gate import AuthzGate
 from corlinman_agent.authz.grants import GrantStore, get_grant_store, reset_grant_store
 from corlinman_agent.authz.matcher import external_candidate_keys
 from corlinman_agent.authz.model import Memory, PermissionMode, Subject
+from corlinman_agent.authz.prompt_channel import (
+    AuthzAnswer,
+    AuthzRequest,
+    NullPromptChannel,
+    PromptChannel,
+    ResolverPromptChannel,
+    grant_scope_flags,
+)
 
 __all__ = [
+    "AuthzAnswer",
     "AuthzGate",
+    "AuthzRequest",
     "GrantStore",
     "Memory",
+    "NullPromptChannel",
     "PermissionMode",
     "PermissionsDefaults",
+    "PromptChannel",
+    "ResolverPromptChannel",
     "Subject",
     "apply_permissions_config",
     "external_candidate_keys",
     "get_grant_store",
     "get_permissions_defaults",
+    "grant_scope_flags",
     "merge_approvals_into_permissions",
     "reset_grant_store",
     "reset_permissions_defaults",

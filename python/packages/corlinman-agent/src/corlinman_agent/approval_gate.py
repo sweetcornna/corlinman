@@ -89,12 +89,22 @@ class ApprovalOutcome:
     rule_index
         Index of the matched permission rule, or ``None`` for a default /
         mode fallback.
+    no_channel
+        W3-3: the ``ask`` fail-closed because NO prompt channel / resolver
+        was wired — lets the caller emit a diagnosable ``authz_no_channel``
+        error envelope instead of a generic ``approval_denied``.
+    timed_out
+        W3-3: the prompt was shown but nobody answered within the ask
+        timeout — surfaced so channels can render an explicit timeout
+        notice rather than a silent failure.
     """
 
     verdict: ApprovalVerdict
     asked: bool = False
     reason: str | None = None
     rule_index: int | None = None
+    no_channel: bool = False
+    timed_out: bool = False
 
     @property
     def allowed(self) -> bool:
@@ -217,19 +227,26 @@ class ApprovalGate:
                     verdict=ApprovalVerdict.DENY,
                     asked=True,
                     reason=(
-                        f"tool {tool!r} needs approval but no approval "
-                        "resolver is wired (fail-closed)"
+                        f"authz_no_channel: tool {tool!r} needs approval "
+                        "but no prompt channel is wired (fail-closed)"
                     ),
                     rule_index=rule_index,
+                    no_channel=True,
                 )
-            approved = await self._run_resolver(tool, args or {}, ctx)
+            approved, deny_message, timed_out, no_channel = await self._run_resolver(
+                tool, args or {}, ctx
+            )
             return ApprovalOutcome(
                 verdict=ApprovalVerdict.ALLOW
                 if approved
                 else ApprovalVerdict.DENY,
                 asked=True,
-                reason=None if approved else f"tool {tool!r} denied by operator",
+                reason=None
+                if approved
+                else (deny_message or f"tool {tool!r} denied by operator"),
                 rule_index=rule_index,
+                no_channel=no_channel,
+                timed_out=timed_out,
             )
 
         # Unknown action — conservative deny so a config typo can't silently
@@ -242,12 +259,19 @@ class ApprovalGate:
 
     async def _run_resolver(
         self, tool: str, args: dict[str, Any], ctx: PermissionContext
-    ) -> bool:
+    ) -> tuple[bool, str | None, bool, bool]:
         """Run the prompt-and-wait resolver with timeout + error guards.
 
-        A resolver that raises, times out, or returns a non-bool is
+        Returns ``(approved, deny_message, timed_out, no_channel)``. A
+        resolver that raises, times out, or returns a non-bool is
         fail-closed to deny so a broken prompt path never silently
         approves a sensitive call.
+
+        W3-3: a resolver may return either a bare bool (legacy console
+        shape) or a rich answer object carrying ``approved`` /
+        ``deny_message`` / ``timed_out`` / ``no_channel`` (the
+        :class:`~corlinman_agent.authz.prompt_channel.AuthzAnswer` shape)
+        so stream-bridged channels can report a distinguishable timeout.
         """
         assert self._resolver is not None  # guarded by caller
         try:
@@ -258,11 +282,23 @@ class ApprovalGate:
                 result = await coro
         except TimeoutError:
             logger.info("agent.approval.ask_timeout", tool=tool)
-            return False
+            return (
+                False,
+                f"approval for tool {tool!r} timed out (fail-closed)",
+                True,
+                False,
+            )
         except Exception as exc:  # noqa: BLE001 — fail-closed on resolver error
             logger.warning("agent.approval.resolver_error", tool=tool, error=str(exc))
-            return False
-        return bool(result)
+            return False, str(exc), False, False
+        if hasattr(result, "approved"):
+            return (
+                bool(result.approved),
+                getattr(result, "deny_message", None),
+                bool(getattr(result, "timed_out", False)),
+                bool(getattr(result, "no_channel", False)),
+            )
+        return bool(result), None, False, False
 
 
 __all__ = [

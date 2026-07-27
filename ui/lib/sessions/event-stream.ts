@@ -38,6 +38,7 @@ export type LiveEventType =
   | "SubagentEvent"
   | "SubagentCompleted"
   | "AttachmentAdded"
+  | "AwaitingApproval"
   | "Cancelling"
   | "TurnComplete"
   | "TurnErrored";

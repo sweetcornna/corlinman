@@ -96,6 +96,15 @@ export function ApprovalPrompt({ prompt, onDecide }: ApprovalPromptProps) {
               <Shield className="h-3.5 w-3.5" aria-hidden="true" />
               {t("chat.approvalApproveAlways")}
             </button>
+            <button
+              type="button"
+              onClick={() => onDecide("approved", "always")}
+              className="inline-flex items-center gap-1 rounded-full border border-sg-border-ghost bg-transparent px-2.5 py-1 text-[12px] text-sg-ink hover:bg-sg-inset-hover"
+              data-testid="approval-always"
+            >
+              <Shield className="h-3.5 w-3.5" aria-hidden="true" />
+              {t("chat.approvalApproveDurable")}
+            </button>
           </div>
         ) : null}
       </div>

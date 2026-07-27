@@ -38,6 +38,7 @@ __all__ = [
     "Attachment",
     "AttachmentEvent",
     "AttachmentKind",
+    "AwaitingApprovalEvent",
     "ChannelBinding",
     "DoneEvent",
     "ErrorEvent",
@@ -286,6 +287,16 @@ class InternalChatRequest(BaseModel):
     such turns are owned by the default tenant.
     """
 
+    approval_capable: bool = False
+    """W3-3 — the calling surface can answer an ``AwaitingApproval``.
+
+    Set by channel handlers that implement the approval reply loop and by
+    the web chat route (whose deciders POST the approve route). ``False``
+    (the default, and what every legacy caller gets) keeps an ``ask``
+    permission verdict fail-closed instead of parking the turn on a
+    prompt no one can answer.
+    """
+
 
 # ─── Usage / events / errors ──────────────────────────────────────────
 
@@ -406,6 +417,25 @@ class ToolResultEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class AwaitingApprovalEvent:
+    """A tool call is parked on an interactive approval (W3-3).
+
+    Forwarded from the agent's ``AwaitingApproval`` server frame so
+    channel handlers can render an approval prompt (QQ text menu /
+    Telegram inline keyboard). The decision travels back through the
+    gateway approval broker → the backend ``tx`` queue as an
+    ``ApprovalDecision`` client frame — never through the request shape.
+    """
+
+    call_id: str
+    plugin: str
+    tool: str
+    args_preview_json: str
+    reason: str = ""
+    kind: Literal["awaiting_approval"] = field(default="awaiting_approval", init=False)
+
+
+@dataclass(frozen=True, slots=True)
 class AttachmentEvent:
     """A tool-produced file registered into the gateway file store
     mid-turn — surfaced live so the web chat renders the attachment
@@ -451,5 +481,11 @@ class ErrorEvent:
 # Sum type alias matching the Rust ``enum InternalChatEvent``. Discriminate
 # via ``isinstance`` or the ``.kind`` literal field — both work.
 InternalChatEvent = (
-    TokenDeltaEvent | ToolCallEvent | ToolResultEvent | AttachmentEvent | DoneEvent | ErrorEvent
+    TokenDeltaEvent
+    | ToolCallEvent
+    | ToolResultEvent
+    | AwaitingApprovalEvent
+    | AttachmentEvent
+    | DoneEvent
+    | ErrorEvent
 )

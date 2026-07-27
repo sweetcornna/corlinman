@@ -21,7 +21,7 @@ output. Callers wanting that should mount a separate scrape endpoint.
 | ``corlinman_agent_grpc_inflight``          | Gauge     | — |
 | ``corlinman_channels_rate_limited_total``  | Counter   | ``channel``, ``reason`` |
 | ``corlinman_vector_query_duration_seconds``| Histogram | ``stage`` |
-| ``corlinman_approvals_total``              | Counter   | ``decision`` |
+| ``corlinman_approvals_total``              | Counter   | ``decision``, ``surface`` |
 | ``corlinman_log_files_removed_total``      | Counter   | ``reason`` |
 
 A best-effort :func:`init` pre-touches every label set with a sentinel
@@ -102,8 +102,9 @@ VECTOR_QUERY_DURATION: Histogram = Histogram(
 # ---- Approvals / log retention --------------------------------------------
 APPROVALS_TOTAL: Counter = Counter(
     "corlinman_approvals_total",
-    "Tool approval decisions, labelled by terminal decision",
-    labelnames=("decision",),
+    "Tool approval decisions, labelled by terminal decision and the "
+    "surface the ask came from (W3-3)",
+    labelnames=("decision", "surface"),
     registry=REGISTRY,
 )
 LOG_FILES_REMOVED: Counter = Counter(
@@ -127,7 +128,7 @@ def init() -> None:
     CHAT_STREAM_DURATION.labels(model="startup", finish="startup").observe(0.0)
     PLUGIN_EXECUTE_DURATION.labels(plugin="startup").observe(0.0)
     VECTOR_QUERY_DURATION.labels(stage="startup").observe(0.0)
-    APPROVALS_TOTAL.labels(decision="startup").inc(0)
+    APPROVALS_TOTAL.labels(decision="startup", surface="startup").inc(0)
     LOG_FILES_REMOVED.labels(reason="startup").inc(0)
     # AGENT_GRPC_INFLIGHT is unlabelled — touching .set(0) is enough.
     AGENT_GRPC_INFLIGHT.set(0)

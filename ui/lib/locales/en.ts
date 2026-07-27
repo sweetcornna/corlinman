@@ -3336,6 +3336,7 @@ export const en = {
     approvalDeny: "Deny",
     approvalApproveOnce: "Approve once",
     approvalApproveAlways: "Always (session)",
+    approvalApproveDurable: "Always (durable)",
     searchOverlayAriaLabel: "Search this conversation",
     searchPlaceholderConversation: "Search in conversation",
     searchPrevAriaLabel: "Previous match",

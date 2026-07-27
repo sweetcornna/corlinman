@@ -403,25 +403,23 @@ export function liveEventToChatEvent(ev: LiveEvent): ChatEvent | null {
         sequence: baseSeq,
       };
     }
-    // AwaitingApproval is not yet in the LiveEventType union (backend
-    // stub), but the merger handles it if/when added. Fall through.
+    case "AwaitingApproval": {
+      // W3-3: the agent parked a tool call on an interactive approval —
+      // surface the prompt card; the decision POSTs to the approve route.
+      const p = (ev.payload ?? {}) as LivePayloads["AwaitingApproval"];
+      return {
+        kind: "awaiting-approval",
+        turnId: baseTurnId,
+        sequence: baseSeq,
+        callId: p.call_id,
+        plugin: p.plugin,
+        tool: p.tool,
+        argsPreviewJson: p.args_preview_json ?? "",
+        reason: p.reason,
+      };
+    }
     default:
       // BlockStart / BlockStop / Heartbeat — UI doesn't render.
-      if (
-        (ev.event_type as string) === "AwaitingApproval"
-      ) {
-        const p = (ev.payload ?? {}) as LivePayloads["AwaitingApproval"];
-        return {
-          kind: "awaiting-approval",
-          turnId: baseTurnId,
-          sequence: baseSeq,
-          callId: p.call_id,
-          plugin: p.plugin,
-          tool: p.tool,
-          argsPreviewJson: p.args_preview_json ?? "",
-          reason: p.reason,
-        };
-      }
       return null;
   }
 }

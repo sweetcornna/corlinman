@@ -265,7 +265,11 @@ def test_returns_200_on_approve_and_forwards_decision() -> None:
     assert len(resolver.calls) == 1
     forwarded_call_id, forwarded_decision = resolver.calls[0]
     assert forwarded_call_id == "call_abc123"
-    assert forwarded_decision == ApprovalDecision(kind="approved", reason="")
+    # W3-3: the client's requested grant scope now rides on the decision
+    # so the agent can record it in the GrantStore.
+    assert forwarded_decision == ApprovalDecision(
+        kind="approved", reason="", scope="session"
+    )
 
 
 def test_returns_200_on_deny_and_forwards_reason() -> None:

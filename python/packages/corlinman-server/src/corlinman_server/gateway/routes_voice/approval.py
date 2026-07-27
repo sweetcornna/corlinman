@@ -30,8 +30,9 @@ Python ``ApprovalStore`` exposes a simpler ``insert`` / ``decide`` /
 ``wait`` shape. The Python bridge wraps either shape: pass a queue
 that supports ``enqueue_and_wait(request, timeout=…)`` (e.g.
 :class:`corlinman_providers.plugins.ApprovalQueue`) and the bridge
-will block on it; pass ``None`` to opt out and auto-approve every tool
-call (mirrors the Rust ``NoMatch → Approved`` default).
+will block on it; pass ``None`` and the bridge is **fail-closed**: every
+tool call is denied with a spoken explanation (W3-3 / decision C1 — an
+``ask`` with no prompt channel is a deny, never a silent allow).
 """
 
 from __future__ import annotations
@@ -148,9 +149,10 @@ def _coerce_decision(decision: Any) -> str:
 
 class VoiceApprovalBridge:
     """Optional handle to the approval queue, scoped to one voice
-    session. ``queue=None`` (or :meth:`no_gate`) means the bridge
-    auto-approves every tool call without prompting — same default
-    ``NoMatch → Approved`` semantics as the Rust chat surface.
+    session. ``queue=None`` (or :meth:`no_gate`) means the bridge is
+    FAIL-CLOSED: every tool call is denied with a spoken explanation
+    (W3-3 / decision C1 — the old auto-approve default was the product's
+    only fail-open ask path and is gone).
 
     Construct via :meth:`no_gate` for the "no gate wired" path or
     :meth:`with_queue` to wire a real
@@ -168,6 +170,9 @@ class VoiceApprovalBridge:
         self._queue = queue
         self._session_key = session_key
         self._timeout_seconds = timeout_seconds
+        # Lazy call-time gate (W3-3 review fix) — resolves the verdict
+        # BEFORE any approval machinery runs; see handle_tool_call.
+        self._authz_gate: Any = None
 
     @classmethod
     def no_gate(
@@ -207,6 +212,52 @@ class VoiceApprovalBridge:
         Returns the :class:`ApprovalOutcome` to apply to client +
         provider channels; never blocks beyond the gate's own timeout.
         """
+        # W3-3 review fix (C1 nuance): the bridge sees EVERY provider
+        # tool call, not just ask-verdict ones — so it must resolve the
+        # unified gate FIRST. allow/log verdicts (the default) proceed
+        # without any prompt; deny blocks outright; only a genuine
+        # ``ask`` reaches the queue / fail-closed path below. Without
+        # this, flipping the no-queue branch to fail-closed denied every
+        # voice tool call in every real deployment (the queue is never
+        # wired in production). Fail-open to the ask path on internal
+        # gate error — the ask machinery below still fail-closes.
+        try:
+            from corlinman_agent.authz import AuthzGate, Subject  # noqa: PLC0415
+
+            if self._authz_gate is None:
+                self._authz_gate = AuthzGate()
+            action, _idx = self._authz_gate.resolve_external(
+                (tool, f"voice:{tool}"),
+                Subject(session_key=self._session_key, surface="voice"),
+                args_json if isinstance(args_json, dict) else None,
+            )
+        except Exception as exc:  # noqa: BLE001 — degrade to the ask path
+            logger.warning(
+                "voice: authz resolve failed (treating as ask): %s", exc
+            )
+            action = "ask"
+        if action in ("allow", "log"):
+            return ApprovalOutcome(
+                server_frames=[],
+                provider_commands=[
+                    ProviderCommand.approve_tool(approval_id, approve=True)
+                ],
+                decision=ApprovalDecisionKind.APPROVED,
+            )
+        if action == "deny":
+            return ApprovalOutcome(
+                server_frames=[
+                    ServerControl(
+                        type=ServerControl.AGENT_TEXT, text=APPROVAL_DENIED_TEXT
+                    ),
+                ],
+                provider_commands=[
+                    ProviderCommand.approve_tool(approval_id, approve=False),
+                    ProviderCommand.interrupt(),
+                ],
+                decision=ApprovalDecisionKind.DENIED,
+            )
+
         pause_frame = ServerControl(
             type=ServerControl.TOOL_APPROVAL_REQUIRED,
             approval_id=approval_id,
@@ -215,21 +266,33 @@ class VoiceApprovalBridge:
         )
 
         if self._queue is None:
-            # No gate wired: approve immediately, but still emit the
-            # pause frame so client UX stays consistent across
-            # configurations. The agent_text breadcrumb confirms the
-            # resume to the user.
+            # W3-3 / decision C1: no gate wired → FAIL-CLOSED deny. The
+            # old behaviour auto-approved here — the only fail-open ask
+            # path in the whole product, and an accident of the queue
+            # never being wired (routes_voice/mod.py passes
+            # ``state.approval_queue`` which defaults to None) rather
+            # than a design decision. The pause frame still goes out so
+            # client UX stays consistent; the denial breadcrumb tells
+            # the user the tool was blocked, and the Interrupt flushes
+            # any TTS the upstream already buffered.
+            logger.warning(
+                "voice: authz_no_channel — approval queue not wired; "
+                "denying tool call fail-closed: approval_id=%s tool=%s",
+                approval_id,
+                tool,
+            )
             return ApprovalOutcome(
                 server_frames=[
                     pause_frame,
                     ServerControl(
-                        type=ServerControl.AGENT_TEXT, text=APPROVAL_RESUME_TEXT
+                        type=ServerControl.AGENT_TEXT, text=APPROVAL_DENIED_TEXT
                     ),
                 ],
                 provider_commands=[
-                    ProviderCommand.approve_tool(approval_id, approve=True)
+                    ProviderCommand.approve_tool(approval_id, approve=False),
+                    ProviderCommand.interrupt(),
                 ],
-                decision=ApprovalDecisionKind.APPROVED,
+                decision=ApprovalDecisionKind.DENIED,
             )
 
         # Build the request payload. Lazy-import the providers
