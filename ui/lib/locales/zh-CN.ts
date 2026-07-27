@@ -446,16 +446,22 @@ export const zhCN = {
       "将在新标签页打开 Google 登录页，完成登录后把返回的 code 粘贴回这里。",
 
     // Modal — folded long-form detail (Collapsible body; the visible
-    // description/intro above stays one sentence each).
+    // description/intro above stays one sentence each). Each provider
+    // splits into a lede (detail*) + follow-up (detail*More) so every
+    // string stays a single ≤60-char sentence; the component joins them.
     detailSummary: "登录流程详情",
-    detailAnthropic:
-      "登录在 Anthropic 页面完成，密码不会离开你的浏览器；此处只回填授权 code（连同 state），令牌兑换在服务端进行。",
-    detailXai:
-      "登录在 xAI 页面完成，密码不会离开你的浏览器；此处只回填授权 code（连同 state），令牌兑换在服务端进行。",
-    detailCodex:
-      "登录完成后浏览器会跳到一个打不开的本地地址，这是正常现象；此时地址栏里的 ?code=…&state=… 就是要回填的内容，把整段地址或 code 复制回来即可。令牌兑换在服务端进行。",
-    detailGemini:
-      "登录完成后浏览器会跳到一个打不开的本地地址，这是正常现象；此时地址栏里的 ?code=… 就是要回填的内容，把整段地址或 code 复制回来即可。令牌兑换在服务端进行。",
+    detailAnthropic: "登录在 Anthropic 页面完成，密码不会离开你的浏览器。",
+    detailAnthropicMore:
+      "此处只回填授权 code（连同 state），令牌兑换在服务端进行。",
+    detailXai: "登录在 xAI 页面完成，密码不会离开你的浏览器。",
+    detailXaiMore:
+      "此处只回填授权 code（连同 state），令牌兑换在服务端进行。",
+    detailCodex: "登录完成后浏览器会跳到一个打不开的本地地址，这是正常现象。",
+    detailCodexMore:
+      "把地址栏里的 ?code=…&state=… 或整段地址复制回来即可；令牌兑换在服务端进行。",
+    detailGemini: "登录完成后浏览器会跳到一个打不开的本地地址，这是正常现象。",
+    detailGeminiMore:
+      "把地址栏里的 ?code=… 或整段地址复制回来即可；令牌兑换在服务端进行。",
     loginButtonAnthropic: "使用 Anthropic 登录",
     loginButtonXai: "使用 xAI 登录",
     loginButtonCodex: "使用 ChatGPT 登录",
@@ -1731,8 +1737,9 @@ export const zhCN = {
     fieldNameHint: "标识用；alias.provider 引用此值。",
     fieldKind: "类型",
     fieldBaseUrl: "Base URL",
-    fieldBaseUrlHint:
-      "openai_compatible 必填；第一方可留空以使用 SDK 默认。可填根地址、/api、/v1 或完整的 /chat/completions 链接，会自动补全（结尾加 # 则原样使用）。",
+    fieldBaseUrlHint: "openai_compatible 必填；第一方可留空以使用 SDK 默认。",
+    fieldBaseUrlDetail:
+      "可填根地址、/api、/v1 或完整的 /chat/completions 链接，会自动补全；结尾加 # 则原样使用。",
     fieldApiKeySource: "API key 来源",
     fieldApiKeyEnv: "环境变量",
     fieldApiKeyValue: "字面量",
@@ -3692,10 +3699,11 @@ export const zhCN = {
     editorDescription:
       "填写 slug、显示名、简介、以及 markdown system prompt。System prompt 会直接传给 agent — 用 markdown 编写即可。",
     fieldId: "Slug",
-    fieldIdHint: "稳定标识，仅限小写 a–z / 0–9 / 连字符。创建后不可修改。",
+    fieldIdHint: "稳定标识，创建后不可修改。",
+    fieldIdDetail: "仅限小写字母 a–z、数字 0–9 与连字符，创建后不可更改。",
     fieldDisplayName: "显示名",
     fieldDisplayNamePlaceholder: "格兰特利·贝尔",
-    fieldIdAutoHint: "根据显示名称自动生成，可手动修改；仅小写字母/数字/连字符，创建后不可更改。",
+    fieldIdAutoHint: "根据显示名称自动生成，可手动修改。",
     fieldShortSummary: "简短描述",
     fieldShortSummaryHint: "一两行 — 显示在列表行中。",
     fieldSystemPrompt: "系统提示词（Markdown）",

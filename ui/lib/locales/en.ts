@@ -462,16 +462,26 @@ export const en = {
       "A new tab will open the Google sign-in page; once done, paste the returned code back here.",
 
     // Modal — folded long-form detail (Collapsible body; the visible
-    // description/intro above stays one sentence each).
+    // description/intro above stays one sentence each). Each provider
+    // splits into a lede (detail*) + follow-up (detail*More) so every
+    // string stays a single short sentence; the component joins them.
     detailSummary: "How the sign-in works",
     detailAnthropic:
-      "You sign in on Anthropic's page — your password never touches corlinman. Only the authorisation code (plus state) comes back here, and the token exchange runs server-side.",
+      "You sign in on Anthropic's page — your password never touches corlinman.",
+    detailAnthropicMore:
+      "Only the authorisation code (plus state) comes back here; the token exchange runs server-side.",
     detailXai:
-      "You sign in on xAI's page — your password never touches corlinman. Only the authorisation code (plus state) comes back here, and the token exchange runs server-side.",
+      "You sign in on xAI's page — your password never touches corlinman.",
+    detailXaiMore:
+      "Only the authorisation code (plus state) comes back here; the token exchange runs server-side.",
     detailCodex:
-      "After signing in, the browser lands on a local address that won't load — that's expected. The ?code=…&state=… in the URL bar is what you paste back; copying the whole URL works too. The token exchange runs server-side.",
+      "After signing in, the browser lands on a local address that won't load — that's expected.",
+    detailCodexMore:
+      "Paste back the ?code=…&state=… from the URL bar (the whole URL works too); the token exchange runs server-side.",
     detailGemini:
-      "After signing in, the browser lands on a local address that won't load — that's expected. The ?code=… in the URL bar is what you paste back; copying the whole URL works too. The token exchange runs server-side.",
+      "After signing in, the browser lands on a local address that won't load — that's expected.",
+    detailGeminiMore:
+      "Paste back the ?code=… from the URL bar (the whole URL works too); the token exchange runs server-side.",
     loginButtonAnthropic: "Login with Anthropic",
     loginButtonXai: "Login with xAI",
     loginButtonCodex: "Login with ChatGPT",
@@ -1782,7 +1792,9 @@ export const en = {
     fieldKind: "Kind",
     fieldBaseUrl: "Base URL",
     fieldBaseUrlHint:
-      "Required for openai_compatible; optional for first-party (SDK default). Paste any form — host, /api, /v1, or a full /chat/completions URL; it's auto-completed (append # to use verbatim).",
+      "Required for openai_compatible; optional for first-party (SDK default).",
+    fieldBaseUrlDetail:
+      "Paste any form — host, /api, /v1, or a full /chat/completions URL; it's auto-completed (append # to use verbatim).",
     fieldApiKeySource: "API key source",
     fieldApiKeyEnv: "Env var",
     fieldApiKeyValue: "Literal",
@@ -3782,10 +3794,12 @@ export const en = {
     editorDescription:
       "Fill in the slug, display name, summary and the markdown system prompt. The system prompt is what the agent receives — write it as plain markdown.",
     fieldId: "Slug",
-    fieldIdHint: "Stable ID, lowercase a–z / 0–9 / hyphens. Cannot be changed after creation.",
+    fieldIdHint: "Stable ID; cannot be changed after creation.",
+    fieldIdDetail:
+      "Lowercase a–z, digits 0–9 and hyphens only; cannot be changed after creation.",
     fieldDisplayName: "Display name",
     fieldDisplayNamePlaceholder: "Grantley Bell",
-    fieldIdAutoHint: "Auto-filled from the display name — edit to override. Lowercase letters/digits/hyphens; cannot be changed after creation.",
+    fieldIdAutoHint: "Auto-filled from the display name — edit to override.",
     fieldShortSummary: "Short summary",
     fieldShortSummaryHint: "One or two lines — shown in the list row.",
     fieldSystemPrompt: "System prompt (markdown)",

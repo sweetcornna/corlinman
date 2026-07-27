@@ -29,6 +29,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { FieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -469,7 +470,7 @@ function Field({
     <div className="flex items-center justify-between gap-3">
       <div className="flex flex-col">
         <Label className="text-[12.5px] text-sg-ink">{label}</Label>
-        {hint ? <span className="text-[11px] text-sg-ink-3">{hint}</span> : null}
+        {hint ? <FieldHint>{hint}</FieldHint> : null}
       </div>
       {children}
     </div>
