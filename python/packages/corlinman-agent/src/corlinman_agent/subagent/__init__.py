@@ -48,6 +48,7 @@ from corlinman_agent.subagent.api import (
     ToolCallSummary,
 )
 from corlinman_agent.subagent.runner import (
+    SUBAGENT_BASELINE_PROMPT,
     SUBAGENT_SPAWN_INLINE_TOOL,
     SUBAGENT_SPAWN_MANY_TOOL,
     SUBAGENT_SPAWN_TOOL,
@@ -83,6 +84,7 @@ __all__ = [
     "DEFAULT_MAX_DEPTH",
     "DEFAULT_MAX_TOOL_CALLS",
     "DEFAULT_MAX_WALL_SECONDS",
+    "SUBAGENT_BASELINE_PROMPT",
     "SUBAGENT_SPAWN_INLINE_TOOL",
     "SUBAGENT_SPAWN_MANY_MAX_TASKS",
     "SUBAGENT_SPAWN_MANY_TOOL",

@@ -26,6 +26,7 @@ from typing import Any
 import pytest
 from corlinman_agent.agents.card import AgentCard
 from corlinman_agent.subagent import (
+    SUBAGENT_BASELINE_PROMPT,
     FinishReason,
     ParentContext,
     TaskSpec,
@@ -300,9 +301,12 @@ async def test_parent_chat_history_not_visible_to_child() -> None:
     msgs = provider.messages_seen[0]
 
     # System + user, in that order. No assistant turns, no tool turns,
-    # nothing carrying the parent's prior chat.
+    # nothing carrying the parent's prior chat. The system message is the
+    # behavioural baseline followed by the card's own prompt.
     assert [m["role"] for m in msgs] == ["system", "user"]
-    assert msgs[0]["content"] == "You are a careful researcher."
+    assert msgs[0]["content"] == (
+        f"{SUBAGENT_BASELINE_PROMPT}\n\nYou are a careful researcher."
+    )
     assert msgs[1]["content"] == parent_goal
 
     # Belt-and-braces: nothing in the messages mentions parent history
@@ -311,6 +315,93 @@ async def test_parent_chat_history_not_visible_to_child() -> None:
         assert m["role"] not in ("assistant", "tool"), (
             "parent's assistant/tool turns must not be inherited"
         )
+
+
+# ---------------------------------------------------------------------------
+# Behaviour baseline (roadmap P1): SUBAGENT_BASELINE_PROMPT is a floor
+#
+# Acceptance rows (a) and (c) from the roadmap item — row (b), the
+# spawn_inline "model-authored prompt cannot override the floor" case,
+# lives in ``test_subagent_spawn_inline.py`` next to the inline dispatch
+# tests it exercises.
+# ---------------------------------------------------------------------------
+
+
+async def test_baseline_precedes_card_prompt_in_system_message() -> None:
+    """Acceptance (a): drive a real child round through :func:`run_child`
+    with a message-capturing fake provider and assert the behavioural
+    baseline is present in the child's system message AND strictly
+    precedes the card's own prompt. Prepend order is the enforcement
+    mechanism — the card prompt must read as an addition to the floor,
+    never a replacement.
+    """
+    provider = _FakeProvider(
+        [ProviderChunk(kind="done", finish_reason="stop")]
+    )
+    card_prompt = "You are a niche domain specialist."
+
+    await run_child(
+        _parent_ctx(),
+        _agent_card(system_prompt=card_prompt),
+        TaskSpec(goal="do the thing"),
+        provider=provider,
+    )
+
+    assert len(provider.messages_seen) == 1, "exactly one provider round"
+    msgs = provider.messages_seen[0]
+    assert msgs[0]["role"] == "system"
+    system = msgs[0]["content"]
+
+    # Baseline is present, verbatim, and the system message STARTS with
+    # it — nothing (not even whitespace) may be spliced in front.
+    assert SUBAGENT_BASELINE_PROMPT in system
+    assert system.startswith(SUBAGENT_BASELINE_PROMPT)
+    # The card's prompt survives too, strictly AFTER the baseline.
+    assert card_prompt in system
+    assert system.index(SUBAGENT_BASELINE_PROMPT) < system.index(card_prompt)
+
+
+async def test_baseline_precedes_extra_context_blocks() -> None:
+    """The ``[ctx.*]`` blocks folded in from ``task.extra_context`` also
+    land after the baseline — the floor is system_parts[0] no matter how
+    many parts follow it."""
+    provider = _FakeProvider(
+        [ProviderChunk(kind="done", finish_reason="stop")]
+    )
+
+    await run_child(
+        _parent_ctx(),
+        _agent_card(system_prompt="You are a careful researcher."),
+        TaskSpec(goal="anything", extra_context={"repo": "corlinman"}),
+        provider=provider,
+    )
+
+    system = provider.messages_seen[0][0]["content"]
+    assert system.startswith(SUBAGENT_BASELINE_PROMPT)
+    assert "[ctx.repo]\ncorlinman" in system
+    assert system.index(SUBAGENT_BASELINE_PROMPT) < system.index("[ctx.repo]")
+
+
+async def test_baseline_alone_when_card_has_no_prompt() -> None:
+    """Acceptance (c): a card with an empty ``system_prompt`` still
+    yields a system message, and its content is EXACTLY the baseline —
+    no separator artefacts, no empty trailing part. Before the floor
+    existed such a child ran with no system message at all.
+    """
+    provider = _FakeProvider(
+        [ProviderChunk(kind="done", finish_reason="stop")]
+    )
+
+    await run_child(
+        _parent_ctx(),
+        _agent_card(system_prompt=""),
+        TaskSpec(goal="anything"),
+        provider=provider,
+    )
+
+    msgs = provider.messages_seen[0]
+    assert [m["role"] for m in msgs] == ["system", "user"]
+    assert msgs[0]["content"] == SUBAGENT_BASELINE_PROMPT
 
 
 # ---------------------------------------------------------------------------
