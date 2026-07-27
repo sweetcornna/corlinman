@@ -13,8 +13,9 @@ poster, slide, screenshot, HTML export, or generated graphic.
 
 ## Default Rules
 
-- For PDFs and reports, use the `document-generator` path first: write Markdown,
-  render with `corlinman-md2pdf`, then inspect the result before sending.
+- For PDFs and reports, render with the `render_document` tool (Markdown in,
+  verified PDF out), then inspect the result before sending. See the
+  `document-generator` skill for the full flow.
 - For text-heavy images, posters, slides, and charts, prefer HTML/CSS/React or
   canvas/SVG for the text layer. Do not ask an image model to draw dense final
   text; use generated raster art only as background or illustration.

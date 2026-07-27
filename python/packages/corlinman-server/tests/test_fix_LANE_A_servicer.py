@@ -384,12 +384,20 @@ async def test_cmp04_ask_resolver_can_be_wired() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_cmp02_default_always_skills_include_document_and_visual_quality() -> None:
-    """The main chat agent must always see the PDF and visual layout
-    guardrails, even when no explicit agent card is invoked."""
+def test_cmp02_default_always_skills_pdf_half_retired() -> None:
+    """``document-generator`` left the always-on list: the
+    ``render_document`` builtin absorbed its half of the v1.12.3 fix (the
+    tool's shape prevents hand-rolled PDFs). ``visual-output-quality``
+    STAYS — its image/poster/slide layout rules have no structural
+    replacement (``image_with_refs`` is still unconstrained), so retiring
+    it would reopen the other half of the regression."""
 
-    assert "document-generator" in _DEFAULT_ALWAYS_SKILLS
-    assert "visual-output-quality" in _DEFAULT_ALWAYS_SKILLS
+    assert "document-generator" not in _DEFAULT_ALWAYS_SKILLS
+    assert _DEFAULT_ALWAYS_SKILLS == ("visual-output-quality",)
+    # The structural replacement must actually be advertised.
+    from corlinman_server.agent_servicer import BUILTIN_TOOLS
+
+    assert "render_document" in BUILTIN_TOOLS
 
 
 @pytest.mark.asyncio
@@ -404,9 +412,18 @@ async def test_cmp02_injected_skill_allowed_tools_enforced(tmp_path: Any, monkey
 
     monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
 
+    # The shipped default list is empty now (render_document supersedes the
+    # PDF guardrails), but the always-on injection path itself must keep
+    # enforcing allowed-tools — pin a test list onto the module global the
+    # servicer reads at fold time.
+    always_skills = ("test-always-skill",)
+    import corlinman_server.agent_servicer as _servicer_mod
+
+    monkeypatch.setattr(_servicer_mod, "_DEFAULT_ALWAYS_SKILLS", always_skills)
+
     # Build restricted skills whose names must be in the servicer's
     # _DEFAULT_ALWAYS_SKILLS for the always-on injection path.
-    for name in _DEFAULT_ALWAYS_SKILLS:
+    for name in always_skills:
         skills_dir = tmp_path / "skills" / name
         skills_dir.mkdir(parents=True)
         (skills_dir / "SKILL.md").write_text(
