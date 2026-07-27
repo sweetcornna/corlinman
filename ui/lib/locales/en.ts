@@ -546,6 +546,7 @@ export const en = {
     evolution: "Evolution",
     models: "Models & Keys",
     persona: "Persona",
+    voice: "Voice",
     providers: "Providers",
     credentials: "Credentials",
     config: "Config",

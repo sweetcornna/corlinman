@@ -58,6 +58,9 @@ from corlinman_server.gateway.routes_admin_b import (
 from corlinman_server.gateway.routes_admin_b import (
     rag as _rag,
 )
+from corlinman_server.gateway.routes_admin_b import (
+    voice as _voice,
+)
 from corlinman_server.gateway.routes_admin_b.config_admin import (
     config as _config,
 )
@@ -166,6 +169,7 @@ def build_router() -> APIRouter:
         _skills,
         _subagents,
         _system,
+        _voice,
         _corlinman_channel,
     ):
         root.include_router(mod.router())

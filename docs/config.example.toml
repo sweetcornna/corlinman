@@ -136,6 +136,62 @@ enabled = false
 # params = { tts_backend = "fish", reference_id = "your-fish-reference-id", format = "mp3" }
 
 # ---------------------------------------------------------------------------
+# [voice] — 语音合成（TTS）。决定 `text_to_speech` 工具、管理界面 /voice 的
+# 试听、以及各渠道语音消息用哪个后端和音色。整节可省略：不配置时用
+# `openai` 后端 + `alloy` 音色，并复用 [providers.*] 里的 OpenAI 凭据。
+#
+# 内置后端：gpt_live / openai / fish / elevenlabs / gemini / minimax
+# ---------------------------------------------------------------------------
+# [voice]
+# enabled = true
+# backend = "openai"          # 见上方内置列表，或下面自定义的后端 id
+# voice = "alloy"             # 留空 = 用该后端的默认音色
+# model = ""                  # 留空 = 用该后端的默认模型
+# format = "mp3"              # mp3 兼容性最好；渠道需要别的容器时会自动转码
+# instructions = ""           # 朗读风格提示，仅部分后端支持（openai / gpt_live）
+# speed = 1.0
+
+# 每个后端的凭据 / 覆盖项。api_key 也可写成 { env = "XXX" }。
+# [voice.backends.openai]
+# api_key = { env = "OPENAI_API_KEY" }
+# base_url = "https://api.openai.com/v1"
+
+# GPT-Live 走 WebRTC 实时会话，需要网关暴露 POST /v1/live 且具备 Live
+# attestation 能力；另需安装可选依赖 aiortc（`uv sync --extra voice`）。
+# [voice.backends.gpt_live]
+# api_key = { env = "OPENAI_API_KEY" }
+# base_url = "https://your-gateway.example.com"
+
+# Fish Audio 用 reference_id（声音克隆句柄）指定音色，没有固定音色表。
+# [voice.backends.fish]
+# api_key = { env = "FISH_AUDIO_API_KEY" }
+# voice = "your-fish-reference-id"
+
+# 自定义后端 —— 任意 HTTP TTS 服务都能用一段声明接进来，管理界面会把它
+# 和内置后端并列显示。body 里的 {text} {voice} {format} {model} {speed}
+# {instructions} 会被替换；其余字段原样发送。整串正好等于一个占位符时按
+# 原始类型替换（"{speed}" -> 1.0 数字），未设置的可选项会被整键丢弃。
+# response = "binary" 表示响应体就是音频；"json_b64" 表示音频是 JSON 里的
+# base64 字段，用 audio_path 指定其路径（支持数字下标）。
+# [voice.backends.my_tts]
+# label = "自建 TTS"
+# base_url = "https://tts.example.com"
+# api_key = { env = "MY_TTS_KEY" }
+# models = ["v2"]
+# formats = ["mp3", "wav"]
+# default_voice = "xiaoyu"
+# voices = [
+#   { id = "xiaoyu", label = "小雨", tone = "轻快", description = "适合日常提醒" },
+# ]
+# [voice.backends.my_tts.http]
+# path = "/api/tts"
+# method = "POST"
+# auth = "bearer"                 # bearer | header | query | none
+# auth_header = "Authorization"
+# response = "binary"             # binary | json_b64
+# body = { content = "{text}", speaker = "{voice}", encoding = "{format}" }
+
+# ---------------------------------------------------------------------------
 # [embedding] — optional dense-retrieval binding. `provider` references one
 # of the keys under `[providers.*]` above; the referenced provider must be
 # embedding-capable (OpenAI-kind / openai_compatible — Anthropic is not).

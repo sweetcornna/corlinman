@@ -7,6 +7,7 @@ import {
   FileAudio,
   FileText,
   FileVideo,
+  Mic,
   Paperclip,
   X,
 } from "@/components/icons";
@@ -49,8 +50,14 @@ export function AttachmentGallery({ attachments, className }: AttachmentGalleryP
   const images = attachments.filter(
     (a) => a.kind === "image" && attachmentSrc(a),
   );
+  // Audio gets a real player rather than a download chip — a voice reply
+  // the agent just synthesised should be playable where it lands.
+  const audios = attachments.filter(
+    (a) => a.kind === "audio" && attachmentSrc(a),
+  );
   const others = attachments.filter(
-    (a) => a.kind !== "image" || !attachmentSrc(a),
+    (a) =>
+      (a.kind !== "image" && a.kind !== "audio") || !attachmentSrc(a),
   );
 
   if (attachments.length === 0) return null;
@@ -84,6 +91,44 @@ export function AttachmentGallery({ attachments, className }: AttachmentGalleryP
             );
           })}
         </div>
+      ) : null}
+
+      {audios.length > 0 ? (
+        <ul className="flex flex-col gap-1.5">
+          {audios.map((att) => (
+            <li
+              key={att.id}
+              className="flex items-center gap-2 rounded-sg-sm border border-sg-border bg-sg-inset px-2.5 py-2"
+              data-testid="attachment-audio-card"
+            >
+              <Mic className="h-4 w-4 shrink-0 text-sg-ink-3" aria-hidden="true" />
+              <div className="min-w-0 flex-1">
+                <span className="block truncate font-mono text-[11px] text-sg-ink">
+                  {att.name}
+                </span>
+                {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+                <audio
+                  controls
+                  preload="metadata"
+                  src={attachmentSrc(att)}
+                  className="mt-1 w-full max-w-sm"
+                  data-testid="attachment-audio-player"
+                />
+              </div>
+              {att.remoteUrl ? (
+                <a
+                  href={att.remoteUrl}
+                  download={att.name}
+                  className="shrink-0 rounded-md p-1 text-sg-ink-3 transition-colors hover:bg-sg-inset-hover hover:text-sg-ink"
+                  aria-label={t("chat.downloadAttachment", { name: att.name })}
+                  data-testid="attachment-download"
+                >
+                  <Download className="h-3.5 w-3.5" aria-hidden="true" />
+                </a>
+              ) : null}
+            </li>
+          ))}
+        </ul>
       ) : null}
 
       {others.length > 0 ? (

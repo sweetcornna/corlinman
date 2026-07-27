@@ -42,6 +42,7 @@ import {
   MessageSquare,
   MessageSquareText,
   MessagesSquare,
+  Mic,
   MonitorCog,
   Network,
   Plug,
@@ -204,6 +205,14 @@ export const NAV_PAGES: NavPageDef[] = [
     icon: Sparkles,
     section: "config",
     keywords: "persona humanlike chat personality 拟人化 角色 grantley",
+  },
+  {
+    id: "voice",
+    href: "/voice",
+    labelKey: "nav.voice",
+    icon: Mic,
+    section: "config",
+    keywords: "voice tts speech audio gpt-live 语音 音色 试听 朗读",
   },
   {
     id: "marketplace",

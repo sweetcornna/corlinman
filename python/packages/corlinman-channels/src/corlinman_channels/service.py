@@ -67,18 +67,9 @@ from corlinman_content_policy import (
 
 _log = logging.getLogger(__name__)
 
-_QQ_AUDIO_ATTACHMENT_SUFFIXES = {
-    ".aac",
-    ".amr",
-    ".flac",
-    ".m4a",
-    ".mp3",
-    ".oga",
-    ".ogg",
-    ".opus",
-    ".silk",
-    ".wav",
-}
+# NOTE: the QQ-local audio-suffix set used to live here. It now lives once
+# in ``corlinman_channels.voice_out.AUDIO_SUFFIXES`` so QQ, Telegram and
+# WeChat cannot drift apart on what counts as audio.
 
 #: Tool names that dispatch sub-agent(s). The moment one of these surfaces as
 #: a ``tool_call`` event mid-turn, the channel handler surfaces the shareable
@@ -1736,14 +1727,17 @@ async def _qq_send_attachment(
     p = _resolve_attachment_path(path_str)
     if p is None:
         return f"⚠️ 发送文件失败: {Path(path_str).name} 不存在"
+    from corlinman_channels.voice_out import is_audio as _is_audio_file
+
     display = filename or p.name
     # MIME-sniff the resolved file. ``image/*`` and ``audio/*`` are sent
     # inline; anything else remains a file-share upload.
     mime, _ = mimetypes.guess_type(p.name)
     is_image = bool(mime and mime.startswith("image/"))
-    is_audio = bool(mime and mime.startswith("audio/")) or (
-        p.suffix.lower() in _QQ_AUDIO_ATTACHMENT_SUFFIXES
-    )
+    # Shared classifier so QQ, Telegram and WeChat agree on what counts
+    # as audio (it also covers containers mimetypes cannot resolve, such
+    # as .silk and .amr).
+    is_audio = _is_audio_file(p, mime)
     try:
         if is_image:
             # Use OneBot's base64 image form instead of a local file URL.
@@ -3494,9 +3488,20 @@ async def _telegram_send_attachment(
     """Send a file via the Telegram sender, picking photo/voice/document
     by MIME. Returns the status text to render in the placeholder.
 
+    Audio is routed through :func:`prepare_voice_note`, which transcodes
+    to OGG/Opus when needed — Telegram's ``sendVoice`` renders a waveform
+    bubble only for that container, so the mp3 ``text_to_speech`` emits by
+    default would otherwise land as a silent document.
+
     Best-effort: any failure is folded into a status line — never raises.
     """
     import mimetypes
+
+    from corlinman_channels.voice_out import (
+        is_audio,
+        prepare_voice_note,
+        voice_status_line,
+    )
 
     path_str, caption, filename = _parse_send_attachment_args(ev)
     if not path_str:
@@ -3507,20 +3512,29 @@ async def _telegram_send_attachment(
     mime, _ = mimetypes.guess_type(p.name)
     mime = mime or "application/octet-stream"
     display = filename or p.name
+    status = f"📎 已发送文件: {display}"
     try:
         if mime.startswith("image/"):
             from corlinman_channels.telegram_send import PhotoSource
 
             await sender.send_photo(chat_id, PhotoSource.Path(p), caption=caption)
-        elif mime.startswith("audio/") and p.suffix.lower() in {".ogg", ".oga"}:
-            await sender.send_voice(chat_id, p, caption=caption)
+        elif is_audio(p, mime):
+            voice = await prepare_voice_note(p, "telegram")
+            if voice is not None:
+                await sender.send_voice(chat_id, voice, caption=caption)
+                status = voice_status_line(display, native=True)
+            else:
+                await sender.send_document(
+                    chat_id, p, caption=caption, filename=display, mime=mime
+                )
+                status = voice_status_line(display, native=False)
         else:
             await sender.send_document(chat_id, p, caption=caption, filename=display, mime=mime)
     except Exception as exc:  # noqa: BLE001
         _log.warning("telegram send_attachment failed: %s", exc)
         return f"⚠️ 发送文件失败: {display} ({exc})"
     _log.info("telegram send_attachment ok path=%s display=%s mime=%s", p, display, mime)
-    return f"📎 已发送文件: {display}"
+    return status
 
 
 async def handle_one_telegram(
@@ -4403,6 +4417,12 @@ async def _discord_send_attachment(
         _log.warning("discord send_attachment failed: %s", exc)
         return f"⚠️ 发送文件失败: {display} ({exc})"
     _log.info("discord send_attachment ok path=%s display=%s", p, display)
+    # Discord renders uploaded audio with an inline player; its native
+    # voice-message API is bot-restricted, so a file upload is the path.
+    from corlinman_channels.voice_out import is_audio, voice_status_line
+
+    if is_audio(p):
+        return voice_status_line(display, native=False)
     return f"📎 已发送文件: {display}"
 
 
@@ -4711,6 +4731,12 @@ async def _slack_send_attachment(
         _log.warning("slack send_attachment failed: %s", exc)
         return f"⚠️ 发送文件失败: {display} ({exc})"
     _log.info("slack send_attachment ok path=%s display=%s", p, display)
+    # Slack has no voice-note API — an uploaded audio file renders with an
+    # inline player, so say "音频" rather than the generic 文件 label.
+    from corlinman_channels.voice_out import is_audio, voice_status_line
+
+    if is_audio(p):
+        return voice_status_line(display, native=False)
     return f"📎 已发送文件: {display}"
 
 
@@ -5017,6 +5043,10 @@ async def _feishu_send_attachment(
         _log.warning("feishu send_attachment failed: %s", exc)
         return f"⚠️ 发送文件失败: {display} ({exc})"
     _log.info("feishu send_attachment ok path=%s display=%s", p, display)
+    from corlinman_channels.voice_out import is_audio, voice_status_line
+
+    if is_audio(p):
+        return voice_status_line(display, native=False)
     return f"📎 已发送文件: {display}"
 
 
@@ -5393,6 +5423,32 @@ async def _qq_official_send_image(
     return await sender.send_image(thread, url, msg_id=msg_id, content=caption)
 
 
+async def _qq_official_send_voice(
+    sender: QqOfficialSender,
+    inbound: InboundEvent[Any],
+    path: Path,
+    caption: str | None,
+) -> str:
+    """Pre-upload a SILK clip and send it on the C2C / group endpoint.
+
+    Guild channels have no rich-media voice slot (they take a public
+    HTTPS image URL only), so they degrade to a text notice.
+    """
+    event_type = _qq_official_event_type(inbound)
+    thread = inbound.binding.thread
+    msg_id = inbound.message_id
+    file_data = path.read_bytes()
+    if event_type == _QQ_OFFICIAL_EVT_C2C:
+        info = await sender.upload_c2c_voice(thread, file_data=file_data)
+        await sender.send_c2c_voice(thread, info, msg_id=msg_id, content=caption or "")
+    elif event_type == _QQ_OFFICIAL_EVT_GROUP:
+        info = await sender.upload_group_voice(thread, file_data=file_data)
+        await sender.send_group_voice(thread, info, msg_id=msg_id, content=caption or "")
+    else:
+        return f"🎵 [语音] {path.name} (QQ官方频道暂不支持语音消息)"
+    return f"🎙️ 已发送语音: {path.name}"
+
+
 async def _qq_official_send_attachment(
     sender: QqOfficialSender,
     inbound: InboundEvent[Any],
@@ -5416,7 +5472,34 @@ async def _qq_official_send_attachment(
     mime, _ = mimetypes.guess_type(p.name)
     mime = mime or "application/octet-stream"
     display = filename or p.name
+
+    from corlinman_channels.voice_out import (
+        is_audio,
+        prepare_voice_note,
+        voice_status_line,
+    )
+
     if not mime.startswith("image/"):
+        if is_audio(p, mime):
+            # Tencent's voice slot accepts SILK only, and no general
+            # encoder produces it — prepare_voice_note returns None for
+            # anything else, so we tell the user why instead of failing
+            # an upload the CDN would reject anyway.
+            voice = await prepare_voice_note(p, "qq_official")
+            if voice is not None:
+                try:
+                    status = await _qq_official_send_voice(
+                        sender, inbound, voice, caption
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning("qq_official send voice failed: %s", exc)
+                    return f"⚠️ 发送语音失败: {display} ({exc})"
+                _log.info("qq_official send_attachment voice path=%s", voice)
+                return status or voice_status_line(display, native=True)
+            return (
+                f"🎵 [语音] {display} "
+                "(QQ官方机器人语音仅支持 SILK 格式，已跳过发送)"
+            )
         # Platform limitation — only images survive the C2C / group
         # pipeline. Surface a clear human-readable status instead of
         # silently dropping the file.
@@ -5924,6 +6007,60 @@ def _split_passive_and_rest(body: str) -> tuple[str, str]:
     return (body[:cut].rstrip() + "…", body[cut:].lstrip())
 
 
+async def _wechat_send_attachment(
+    sender: WeChatOfficialSender,
+    openid: str,
+    ev: Any,
+) -> str:
+    """Deliver a ``send_attachment`` payload through WeChat customer service.
+
+    WeChat needs a two-step flow — upload to the temp-media store, then
+    send a message referencing the returned ``media_id``. Voice must be
+    AMR/MP3 ≤60 s and ≤2 MB, which :func:`prepare_voice_note` enforces by
+    transcoding; a clip that cannot be made to fit degrades to a text
+    notice, because the platform offers no generic file message.
+
+    Returns a status line. Best-effort: never raises.
+    """
+    import mimetypes
+
+    from corlinman_channels.voice_out import is_audio, prepare_voice_note
+
+    path_str, caption, filename = _parse_send_attachment_args(ev)
+    if not path_str:
+        return "⚠️ 发送文件失败: missing `path`"
+    p = _resolve_attachment_path(path_str)
+    if p is None:
+        return f"⚠️ 发送文件失败: {Path(path_str).name} 不存在"
+    mime, _ = mimetypes.guess_type(p.name)
+    mime = mime or "application/octet-stream"
+    display = filename or p.name
+
+    try:
+        if is_audio(p, mime):
+            voice = await prepare_voice_note(p, "wechat_official")
+            if voice is None:
+                return f"🎵 [语音] {display} (格式或时长不符合微信语音要求，已跳过)"
+            media_id = await sender.upload_temp_media("voice", voice)
+            await sender.send_voice_customer(openid, media_id)
+            if caption:
+                await sender.send_text_customer(openid, caption)
+            _log.info("wechat_official send_attachment voice path=%s", voice)
+            return f"🎙️ 已发送语音: {display}"
+        if mime.startswith("image/"):
+            media_id = await sender.upload_temp_media("image", p)
+            await sender.send_image_customer(openid, media_id)
+            if caption:
+                await sender.send_text_customer(openid, caption)
+            _log.info("wechat_official send_attachment image path=%s", p)
+            return f"📎 已发送图片: {display}"
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("wechat_official send_attachment failed: %s", exc)
+        return f"⚠️ 发送失败: {display} ({exc})"
+    # No generic document message exists on the customer-service API.
+    return f"📎 [文件] {display} (微信公众号暂不支持文件直发)"
+
+
 async def handle_one_wechat_official(
     chat_service: ChatServiceLike,
     inbound: InboundEvent[Any],
@@ -5969,6 +6106,9 @@ async def handle_one_wechat_official(
     text_parts: list[str] = []
     error_message: str | None = None
     supplemented = False
+    #: Only *unsuccessful* attachment sends land here; they are appended
+    #: to the reply so a silently-skipped voice note is visible.
+    attachment_notes: list[str] = []
     # WeChat has no live status surface, but a sub-agent fan-out can run
     # for minutes — push the live status link as a customer-service message
     # the moment the first sub-agent spawns so the user can watch. If that
@@ -5989,6 +6129,18 @@ async def handle_one_wechat_official(
             elif kind == "error":
                 error_message = getattr(ev, "error", "") or getattr(ev, "message", "")
                 break
+            elif kind == "tool_call" and (getattr(ev, "tool", "") or "") == (
+                _SEND_ATTACHMENT_TOOL
+            ):
+                # WeChat has no live status surface, so the send happens
+                # inline and only *failures* are surfaced — appended to
+                # the reply body below so the user is never left thinking
+                # a voice message arrived when it did not.
+                _wx_note = await _wechat_send_attachment(
+                    sender, inbound.binding.sender, ev
+                )
+                if _wx_note.startswith(("⚠️", "📎 [文件]", "🎵 [语音]")):
+                    attachment_notes.append(_wx_note)
             elif kind == "tool_call" and not _wx_status_link_requested and not _wx_status_link_sent:
                 tool_name = getattr(ev, "tool", "") or ""
                 if tool_name in _SUBAGENT_SPAWN_TOOLS:
@@ -6033,7 +6185,7 @@ async def handle_one_wechat_official(
         body = f"[corlinman error] {error_message}"
     else:
         body = _normalize_for_channel("".join(text_parts), "wechat_official")
-        if not body:
+        if not body and not attachment_notes:
             # Empty reply — release the webhook so it doesn't sit on
             # the passive deadline forever. (Previously we'd ship the
             # todo list as a fallback payload, but pending rows are
@@ -6041,6 +6193,12 @@ async def handle_one_wechat_official(
             if passive_future is not None and not passive_future.done():
                 passive_future.set_result("")
             return
+
+    if attachment_notes:
+        # A voice note that could not be delivered must not vanish
+        # silently — the model already told the user it sent one.
+        notes = "\n".join(attachment_notes)
+        body = f"{body}\n\n{notes}" if body else notes
 
     passive, remainder = _split_passive_and_rest(body)
 

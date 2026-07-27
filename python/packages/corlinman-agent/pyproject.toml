@@ -25,6 +25,14 @@ dependencies = [
     "websockets>=13",
 ]
 
+[project.optional-dependencies]
+# GPT-Live synthesis speaks WebRTC (the realtime models have no REST
+# speech endpoint). aiortc pulls in PyAV/ffmpeg bindings, so it stays
+# optional: every other TTS backend is plain HTTP, and a deployment that
+# never enables gpt_live gets a `gpt_live_dependency_missing` envelope
+# instead of an import error at boot.
+voice = ["aiortc>=1.9"]
+
 [tool.uv.sources]
 corlinman-grpc = { workspace = true }
 corlinman-providers = { workspace = true }
