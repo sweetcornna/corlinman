@@ -4,6 +4,31 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.48.0] — 2026-07-27 — 统一授权模型收官（W3-4）：队列持久化 + 策略/授权 UI
+
+### Added
+- **审批队列持久化**:pending 行落
+  `<data_dir>/authz/approvals.sqlite3`((session, call) 复合键),重启
+  不丢;`decision` 区分 approved/denied/**timeout**,超时永不覆盖人的
+  决定;boot 时清算上个进程遗留的孤儿 pending(标 timeout,不再出现
+  「批准了一个没人执行的调用」)。(#183)
+- **`/admin/approvals` 端到端**(此前恒 503):列真实 pending、批准即
+  写回在流 turn;无活流的决策答 410 expired;歧义 call_id 答 409。(#183)
+- **`/authz` 管理页**:策略编辑器([permissions] 规则表单化,保存即
+  双写 config.toml + sidecar,下一回合生效)+ 授权记录面板(always
+  授权列表 + 单条撤销,跨进程下一回合生效)。(#183)
+
+### Fixed
+- `/approvals` 页三个老 bug(undefined id / NaN 日期 / POST 到
+  undefined 路由);approval 类型三合一与后端 ApprovalOut 对齐。(#183)
+- GrantStore 跨进程失效改三元变更令牌(mtime+size+SQLite 计数器),
+  同一时间戳刻度内的写不再漏检;新授权不再复活刚被撤销的旧授权。(#183)
+
+### Notes
+- **P4 统一授权模型至此四波全部落地**(W3-1 #179 / W3-2 #181 /
+  W3-3 #182 / W3-4 #183):一套规则语言、两个执行点、三级记忆性、四种
+  判决,从 config 到 UI 到七渠道审批全链路贯通。
+
 ## [1.47.0] — 2026-07-27 — 统一授权模型第三波（W3-3）：跨 surface 审批通道
 
 ### Added
