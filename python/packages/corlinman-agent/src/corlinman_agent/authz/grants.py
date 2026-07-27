@@ -89,6 +89,24 @@ def arg_digest(tool: str, args: dict[str, Any] | None) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
+def _surface_of(subject: Any) -> str:
+    """The surface a scoped grant keys on.
+
+    A subagent call carries ``surface="subagent"`` with the spawning
+    turn's surface in ``parent_surface`` — grants belong to the HUMAN
+    surface (the person who answered the prompt), so the parent surface
+    is the key. Without this a child-granted approval never satisfied
+    the parent's later asks AND was shared across every unrelated
+    surface's subagents (W3-3 review fix).
+    """
+    surface = getattr(subject, "surface", None)
+    if surface == "subagent":
+        parent = getattr(subject, "parent_surface", None)
+        if isinstance(parent, str) and parent.strip():
+            return parent.strip()
+    return str(surface or "")
+
+
 def _tenant_of(subject: Any) -> str:
     """Normalize the tenant key exactly like the servicer's dispatch path.
 
@@ -242,9 +260,7 @@ class GrantStore:
                 session_key = str(getattr(subject, "session_key", None) or "")
                 self._session.add((tenant, session_key, tool, digest))
                 return
-            surface = (
-                str(getattr(subject, "surface", None) or "") if scope_surface else ""
-            )
+            surface = _surface_of(subject) if scope_surface else ""
             user = str(getattr(subject, "user_id", None) or "") if scope_user else ""
             key = (tenant, surface, user, tool, digest)
             self._load_db()
@@ -260,7 +276,7 @@ class GrantStore:
             if (tenant, session_key, tool, digest) in self._session:
                 return True
             self._load_db()
-            surface = str(getattr(subject, "surface", None) or "")
+            surface = _surface_of(subject)
             user = str(getattr(subject, "user_id", None) or "")
             # Unscoped grant, then the progressively-narrower scoped shapes.
             for key in (

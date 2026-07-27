@@ -39,6 +39,7 @@ import asyncio
 import base64
 import collections
 import contextlib
+import contextvars
 import functools
 import json
 import logging
@@ -1569,6 +1570,15 @@ async def _qq_run_one(
     signature — old callers in tests still work because the kwarg
     defaults to ``None`` and the persona path no-ops on that.
     """
+    released = False
+
+    def _release_once() -> None:
+        nonlocal released
+        if not released:
+            released = True
+            semaphore.release()
+
+    token = _TURN_PARK_RELEASE.set(_release_once)
     try:
         await handle_one_qq(
             chat_service,
@@ -1582,7 +1592,8 @@ async def _qq_run_one(
             params=params,
         )
     finally:
-        semaphore.release()
+        _TURN_PARK_RELEASE.reset(token)
+        _release_once()
 
 
 def _qq_activity_label_for_call(ev: Any) -> str:
@@ -1891,6 +1902,29 @@ _APPROVE_ALWAYS_WORDS = frozenset({"a", "3", "always", "永久"})
 _DENY_WORDS = frozenset({"n", "no", "0", "拒绝", "deny"})
 
 
+#: Per-turn hook set by the semaphore-holding wrapper (``_qq_run_one`` /
+#: ``_bounded_spawn``): releases THIS turn's concurrency permit exactly
+#: once. Triggered when the turn parks on a human approval — a parked
+#: turn consumes no compute, and holding its permit for up to 300s can
+#: saturate the per-channel semaphore, which blocks the sequential
+#: dispatch loop at ``semaphore.acquire()`` BEFORE it can read the very
+#: replies that would un-park anything (review finding, W3-3). Trade-off:
+#: an approved turn resumes WITHOUT a permit, so concurrency can briefly
+#: overshoot the cap by the number of in-flight approvals — accepted over
+#: the deadlock.
+_TURN_PARK_RELEASE: contextvars.ContextVar[Callable[[], None] | None] = (
+    contextvars.ContextVar("corlinman_turn_park_release", default=None)
+)
+
+
+def _release_turn_permit_early() -> None:
+    """Fire the current turn's park-release hook (idempotent, no-op when
+    the turn runs outside a permit-holding wrapper, e.g. in tests)."""
+    hook = _TURN_PARK_RELEASE.get()
+    if hook is not None:
+        hook()
+
+
 @dataclass
 class _PendingChannelApproval:
     """One approval prompt posted into a channel conversation."""
@@ -1900,6 +1934,9 @@ class _PendingChannelApproval:
     tool: str
     conv_key: str
     expires_at: float
+    #: The parked stream's session — required by the broker's scoped
+    #: decide() (W3-3 review fix).
+    session_key: str = ""
     timeout_task: asyncio.Task[None] | None = None
 
 
@@ -1929,6 +1966,24 @@ def _approval_prompt_text(ev: Any) -> str:
     return "\n".join(lines)
 
 
+def channel_approval_awaits_reply(conv_key: str, sender: str, text: str) -> bool:
+    """True when ``text`` from ``sender`` is a decision an approval in
+    ``conv_key`` is waiting for.
+
+    The adapter-side group-gate exemption (telegram.py) calls this so a
+    bare y/s/a/n (or a keyboard press's synthetic message) survives
+    ``require_mention_in_groups`` / ``keyword_filter`` — using the SAME
+    predicate the interceptor applies, so nothing else leaks past the
+    gate.
+    """
+    bucket = _PENDING_CHANNEL_APPROVALS.get(conv_key)
+    if not bucket:
+        return False
+    if _parse_approval_reply(text) is None:
+        return False
+    return any(str(sender) == e.initiator for e in bucket.values())
+
+
 def _parse_approval_reply(text: str) -> tuple[bool, str] | None:
     """Map a reply to ``(approved, scope)`` or ``None`` (not a decision)."""
     word = (text or "").strip().lower()
@@ -1950,6 +2005,7 @@ def _register_channel_approval(
     ev: Any,
     initiator: str,
     notify_timeout: Callable[[], Awaitable[None]] | None,
+    session_key: str = "",
 ) -> _PendingChannelApproval:
     """Track a posted prompt; arm the channel-side expiry notice."""
     call_id = getattr(ev, "call_id", "") or ""
@@ -1959,6 +2015,7 @@ def _register_channel_approval(
         tool=getattr(ev, "tool", "") or "",
         conv_key=conv_key,
         expires_at=time.time() + _APPROVAL_TIMEOUT_S,
+        session_key=session_key or "",
     )
     bucket = _PENDING_CHANNEL_APPROVALS.setdefault(conv_key, collections.OrderedDict())
     bucket[call_id] = entry
@@ -1996,7 +2053,12 @@ def _clear_channel_approval(
 
 
 async def _approval_decide_via_broker(
-    call_id: str, *, approved: bool, scope: str, deny_message: str = ""
+    call_id: str,
+    *,
+    approved: bool,
+    scope: str,
+    deny_message: str = "",
+    session_key: str = "",
 ) -> bool:
     """Feed a decision to the gateway approval broker (guarded import).
 
@@ -2016,6 +2078,7 @@ async def _approval_decide_via_broker(
             approved=approved,
             scope=scope,
             deny_message=deny_message,
+            session_key=session_key,
         )
     except Exception as exc:  # noqa: BLE001 — decision failure ≙ expired
         _log.warning("approval broker decide failed: %s", exc)
@@ -2038,9 +2101,15 @@ async def _try_handle_channel_approval_reply(
     parsed = _parse_approval_reply(text)
     if parsed is None:
         return None
-    # FIFO: answers apply to the oldest pending prompt in the conversation.
-    entry = next(iter(bucket.values()))
-    if str(sender) != entry.initiator:
+    # A reply answers the oldest pending prompt OF ITS OWN SENDER — the
+    # bucket is per-conversation while approvals are per-initiator, so
+    # plain FIFO would let one user's pending prompt block every other
+    # user in the same group from answering their own (and route B's
+    # "y" onto A's tool call).
+    entry = next(
+        (e for e in bucket.values() if str(sender) == e.initiator), None
+    )
+    if entry is None:
         _log.info(
             "channel approval reply ignored (non-initiator) conv=%s sender=%s",
             conv_key,
@@ -2054,6 +2123,7 @@ async def _try_handle_channel_approval_reply(
         approved=approved,
         scope=scope,
         deny_message="" if approved else f"denied by {sender} in channel",
+        session_key=entry.session_key,
     )
     if not delivered:
         return "⚠️ 该审批已失效（可能已超时或被处理）"
@@ -2079,6 +2149,7 @@ async def _qq_present_approval(
     event: MessageEvent,
     chat_ev: Any,
     instance_id: str,
+    session_key: str = "",
 ) -> str | None:
     """Post the QQ text-menu approval prompt + register the pending entry.
 
@@ -2105,7 +2176,7 @@ async def _qq_present_approval(
         _log.warning("qq approval prompt send failed: %s", exc)
         return None
     entry = _register_channel_approval(
-        conv_key, chat_ev, str(event.user_id), _notify_timeout
+        conv_key, chat_ev, str(event.user_id), _notify_timeout, session_key
     )
     return entry.call_id
 
@@ -2246,10 +2317,18 @@ async def handle_one_qq(
             kind = _event_kind(chat_ev)
             if kind == "awaiting_approval":
                 _cid = await _qq_present_approval(
-                    adapter, event, chat_ev, _qq_instance_id
+                    adapter,
+                    event,
+                    chat_ev,
+                    _qq_instance_id,
+                    session_key=req.binding.session_key(),
                 )
                 if _cid:
                     _qq_approval_call_ids.append(_cid)
+                # Parked on a human — free this turn's concurrency permit
+                # so a saturated semaphore can't block the dispatch loop
+                # from reading the decision replies (idempotent).
+                _release_turn_permit_early()
                 continue
             if kind == "token_delta":
                 text_parts.append(getattr(chat_ev, "text", "") or "")
@@ -3990,7 +4069,11 @@ async def handle_one_telegram(
             inline_keyboard=keyboard,
         )
         entry = _register_channel_approval(
-            _tg_conv_key, ev, str(inbound.binding.sender), _notify_timeout
+            _tg_conv_key,
+            ev,
+            str(inbound.binding.sender),
+            _notify_timeout,
+            session_key=inbound.binding.session_key(),
         )
         _tg_approval_call_ids.append(entry.call_id)
 
@@ -4372,6 +4455,10 @@ async def _drive_spinner(
                     await on_awaiting_approval(ev)
                 except Exception as exc:  # noqa: BLE001
                     _log.warning("awaiting-approval prompt failed: %s", exc)
+            # Parked on a human — free this turn's concurrency permit so
+            # a saturated semaphore can't block the dispatch loop from
+            # reading the decision replies (idempotent).
+            _release_turn_permit_early()
             continue
         if kind == "token_delta":
             await spinner.on_token_delta(
@@ -6966,15 +7053,28 @@ async def _bounded_spawn(
     Used by the four text-only channel dispatch loops (Telegram /
     Discord / Slack / Feishu) to keep R3's concurrency cap in one
     place. The semaphore is released in the task's ``finally`` block
-    so a crashing handler never strands a permit.
+    so a crashing handler never strands a permit. A turn that parks on
+    a human approval releases its permit EARLY via
+    :data:`_TURN_PARK_RELEASE` (idempotent) — see that var's docstring
+    for the deadlock this prevents.
     """
     await semaphore.acquire()
 
     async def _wrapped() -> None:
+        released = False
+
+        def _release_once() -> None:
+            nonlocal released
+            if not released:
+                released = True
+                semaphore.release()
+
+        token = _TURN_PARK_RELEASE.set(_release_once)
         try:
             await coro_factory()
         finally:
-            semaphore.release()
+            _TURN_PARK_RELEASE.reset(token)
+            _release_once()
 
     t = asyncio.create_task(_wrapped())
     pending.add(t)

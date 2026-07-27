@@ -104,8 +104,18 @@ async def test_awaiting_frame_surfaces_event_and_registers_broker() -> None:
     assert broker.pending_ids() == ["call-w33"]
 
     # Decide → the ApprovalDecision client frame lands on THIS stream's tx.
-    delivered = await broker.decide(
+    # Review fix: the lookup is (session, call_id)-scoped — a decide
+    # without the stream's session key reads as expired.
+    unscoped = await broker.decide(
         "call-w33", approved=True, scope="session", deny_message=""
+    )
+    assert unscoped is False
+    delivered = await broker.decide(
+        "call-w33",
+        approved=True,
+        scope="session",
+        deny_message="",
+        session_key="t::s1",
     )
     assert delivered is True
     frame = backend.tx.get_nowait()
@@ -139,3 +149,32 @@ def test_build_chat_start_carries_approval_capable() -> None:
     assert _build_chat_start(req).approval_capable is False
     req.approval_capable = True
     assert _build_chat_start(req).approval_capable is True
+
+
+@pytest.mark.asyncio
+async def test_broker_keys_disambiguate_index_style_call_ids() -> None:
+    """Provider tool-call ids are NOT globally unique (index-style
+    ``call_0``) — two concurrent streams registering the same call_id
+    must not clobber each other (review finding, W3-3)."""
+    import asyncio
+
+    from corlinman_server.gateway.services.approval_broker import (
+        ApprovalBroker,
+        PendingApproval,
+    )
+
+    broker = ApprovalBroker()
+    tx_a: asyncio.Queue = asyncio.Queue()
+    tx_b: asyncio.Queue = asyncio.Queue()
+    broker.register(PendingApproval(call_id="call_0", tx=tx_a, session_key="t::a"))
+    broker.register(PendingApproval(call_id="call_0", tx=tx_b, session_key="t::b"))
+
+    assert await broker.decide(
+        "call_0", approved=True, session_key="t::b"
+    )
+    assert tx_b.qsize() == 1 and tx_a.qsize() == 0
+    # Stream A's registration survived B's identical call_id.
+    assert await broker.decide(
+        "call_0", approved=False, deny_message="no", session_key="t::a"
+    )
+    assert tx_a.qsize() == 1

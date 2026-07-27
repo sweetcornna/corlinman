@@ -485,6 +485,9 @@ async def _run_chat(
                         tool=aw.tool,
                         args_preview_json=preview,
                         reason=aw.reason,
+                        # Scopes who may decide (and disambiguates
+                        # index-style call ids across concurrent streams).
+                        session_key=req.session_key or "",
                     )
                 )
                 registered_approvals.add(aw.call_id)
@@ -504,7 +507,7 @@ async def _run_chat(
     finally:
         broker = get_approval_broker()
         for call_id in registered_approvals:
-            broker.unregister(call_id)
+            broker.unregister(call_id, session_key=req.session_key or "")
         cancel_task.cancel()
         with _suppress_cancelled():
             await cancel_task

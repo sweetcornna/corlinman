@@ -483,8 +483,13 @@ def _build_internal_request(req: ChatRequest, session_key: str | None) -> Intern
         # W3-3: the web chat can answer AwaitingApproval — the UI renders
         # the approval prompt card from the live-event stream and POSTs
         # the decision to /v1/chat/completions/{turn}/approve, which the
-        # gateway approval broker routes back into this stream.
-        approval_capable=True,
+        # gateway approval broker routes back into this stream. STREAMING
+        # ONLY: a stream=false caller (curl / OpenAI SDK pointed at the
+        # gateway) never sees the awaiting event and could never answer —
+        # stamping it capable would turn the previously-instant ask
+        # fail-close into a silent 300s hang. Non-stream keeps
+        # approval_capable=False → immediate authz_no_channel.
+        approval_capable=bool(req.stream),
     )
 
 

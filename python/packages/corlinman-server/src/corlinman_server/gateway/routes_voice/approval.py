@@ -170,6 +170,9 @@ class VoiceApprovalBridge:
         self._queue = queue
         self._session_key = session_key
         self._timeout_seconds = timeout_seconds
+        # Lazy call-time gate (W3-3 review fix) — resolves the verdict
+        # BEFORE any approval machinery runs; see handle_tool_call.
+        self._authz_gate: Any = None
 
     @classmethod
     def no_gate(
@@ -209,6 +212,52 @@ class VoiceApprovalBridge:
         Returns the :class:`ApprovalOutcome` to apply to client +
         provider channels; never blocks beyond the gate's own timeout.
         """
+        # W3-3 review fix (C1 nuance): the bridge sees EVERY provider
+        # tool call, not just ask-verdict ones — so it must resolve the
+        # unified gate FIRST. allow/log verdicts (the default) proceed
+        # without any prompt; deny blocks outright; only a genuine
+        # ``ask`` reaches the queue / fail-closed path below. Without
+        # this, flipping the no-queue branch to fail-closed denied every
+        # voice tool call in every real deployment (the queue is never
+        # wired in production). Fail-open to the ask path on internal
+        # gate error — the ask machinery below still fail-closes.
+        try:
+            from corlinman_agent.authz import AuthzGate, Subject  # noqa: PLC0415
+
+            if self._authz_gate is None:
+                self._authz_gate = AuthzGate()
+            action, _idx = self._authz_gate.resolve_external(
+                (tool, f"voice:{tool}"),
+                Subject(session_key=self._session_key, surface="voice"),
+                args_json if isinstance(args_json, dict) else None,
+            )
+        except Exception as exc:  # noqa: BLE001 — degrade to the ask path
+            logger.warning(
+                "voice: authz resolve failed (treating as ask): %s", exc
+            )
+            action = "ask"
+        if action in ("allow", "log"):
+            return ApprovalOutcome(
+                server_frames=[],
+                provider_commands=[
+                    ProviderCommand.approve_tool(approval_id, approve=True)
+                ],
+                decision=ApprovalDecisionKind.APPROVED,
+            )
+        if action == "deny":
+            return ApprovalOutcome(
+                server_frames=[
+                    ServerControl(
+                        type=ServerControl.AGENT_TEXT, text=APPROVAL_DENIED_TEXT
+                    ),
+                ],
+                provider_commands=[
+                    ProviderCommand.approve_tool(approval_id, approve=False),
+                    ProviderCommand.interrupt(),
+                ],
+                decision=ApprovalDecisionKind.DENIED,
+            )
+
         pause_frame = ServerControl(
             type=ServerControl.TOOL_APPROVAL_REQUIRED,
             approval_id=approval_id,

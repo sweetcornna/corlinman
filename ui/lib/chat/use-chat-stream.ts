@@ -929,10 +929,12 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
         await submitApproval(turnId, {
           // The route 400s without a call_id and, on deny, without a
           // deny_message — both were missing before W3-3 wired the
-          // decision path end-to-end.
+          // decision path end-to-end. session_key scopes the broker
+          // lookup (same capability bar as posting into the session).
           call_id: callId,
           approved: decision === "approved",
           scope,
+          session_key: args.sessionKey,
           ...(decision === "approved"
             ? {}
             : { deny_message: "Denied from web chat" }),
@@ -957,7 +959,7 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
         };
       });
     },
-    [],
+    [args.sessionKey],
   );
 
   // Session switch: the hook instance survives a `sessionKey` change, but

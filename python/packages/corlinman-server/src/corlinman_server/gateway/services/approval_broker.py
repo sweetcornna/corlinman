@@ -46,31 +46,45 @@ class PendingApproval:
     tool: str = ""
     args_preview_json: str = ""
     reason: str = ""
+    #: The parked stream's session — the decision-authorization scope.
+    #: Deciders must present the same key: knowing a session's key is the
+    #: same capability bar as posting messages into it, and without the
+    #: check ANY authenticated caller could decide ANY pending approval
+    #: process-wide (review finding, W3-3).
+    session_key: str = ""
     registered_at: float = field(default_factory=time.time)
 
 
+def _key(session_key: str, call_id: str) -> tuple[str, str]:
+    """Registry key. Composite on purpose — provider tool-call ids are
+    NOT globally unique (index-style ``call_0`` ids collide across
+    concurrent streams), so a bare call_id key would let one stream's
+    registration clobber another's."""
+    return (session_key or "", call_id)
+
+
 class ApprovalBroker:
-    """call_id → backend-stream registry with a decide() entry point."""
+    """(session_key, call_id) → backend-stream registry + decide()."""
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
-        self._pending: dict[str, PendingApproval] = {}
+        self._pending: dict[tuple[str, str], PendingApproval] = {}
 
     def register(self, entry: PendingApproval) -> None:
         with self._lock:
-            self._pending[entry.call_id] = entry
+            self._pending[_key(entry.session_key, entry.call_id)] = entry
 
-    def unregister(self, call_id: str) -> None:
+    def unregister(self, call_id: str, session_key: str = "") -> None:
         with self._lock:
-            self._pending.pop(call_id, None)
+            self._pending.pop(_key(session_key, call_id), None)
 
     def pending_ids(self) -> list[str]:
         with self._lock:
-            return list(self._pending)
+            return [call_id for (_s, call_id) in self._pending]
 
-    def get(self, call_id: str) -> PendingApproval | None:
+    def get(self, call_id: str, session_key: str = "") -> PendingApproval | None:
         with self._lock:
-            return self._pending.get(call_id)
+            return self._pending.get(_key(session_key, call_id))
 
     async def decide(
         self,
@@ -79,15 +93,19 @@ class ApprovalBroker:
         approved: bool,
         scope: str = "once",
         deny_message: str = "",
+        session_key: str = "",
     ) -> bool:
         """Feed a decision to the parked stream.
 
-        Returns ``False`` when the ``call_id`` is unknown (already
-        decided, timed out agent-side, or never existed) so callers can
-        surface "this approval has expired" instead of a silent no-op.
+        ``session_key`` scopes the lookup: a decider must know the parked
+        stream's session (the same capability posting into that session
+        requires). Returns ``False`` when the (session, call_id) pair is
+        unknown — already decided, timed out agent-side, never existed,
+        or the caller presented the wrong session — so callers surface
+        "this approval has expired" instead of a silent no-op.
         """
         with self._lock:
-            entry = self._pending.pop(call_id, None)
+            entry = self._pending.pop(_key(session_key, call_id), None)
         if entry is None:
             return False
         frame = agent_pb2.ClientFrame(

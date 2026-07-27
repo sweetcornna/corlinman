@@ -73,13 +73,20 @@ class _BrokerRecorder:
     gate: asyncio.Event | None = None
 
     async def __call__(
-        self, call_id: str, *, approved: bool, scope: str, deny_message: str = ""
+        self,
+        call_id: str,
+        *,
+        approved: bool,
+        scope: str,
+        deny_message: str = "",
+        session_key: str = "",
     ) -> bool:
         self.calls.append(
             {
                 "call_id": call_id,
                 "approved": approved,
                 "scope": scope,
+                "session_key": session_key,
                 "deny_message": deny_message,
             }
         )
@@ -205,14 +212,16 @@ async def test_qq_awaiting_event_posts_prompt_and_initiator_approves(
     reply = _group_event(user_id=555, text="s")
     consumed = await service._qq_try_handle_approval_reply(adapter, reply, "default")
     assert consumed is True
-    assert broker.calls == [
-        {
-            "call_id": "call-appr-1",
-            "approved": True,
-            "scope": "session",
-            "deny_message": "",
-        }
-    ]
+    assert len(broker.calls) == 1
+    call = broker.calls[0]
+    assert call["call_id"] == "call-appr-1"
+    assert call["approved"] is True
+    assert call["scope"] == "session"
+    assert call["deny_message"] == ""
+    # Review fix: the decision is session-scoped — the registration
+    # captured the initiator's binding session key and the broker decide
+    # must present it (an unscoped decide would read as expired).
+    assert call["session_key"], "decide must carry the stream's session key"
     # The confirmation message went back into the conversation.
     assert any("已批准" in _action_text(a) for a in adapter.sent[1:])
     await turn
@@ -343,3 +352,75 @@ def test_text_channel_request_defaults_fail_closed() -> None:
         inbound, "m", approval_capable=True
     )
     assert telegram_request.approval_capable is True
+
+
+# ─── W3-3 review fixes ────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_concurrent_approvals_match_by_initiator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two users' approvals pend in ONE group — each initiator's reply
+    answers their OWN prompt (plain FIFO let the oldest entry absorb
+    every reply, so the second initiator could never decide)."""
+    broker = _BrokerRecorder()
+    monkeypatch.setattr(service, "_approval_decide_via_broker", broker)
+    conv = "qq:default:g12345"
+    service._register_channel_approval(
+        conv, _awaiting_ev("call-A"), "111", None, session_key="sess-a"
+    )
+    service._register_channel_approval(
+        conv, _awaiting_ev("call-B"), "222", None, session_key="sess-b"
+    )
+
+    # The SECOND initiator answers first — their own entry is decided.
+    out = await service._try_handle_channel_approval_reply(conv, "222", "y")
+    assert out is not None and "已批准" in out
+    assert [c["call_id"] for c in broker.calls] == ["call-B"]
+    assert broker.calls[0]["session_key"] == "sess-b"
+
+    # The first initiator's entry is untouched and still decidable.
+    out = await service._try_handle_channel_approval_reply(conv, "111", "n")
+    assert out is not None and "已拒绝" in out
+    assert [c["call_id"] for c in broker.calls] == ["call-B", "call-A"]
+
+
+@pytest.mark.asyncio
+async def test_bounded_spawn_releases_permit_on_park() -> None:
+    """A turn parked on approval frees its concurrency permit — a
+    saturated semaphore must not block the dispatch loop from reading
+    the decision replies (deadlock finding, W3-3 review)."""
+    sem = asyncio.Semaphore(1)
+    pending: set[asyncio.Task[None]] = set()
+    parked = asyncio.Event()
+    unpark = asyncio.Event()
+
+    async def _turn() -> None:
+        service._release_turn_permit_early()
+        parked.set()
+        await unpark.wait()
+
+    await service._bounded_spawn(sem, pending, _turn)
+    await asyncio.wait_for(parked.wait(), timeout=2)
+    # Permit already back while the turn is still parked…
+    await asyncio.wait_for(sem.acquire(), timeout=2)
+    sem.release()
+    unpark.set()
+    for t in list(pending):
+        await t
+    # …and turn completion does not double-release.
+    await asyncio.wait_for(sem.acquire(), timeout=2)
+    assert sem.locked()
+
+
+def test_gate_exempt_predicate_matches_interceptor() -> None:
+    """channel_approval_awaits_reply: pending + parseable + initiator."""
+    conv = "telegram:777"
+    service._register_channel_approval(
+        conv, _awaiting_ev("call-tg"), "42", None, session_key="s"
+    )
+    assert service.channel_approval_awaits_reply(conv, "42", "y")
+    assert not service.channel_approval_awaits_reply(conv, "43", "y")  # not initiator
+    assert not service.channel_approval_awaits_reply(conv, "42", "hello")  # not a decision
+    assert not service.channel_approval_awaits_reply("telegram:888", "42", "y")  # no pending

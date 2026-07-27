@@ -704,9 +704,18 @@ class TelegramAdapter:
             mentioned = self._is_bot_addressed(msg)
 
             if not msg.chat.is_private():
-                if self._cfg.require_mention_in_groups and not mentioned:
-                    continue
-                if not mentioned and not self._keyword_match(msg):
+                gated = (
+                    self._cfg.require_mention_in_groups and not mentioned
+                ) or (not mentioned and not self._keyword_match(msg))
+                # W3-3 review fix: a pending approval's decision reply (a
+                # typed y/s/a/n OR an inline-keyboard press arriving as a
+                # synthetic message) carries no @mention and rarely a
+                # keyword — the group gate would swallow it before the
+                # service-layer interceptor ever ran. Exempt EXACTLY the
+                # messages the interceptor will consume (pending entry in
+                # this chat + parseable decision + sender is an
+                # initiator), so nothing else leaks past the gate.
+                if gated and not _approval_reply_gate_exempt(msg):
                     continue
 
             # Multimodal: build the attachment descriptors first so an
@@ -1020,3 +1029,26 @@ __all__ = [
 # own functions without an extra import; not in __all__ since it's just
 # a convenience alias.
 _Sequence = Sequence
+
+
+def _approval_reply_gate_exempt(msg: Message) -> bool:
+    """True when a group-gated message is an awaited approval decision.
+
+    Mirrors the service-layer interceptor's own predicate (pending entry
+    for this chat + parseable y/s/a/n + sender is an initiator) so the
+    exemption lets through EXACTLY the messages the interceptor consumes
+    — a non-decision message stays gated. Lazy import: ``service``
+    imports this module at load time, so the reverse import must happen
+    at call time only. Fail-closed on any error (the gate stands).
+    """
+    try:
+        from corlinman_channels.service import (  # noqa: PLC0415
+            channel_approval_awaits_reply,
+        )
+
+        sender = msg.from_.id if msg.from_ is not None else msg.chat.id
+        return channel_approval_awaits_reply(
+            f"telegram:{msg.chat.id}", str(sender), msg.body_text()
+        )
+    except Exception:  # noqa: BLE001 — exemption is best-effort
+        return False
