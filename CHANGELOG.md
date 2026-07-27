@@ -4,6 +4,38 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.41.0] — 2026-07-27 — 联网搜索可配置 + CI 挂死根治
+
+### Fixed
+- **`web_search` 此前在所有原生部署里永远走 DuckDuckGo 网页抓取**，SerpApi 分支
+  不可达，且没有任何配置面能改。后端与 API key 只能从 `CORLINMAN_WEB_SEARCH_*`
+  读，而 agent 的 systemd unit **刻意不挂 `EnvironmentFile`**（只有 `HOME` /
+  `CORLINMAN_EXECUTION_STATE_DIR` / `CORLINMAN_PY_CONFIG` / `CORLINMAN_PY_SOCKET`
+  四个变量），所以那层 env 在生产上根本不可达。新增 `[web_search]` 配置段，经
+  `py-config.json` sidecar 下发，保存即生效。优先级 config > env > 内置默认——
+  不能让主机上的陈旧 export 覆盖 UI 的选择。(#169)
+- **`[models].image_*` 在进程内启动模式下静默失效**（v1.40.0 引入）：
+  `apply_image_config` 只接在 sidecar 路径上，进程内路径从没调用。两条启动路径
+  现在共用同一组 `apply_*_config`，并有直接钉住「同样配置进、同样 agent 状态出」
+  的 parity 测试。(#169)
+- **CI `py-test` 确定性挂死**（v1.38.0 起三个 release 全红，并非"间歇性"）。两个
+  缺陷叠加：测试桩 `lambda _r, _w: None` 接受连接后从不关闭，而 Python **3.12
+  起 `Server.wait_closed()` 会真正等待在途连接**——CI 跑 3.12 必挂、开发机跑
+  3.13 必过，"本地全绿"一直成立也一直误导；同时 `timeout_method = "thread"`
+  无法中断卡住的测试，只能打印堆栈后杀进程，于是整个 job 无任何失败归因。改为
+  `signal` 后超时在测试内部抛出、带 traceback 指向阻塞行、其余测试照常跑完。
+  (#170)
+- 陈旧 socket 替换的用例改为断言**能否连上**，不再断言 inode 号变化：Linux
+  tmpfs 会把刚释放的 inode 立刻分配回来，macOS APFS 不会。(#170)
+
+### Added
+- **`/models` 能力页新增「联网搜索」卡片**：后端选择 + API key。API key 三态
+  语义——未动 = 不传字段（服务端保留）/ 输入 = 写入 / 显式清空 = 删除；`GET`
+  永不回显密钥，只回 `api_key_set`。新增
+  `PUT /admin/models/capabilities/search`。(#169)
+- `[web_search].api_key` 支持 `{ env = "..." }` 密钥引用，在网关侧解析后再下发，
+  literal 不必落进 `config.toml`。(#169)
+
 ## [1.40.0] — 2026-07-26 — 语音配置真正生效 + 模型能力绑定
 
 ### Fixed
