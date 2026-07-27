@@ -126,15 +126,19 @@ def _is_reference_md(root: Path, path: Path) -> bool:
     skills are unaffected.
     """
     cur = path.parent
-    while cur != root:
+    while True:
         anchor = cur / "SKILL.md"
         if anchor.is_file():
             return path != anchor
+        if cur == root:
+            # Review fix: the root itself may BE the nested layout
+            # (<root>/SKILL.md + <root>/references/*.md) — checked above
+            # before breaking, so root-level references are skipped too.
+            return False
         nxt = cur.parent
         if nxt == cur:  # filesystem root — path was not under root
             return False
         cur = nxt
-    return False
 
 
 def _as_str_list(value: Any, field_name: str, path: Path) -> list[str]:
@@ -372,6 +376,9 @@ class SkillRegistry:
                 # nested SKILL.md) is progressive-disclosure material, not
                 # a skill of its own.
                 if _is_reference_md(root, path):
+                    _log.debug(
+                        "skills.registry.reference_md_skipped", path=str(path)
+                    )
                     continue
                 text = path.read_text(encoding="utf-8")
                 skill = _parse_skill(path, text)

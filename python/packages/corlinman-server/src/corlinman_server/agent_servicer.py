@@ -5125,8 +5125,26 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 {"ok": False, "error": "file_path_escapes_skill_dir", "name": name}
             )
         if not candidate.is_file():
+            # List what IS there so the model self-corrects instead of
+            # guessing again — split skills route to references some
+            # upstream bundles never shipped (review finding: that prose
+            # is now a real failed tool call, so make the failure cheap).
+            try:
+                available = sorted(
+                    str(p.relative_to(skill_root))
+                    for p in skill_root.rglob("*")
+                    if p.is_file() and p.name != "SKILL.md"
+                )[:50]
+            except OSError:
+                available = []
             return json.dumps(
-                {"ok": False, "error": "file_not_found", "name": name, "file": rel_path}
+                {
+                    "ok": False,
+                    "error": "file_not_found",
+                    "name": name,
+                    "file": rel_path,
+                    "available_files": available,
+                }
             )
         try:
             if candidate.stat().st_size > self._SKILL_FILE_MAX_BYTES:
