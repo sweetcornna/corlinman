@@ -69,6 +69,15 @@ username = "admin"
 # # 反代后网关看到的 Host 与公网不一致时，显式指定回调地址
 # # （必须与 IdP 侧注册的 redirect URI 完全一致）：
 # # redirect_url = "https://corlinman.example.com/auth/oidc/callback"
+# # 二期（RP 发起登出 + token 刷新）：
+# # * GET /auth/oidc/logout 先吊销本地会话；若 discovery 提供
+# #   end_session_endpoint 且本次会话由 SSO 建立，会带 id_token_hint
+# #   跳转 IdP 完成单点登出（IdP 不支持则自动降级为仅本地登出）。
+# # * request_offline_access = true 时登录会额外请求 offline_access
+# #   scope 以获取 refresh_token，之后 POST /auth/oidc/refresh 可用
+# #   refresh_token 换新并重新完整校验 id_token 后滑动续期会话。
+# #   默认 false —— 默认 scopes 永不静默加宽。
+# # request_offline_access = false
 
 # ---------------------------------------------------------------------------
 # [providers.*] — free-form named provider entries. The map key (the bit
