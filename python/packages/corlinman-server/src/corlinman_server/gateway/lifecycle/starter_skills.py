@@ -76,6 +76,8 @@ logger = structlog.get_logger(__name__)
 _FACTORY_SKILL_MD_SHA256: dict[str, frozenset[str]] = {
     "configure-persona": frozenset(
         {
+            # 204f4da5 (#184) — P6 progressive-disclosure split (current)
+            "16b382fc01c52e6a44a7f0351a48d6f3a31a91cd6b5d8ea4444bb4ffee7e204c",
             # bf4eff76 / 4b66e4fe — last pre-split revision (#164)
             "7311db6e85bc660624d21f4348384b3908072254aa9c7417b65d91c84425a955",
             # 20aa602d — v1.7.0 onboarding wizard
@@ -94,12 +96,16 @@ _FACTORY_SKILL_MD_SHA256: dict[str, frozenset[str]] = {
     ),
     "darwin-skill": frozenset(
         {
+            # 204f4da5 (#184) — P6 progressive-disclosure split (current)
+            "514fa2e8e9b8cb36d505e7fcca1382fdb56444e8b241212aec440b0dae272cd2",
             # a5d36490 .. bf4eff76 — sole pre-split revision (W1 bundle)
             "ea1c92431f8a2b056861481f74c83413f16c7a5e2d100a9eee3f12759edc48d4",
         }
     ),
     "huashu-design": frozenset(
         {
+            # 204f4da5 (#184) — P6 progressive-disclosure split (current)
+            "ccad74f458f71cf25d2fe78415eea5a62cfb20a2860bd38030984abac477c703",
             # bf4eff76 — last pre-split revision (#164)
             "e56ec50de356937ce2b9a54fc5e9db43f20962dfb8970db15cd5b0926ac5e7e2",
             # a5d36490 .. 4b66e4fe — original W1 bundle revision
@@ -108,6 +114,8 @@ _FACTORY_SKILL_MD_SHA256: dict[str, frozenset[str]] = {
     ),
     "nuwa-skill": frozenset(
         {
+            # 204f4da5 (#184) — P6 progressive-disclosure split (current)
+            "69e70e02d692301e0e630a00e51a739377496df9fe6df655037b937fa8cd284f",
             # bf4eff76 — last pre-split revision (#164)
             "9fd06d566ca69581ad350c05e524c81c78822092c0d281f3a49d26304d9bd7b0",
             # a5d36490 .. 4b66e4fe — original W1 bundle revision
@@ -248,6 +256,26 @@ def _subtree_in_sync(src_dir: Path, dst_dir: Path) -> bool:
     return True
 
 
+def _only_factory_artifacts(src_dir: Path, dst_dir: Path) -> bool:
+    """True when every file under ``dst_dir`` has a same-relative-path
+    counterpart in the bundle (or is the runtime usage sidecar) — the
+    shape a crashed partial refresh leaves behind. Any unknown file means
+    operator content and forbids the destructive self-heal (review fix:
+    a SKILL.md-less dir used to be rmtree'd unconditionally)."""
+    try:
+        for path in dst_dir.rglob("*"):
+            if not path.is_file():
+                continue
+            rel = path.relative_to(dst_dir)
+            if rel.name == _USAGE_FILENAME:
+                continue
+            if not (src_dir / rel).is_file():
+                return False
+    except OSError:  # pragma: no cover — unreadable tree: be conservative
+        return False
+    return True
+
+
 def seed_starter_skills(target_dir: Path) -> SeedReport:
     """Copy every bundled ``*.md`` into ``target_dir`` if absent.
 
@@ -366,11 +394,19 @@ def seed_starter_skills(target_dir: Path) -> SeedReport:
 
         if dst_dir.exists():
             existing_md = dst_dir / "SKILL.md"
-            # A seeded dir whose SKILL.md is gone is a broken partial
-            # copy, not operator content — treat it as refreshable so a
-            # crashed refresh self-heals on the next boot.
             if existing_md.is_file() and not _is_factory_content(
                 src_dir.name, skill_md, existing_md
+            ):
+                skipped.append(src_dir.name)
+                continue
+            # SKILL.md absent: could be a crashed partial refresh — but
+            # equally an operator who deleted the entrypoint on purpose
+            # or parked their own files here. Review fix: self-heal ONLY
+            # when everything present is provably factory-shaped
+            # (relative paths that exist in the bundle, plus the usage
+            # sidecar); one unknown file → operator content, skip.
+            if not existing_md.is_file() and not _only_factory_artifacts(
+                src_dir, dst_dir
             ):
                 skipped.append(src_dir.name)
                 continue

@@ -551,3 +551,63 @@ def test_seed_starter_skills_no_bundle_source_is_quiet(
     assert report.source is None
     assert report.copied == ()
     assert report.skipped == ()
+
+
+# ---------------------------------------------------------------------------
+# W3-review fixes on the factory-refresh path
+# ---------------------------------------------------------------------------
+
+
+def test_current_bundle_hashes_are_in_the_factory_allowlist() -> None:
+    """CI guard (review fix): the allowlist is a manual snapshot — the
+    NEXT bundle edit would silently re-break the upgrade path for the
+    version being replaced. This test fails the moment a listed skill's
+    SKILL.md changes without its new hash being appended to
+    ``_FACTORY_SKILL_MD_SHA256``, forcing the future editor to extend it.
+    """
+    import hashlib
+
+    from corlinman_server.gateway.lifecycle.starter_skills import (
+        _FACTORY_SKILL_MD_SHA256,
+    )
+    from corlinman_server.gateway.lifecycle import starter_skills as mod
+
+    bundle = Path(mod.__file__).resolve().parents[2] / "bundled_skills"
+    for name, known in _FACTORY_SKILL_MD_SHA256.items():
+        current = bundle / name / "SKILL.md"
+        assert current.is_file(), f"{name}: bundled SKILL.md missing"
+        digest = hashlib.sha256(current.read_bytes()).hexdigest()
+        assert digest in known, (
+            f"{name}: the current bundle's SKILL.md hash {digest} is not in "
+            "_FACTORY_SKILL_MD_SHA256 — append it (with the commit noted) so "
+            "deployments seeded from THIS version stay refreshable after the "
+            "next edit."
+        )
+
+
+def test_skillmd_less_dir_with_operator_files_is_not_destroyed(
+    tmp_path: Path,
+) -> None:
+    """Review fix: a directory without SKILL.md used to be rmtree'd as a
+    'broken partial copy' — but it may hold operator files. Unknown
+    files → skip; a pure factory-subset residue still self-heals."""
+    target = tmp_path / "skills"
+    target.mkdir()
+    report = starter_skills.seed_starter_skills(target)
+    nested = [n.removesuffix(".md") for n in report.copied if (target / n.removesuffix(".md") / "references").is_dir()]
+    assert nested, "expected at least one nested bundle skill"
+    name = nested[0]
+
+    # Case 1: operator parked their own file; SKILL.md deleted.
+    (target / name / "SKILL.md").unlink()
+    keeper = target / name / "my-notes.md"
+    keeper.write_text("operator notes — must survive", encoding="utf-8")
+    report2 = starter_skills.seed_starter_skills(target)
+    assert name in report2.skipped
+    assert keeper.read_text(encoding="utf-8").startswith("operator notes")
+
+    # Case 2: pure factory residue (crashed refresh shape) self-heals.
+    keeper.unlink()
+    report3 = starter_skills.seed_starter_skills(target)
+    assert name in report3.refreshed
+    assert (target / name / "SKILL.md").is_file()
