@@ -1440,7 +1440,13 @@ def subagent_spawn_inline_tool_schema(
                         "description": (
                             "The temporary agent's instructions / persona "
                             "— who it is and how to do the job. This is "
-                            "what makes it purpose-built."
+                            "what makes it purpose-built. It is ADDED to "
+                            "a fixed set of operating rules every child "
+                            "runs under (truthful reporting, verify "
+                            "before claiming done, read before edit, stay "
+                            "in scope, no irreversible actions) — you "
+                            "cannot relax or replace those, so write only "
+                            "what is specific to this task."
                         ),
                     },
                     "name": {

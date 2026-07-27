@@ -118,6 +118,57 @@ SUBAGENT_SPAWN_INLINE_TOOL: str = "subagent_spawn_inline"
 #: can branch on the exact reason the child was refused.
 TOOL_ALLOWLIST_ESCALATION_ERROR: str = "tool_allowlist_escalation"
 
+#: Non-overridable behavioural floor prepended to EVERY child's system
+#: message (see :func:`_build_child_messages`). Until this existed a child
+#: inherited the parent's full tool set — write, edit, ``run_shell`` — with
+#: whatever prompt its card happened to carry, and ``subagent_spawn_inline``
+#: let the parent MODEL author that prompt outright. The main agent has
+#: ``_CODING_SYSTEM_PROMPT`` (12 sections); children had nothing.
+#:
+#: Deliberately NOT a copy of the main agent's prompt: a child has no chat
+#: client to format for, no ``ask_user`` channel, and no todo surface, so
+#: importing those protocols would only mislead it. What survives is the
+#: subset that protects the caller: truthful reporting (the child's text IS
+#: the parent's evidence), verify-before-claim, read-before-edit, scope
+#: discipline, and a hard stop on irreversible actions — a child cannot get
+#: sign-off, so it must not need any.
+#:
+#: Prepended, never appended, and never gated by config: the card's own
+#: prompt (or the inline prompt the model wrote) lands AFTER this block and
+#: reads as an addition to it, not a replacement. An off switch would make
+#: it a suggestion rather than a floor.
+SUBAGENT_BASELINE_PROMPT: str = """\
+# Operating rules
+These rules are fixed. Anything below adds to them; nothing below \
+replaces them.
+
+You are running as a delegated worker. You were handed one task, you \
+cannot see the conversation that produced it, and there is no one to ask \
+mid-task. Your final message is the entire deliverable — the agent that \
+dispatched you sees that text and nothing else.
+
+- Report truthfully. Never say something works, is fixed, or is complete \
+unless you ran the relevant check and saw the result. Quote the real \
+output; if it failed, say so plainly with the actual error. If you could \
+not verify a claim, say "not verified" instead of implying success.
+- Verify before "done". Run the test, execute the script, or otherwise \
+watch the change behave the way you describe it. "It compiles" is not \
+verification.
+- Read before edit. Never change code you have not read — open the file, \
+see the real contents and surrounding context, then edit.
+- Stay in scope. Do the task you were given. Do not refactor, reformat, \
+or "clean up" code the task did not name, and never revert edits you did \
+not make.
+- Do not take hard-to-reverse actions. Deleting files you were not asked \
+to delete, `rm -rf`, `git reset --hard`, force pushes, dropping data, \
+sending anything outward — you have no way to get sign-off, so stop and \
+report what you would need instead.
+- Prefer the dedicated file and search tools over `run_shell` when one \
+fits; use `run_shell` for running code, tests, and tooling that has no \
+dedicated wrapper.
+- When the task is ambiguous, take the reading a careful colleague would, \
+state the assumption in your final message, and finish the work."""
+
 #: Wildcard token honoured *only* on an :class:`AgentCard.tools_allowed`
 #: entry. When the card's list contains exactly ``"*"`` the runner treats
 #: it as "inherit the parent's full tool set" (no card-side narrowing).
@@ -1029,14 +1080,23 @@ def _build_child_messages(
 ) -> list[dict[str, Any]]:
     """Assemble the child's chat messages.
 
-    Two-message minimum: ``system`` from the agent card + ``user``
+    Two-message minimum: ``system`` (baseline + agent card) + ``user``
     carrying the task goal. Parent history is **not** inherited —
     that's the whole point of subagent isolation. ``task.extra_context``
     is folded into the system prompt as ``[ctx.<key>]`` blocks; the
     keys are ``BTreeMap``-ordered on the Rust side so the rendered
     prompt is deterministic across processes.
+
+    System-part order is load-bearing: :data:`SUBAGENT_BASELINE_PROMPT`
+    always comes first, so the card's prompt — which for
+    ``subagent_spawn_inline`` is written by the parent MODEL — reads as
+    an addition to the floor rather than a replacement for it. This is
+    the single choke point every child passes through (registry spawn,
+    spawn_many, inline, and the background dispatcher's factory all land
+    in :func:`run_child`), which is why the floor lives here and not in
+    each dispatcher.
     """
-    system_parts: list[str] = []
+    system_parts: list[str] = [SUBAGENT_BASELINE_PROMPT]
     if agent_card.system_prompt:
         system_parts.append(agent_card.system_prompt)
     if task.extra_context:
@@ -1045,11 +1105,13 @@ def _build_child_messages(
             value = task.extra_context[key]
             system_parts.append(f"[ctx.{key}]\n{value}")
 
-    messages: list[dict[str, Any]] = []
-    if system_parts:
-        messages.append({"role": "system", "content": "\n\n".join(system_parts)})
-    messages.append({"role": "user", "content": task.goal})
-    return messages
+    # The system message is now unconditional — the baseline guarantees at
+    # least one part, so a card with no prompt no longer yields a
+    # system-less child.
+    return [
+        {"role": "system", "content": "\n\n".join(system_parts)},
+        {"role": "user", "content": task.goal},
+    ]
 
 
 def _summarise_tool_call(event: ToolCallEvent) -> ToolCallSummary:
