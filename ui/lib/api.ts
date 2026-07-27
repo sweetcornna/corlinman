@@ -107,31 +107,32 @@ export async function listAgents(): Promise<AgentSummary[]> {
   return apiFetch<AgentSummary[]>("/admin/agents");
 }
 
-export interface ApprovalItem {
-  id: string;
-  plugin: string;
-  tool: string;
-  sessionKey: string;
-  requestedAt: string;
-  argsPreview: string;
-}
-
-export async function listPendingApprovals(): Promise<ApprovalItem[]> {
-  return apiFetch<ApprovalItem[]>("/admin/approvals");
-}
-
-// --- Approvals (S2 T3 wired, S5 T4 expanded with batch helper) -------------
-// Matches the Rust `ApprovalOut` shape in
-// rust/crates/corlinman-gateway/src/routes/admin/approvals.rs.
+// --- Approvals --------------------------------------------------------------
+// ONE approval shape (W3-4), mapping 1:1 onto the Python gateway's
+// `ApprovalOut` (routes_admin_a/_approvals_lib.py). The old trio
+// (`ApprovalItem` camelCase / Rust-era `Approval` with id/args_json/
+// requested_at) is gone — those fields never existed on the Python wire.
 export interface Approval {
-  id: string;
+  call_id: string;
   plugin: string;
   tool: string;
   session_key: string;
-  args_json: string;
-  requested_at: string;
-  decided_at: string | null;
+  /** Single-line JSON preview of the tool call's arguments. */
+  args_preview: string;
+  /** Request side: why this call needed approval. */
+  reason: string;
+  /** Unix seconds (float). */
+  created_at: number;
+  /** `"approved" | "denied" | "timeout"` once decided; null = pending. */
   decision: string | null;
+  /** Unix seconds (float), null while pending. */
+  decided_at: number | null;
+  /** Decider's rationale (deny reason / timeout note). */
+  decision_reason: string | null;
+}
+
+export async function listPendingApprovals(): Promise<Approval[]> {
+  return apiFetch<Approval[]>("/admin/approvals");
 }
 
 export function fetchApprovals(includeDecided: boolean): Promise<Approval[]> {
@@ -145,11 +146,11 @@ export interface DecideResult {
 }
 
 export function decideApproval(
-  id: string,
+  callId: string,
   approve: boolean,
   reason?: string,
 ): Promise<DecideResult> {
-  return apiFetch<DecideResult>(`/admin/approvals/${id}/decide`, {
+  return apiFetch<DecideResult>(`/admin/approvals/${callId}/decide`, {
     method: "POST",
     body: { approve, reason },
   });
@@ -182,6 +183,72 @@ export async function decideApprovalsBatch(
 
 /** Convenience re-export for callers that want the SSE helper. */
 export { openEventStream } from "./sse";
+
+// ---------------------------------------------------------------------------
+// W3-4 — unified authz admin surface: durable grants + policy editor
+// ---------------------------------------------------------------------------
+
+/** One durable ("always") grant row from `<data_dir>/authz/grants.sqlite3`. */
+export interface AlwaysGrant {
+  tenant: string;
+  surface: string;
+  user_id: string;
+  tool: string;
+  arg_digest: string;
+  /** Unix seconds; null for memory-only rows the DB never accepted. */
+  created_at: number | null;
+}
+
+export function listAlwaysGrants(): Promise<AlwaysGrant[]> {
+  return apiFetch<AlwaysGrant[]>("/admin/authz/grants");
+}
+
+export function revokeAlwaysGrant(
+  key: Pick<AlwaysGrant, "tenant" | "surface" | "user_id" | "tool" | "arg_digest">,
+): Promise<{ ok: boolean }> {
+  return apiFetch<{ ok: boolean }>("/admin/authz/grants", {
+    method: "DELETE",
+    body: key,
+  });
+}
+
+/** Scope block of a `[[permissions.rules]]` entry (all fields optional). */
+export interface AuthzRuleScope {
+  tenant?: string | null;
+  surface?: string | null;
+  user?: string | null;
+  session?: string | null;
+  model?: string | null;
+}
+
+export interface AuthzRule {
+  tool: string;
+  action: string;
+  note?: string | null;
+  memory?: string | null;
+  scope?: AuthzRuleScope | null;
+}
+
+/** Structured `[permissions]` section; null = key unset in the TOML. */
+export interface AuthzPolicy {
+  mode: string | null;
+  strict: boolean | null;
+  default_action: string | null;
+  last_match_wins: boolean | null;
+  external_tools_enforced: boolean | null;
+  rules: AuthzRule[];
+}
+
+export function fetchAuthzPolicy(): Promise<AuthzPolicy> {
+  return apiFetch<AuthzPolicy>("/admin/authz/policy");
+}
+
+export function saveAuthzPolicy(policy: AuthzPolicy): Promise<AuthzPolicy> {
+  return apiFetch<AuthzPolicy>("/admin/authz/policy", {
+    method: "PUT",
+    body: policy,
+  });
+}
 
 // ---------------------------------------------------------------------------
 // S6 T1 — RAG admin surface

@@ -178,3 +178,73 @@ async def test_broker_keys_disambiguate_index_style_call_ids() -> None:
         "call_0", approved=False, deny_message="no", session_key="t::a"
     )
     assert tx_a.qsize() == 1
+
+
+# ---------------------------------------------------------------------------
+# W3-4 — broker ↔ ApprovalStore persistence bridge.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_awaiting_frame_persists_pending_row_and_decision() -> None:
+    """Register → durable pending row; decide → row updated with the
+    wire decision + the decider's reason."""
+    from corlinman_providers.plugins import ApprovalDecision, ApprovalStore
+
+    store = ApprovalStore(":memory:")
+    broker = get_approval_broker()
+    broker.attach_store(store)
+
+    backend = _ScriptedBackend([_awaiting_frame()], hold=True)
+    service = ChatService(backend)
+    stream = service.run(_request(), asyncio.Event())
+    first = await stream.__anext__()
+    assert isinstance(first, AwaitingApprovalEvent)
+    await broker.drain_persistence()
+
+    pending = await store.pending()
+    assert [r.call_id for r in pending] == ["call-w33"]
+    assert pending[0].session_key == "t::s1"
+    assert pending[0].tool == "github_create_issue"
+
+    assert await broker.decide(
+        "call-w33",
+        approved=False,
+        deny_message="not today",
+        session_key="t::s1",
+    )
+    rec = await store.get("call-w33")
+    assert rec is not None
+    assert rec.decision is ApprovalDecision.DENY
+    assert rec.decision_reason == "not today"
+
+    backend.release()
+    async for _ev in stream:
+        pass
+    await broker.drain_persistence()
+    # The decided row is NOT downgraded to timeout by stream teardown.
+    rec = await store.get("call-w33")
+    assert rec is not None and rec.decision is ApprovalDecision.DENY
+
+
+@pytest.mark.asyncio
+async def test_stream_teardown_marks_undecided_rows_timeout() -> None:
+    """W3-4 AC3: a stream that ends with the approval still parked leaves
+    a ``timeout`` decision — distinguishable from a human deny."""
+    from corlinman_providers.plugins import ApprovalDecision, ApprovalStore
+
+    store = ApprovalStore(":memory:")
+    broker = get_approval_broker()
+    broker.attach_store(store)
+
+    backend = _ScriptedBackend([_awaiting_frame()])
+    service = ChatService(backend)
+    async for _ev in service.run(_request(), asyncio.Event()):
+        pass
+    await broker.drain_persistence()
+
+    rec = await store.get("call-w33")
+    assert rec is not None
+    assert rec.decision is ApprovalDecision.TIMEOUT
+    assert rec.decision_reason
+    assert await store.pending() == []

@@ -34,6 +34,7 @@ from corlinman_server.gateway.routes_admin_a._approvals_lib import (
     _record_to_out,
     _require_store,
     _sse_iter,
+    _wire_decision,
 )
 from corlinman_server.gateway.routes_admin_a._auth_shim import (
     require_admin_dependency,
@@ -112,17 +113,21 @@ def router() -> APIRouter:
             ApprovalDecision.ALLOW if body.approve else ApprovalDecision.DENY
         )
 
-        # Prefer the queue (wakes in-process waiters) when wired; fall
-        # back to the store directly otherwise.
-        target = state.approval_queue or store
+        # Resolve the PENDING row(s) for this call — provider call ids
+        # collide across concurrent streams (composite keys everywhere,
+        # W3-4 review fix), so a bare id may be ambiguous.
         try:
-            updated = await target.decide(call_id, decision)
-        except Exception as exc:
+            candidates = await store.pending_for_call(call_id)
+        except Exception as exc:  # noqa: BLE001
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail={"error": "decide_failed", "message": str(exc)},
             ) from exc
-        if not updated:
+        if body.session_key:
+            candidates = [
+                r for r in candidates if r.session_key == body.session_key
+            ]
+        if not candidates:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
@@ -131,7 +136,83 @@ def router() -> APIRouter:
                     "id": call_id,
                 },
             )
-        return {"id": call_id, "decision": decision.value}
+        if len(candidates) > 1:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "ambiguous_call_id",
+                    "id": call_id,
+                    "sessions": [r.session_key for r in candidates],
+                    "message": "pass session_key to pick one",
+                },
+            )
+        record = candidates[0]
+
+        # DELIVER FIRST, persist after (W3-4 review fix): recording
+        # "approved" for a call no stream will ever consume told the
+        # operator a lie. Boot-time reconcile_orphaned() already swept
+        # restart orphans to timeout, so an undeliverable pending row
+        # here means its stream is tearing down right now — mark it
+        # expired instead of approved.
+        delivered = False
+        try:
+            from corlinman_server.gateway.services.approval_broker import (  # noqa: PLC0415
+                get_approval_broker,
+            )
+
+            delivered = await get_approval_broker().decide(
+                call_id,
+                approved=body.approve,
+                scope="once",
+                deny_message=body.reason or "",
+                session_key=record.session_key,
+            )
+        except Exception:  # noqa: BLE001 — treated as undeliverable
+            delivered = False
+
+        target = state.approval_queue or store
+        if not delivered:
+            try:
+                await target.decide(
+                    call_id,
+                    ApprovalDecision.TIMEOUT,
+                    reason="expired: no live stream for this approval",
+                    session_key=record.session_key,
+                )
+            except Exception:  # noqa: BLE001 — expiry sweep is best-effort
+                pass
+            raise HTTPException(
+                status_code=status.HTTP_410_GONE,
+                detail={
+                    "error": "approval_expired",
+                    "id": call_id,
+                    "message": (
+                        "no live stream is waiting on this approval; "
+                        "the row was marked timeout"
+                    ),
+                },
+            )
+        try:
+            updated = await target.decide(
+                call_id,
+                decision,
+                reason=body.reason,
+                session_key=record.session_key,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={"error": "decide_failed", "message": str(exc)},
+            ) from exc
+        if not updated:
+            # The broker delivered but the row vanished mid-flight — the
+            # stream's own persistence already recorded the decision.
+            import logging  # noqa: PLC0415
+
+            logging.getLogger(__name__).info(
+                "admin approvals: row already decided call_id=%s", call_id
+            )
+        return {"id": call_id, "decision": _wire_decision(decision.value) or ""}
 
     @r.get(
         "/admin/approvals/stream",

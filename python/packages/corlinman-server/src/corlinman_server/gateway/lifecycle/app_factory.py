@@ -875,6 +875,41 @@ def _mount_routes(app: Any, state: Any, *, admin_config_path: Path | None = None
                 # registry is optional surface (the routes degrade to
                 # the legacy filesystem scan when it's absent).
                 _agent_registry, _agent_registry_reload = _build_agent_registry_stack(data_dir)
+                # W3-4: durable approvals queue. The store file lives under
+                # <data_dir>/authz/ so pending rows survive gateway restarts;
+                # the same store is attached to the process-global
+                # ApprovalBroker so parked chat streams and the admin routes
+                # see one queue. Best-effort — a failed init leaves the
+                # /admin/approvals mutating routes on their 503 path.
+                approval_store: Any | None = None
+                approval_queue: Any | None = None
+                try:
+                    from corlinman_providers.plugins import (  # noqa: PLC0415
+                        ApprovalQueue,
+                        ApprovalStore,
+                        default_approvals_db_path,
+                    )
+
+                    from corlinman_server.gateway.services.approval_broker import (  # noqa: PLC0415
+                        get_approval_broker,
+                    )
+
+                    approval_store = ApprovalStore(
+                        default_approvals_db_path(data_dir)
+                        if data_dir is not None
+                        else None
+                    )
+                    approval_queue = ApprovalQueue(store=approval_store)
+                    get_approval_broker().attach_store(approval_store)
+                    # Boot-time orphan sweep happens in the LIFESPAN (this
+                    # function is sync): rows left pending by a hard stop
+                    # have no stream that could ever consume a decision —
+                    # see the reconcile_orphaned call in entrypoint's
+                    # _lifespan (W3-4 review fix).
+                except Exception as exc:  # pragma: no cover — degraded boot
+                    logger.warning(
+                        "gateway.approvals.store_init_failed", error=str(exc)
+                    )
                 admin_a_state = admin_a_state_cls(
                     data_dir=data_dir,
                     execution_state_dir=execution_state_dir,
@@ -887,6 +922,8 @@ def _mount_routes(app: Any, state: Any, *, admin_config_path: Path | None = None
                     persona_store=None,
                     agent_registry=_agent_registry,
                     agent_registry_reload=_agent_registry_reload,
+                    approval_store=approval_store,
+                    approval_queue=approval_queue,
                 )
                 set_admin_a(admin_a_state)
                 # Wire the channels-config write-back. Without this every

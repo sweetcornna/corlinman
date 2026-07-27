@@ -69,14 +69,14 @@ export function ApprovalCard({
   showShortcuts,
 }: ApprovalCardProps) {
   const { t } = useTranslation();
-  const heldMs = Math.max(0, now - new Date(approval.requested_at).getTime());
+  const heldMs = Math.max(0, now - approval.created_at * 1000);
   const remainingMs = isPending
     ? Math.max(0, APPROVAL_TTL_MS - heldMs)
     : 0;
 
   const argsPreview = React.useMemo(
-    () => truncateArgs(approval.args_json),
-    [approval.args_json],
+    () => truncateArgs(approval.args_preview),
+    [approval.args_preview],
   );
   const heldTone = heldToneFor(heldMs);
 
@@ -89,11 +89,11 @@ export function ApprovalCard({
       aria-label={`${approval.plugin}.${approval.tool}`}
       tabIndex={0}
       data-active={isActive || undefined}
-      onClick={() => onActivate(approval.id)}
+      onClick={() => onActivate(approval.call_id)}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
-          onActivate(approval.id);
+          onActivate(approval.call_id);
         }
       }}
       className={cn(
@@ -117,7 +117,7 @@ export function ApprovalCard({
                 tool: approval.tool,
               })}
               checked={isSelected}
-              onChange={() => onToggleSelect(approval.id)}
+              onChange={() => onToggleSelect(approval.call_id)}
               disabled={disabled}
             />
           </span>
@@ -150,13 +150,13 @@ export function ApprovalCard({
             onClick={(e) => e.stopPropagation()}
           >
             <ApproveButton
-              onClick={() => onApprove(approval.id)}
+              onClick={() => onApprove(approval.call_id)}
               disabled={disabled}
               showShortcut={showShortcuts}
               shortcutKey={t("approvals.tp.shortcutApprove")}
             />
             <DenyButton
-              onClick={() => onDeny(approval.id)}
+              onClick={() => onDeny(approval.call_id)}
               disabled={disabled}
               showShortcut={showShortcuts}
               shortcutKey={t("approvals.tp.shortcutDeny")}

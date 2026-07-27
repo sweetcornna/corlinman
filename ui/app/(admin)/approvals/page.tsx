@@ -118,7 +118,7 @@ export default function ApprovalsPage() {
   const removePendingLocally = (ids: Iterable<string>) => {
     const drop = new Set(ids);
     qc.setQueryData<Approval[]>(["admin", "approvals", "pending"], (prev) =>
-      prev ? prev.filter((r) => !drop.has(r.id)) : prev,
+      prev ? prev.filter((r) => !drop.has(r.call_id)) : prev,
     );
   };
 
@@ -128,8 +128,8 @@ export default function ApprovalsPage() {
     if (!snap) return;
     qc.setQueryData<Approval[]>(["admin", "approvals", "pending"], (prev) => {
       const current = prev ?? [];
-      const seen = new Set(current.map((r) => r.id));
-      const missing = snap.filter((r) => failed.has(r.id) && !seen.has(r.id));
+      const seen = new Set(current.map((r) => r.call_id));
+      const missing = snap.filter((r) => failed.has(r.call_id) && !seen.has(r.call_id));
       return [...current, ...missing];
     });
   };
@@ -235,7 +235,7 @@ export default function ApprovalsPage() {
               ["admin", "approvals", "pending"],
               (prev) => {
                 const next = prev ? [...prev] : [];
-                if (!next.some((r) => r.id === evt.approval.id)) {
+                if (!next.some((r) => r.call_id === evt.approval.call_id)) {
                   next.push(evt.approval);
                 }
                 return next;
@@ -243,10 +243,10 @@ export default function ApprovalsPage() {
             );
             setHighlightIds((prev) => {
               const n = new Set(prev);
-              n.add(evt.approval.id);
+              n.add(evt.approval.call_id);
               return n;
             });
-            const id = evt.approval.id;
+            const id = evt.approval.call_id;
             window.setTimeout(() => {
               setHighlightIds((prev) => {
                 if (!prev.has(id)) return prev;
@@ -265,7 +265,7 @@ export default function ApprovalsPage() {
             window.setTimeout(() => {
               qc.setQueryData<Approval[]>(
                 ["admin", "approvals", "pending"],
-                (prev) => (prev ? prev.filter((r) => r.id !== id) : prev),
+                (prev) => (prev ? prev.filter((r) => r.call_id !== id) : prev),
               );
               setFadingIds((prev) => {
                 if (!prev.has(id)) return prev;
@@ -317,21 +317,21 @@ export default function ApprovalsPage() {
     let oldest: number | null = null;
     for (const r of rawRows) {
       if (r.decision !== null) continue;
-      const held = now - new Date(r.requested_at).getTime();
+      const held = now - r.created_at * 1000;
       if (oldest === null || held > oldest) oldest = held;
     }
     return oldest;
   }, [rawRows, now]);
 
   const activeApproval = useMemo(
-    () => visibleRows.find((r) => r.id === activeId) ?? null,
+    () => visibleRows.find((r) => r.call_id === activeId) ?? null,
     [visibleRows, activeId],
   );
 
   // When the active row disappears from the visible set (filter change,
   // decided-fade removal), drop it.
   useEffect(() => {
-    if (activeId && !visibleRows.some((r) => r.id === activeId)) {
+    if (activeId && !visibleRows.some((r) => r.call_id === activeId)) {
       setActiveId(null);
     }
   }, [activeId, visibleRows]);
@@ -397,7 +397,7 @@ export default function ApprovalsPage() {
           return;
         }
         if (activeId) {
-          const row = visibleRows.find((r) => r.id === activeId);
+          const row = visibleRows.find((r) => r.call_id === activeId);
           if (row && row.decision === null) {
             e.preventDefault();
             singleMutation.mutate({ id: activeId, approve: true });
@@ -410,7 +410,7 @@ export default function ApprovalsPage() {
           return;
         }
         if (activeId) {
-          const row = visibleRows.find((r) => r.id === activeId);
+          const row = visibleRows.find((r) => r.call_id === activeId);
           if (row && row.decision === null) {
             e.preventDefault();
             setDenyDialog({ kind: "single", id: activeId });
@@ -516,14 +516,14 @@ export default function ApprovalsPage() {
           ) : (
             visibleRows.map((row) => (
               <ApprovalCard
-                key={row.id}
+                key={row.call_id}
                 approval={row}
                 now={now}
                 isPending={row.decision === null}
-                isSelected={selected.has(row.id)}
-                isActive={activeId === row.id}
-                isHighlighted={highlightIds.has(row.id)}
-                isFading={fadingIds.has(row.id)}
+                isSelected={selected.has(row.call_id)}
+                isActive={activeId === row.call_id}
+                isHighlighted={highlightIds.has(row.call_id)}
+                isFading={fadingIds.has(row.call_id)}
                 onToggleSelect={toggleOne}
                 onActivate={(id) =>
                   setActiveId((prev) => (prev === id ? null : id))
@@ -533,7 +533,7 @@ export default function ApprovalsPage() {
                 }
                 onDeny={(id) => setDenyDialog({ kind: "single", id })}
                 disabled={anyMutating}
-                showShortcuts={activeId === row.id && selected.size === 0}
+                showShortcuts={activeId === row.call_id && selected.size === 0}
               />
             ))
           )}

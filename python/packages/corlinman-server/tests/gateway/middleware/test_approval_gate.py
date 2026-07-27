@@ -23,7 +23,7 @@ from corlinman_server.gateway.middleware import (
 
 @pytest.mark.asyncio
 async def test_check_auto_returns_approved_without_persisting() -> None:
-    store = ApprovalStore()
+    store = ApprovalStore(":memory:")
     gate = ApprovalGate(
         rules=[ApprovalRule(plugin="file-ops", mode=ApprovalMode.AUTO)],
         store=store,
@@ -38,7 +38,7 @@ async def test_check_auto_returns_approved_without_persisting() -> None:
 
 @pytest.mark.asyncio
 async def test_check_deny_records_decided_row() -> None:
-    store = ApprovalStore()
+    store = ApprovalStore(":memory:")
     gate = ApprovalGate(
         rules=[ApprovalRule(plugin="shell", mode=ApprovalMode.DENY)],
         store=store,
@@ -56,7 +56,7 @@ async def test_check_deny_records_decided_row() -> None:
 
 @pytest.mark.asyncio
 async def test_check_prompt_times_out_and_persists_timeout() -> None:
-    store = ApprovalStore()
+    store = ApprovalStore(":memory:")
     gate = ApprovalGate(
         rules=[ApprovalRule(plugin="shell", mode=ApprovalMode.PROMPT)],
         store=store,
@@ -73,7 +73,7 @@ async def test_check_prompt_times_out_and_persists_timeout() -> None:
 
 @pytest.mark.asyncio
 async def test_check_prompt_with_whitelist_approves_without_row() -> None:
-    store = ApprovalStore()
+    store = ApprovalStore(":memory:")
     gate = ApprovalGate(
         rules=[
             ApprovalRule(
@@ -94,7 +94,7 @@ async def test_check_prompt_with_whitelist_approves_without_row() -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_wakes_pending_check() -> None:
-    store = ApprovalStore()
+    store = ApprovalStore(":memory:")
     gate = ApprovalGate(
         rules=[ApprovalRule(plugin="shell", mode=ApprovalMode.PROMPT)],
         store=store,
@@ -125,7 +125,7 @@ async def test_resolve_wakes_pending_check() -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_unknown_call_id_raises_lookup_error() -> None:
-    store = ApprovalStore()
+    store = ApprovalStore(":memory:")
     gate = ApprovalGate(
         rules=[ApprovalRule(plugin="shell", mode=ApprovalMode.PROMPT)],
         store=store,
@@ -136,7 +136,7 @@ async def test_resolve_unknown_call_id_raises_lookup_error() -> None:
 
 @pytest.mark.asyncio
 async def test_check_no_match_defaults_to_approved() -> None:
-    store = ApprovalStore()
+    store = ApprovalStore(":memory:")
     gate = ApprovalGate(rules=[], store=store)
     decision, _ = await gate.check(
         session_key="s1", plugin="anything", tool="x", args_json=b"{}"

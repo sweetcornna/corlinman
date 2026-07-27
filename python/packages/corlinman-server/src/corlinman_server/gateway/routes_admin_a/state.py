@@ -106,6 +106,10 @@ class AdminState:
     # ``corlinman_providers.plugins.ApprovalStore`` / ``ApprovalQueue``
     # — typed loosely with ``Any`` to keep the dataclass importable
     # without the providers package being installed at import time.
+    # Wired at boot by ``app_factory._mount_routes`` (W3-4): the store is
+    # file-backed under ``<data_dir>/authz/`` and shared with the
+    # process-global ApprovalBroker, so admin decisions reach parked chat
+    # streams and pending rows survive restarts.
     approval_store: Any | None = None
     approval_queue: Any | None = None
 

@@ -48,10 +48,12 @@ export function DetailDrawerContent({ approval }: DetailDrawerContentProps) {
       ? t("approvals.statusApproved")
       : approval.decision === "denied"
         ? t("approvals.statusDenied")
-        : approval.decision
+        : approval.decision === "timeout"
+          ? t("approvals.statusTimeout")
+          : approval.decision
     : t("approvals.statusPending");
 
-  const prettyArgs = toPretty(approval.args_json);
+  const prettyArgs = toPretty(approval.args_preview);
 
   return (
     <DetailDrawer
@@ -67,7 +69,7 @@ export function DetailDrawerContent({ approval }: DetailDrawerContentProps) {
         <>
           <StatusPill decision={approval.decision} label={decisionLabel} />
           <span className="font-mono text-[11px] text-sg-ink-3">
-            {formatTime(approval.requested_at)}
+            {formatTime(approval.created_at)}
           </span>
         </>
       }
@@ -83,7 +85,7 @@ export function DetailDrawerContent({ approval }: DetailDrawerContentProps) {
             {approval.session_key || t("approvals.noneValue")}
           </dd>
           <dt className="text-sg-ink-4">{t("approvals.tp.drawerRequestedAt")}</dt>
-          <dd className="text-sg-ink-2">{formatTime(approval.requested_at)}</dd>
+          <dd className="text-sg-ink-2">{formatTime(approval.created_at)}</dd>
           {approval.decided_at ? (
             <>
               <dt className="text-sg-ink-4">
@@ -96,6 +98,14 @@ export function DetailDrawerContent({ approval }: DetailDrawerContentProps) {
           ) : null}
           <dt className="text-sg-ink-4">{t("approvals.tp.drawerStatus")}</dt>
           <dd className="text-sg-ink-2">{decisionLabel}</dd>
+          {approval.decision_reason ? (
+            <>
+              <dt className="text-sg-ink-4">
+                {t("approvals.decisionReasonLabel")}
+              </dt>
+              <dd className="text-sg-ink-2">{approval.decision_reason}</dd>
+            </>
+          ) : null}
         </dl>
       </DetailDrawer.Section>
       <DetailDrawer.Section label={t("approvals.tp.drawerSectionSafety")}>
@@ -135,11 +145,11 @@ function StatusPill({
   );
 }
 
-function formatTime(iso: string): string {
+function formatTime(epochSeconds: number): string {
   try {
-    return formatDateTime(new Date(iso));
+    return formatDateTime(new Date(epochSeconds * 1000));
   } catch {
-    return iso;
+    return String(epochSeconds);
   }
 }
 

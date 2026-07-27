@@ -24,11 +24,11 @@ import type { Approval } from "./types";
  * `<JsonView>` primitive (syntax-highlighted) and wraps content in the
  * glass card aesthetic.
  */
-function formatTime(iso: string): string {
+function formatTime(epochSeconds: number): string {
   try {
-    return formatDateTime(new Date(iso));
+    return formatDateTime(new Date(epochSeconds * 1000));
   } catch {
-    return iso;
+    return String(epochSeconds);
   }
 }
 
@@ -75,7 +75,7 @@ export function ArgsDialog({ approval }: { approval: Approval }) {
               <div>
                 {t("approvals.argsRequestedAt")}:{" "}
                 <span className="font-mono text-sg-ink-2">
-                  {formatTime(approval.requested_at)}
+                  {formatTime(approval.created_at)}
                 </span>
               </div>
               {approval.decided_at ? (
@@ -90,7 +90,7 @@ export function ArgsDialog({ approval }: { approval: Approval }) {
             </div>
           </DialogDescription>
         </DialogHeader>
-        <JsonView raw={prettifyJson(approval.args_json)} className="max-h-96" />
+        <JsonView raw={prettifyJson(approval.args_preview)} className="max-h-96" />
       </DialogContent>
     </Dialog>
   );

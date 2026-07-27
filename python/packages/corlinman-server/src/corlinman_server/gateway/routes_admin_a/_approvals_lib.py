@@ -34,7 +34,14 @@ class ApprovalOut(BaseModel):
     (``call_id``, ``args_preview``, ``created_at``) — the Rust side's
     flat ``SqliteStore::PendingApproval`` shape carried different
     column names (``id``, ``args_json``, ``requested_at``). UI clients
-    of the Python plane should consume this Python-native shape.
+    of the Python plane should consume this Python-native shape; the
+    ``ui/lib/api.ts`` ``Approval`` interface maps 1:1 onto it (W3-4).
+
+    ``decision`` is normalized to the wire vocabulary
+    ``approved`` / ``denied`` / ``timeout`` (store-internal values are
+    ``allow`` / ``deny`` / ``timeout``). ``decision_reason`` carries the
+    decider's rationale; ``reason`` stays the request-side "why this
+    needed approval".
     """
 
     call_id: str
@@ -46,19 +53,39 @@ class ApprovalOut(BaseModel):
     created_at: float
     decision: str | None = None
     decided_at: float | None = None
+    decision_reason: str | None = None
 
 
 class DecideBody(BaseModel):
     """``POST /admin/approvals/{call_id}/decide`` body.
 
     ``approve = True`` maps to :class:`ApprovalDecision.ALLOW`;
-    ``approve = False`` to :class:`ApprovalDecision.DENY`. The
-    optional ``reason`` is reserved for the audit log (the Python
-    ``ApprovalStore`` doesn't persist it today; we accept it on the
-    wire for parity with the Rust contract)."""
+    ``approve = False`` to :class:`ApprovalDecision.DENY`. ``reason``
+    (W3-4) is persisted into the row's ``decision_reason`` column and
+    forwarded to the parked stream as the deny message."""
 
     approve: bool
     reason: str | None = None
+    #: Disambiguates when the same provider call_id is parked by MORE
+    #: than one concurrent stream (index-style ids collide). Optional —
+    #: required only when the route reports 409 ambiguous.
+    session_key: str | None = None
+
+
+#: Store-internal decision values → the wire vocabulary the UI renders.
+_WIRE_DECISION = {
+    "allow": "approved",
+    "deny": "denied",
+    "timeout": "timeout",
+    "prompt": "prompt",
+}
+
+
+def _wire_decision(value: str | None) -> str | None:
+    """Normalize a store decision value for the wire (identity fallback)."""
+    if value is None:
+        return None
+    return _WIRE_DECISION.get(value, value)
 
 
 # ---------------------------------------------------------------------------
@@ -96,56 +123,27 @@ def _record_to_out(record: Any) -> ApprovalOut:
         args_preview=record.args_preview,
         reason=record.reason,
         created_at=float(record.created_at),
-        decision=(decision.value if decision is not None else None),
+        decision=_wire_decision(decision.value if decision is not None else None),
         decided_at=(float(decided_at) if decided_at is not None else None),
+        decision_reason=getattr(record, "decision_reason", None),
     )
 
 
 async def _list_decided(store: Any) -> list[Any]:
-    """Best-effort list of decided rows. Returns an empty list when the
-    store doesn't expose a compatible query path (so the
-    ``include_decided=true`` query degrades gracefully rather than
-    raising)."""
-    # The Python ApprovalStore only exposes ``pending()`` publicly;
-    # reach into its connection helper to fetch decided rows. We use
-    # the documented private ``_conn`` async context manager rather
-    # than re-implement the SQL.
-    if not hasattr(store, "_conn"):
+    """Decided rows via the store's public ``decided()`` API (W3-4).
+
+    Returns an empty list when the store predates the API or the query
+    fails, so ``include_decided=true`` degrades gracefully rather than
+    raising. The old implementation reflected on the private
+    ``store._conn`` and re-implemented the SQL — that path is gone.
+    """
+    decided = getattr(store, "decided", None)
+    if not callable(decided):
         return []
-    rows: list[Any] = []
     try:
-        async with store._conn() as conn:  # type: ignore[attr-defined]
-            cur = await conn.execute(
-                "SELECT * FROM pending_approvals "
-                "WHERE decision IS NOT NULL "
-                "ORDER BY decided_at DESC"
-            )
-            sql_rows = await cur.fetchall()
-        for r in sql_rows:
-            rows.append(_row_to_record(r))
+        return list(await decided())
     except Exception:  # pragma: no cover — informational only
         return []
-    return rows
-
-
-def _row_to_record(row: Any) -> Any:
-    """Mirror the private ``_row_to_record`` helper inside the
-    Python ApprovalStore so the include-decided query renders the
-    same ``ApprovalRecord`` shape the pending() call returns."""
-    from corlinman_providers.plugins import ApprovalDecision, ApprovalRecord
-
-    decision_raw = row["decision"]
-    return ApprovalRecord(
-        call_id=row["call_id"],
-        plugin=row["plugin"],
-        tool=row["tool"],
-        args_preview=row["args_preview"],
-        session_key=row["session_key"],
-        reason=row["reason"],
-        created_at=float(row["created_at"]),
-        decision=ApprovalDecision(decision_raw) if decision_raw else None,
-        decided_at=float(row["decided_at"]) if row["decided_at"] is not None else None,
-    )
 
 
 async def _sse_iter(
@@ -160,8 +158,10 @@ async def _sse_iter(
 
     * ``data: {"kind": "pending", "approval": {...}}\\n\\n`` — when a
       row appears in ``pending()``.
-    * ``data: {"kind": "decided", "id": ..., "decision": ...}\\n\\n``
-      — when a previously pending row gains a decision.
+    * ``data: {"kind": "decided", "id": ..., "decision": ...,
+      "reason": ...}\\n\\n`` — when a previously pending row gains a
+      decision. ``reason`` is the decider's rationale (W3-4), ``null``
+      when none was given.
 
     Drops out cleanly when the client disconnects.
     """
@@ -219,7 +219,8 @@ async def _sse_iter(
             payload = {
                 "kind": "decided",
                 "id": call_id,
-                "decision": decision,
+                "decision": _wire_decision(decision),
+                "reason": getattr(record, "decision_reason", None),
             }
             yield _sse_frame(payload)
 
