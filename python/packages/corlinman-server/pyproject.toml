@@ -104,6 +104,12 @@ dependencies = [
 # the base package does not pull asyncpg, so single-process SQLite
 # deployments stay slim.
 postgres = ["asyncpg>=0.29,<1.0"]
+# Low-latency shared journal backend on Redis
+# (``CORLINMAN_JOURNAL_BACKEND=redis``). Same posture as ``postgres``:
+# off by default, imported lazily, loud RuntimeError at open() when the
+# extra is missing. Tests run against fakeredis (root dev group) so no
+# live Redis is required in CI.
+redis = ["redis>=5.0"]
 # Tests for the Postgres backend skip cleanly when these extras are
 # missing (see ``tests/test_agent_journal_postgres.py``). Bundled here
 # so a developer working on the journal can ``uv sync --extra test`` and

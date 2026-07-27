@@ -21,8 +21,8 @@ Backend selection is controlled by env (see
 :func:`~corlinman_server.agent_journal_backend.open_backend_from_env`):
 
 - ``CORLINMAN_JOURNAL_BACKEND`` — ``sqlite`` (default) / ``postgres`` / ``redis``
-- ``CORLINMAN_JOURNAL_POSTGRES_DSN`` — used when backend = postgres (stub)
-- ``CORLINMAN_JOURNAL_REDIS_URL`` — used when backend = redis (stub)
+- ``CORLINMAN_JOURNAL_POSTGRES_DSN`` — used when backend = postgres
+- ``CORLINMAN_JOURNAL_REDIS_URL`` — used when backend = redis
 """
 
 from __future__ import annotations
