@@ -78,3 +78,65 @@ describe("AttachmentGallery", () => {
     expect(screen.queryByTestId("attachment-download")).not.toBeInTheDocument();
   });
 });
+
+describe("AttachmentGallery — audio", () => {
+  it("renders an audio attachment with a real player, not a static icon", () => {
+    render(
+      <AttachmentGallery
+        attachments={[
+          att({
+            id: "v1",
+            kind: "audio",
+            name: "reply.mp3",
+            remoteUrl: "/v1/files/v1",
+          }),
+        ]}
+      />,
+    );
+    const player = screen.getByTestId("attachment-audio-player");
+    expect(player).toBeInTheDocument();
+    expect(player).toHaveAttribute("src", "/v1/files/v1");
+    expect(player).toHaveAttribute("controls");
+    // It must NOT fall through to the generic file-chip branch.
+    expect(screen.queryByTestId("attachment-file-card")).not.toBeInTheDocument();
+  });
+
+  it("still offers a download link next to the player", () => {
+    render(
+      <AttachmentGallery
+        attachments={[
+          att({ id: "v1", kind: "audio", name: "reply.mp3", remoteUrl: "/v1/files/v1" }),
+        ]}
+      />,
+    );
+    expect(screen.getByTestId("attachment-download")).toHaveAttribute(
+      "href",
+      "/v1/files/v1",
+    );
+  });
+
+  it("falls back to a file chip when the audio has no fetchable url", () => {
+    render(
+      <AttachmentGallery
+        attachments={[att({ id: "v1", kind: "audio", name: "reply.mp3" })]}
+      />,
+    );
+    expect(screen.queryByTestId("attachment-audio-player")).not.toBeInTheDocument();
+    expect(screen.getByTestId("attachment-file-card")).toBeInTheDocument();
+  });
+
+  it("mixes audio, images and documents without losing any of them", () => {
+    render(
+      <AttachmentGallery
+        attachments={[
+          att({ id: "i1", kind: "image", name: "s.png", remoteUrl: "/v1/files/i1" }),
+          att({ id: "v1", kind: "audio", name: "r.mp3", remoteUrl: "/v1/files/v1" }),
+          att({ id: "d1", kind: "document", name: "d.pdf", remoteUrl: "/v1/files/d1" }),
+        ]}
+      />,
+    );
+    expect(screen.getByTestId("attachment-thumb")).toBeInTheDocument();
+    expect(screen.getByTestId("attachment-audio-player")).toBeInTheDocument();
+    expect(screen.getByTestId("attachment-file-card")).toBeInTheDocument();
+  });
+});

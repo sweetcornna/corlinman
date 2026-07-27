@@ -18,6 +18,7 @@ from corlinman_agent.image.tts import (
     dispatch_text_to_speech,
     text_to_speech_tool_schema,
 )
+from corlinman_agent.voice import get_backend
 
 _AUDIO = b"ID3\x04\x00FAKEMP3PAYLOAD" * 4
 
@@ -29,14 +30,12 @@ def _ok_handler(*, expected_model: str | None = None):
         if expected_model is not None:
             assert body["model"] == expected_model
         assert body["input"]
-        assert body["voice"] in (
-            "alloy",
-            "echo",
-            "fable",
-            "onyx",
-            "nova",
-            "shimmer",
-        )
+        # Voice ids are validated against the selected backend's catalog
+        # (corlinman_agent.voice.catalog), which now spans the full
+        # /audio/speech set including marin/cedar.
+        assert body["voice"] in {
+            v.id for v in get_backend("openai").voices
+        }
         return httpx.Response(200, content=_AUDIO)
 
     return handler
@@ -266,5 +265,8 @@ async def test_http_500_graceful(tmp_path, monkeypatch) -> None:
     )
     env = json.loads(out)
     assert env["ok"] is False
-    # RuntimeError raised on >=400 → tts_unavailable envelope.
-    assert env["error"] == "tts_unavailable"
+    # Upstream HTTP failures are reported distinctly from "not configured"
+    # so the admin preview can surface the real status; the older code
+    # collapsed both onto tts_unavailable.
+    assert env["error"] == "tts_http_status"
+    assert "500" in env["message"]

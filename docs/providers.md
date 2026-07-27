@@ -244,6 +244,13 @@ it.
 
 ### "I want Fish Audio for persona voice replies"
 
+> Voice now has a dedicated backend registry and an admin page — see
+> [docs/voice.md](voice.md). The `[voice]` section is the preferred place
+> to configure TTS (it covers GPT-Live, OpenAI, Fish, ElevenLabs, Gemini,
+> MiniMax and any custom HTTP provider, with per-voice preview). The
+> provider-params route below still works and is the right choice when you
+> want a **per-persona** voice binding rather than a global default.
+
 Fish Audio's TTS API is not OpenAI's `/audio/speech` shape. Declare it as
 a named provider so Corlinman can reuse its credential/base URL, then mark
 the provider params with `tts_backend = "fish"`. The persona voice binding

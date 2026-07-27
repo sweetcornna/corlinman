@@ -529,6 +529,7 @@ export const zhCN = {
     evolution: "演化",
     models: "模型与密钥",
     persona: "Persona",
+    voice: "语音",
     providers: "Providers",
     credentials: "凭证",
     config: "配置",

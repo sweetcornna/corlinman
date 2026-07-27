@@ -453,8 +453,36 @@ def _make_config_swap_fn(app: Any, state: Any) -> Any:
         if changed:
             with suppress(Exception):
                 _reapply_hot_reloadable(state, changed)
+        if "voice" in changed:
+            _register_voice_backends(new_cfg)
 
     return _config_swap_fn
+
+
+def _register_voice_backends(cfg: Any) -> None:
+    """Fold ``[voice.backends.*]`` into the process-wide TTS registry.
+
+    Called at boot and again whenever the ``voice`` config section
+    changes. The admin routes re-apply this per request so UI edits show
+    up immediately there, but the ``text_to_speech`` tool resolves its
+    backend inside the agent loop and never touches those routes — without
+    this hook an operator-defined provider would stay invisible to the
+    model until someone happened to open the settings page.
+
+    Never fatal: a malformed custom backend must not take the gateway down.
+    """
+    try:
+        from corlinman_agent.voice import register_backends_from_config
+
+        voice_cfg = cfg.get("voice") if isinstance(cfg, dict) else None
+        backends_cfg = (
+            voice_cfg.get("backends") if isinstance(voice_cfg, dict) else None
+        )
+        registered = register_backends_from_config(backends_cfg)
+        if registered:
+            logger.info("gateway.voice.custom_backends", backends=list(registered))
+    except Exception as exc:  # pragma: no cover — never fatal
+        logger.warning("gateway.voice.backend_registration_failed", error=str(exc))
 
 
 def _make_chat_refresh_fn(state: Any) -> Any:
@@ -603,6 +631,8 @@ def _mount_routes(app: Any, state: Any, *, admin_config_path: Path | None = None
             app.include_router(voice_router)
         except Exception as exc:  # pragma: no cover — sibling-owned
             logger.warning("gateway.routes_voice.mount_failed", error=str(exc))
+
+    _register_voice_backends(getattr(state, "config", None))
 
     admin_a_state: Any | None = None
     admin_a = _lazy_import("corlinman_server.gateway.routes_admin_a")

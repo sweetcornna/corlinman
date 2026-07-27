@@ -57,6 +57,7 @@ _log = logging.getLogger(__name__)
 
 __all__ = [
     "FILE_TYPE_IMAGE",
+    "FILE_TYPE_VOICE",
     "MSG_TYPE_ARK",
     "MSG_TYPE_IMAGE",
     "MSG_TYPE_MARKDOWN",
@@ -88,9 +89,15 @@ MSG_TYPE_IMAGE: int = 7
 MSG_TYPE_RICH_MEDIA: int = 7
 
 #: ``file_type=1`` — image. The QQ Official ``file_info`` upload uses
-#: an integer file-type discriminator; image is the only kind safely
-#: supported across all three send endpoints today.
+#: an integer file-type discriminator.
 FILE_TYPE_IMAGE: int = 1
+
+#: ``file_type=3`` — voice. Tencent only accepts **SILK** on this slot;
+#: an mp3/ogg upload is rejected at the CDN, which is why the channel
+#: handler gates on the container before reaching for it. There is no
+#: general-purpose SILK encoder, so a non-SILK clip degrades to a text
+#: notice rather than a failed send.
+FILE_TYPE_VOICE: int = 3
 
 # Type alias for the token provider — async callable returning the
 # current access token. The adapter's :meth:`access_token` satisfies it.
@@ -399,6 +406,79 @@ class QqOfficialSender:
             f"/v2/users/{openid}/files", body
         )
         return _extract_file_info(env, path="users files upload")
+
+    async def upload_group_voice(
+        self,
+        group_openid: str,
+        *,
+        url: str | None = None,
+        file_data: bytes | None = None,
+        srv_send_msg: bool = False,
+    ) -> str:
+        """Upload a SILK voice clip to the group CDN, returning ``file_info``.
+
+        Same envelope as :meth:`upload_group_image` with
+        :data:`FILE_TYPE_VOICE`. Pair with :meth:`send_group_voice`.
+        """
+        body = self._build_upload_body(
+            file_type=FILE_TYPE_VOICE,
+            url=url,
+            file_data=file_data,
+            srv_send_msg=srv_send_msg,
+        )
+        env = await self._post_json(f"/v2/groups/{group_openid}/files", body)
+        return _extract_file_info(env, path="groups voice upload")
+
+    async def upload_c2c_voice(
+        self,
+        openid: str,
+        *,
+        url: str | None = None,
+        file_data: bytes | None = None,
+        srv_send_msg: bool = False,
+    ) -> str:
+        """Upload a SILK voice clip to the C2C CDN, returning ``file_info``."""
+        body = self._build_upload_body(
+            file_type=FILE_TYPE_VOICE,
+            url=url,
+            file_data=file_data,
+            srv_send_msg=srv_send_msg,
+        )
+        env = await self._post_json(f"/v2/users/{openid}/files", body)
+        return _extract_file_info(env, path="users voice upload")
+
+    async def send_group_voice(
+        self,
+        group_openid: str,
+        file_info: str,
+        *,
+        msg_id: str | None = None,
+        event_id: str | None = None,
+        content: str = "",
+    ) -> str:
+        """Send a pre-uploaded voice clip to a QQ group.
+
+        The send envelope is identical for every rich-media kind
+        (``msg_type=7`` + ``media.file_info``) — the discriminator lives
+        in the *upload*. Named separately so call sites read honestly.
+        """
+        return await self.send_group_image(
+            group_openid, file_info, msg_id=msg_id, event_id=event_id, content=content
+        )
+
+    async def send_c2c_voice(
+        self,
+        openid: str,
+        file_info: str,
+        *,
+        msg_id: str | None = None,
+        event_id: str | None = None,
+        content: str = "",
+    ) -> str:
+        """Send a pre-uploaded voice clip to a QQ C2C conversation."""
+        return await self.send_c2c_image(
+            openid, file_info, msg_id=msg_id, event_id=event_id, content=content
+        )
 
     async def upload_image(
         self,
