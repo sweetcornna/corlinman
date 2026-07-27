@@ -480,6 +480,11 @@ def _build_internal_request(req: ChatRequest, session_key: str | None) -> Intern
         temperature=req.temperature,
         attachments=attachments,
         provider_params=_provider_params_from_chat_request(req),
+        # W3-3: the web chat can answer AwaitingApproval — the UI renders
+        # the approval prompt card from the live-event stream and POSTs
+        # the decision to /v1/chat/completions/{turn}/approve, which the
+        # gateway approval broker routes back into this stream.
+        approval_capable=True,
     )
 
 

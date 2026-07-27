@@ -3257,6 +3257,7 @@ export const zhCN = {
     approvalDeny: "拒绝",
     approvalApproveOnce: "本次批准",
     approvalApproveAlways: "始终批准（本会话）",
+    approvalApproveDurable: "永久批准",
     searchOverlayAriaLabel: "在对话中搜索",
     searchPlaceholderConversation: "在对话中搜索",
     searchPrevAriaLabel: "上一个匹配",

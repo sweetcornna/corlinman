@@ -337,8 +337,11 @@ export async function cancelChatSession(
 /* ------------------------------------------------------------------ */
 
 export interface ApprovalRequest {
+  /** Required by the route — the AwaitingApproval event's call_id. */
+  call_id: string;
   approved: boolean;
   scope?: "once" | "session" | "always";
+  /** Required by the route when approved=false. */
   deny_message?: string;
 }
 

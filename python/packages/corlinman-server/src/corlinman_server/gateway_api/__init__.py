@@ -35,6 +35,7 @@ from corlinman_server.gateway_api.protocol import (
 from corlinman_server.gateway_api.types import (
     Attachment,
     AttachmentKind,
+    AwaitingApprovalEvent,
     ChannelBinding,
     DoneEvent,
     ErrorEvent,
@@ -54,6 +55,7 @@ __all__ = [
     # Data types
     "Attachment",
     "AttachmentKind",
+    "AwaitingApprovalEvent",
     "ChannelBinding",
     # Protocol / trait surface
     "ChatEventStream",

@@ -1365,6 +1365,15 @@ async def _qq_dispatch_loop(
                     sender_name,
                     segments_to_text(payload.message) or payload.raw_message,
                 )
+            # W3-3: approval decisions intercept BEFORE router dispatch —
+            # a bare "y" reply in a group carries no @mention and would
+            # otherwise be filtered; a consumed decision must never spawn
+            # an agent turn. No-op (empty registry lookup) on the
+            # overwhelmingly common non-approval path.
+            if await _qq_try_handle_approval_reply(
+                adapter, payload, params.instance_id
+            ):
+                continue
             req = router.dispatch(payload, slash_policy=slash_policy)
             if req is None:
                 _log.debug(
@@ -1857,6 +1866,299 @@ async def _qq_input_status_pulse(
     )
 
 
+# ---------------------------------------------------------------------------
+# W3-3 — cross-surface tool approvals (channel side)
+# ---------------------------------------------------------------------------
+# When a turn's stream yields an ``awaiting_approval`` event, the handler
+# posts a prompt into the conversation and registers the pending approval
+# here. The channel's inbound loop intercepts the INITIATOR's next matching
+# reply (y/1 approve-once, s/2 approve-session, a/3 approve-always, n/0
+# deny) BEFORE command routing / mention gating, and feeds the decision to
+# the gateway approval broker, which forwards it to the parked agent turn.
+# Non-initiator replies are never treated as decisions. The decision
+# travels through the broker → backend tx queue — NEVER through the
+# request dataclass (the SimpleNamespace/slots contract stays untouched).
+
+#: Agent-side prompt wait budget (mirrors the servicer's
+#: ``APPROVAL_ASK_TIMEOUT_S``). The channel-side expiry notice fires a few
+#: seconds EARLIER so the user sees "已超时" before the agent's deny lands.
+_APPROVAL_TIMEOUT_S: float = 300.0
+_APPROVAL_NOTICE_MARGIN_S: float = 5.0
+
+_APPROVE_ONCE_WORDS = frozenset({"y", "yes", "1", "允许", "同意", "批准"})
+_APPROVE_SESSION_WORDS = frozenset({"s", "2", "session", "本会话"})
+_APPROVE_ALWAYS_WORDS = frozenset({"a", "3", "always", "永久"})
+_DENY_WORDS = frozenset({"n", "no", "0", "拒绝", "deny"})
+
+
+@dataclass
+class _PendingChannelApproval:
+    """One approval prompt posted into a channel conversation."""
+
+    call_id: str
+    initiator: str
+    tool: str
+    conv_key: str
+    expires_at: float
+    timeout_task: asyncio.Task[None] | None = None
+
+
+#: conv_key → call_id → pending entry (FIFO per conversation).
+_PENDING_CHANNEL_APPROVALS: dict[
+    str, collections.OrderedDict[str, _PendingChannelApproval]
+] = {}
+
+
+def _approval_prompt_text(ev: Any) -> str:
+    """Human-readable approval menu for a text channel (QQ etc.)."""
+    tool = getattr(ev, "tool", "") or "?"
+    preview = (getattr(ev, "args_preview_json", "") or "").strip()
+    if len(preview) > 300:
+        preview = preview[:299] + "…"
+    reason = (getattr(ev, "reason", "") or "").strip()
+    lines = [f"⚠️ 工具调用需要审批: {tool}"]
+    if preview and preview not in ("{}", "null"):
+        lines.append(f"参数: {preview}")
+    if reason:
+        lines.append(f"原因: {reason}")
+    lines.append(
+        "回复 y/1 批准本次 · s/2 批准并在本会话内不再询问 · "
+        "a/3 永久批准 · n/0 拒绝"
+    )
+    lines.append(f"（仅发起人可回复，{int(_APPROVAL_TIMEOUT_S)} 秒内未回复将自动拒绝）")
+    return "\n".join(lines)
+
+
+def _parse_approval_reply(text: str) -> tuple[bool, str] | None:
+    """Map a reply to ``(approved, scope)`` or ``None`` (not a decision)."""
+    word = (text or "").strip().lower()
+    if not word:
+        return None
+    if word in _APPROVE_ONCE_WORDS:
+        return True, "once"
+    if word in _APPROVE_SESSION_WORDS:
+        return True, "session"
+    if word in _APPROVE_ALWAYS_WORDS:
+        return True, "always"
+    if word in _DENY_WORDS:
+        return False, "once"
+    return None
+
+
+def _register_channel_approval(
+    conv_key: str,
+    ev: Any,
+    initiator: str,
+    notify_timeout: Callable[[], Awaitable[None]] | None,
+) -> _PendingChannelApproval:
+    """Track a posted prompt; arm the channel-side expiry notice."""
+    call_id = getattr(ev, "call_id", "") or ""
+    entry = _PendingChannelApproval(
+        call_id=call_id,
+        initiator=str(initiator),
+        tool=getattr(ev, "tool", "") or "",
+        conv_key=conv_key,
+        expires_at=time.time() + _APPROVAL_TIMEOUT_S,
+    )
+    bucket = _PENDING_CHANNEL_APPROVALS.setdefault(conv_key, collections.OrderedDict())
+    bucket[call_id] = entry
+
+    if notify_timeout is not None:
+
+        async def _expire() -> None:
+            await asyncio.sleep(
+                max(1.0, _APPROVAL_TIMEOUT_S - _APPROVAL_NOTICE_MARGIN_S)
+            )
+            bucket_now = _PENDING_CHANNEL_APPROVALS.get(conv_key)
+            if bucket_now is None or call_id not in bucket_now:
+                return
+            _clear_channel_approval(conv_key, call_id, cancel_timer=False)
+            try:
+                await notify_timeout()
+            except Exception as exc:  # noqa: BLE001 — notice is best-effort
+                _log.warning("approval timeout notice failed: %s", exc)
+
+        entry.timeout_task = asyncio.create_task(_expire())
+    return entry
+
+
+def _clear_channel_approval(
+    conv_key: str, call_id: str, *, cancel_timer: bool = True
+) -> None:
+    bucket = _PENDING_CHANNEL_APPROVALS.get(conv_key)
+    if bucket is None:
+        return
+    entry = bucket.pop(call_id, None)
+    if not bucket:
+        _PENDING_CHANNEL_APPROVALS.pop(conv_key, None)
+    if entry is not None and cancel_timer and entry.timeout_task is not None:
+        entry.timeout_task.cancel()
+
+
+async def _approval_decide_via_broker(
+    call_id: str, *, approved: bool, scope: str, deny_message: str = ""
+) -> bool:
+    """Feed a decision to the gateway approval broker (guarded import).
+
+    Same tolerance pattern as the durable-inbox import above: channels
+    never hard-depends on corlinman-server, so standalone channel tests
+    simply see ``False`` ("expired") here.
+    """
+    try:
+        from corlinman_server.gateway.services.approval_broker import (  # noqa: PLC0415
+            get_approval_broker,
+        )
+    except Exception:  # noqa: BLE001 — server package unavailable
+        return False
+    try:
+        return await get_approval_broker().decide(
+            call_id,
+            approved=approved,
+            scope=scope,
+            deny_message=deny_message,
+        )
+    except Exception as exc:  # noqa: BLE001 — decision failure ≙ expired
+        _log.warning("approval broker decide failed: %s", exc)
+        return False
+
+
+async def _try_handle_channel_approval_reply(
+    conv_key: str, sender: str, text: str
+) -> str | None:
+    """Consume ``text`` as an approval decision when it is one.
+
+    Returns the confirmation line to post back (the message was consumed),
+    or ``None`` when the message is NOT a decision and must flow through
+    normal routing. Only the initiator's reply counts — anyone else's
+    y/n is deliberately ignored (falls through as an ordinary message).
+    """
+    bucket = _PENDING_CHANNEL_APPROVALS.get(conv_key)
+    if not bucket:
+        return None
+    parsed = _parse_approval_reply(text)
+    if parsed is None:
+        return None
+    # FIFO: answers apply to the oldest pending prompt in the conversation.
+    entry = next(iter(bucket.values()))
+    if str(sender) != entry.initiator:
+        _log.info(
+            "channel approval reply ignored (non-initiator) conv=%s sender=%s",
+            conv_key,
+            sender,
+        )
+        return None
+    approved, scope = parsed
+    _clear_channel_approval(conv_key, entry.call_id)
+    delivered = await _approval_decide_via_broker(
+        entry.call_id,
+        approved=approved,
+        scope=scope,
+        deny_message="" if approved else f"denied by {sender} in channel",
+    )
+    if not delivered:
+        return "⚠️ 该审批已失效（可能已超时或被处理）"
+    if not approved:
+        return f"🚫 已拒绝: {entry.tool}"
+    scope_note = {
+        "once": "仅本次",
+        "session": "本会话内不再询问",
+        "always": "已永久记住",
+    }.get(scope, scope)
+    return f"✅ 已批准: {entry.tool}（{scope_note}）"
+
+
+def _qq_conv_key(instance_id: str, event: MessageEvent) -> str:
+    """Stable conversation key for QQ approval routing."""
+    if event.message_type == MessageType.GROUP and event.group_id is not None:
+        return f"qq:{instance_id}:g{event.group_id}"
+    return f"qq:{instance_id}:p{event.user_id}"
+
+
+async def _qq_present_approval(
+    adapter: OneBotAdapter,
+    event: MessageEvent,
+    chat_ev: Any,
+    instance_id: str,
+) -> str | None:
+    """Post the QQ text-menu approval prompt + register the pending entry.
+
+    Returns the registered call_id (for turn-end cleanup) or ``None``
+    when the prompt could not be posted (fail-closed on the agent side —
+    its own timeout still denies the call).
+    """
+    conv_key = _qq_conv_key(instance_id, event)
+
+    async def _notify_timeout() -> None:
+        await adapter.send_action(
+            _build_reply_action(
+                event,
+                f"⏳ 审批已超时，工具调用 {getattr(chat_ev, 'tool', '?')} 已自动拒绝",
+                prepend_at_mention=False,
+            )
+        )
+
+    try:
+        await adapter.send_action(
+            _build_reply_action(event, _approval_prompt_text(chat_ev))
+        )
+    except Exception as exc:  # noqa: BLE001 — prompt send failure → agent timeout
+        _log.warning("qq approval prompt send failed: %s", exc)
+        return None
+    entry = _register_channel_approval(
+        conv_key, chat_ev, str(event.user_id), _notify_timeout
+    )
+    return entry.call_id
+
+
+async def _telegram_try_handle_approval_reply(
+    ev: InboundEvent[Any], sender: TelegramSender
+) -> bool:
+    """Intercept an approval decision on the Telegram inbound loop.
+
+    Covers both a typed ``y``/``s``/``a``/``n`` reply and an inline-
+    keyboard press (the adapter synthesizes a message whose text is the
+    button's callback_data). Returns ``True`` when consumed.
+    """
+    conv_key = f"telegram:{ev.binding.thread}"
+    if conv_key not in _PENDING_CHANNEL_APPROVALS:
+        return False
+    confirmation = await _try_handle_channel_approval_reply(
+        conv_key, str(ev.binding.sender), ev.text or ""
+    )
+    if confirmation is None:
+        return False
+    try:
+        await sender.send_message(int(ev.binding.thread), confirmation)
+    except Exception as exc:  # noqa: BLE001 — confirmation is best-effort
+        _log.warning("telegram approval confirmation send failed: %s", exc)
+    return True
+
+
+async def _qq_try_handle_approval_reply(
+    adapter: OneBotAdapter, payload: MessageEvent, instance_id: str
+) -> bool:
+    """Intercept an approval decision reply on the QQ inbound loop.
+
+    Runs BEFORE router dispatch so a bare ``y`` in a group (no @mention)
+    still reaches the approval, and a consumed decision never becomes an
+    agent turn. Returns ``True`` when the message was consumed.
+    """
+    conv_key = _qq_conv_key(instance_id, payload)
+    if conv_key not in _PENDING_CHANNEL_APPROVALS:
+        return False
+    text = segments_to_text(payload.message) or payload.raw_message or ""
+    confirmation = await _try_handle_channel_approval_reply(
+        conv_key, str(payload.user_id), text
+    )
+    if confirmation is None:
+        return False
+    try:
+        await adapter.send_action(_build_reply_action(payload, confirmation))
+    except Exception as exc:  # noqa: BLE001 — confirmation is best-effort
+        _log.warning("qq approval confirmation send failed: %s", exc)
+    return True
+
+
 async def handle_one_qq(
     chat_service: ChatServiceLike,
     req: RoutedRequest,
@@ -1934,10 +2236,21 @@ async def handle_one_qq(
     # send fails, the final reply may append one fallback link.
     _qq_status_link_requested = False
     _qq_status_link_sent = False
+    # W3-3: approval prompts posted this turn — cleared in ``finally`` so
+    # a turn that ends (error/cancel) can't leave a stale menu armed.
+    _qq_approval_call_ids: list[str] = []
+    _qq_instance_id = params.instance_id if params is not None else "default"
     try:
         stream = chat_service.run(request, cancel)
         async for chat_ev in stream:
             kind = _event_kind(chat_ev)
+            if kind == "awaiting_approval":
+                _cid = await _qq_present_approval(
+                    adapter, event, chat_ev, _qq_instance_id
+                )
+                if _cid:
+                    _qq_approval_call_ids.append(_cid)
+                continue
             if kind == "token_delta":
                 text_parts.append(getattr(chat_ev, "text", "") or "")
             elif kind == "done":
@@ -2041,6 +2354,11 @@ async def handle_one_qq(
                 pass
         raise
     finally:
+        # W3-3: drop any approval prompts this turn left pending — the
+        # agent side has already denied (timeout) or the turn died; a
+        # stale menu must not capture a later unrelated "y".
+        for _cid in _qq_approval_call_ids:
+            _clear_channel_approval(_qq_conv_key(_qq_instance_id, event), _cid)
         if typing_task is not None:
             typing_task.cancel()
             with suppress(asyncio.CancelledError, Exception):
@@ -2243,6 +2561,11 @@ def _build_internal_request(
         # server-side proto builder's tolerant read happy.
         persona_id=None,
         runtime_instance_id=runtime_instance_id,
+        # W3-3: this handler renders AwaitingApproval events (text menu)
+        # and routes the initiator's reply back through the gateway
+        # approval broker — declare the capability so an `ask` verdict
+        # prompts instead of fail-closing.
+        approval_capable=True,
     )
 
 
@@ -3343,6 +3666,13 @@ async def run_telegram_channel(
                 # prelude via _telegram_apply_command_prelude — that
                 # closes the seam the QQ path gets for free from
                 # router.dispatch.
+                # W3-3: approval decisions (typed y/s/a/n or an inline-
+                # keyboard press, which arrives as a synthetic message
+                # whose text is the callback_data) intercept before
+                # command routing so a consumed decision never becomes
+                # an agent turn.
+                if await _telegram_try_handle_approval_reply(ev, sender):
+                    continue
                 if await _telegram_try_dispatch_command(ev, sender, slash_policy=slash_policy):
                     continue
                 chat_service = params.chat_service
@@ -3612,7 +3942,7 @@ async def handle_one_telegram(
             ),
             name="telegram-observability-consumer",
         )
-    request = _build_text_channel_request(inbound, model)
+    request = _build_text_channel_request(inbound, model, approval_capable=True)
     if params is not None:
         await _inject_persona_if_enabled(
             request,
@@ -3628,6 +3958,42 @@ async def handle_one_telegram(
             asset_store=params.asset_store,
             channel_name="telegram",
         )
+
+    # W3-3: inline-keyboard approval prompt. A button press comes back as
+    # a synthetic inbound message whose text is the callback_data (y/s/a/n)
+    # and is intercepted by ``_telegram_try_handle_approval_reply`` in the
+    # channel loop before command routing.
+    _tg_conv_key = f"telegram:{inbound.binding.thread}"
+    _tg_approval_call_ids: list[str] = []
+
+    async def _tg_on_awaiting(ev: Any) -> None:
+        async def _notify_timeout() -> None:
+            await sender.send_message(
+                chat_id,
+                (
+                    f"⏳ 审批已超时，工具调用 {getattr(ev, 'tool', '?')} "
+                    "已自动拒绝"
+                ),
+                reply_to_message_id=reply_to,
+            )
+
+        keyboard = [
+            [{"text": "✅ 批准本次", "callback_data": "y"}],
+            [{"text": "✅ 本会话内不再询问", "callback_data": "s"}],
+            [{"text": "✅ 永久批准", "callback_data": "a"}],
+            [{"text": "🚫 拒绝", "callback_data": "n"}],
+        ]
+        await sender.send_message(
+            chat_id,
+            _approval_prompt_text(ev),
+            reply_to_message_id=reply_to,
+            inline_keyboard=keyboard,
+        )
+        entry = _register_channel_approval(
+            _tg_conv_key, ev, str(inbound.binding.sender), _notify_timeout
+        )
+        _tg_approval_call_ids.append(entry.call_id)
+
     try:
         try:
             placeholder_id = await sender.send_message(
@@ -3650,8 +4016,12 @@ async def handle_one_telegram(
             cancel,
             request=request,
             on_subagent_spawn=_emit_status_link,
+            on_awaiting_approval=_tg_on_awaiting,
         )
     finally:
+        # W3-3: drop stale approval prompts (see the QQ handler's note).
+        for _cid in _tg_approval_call_ids:
+            _clear_channel_approval(_tg_conv_key, _cid)
         typing_task.cancel()
         with suppress(asyncio.CancelledError, Exception):
             await typing_task
@@ -3951,6 +4321,7 @@ async def _drive_spinner(
     *,
     request: Any | None = None,
     on_subagent_spawn: Callable[[str], Awaitable[None]] | None = None,
+    on_awaiting_approval: Callable[[Any], Awaitable[None]] | None = None,
 ) -> _DriveSpinnerOutcome:
     """Stream ``chat_service.run`` events into ``spinner``.
 
@@ -3991,6 +4362,17 @@ async def _drive_spinner(
     stream = chat_service.run(request, cancel)
     async for ev in stream:
         kind = _event_kind(ev)
+        if kind == "awaiting_approval":
+            # W3-3: hand the pending approval to the channel's prompt
+            # callback (Telegram: inline keyboard). Best-effort — with
+            # no callback (Discord/Slack/Feishu today) the agent's own
+            # timeout denies the call.
+            if on_awaiting_approval is not None:
+                try:
+                    await on_awaiting_approval(ev)
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning("awaiting-approval prompt failed: %s", exc)
+            continue
         if kind == "token_delta":
             await spinner.on_token_delta(
                 getattr(ev, "text", "") or "",
@@ -6356,9 +6738,15 @@ async def _debounce_albums(
         yield ready
 
 
-def _build_text_channel_request(inbound: InboundEvent[Any], model: str) -> Any:
+def _build_text_channel_request(
+    inbound: InboundEvent[Any], model: str, *, approval_capable: bool = False
+) -> Any:
     """Build the request handed to ``chat_service.run`` for the
     text-only channels (Telegram / Discord / Slack / Feishu).
+
+    ``approval_capable`` (W3-3) is set by handlers that implement the
+    approval reply loop (Telegram today); the default keeps every other
+    text channel fail-closed on ``ask`` verdicts.
 
     Returns the same neutral :class:`ChannelChatRequest` contract as QQ.
     The gateway bridge validates it before entering ``ChatService``.
@@ -6402,6 +6790,7 @@ def _build_text_channel_request(inbound: InboundEvent[Any], model: str) -> Any:
         # with a real id when humanlike is enabled; default None keeps the
         # server-side proto builder's tolerant read happy.
         persona_id=None,
+        approval_capable=approval_capable,
     )
 
 
@@ -6494,6 +6883,8 @@ def _event_kind(ev: Any) -> str:
         "TokenDelta": "token_delta",
         "ToolCall": "tool_call",
         "ToolResult": "tool_result",
+        "AwaitingApproval": "awaiting_approval",
+        "AwaitingApprovalEvent": "awaiting_approval",
         "Done": "done",
         "Error": "error",
         "InternalChatEvent": "token_delta",

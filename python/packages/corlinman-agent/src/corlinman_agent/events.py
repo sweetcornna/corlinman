@@ -157,6 +157,22 @@ class AttachmentAdded:
 
 
 @dataclass(slots=True)
+class AwaitingApproval:
+    """A tool call is parked on an interactive approval (W3-3).
+
+    Mirrors the ``AwaitingApproval`` gRPC server frame so live consumers
+    (web chat's approval prompt card, admin surfaces) can render the
+    pending request; the decision travels back out-of-band (the
+    ``/v1/chat/completions/{turn}/approve`` route or a channel reply)."""
+
+    call_id: str
+    plugin: str
+    tool: str
+    args_preview_json: str
+    reason: str = ""
+
+
+@dataclass(slots=True)
 class SubagentSpawned:
     """Parent agent spawned a child subagent. Emitted by W3.2."""
 
@@ -230,6 +246,7 @@ Event = (
     | ToolStateHeartbeat
     | ToolStateCompleted
     | AttachmentAdded
+    | AwaitingApproval
     | SubagentSpawned
     | SubagentEvent
     | SubagentCompleted
@@ -429,6 +446,7 @@ class MockEventEmitter:
 
 __all__ = [
     "AttachmentAdded",
+    "AwaitingApproval",
     "BlockStart",
     "BlockStop",
     "BlockType",

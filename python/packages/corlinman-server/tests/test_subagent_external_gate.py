@@ -111,7 +111,9 @@ async def test_child_external_ask_fail_closes_without_resolver() -> None:
     )
     execute = _child_executor(_servicer())
     result = await execute(_event("github_create_issue", {"title": "hi"}))
-    assert "approval_denied" in json.loads(result)["error"]
+    # W3-3: the no-prompt-channel fail-closed envelope is now the
+    # diagnosable ``authz_no_channel`` marker.
+    assert "authz_no_channel" in json.loads(result)["error"]
 
 
 @pytest.mark.asyncio

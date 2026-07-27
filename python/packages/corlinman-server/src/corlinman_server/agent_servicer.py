@@ -19,11 +19,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import functools
 import json
 import os
 import sys
 import time
+import uuid
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from datetime import date
@@ -137,9 +139,17 @@ except Exception:  # noqa: BLE001 — degrade if the submodule lacks the symbols
     dispatch_memory_read = None  # type: ignore[assignment]
     dispatch_memory_write = None  # type: ignore[assignment]
     _MEMORY_RW_AVAILABLE = False
-from corlinman_agent.approval_gate import ApprovalGate, ApprovalOutcome
-from corlinman_agent.authz import AuthzGate, Subject, external_candidate_keys
+from corlinman_agent.approval_gate import ApprovalGate, ApprovalOutcome, ApprovalVerdict
+from corlinman_agent.authz import (
+    AuthzGate,
+    Memory,
+    Subject,
+    external_candidate_keys,
+    get_grant_store,
+    grant_scope_flags,
+)
 from corlinman_agent.events import AttachmentAdded
+from corlinman_agent.events import AwaitingApproval as AwaitingApprovalEvent
 from corlinman_agent.permission import (
     ALLOW as _PERM_ALLOW,
 )
@@ -300,6 +310,199 @@ except Exception:  # noqa: BLE001 — degrade to a no-op metric handle
     _APPROVALS_TOTAL = None  # type: ignore[assignment]
 
 logger = structlog.get_logger(__name__)
+
+# ─── W3-3: cross-surface prompt channel (ask → AwaitingApproval frame) ────
+
+#: Default prompt-and-wait budget. Matches the ApprovalGate default so the
+#: channel-side countdown and the agent-side fail-closed deny agree.
+APPROVAL_ASK_TIMEOUT_S: float = 300.0
+
+
+class _StreamPromptChannel:
+    """Per-``Chat``-stream prompt channel (W3-3).
+
+    ``request()`` parks the asking dispatch on a future, hands the caller
+    an ``AwaitingApproval`` server frame through ``outbound`` (the Chat
+    generator drains it while the dispatch await is in flight — see
+    :func:`_drive_with_prompt_frames`), and resolves when the matching
+    ``ApprovalDecision`` client frame arrives via ``_pump_inbound``.
+
+    Timeout is fail-closed deny with ``timed_out=True`` so surfaces can
+    render an explicit expiry notice. All pending futures are failed
+    closed when the stream tears down (``fail_pending``).
+    """
+
+    def __init__(
+        self,
+        *,
+        timeout_s: float = APPROVAL_ASK_TIMEOUT_S,
+        on_request: Callable[[Any], Awaitable[None]] | None = None,
+    ) -> None:
+        self.outbound: asyncio.Queue[agent_pb2.ServerFrame] = asyncio.Queue()
+        self._pending: dict[str, asyncio.Future[tuple[bool, str, str]]] = {}
+        self._timeout_s = timeout_s
+        #: Best-effort observer callback (the Chat handler wires the live
+        #: event emit here so web consumers see the pending approval).
+        self._on_request = on_request
+
+    @property
+    def timeout_s(self) -> float:
+        return self._timeout_s
+
+    def resolve(
+        self, call_id: str, approved: bool, scope: str, deny_message: str
+    ) -> bool:
+        """Feed a decision from the client stream. Returns ``False`` for
+        an unknown / already-settled call_id (idempotent, never raises)."""
+        fut = self._pending.pop(call_id, None)
+        if fut is None or fut.done():
+            return False
+        fut.set_result((bool(approved), scope or "once", deny_message or ""))
+        return True
+
+    def fail_pending(self) -> None:
+        """Deny every parked request (stream teardown / cancel)."""
+        for fut in self._pending.values():
+            if not fut.done():
+                fut.set_result((False, "once", "approval channel closed"))
+        self._pending.clear()
+
+    async def request(self, req: Any) -> Any:
+        """PromptChannel protocol — emit the frame, await the decision."""
+        from corlinman_agent.authz import AuthzAnswer
+
+        call_id = req.call_id or f"appr-{uuid.uuid4().hex[:12]}"
+        args_preview = json.dumps(req.args or {}, ensure_ascii=False, default=str)
+        if len(args_preview) > 2048:
+            args_preview = args_preview[:2047] + "…"
+        fut: asyncio.Future[tuple[bool, str, str]] = (
+            asyncio.get_running_loop().create_future()
+        )
+        self._pending[call_id] = fut
+        await self.outbound.put(
+            agent_pb2.ServerFrame(
+                awaiting=agent_pb2.AwaitingApproval(
+                    call_id=call_id,
+                    plugin=req.plugin or "",
+                    tool=req.tool,
+                    args_preview_json=args_preview.encode("utf-8"),
+                    reason=req.reason or "permission rule requires approval",
+                )
+            )
+        )
+        if self._on_request is not None:
+            try:
+                await self._on_request(
+                    AwaitingApprovalEvent(
+                        call_id=call_id,
+                        plugin=req.plugin or "",
+                        tool=req.tool,
+                        args_preview_json=args_preview,
+                        reason=req.reason or "",
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 — observer is best-effort
+                logger.warning(
+                    "agent.approval.request_emit_failed", error=str(exc)
+                )
+        try:
+            approved, scope, deny_message = await asyncio.wait_for(
+                fut, timeout=self._timeout_s
+            )
+        except TimeoutError:
+            self._pending.pop(call_id, None)
+            logger.info(
+                "agent.approval.stream_ask_timeout",
+                tool=req.tool,
+                call_id=call_id,
+            )
+            return AuthzAnswer(
+                approved=False,
+                deny_message=(
+                    f"approval for tool {req.tool!r} timed out after "
+                    f"{int(self._timeout_s)}s (fail-closed)"
+                ),
+                timed_out=True,
+            )
+        return AuthzAnswer(
+            approved=approved,
+            memory=Memory.coerce(scope),
+            deny_message=(deny_message or None) if not approved else None,
+        )
+
+
+#: The active per-turn stream prompt channel. Set by ``Chat`` when the
+#: caller declared ``approval_capable``; read by ``_approval_decide`` (and
+#: therefore inherited by subagent child executors — task context copies
+#: propagate the var, which is exactly the "child asks flow to the same
+#: prompt channel, authority stays with the parent session" contract).
+_ACTIVE_PROMPT_CHANNEL: contextvars.ContextVar[_StreamPromptChannel | None] = (
+    contextvars.ContextVar("corlinman_active_prompt_channel", default=None)
+)
+
+
+def _approval_denied_error(tool: str, outcome: ApprovalOutcome) -> str:
+    """Terminal error string for a denied ``ask`` (W3-3, acceptance 4/7).
+
+    * no channel  → ``authz_no_channel: ...`` (diagnosable — the surface
+      structurally cannot prompt, e.g. --print / attach mode);
+    * timeout     → ``approval_denied: ... timed out ...`` (the reason
+      from the prompt channel already carries the timeout wording, which
+      channels surface verbatim to the user);
+    * plain deny  → ``approval_denied: <operator reason>``.
+    """
+    reason = outcome.reason or "tool requires approval"
+    if outcome.no_channel:
+        # The gate/channel reason already starts with authz_no_channel;
+        # keep exactly one marker prefix either way.
+        if reason.startswith("authz_no_channel"):
+            return reason
+        return f"authz_no_channel: {reason}"
+    return f"approval_denied: {reason}"
+
+
+async def _drive_with_prompt_frames(
+    coro: Awaitable[Any],
+    bridge: _StreamPromptChannel | None,
+) -> AsyncIterator[tuple[agent_pb2.ServerFrame | None, Any]]:
+    """Run ``coro`` while interleaving the bridge's outbound frames.
+
+    Yields ``(frame, None)`` for every AwaitingApproval frame the dispatch
+    produced mid-await, then exactly one terminal ``(None, result)`` —
+    discriminate on ``frame is None`` (the dispatch result itself may be
+    ``None``, e.g. an external permission check that passed). With no
+    bridge this degrades to a plain await — zero overhead on the common
+    path.
+    """
+    if bridge is None:
+        yield None, await coro
+        return
+    task = asyncio.ensure_future(coro)
+    try:
+        while True:
+            if task.done() and bridge.outbound.empty():
+                yield None, task.result()
+                return
+            frame_task = asyncio.ensure_future(bridge.outbound.get())
+            done, _pending = await asyncio.wait(
+                {task, frame_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if frame_task in done:
+                yield frame_task.result(), None
+                continue
+            # Dispatch finished; drop the frame getter (nothing consumed).
+            frame_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await frame_task
+            while not bridge.outbound.empty():
+                yield bridge.outbound.get_nowait(), None
+            yield None, task.result()
+            return
+    finally:
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
 
 #: The "send file via current channel" tool — surfaced as a builtin so
 #: the LLM can reply with a file (HTML, PDF, etc.) instead of dumping
@@ -1941,8 +2144,40 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 return
             await self._run_post_tool_hooks(info[0], info[1], start, content)
 
+        # W3-3: cross-surface prompt channel. Only when the caller declared
+        # ``approval_capable`` (channels with a reply loop, the web chat
+        # route) AND no in-process resolver is wired (embedded console owns
+        # its own terminal prompt) does an ``ask`` verdict become an
+        # ``AwaitingApproval`` frame + parked wait for the matching
+        # ``ApprovalDecision`` client frame. Every other surface stays
+        # fail-closed (``authz_no_channel``) — --print / attach included.
+        approval_bridge: _StreamPromptChannel | None = None
+        if bool(getattr(start_frame.start, "approval_capable", False)) and (
+            getattr(self, "_approval_resolver", None) is None
+        ):
+
+            async def _emit_awaiting_event(event: Any) -> None:
+                if self._event_emitter is None:
+                    return
+                await self._event_emitter.emit_event(
+                    loop.turn_id, loop.session_key, event
+                )
+
+            # ``timeout_s`` reads the module constant at call time so
+            # tests can monkeypatch ``APPROVAL_ASK_TIMEOUT_S``.
+            approval_bridge = _StreamPromptChannel(
+                on_request=_emit_awaiting_event,
+                timeout_s=APPROVAL_ASK_TIMEOUT_S,
+            )
+        _prompt_channel_token = _ACTIVE_PROMPT_CHANNEL.set(approval_bridge)
+
         inbound_task = asyncio.create_task(
-            _pump_inbound(request_iterator, loop, on_tool_result=_on_external_tool_result),
+            _pump_inbound(
+                request_iterator,
+                loop,
+                on_tool_result=_on_external_tool_result,
+                approval_bridge=approval_bridge,
+            ),
             name="agent.chat.pump_inbound",
         )
 
@@ -2071,24 +2306,38 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                                 pass
                             return rj, is_err
 
-                        result_json = await _dispatch_with_obs(
-                            _ds_ctx,
-                            tool_call_id=event.call_id,
-                            tool_name=event.tool,
-                            args_json=event.args_json,
-                            # Inner (no post hooks) — this path fires them
-                            # itself AFTER _register_tool_media so hooks
-                            # audit the URL-bearing result the model sees
-                            # (Codex #109), not the pre-rewrite local path.
-                            invoke=functools.partial(
-                                self._dispatch_builtin_inner,
-                                event,
-                                start,
-                                provider,
-                                file_state,
+                        # W3-3: run the dispatch through the prompt-frame
+                        # interleaver so an ``ask`` verdict raised mid-
+                        # dispatch can push its AwaitingApproval frame to
+                        # the client WHILE the dispatch awaits the
+                        # decision (a plain await would deadlock — the
+                        # generator can't yield the frame it is parked on).
+                        result_json = ""
+                        async for _ap_frame, _ap_result in _drive_with_prompt_frames(
+                            _dispatch_with_obs(
+                                _ds_ctx,
+                                tool_call_id=event.call_id,
+                                tool_name=event.tool,
+                                args_json=event.args_json,
+                                # Inner (no post hooks) — this path fires them
+                                # itself AFTER _register_tool_media so hooks
+                                # audit the URL-bearing result the model sees
+                                # (Codex #109), not the pre-rewrite local path.
+                                invoke=functools.partial(
+                                    self._dispatch_builtin_inner,
+                                    event,
+                                    start,
+                                    provider,
+                                    file_state,
+                                ),
+                                summarise_result=_summarise,
                             ),
-                            summarise_result=_summarise,
-                        )
+                            approval_bridge,
+                        ):
+                            if _ap_frame is not None:
+                                yield _ap_frame
+                                continue
+                            result_json = _ap_result
                         _dispatch_dur_ms = int((time.monotonic() - _dispatch_started_at) * 1000)
                         # W4 — register any media files the tool produced
                         # (local paths are useless to a browser) into the
@@ -2269,7 +2518,17 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     # BREAKING; [permissions].external_tools_enforced =
                     # false is the one-minor escape hatch). Runs BEFORE
                     # the hook gate, mirroring the builtin path's order.
-                    _ext_perm_block = await self._external_permission_block(event, start)
+                    # W3-3: interleaved so an external ``ask`` can emit its
+                    # AwaitingApproval frame while the check is parked.
+                    _ext_perm_block = None
+                    async for _ap_frame, _ap_result in _drive_with_prompt_frames(
+                        self._external_permission_block(event, start),
+                        approval_bridge,
+                    ):
+                        if _ap_frame is not None:
+                            yield _ap_frame
+                            continue
+                        _ext_perm_block = _ap_result
                     if _ext_perm_block is not None:
                         loop.feed_tool_result(
                             ToolResult(
@@ -2349,9 +2608,18 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                             # rewritten args (only when a mutation
                             # actually landed, so the common path pays
                             # nothing).
-                            _ext_perm_block = await self._external_permission_block(
-                                event, start
-                            )
+                            _ext_perm_block = None
+                            async for (
+                                _ap_frame,
+                                _ap_result,
+                            ) in _drive_with_prompt_frames(
+                                self._external_permission_block(event, start),
+                                approval_bridge,
+                            ):
+                                if _ap_frame is not None:
+                                    yield _ap_frame
+                                    continue
+                                _ext_perm_block = _ap_result
                             if _ext_perm_block is not None:
                                 loop.feed_tool_result(
                                     ToolResult(
@@ -2564,6 +2832,17 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 # turn boundary so a skill pulled this turn can't keep
                 # narrowing every later turn for the session forever.
                 self._clear_active_skills(start.session_key)
+            # W3-3: deny anything still parked on the prompt channel and
+            # detach it from the task context so a later turn can't route
+            # its asks into this dead stream.
+            if approval_bridge is not None:
+                approval_bridge.fail_pending()
+            # ``reset`` raises ValueError when the generator's finally is
+            # driven from a different context (aclose() during loop
+            # shutdown) — the token belongs to the RPC task's context,
+            # which is being torn down anyway.
+            with contextlib.suppress(ValueError):
+                _ACTIVE_PROMPT_CHANNEL.reset(_prompt_channel_token)
             inbound_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await inbound_task
@@ -3271,15 +3550,13 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         )
         if decision == _PERM_ASK:
             _outcome = await self._approval_decide(
-                event.tool, args, perm_ctx, external_keys=keys
+                event.tool,
+                args,
+                perm_ctx,
+                external_keys=keys,
+                call_id=event.call_id,
+                plugin=event.plugin,
             )
-            if _APPROVALS_TOTAL is not None:
-                try:
-                    _APPROVALS_TOTAL.labels(
-                        decision="approved" if _outcome.allowed else "denied"
-                    ).inc()
-                except Exception:  # noqa: BLE001 — metric is best-effort
-                    pass
             if not _outcome.allowed:
                 logger.info(
                     "agent.permission.ask_denied",
@@ -3290,10 +3567,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 )
                 return json.dumps(
                     {
-                        "error": (
-                            "approval_denied: "
-                            f"{_outcome.reason or 'tool requires approval'}"
-                        ),
+                        "error": _approval_denied_error(event.tool, _outcome),
                         "tool": event.tool,
                     }
                 )
@@ -3458,14 +3732,9 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     if _is_external_tool and _gate_resolve_external is not None
                     else None
                 ),
+                call_id=event.call_id,
+                plugin=event.plugin,
             )
-            if _APPROVALS_TOTAL is not None:
-                try:
-                    _APPROVALS_TOTAL.labels(
-                        decision="approved" if _outcome.allowed else "denied"
-                    ).inc()
-                except Exception:  # noqa: BLE001 — metric is best-effort
-                    pass
             if not _outcome.allowed:
                 logger.info(
                     "agent.permission.ask_denied",
@@ -3478,13 +3747,15 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     start,
                     ok=False,
                     duration_ms=0,
-                    error_code="approval_denied",
+                    error_code=(
+                        "authz_no_channel"
+                        if _outcome.no_channel
+                        else "approval_denied"
+                    ),
                 )
                 return json.dumps(
                     {
-                        "error": (
-                            f"approval_denied: {_outcome.reason or 'tool requires approval'}"
-                        ),
+                        "error": _approval_denied_error(event.tool, _outcome),
                         "tool": event.tool,
                     }
                 )
@@ -3610,6 +3881,8 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                             if _is_external_tool and _gate_resolve_external is not None
                             else None
                         ),
+                        call_id=event.call_id,
+                        plugin=event.plugin,
                     )
                     _redecision = _PERM_ALLOW if _re_outcome.allowed else _PERM_DENY
                 if _redecision == _PERM_DENY:
@@ -4904,19 +5177,190 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         ctx: PermissionContext,
         *,
         external_keys: tuple[str, ...] | None = None,
+        call_id: str = "",
+        plugin: str = "",
     ) -> ApprovalOutcome:
-        """Run the unified approval gate for an ``ask`` verdict.
+        """Run the unified approval path for an ``ask`` verdict.
 
         Passes the FULL subject through (tenant / surface included) so a
         grant recorded by the resolver keys identically to the gate's own
         later grant checks (W3-1). ``external_keys`` (W3-2) keeps the
         gate's internal re-resolution on the external key space for
         plugin/MCP calls.
+
+        W3-3 additions, all centralised here so every call site behaves
+        identically:
+
+        * when the turn carries a stream prompt channel (channels / web
+          chat with ``approval_capable``) and no in-process resolver is
+          wired, the ask becomes an ``AwaitingApproval`` frame + parked
+          wait, and an approving decision lands in the
+          :class:`~corlinman_agent.authz.grants.GrantStore` under the
+          answer's scope (channel surfaces default to surface+user-scoped
+          ``always`` grants — the opposite of the console default);
+        * ``approval_requested`` / ``approval_decided`` hook events fire
+          around the wait (the evolution observer turns rejected asks
+          into ``approval.rejected`` WARN signals);
+        * the ``corlinman_approvals_total{decision,surface}`` counter is
+          incremented exactly once per terminal decision.
         """
-        gate = self._get_approval_gate()
-        return await gate.decide(
-            tool, args=args, subject=ctx, external_keys=external_keys
+        approval_id = call_id or f"appr-{uuid.uuid4().hex[:12]}"
+        surface_label = getattr(ctx, "surface", None) or "unknown"
+        await self._emit_approval_requested(
+            approval_id, plugin, tool, args, ctx
         )
+        bridge = (
+            _ACTIVE_PROMPT_CHANNEL.get()
+            if getattr(self, "_approval_resolver", None) is None
+            else None
+        )
+        if bridge is not None:
+            outcome = await self._bridge_approval_decide(
+                bridge, tool, args, ctx, call_id=approval_id, plugin=plugin
+            )
+        else:
+            gate = self._get_approval_gate()
+            outcome = await gate.decide(
+                tool, args=args, subject=ctx, external_keys=external_keys
+            )
+        decision_label = (
+            "timeout"
+            if outcome.timed_out
+            else ("approved" if outcome.allowed else "denied")
+        )
+        if _APPROVALS_TOTAL is not None:
+            try:
+                _APPROVALS_TOTAL.labels(
+                    decision=decision_label, surface=surface_label
+                ).inc()
+            except Exception:  # noqa: BLE001 — metric is best-effort
+                pass
+        await self._emit_approval_decided(approval_id, outcome, ctx)
+        return outcome
+
+    async def _bridge_approval_decide(
+        self,
+        bridge: _StreamPromptChannel,
+        tool: str,
+        args: dict[str, Any],
+        ctx: PermissionContext,
+        *,
+        call_id: str,
+        plugin: str,
+    ) -> ApprovalOutcome:
+        """Resolve an ``ask`` over the per-stream prompt channel (W3-3)."""
+        from corlinman_agent.authz import AuthzRequest
+
+        grants = get_grant_store()
+        if grants.is_granted(ctx, tool, args):
+            return ApprovalOutcome(verdict=ApprovalVerdict.ALLOW, asked=True)
+        answer = await bridge.request(
+            AuthzRequest(
+                tool=tool,
+                args=args,
+                subject=ctx,
+                call_id=call_id,
+                plugin=plugin,
+            )
+        )
+        if not answer.approved:
+            return ApprovalOutcome(
+                verdict=ApprovalVerdict.DENY,
+                asked=True,
+                reason=answer.deny_message or f"tool {tool!r} denied by operator",
+                timed_out=answer.timed_out,
+                no_channel=answer.no_channel,
+            )
+        if answer.memory is not Memory.ONCE:
+            # Channel senders get their grants pinned to (surface, user);
+            # trusted operator surfaces (console/web) grant globally. A
+            # subagent's grant keys under the PARENT session subject —
+            # ``ctx.session_key`` is the parent's, which is exactly the
+            # "authority belongs to the parent session" contract.
+            scope_surface, scope_user = grant_scope_flags(ctx)
+            try:
+                grants.record(
+                    ctx,
+                    tool,
+                    args,
+                    answer.memory,
+                    scope_surface=scope_surface,
+                    scope_user=scope_user,
+                )
+            except Exception as exc:  # noqa: BLE001 — grant persist is best-effort
+                logger.warning(
+                    "agent.approval.grant_record_failed",
+                    tool=tool,
+                    error=str(exc),
+                )
+        return ApprovalOutcome(verdict=ApprovalVerdict.ALLOW, asked=True)
+
+    async def _emit_approval_requested(
+        self,
+        approval_id: str,
+        plugin: str,
+        tool: str,
+        args: dict[str, Any],
+        ctx: PermissionContext,
+    ) -> None:
+        """Fire the ``approval_requested`` hook event (best-effort)."""
+        try:
+            from corlinman_hooks import HookEvent  # noqa: PLC0415 — optional dep
+
+            preview = json.dumps(args or {}, ensure_ascii=False, default=str)[:400]
+            await self._emit_hook_event(
+                HookEvent.ApprovalRequested(
+                    id=approval_id,
+                    session_key_=getattr(ctx, "session_key", None) or "",
+                    plugin=plugin or "",
+                    tool=tool,
+                    args_preview=preview,
+                    timeout_at_ms=int(
+                        (time.time() + APPROVAL_ASK_TIMEOUT_S) * 1000
+                    ),
+                    user_id=getattr(ctx, "user_id", None),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — hooks never block approval
+            logger.warning("agent.approval.requested_emit_failed", error=str(exc))
+
+    async def _emit_approval_decided(
+        self,
+        approval_id: str,
+        outcome: ApprovalOutcome,
+        ctx: PermissionContext,
+    ) -> None:
+        """Fire the ``approval_decided`` hook event (best-effort).
+
+        ``decision`` is ``allow`` / ``deny`` / ``timeout`` — the evolution
+        observer treats anything but ``allow`` as an ``approval.rejected``
+        WARN signal. ``decider`` records the answering surface; subagent
+        asks carry ``initiator=subagent`` context via the audit log, while
+        the hook's decider stays the parent-facing surface.
+        """
+        try:
+            from corlinman_hooks import HookEvent  # noqa: PLC0415 — optional dep
+
+            decision = (
+                "timeout"
+                if outcome.timed_out
+                else ("allow" if outcome.allowed else "deny")
+            )
+            surface = getattr(ctx, "surface", None)
+            if surface == "subagent":
+                surface = getattr(ctx, "parent_surface", None) or surface
+            await self._emit_hook_event(
+                HookEvent.ApprovalDecided(
+                    id=approval_id,
+                    decision=decision,
+                    decider=surface,
+                    decided_at_ms=int(time.time() * 1000),
+                    tenant_id=getattr(ctx, "tenant_id", None),
+                    user_id=getattr(ctx, "user_id", None),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — hooks never block approval
+            logger.warning("agent.approval.decided_emit_failed", error=str(exc))
 
     def _resolve_hook_runner(self) -> Any | None:
         """Resolve the pre-tool hook runner (CONTRACT C2-first).
@@ -7035,6 +7479,7 @@ async def _pump_inbound(
     loop: ReasoningLoop,
     *,
     on_tool_result: Callable[[str, str, bool], Awaitable[None]] | None = None,
+    approval_bridge: _StreamPromptChannel | None = None,
 ) -> None:
     """Forward post-ChatStart :class:`ClientFrame` messages to the loop.
 
@@ -7044,7 +7489,8 @@ async def _pump_inbound(
       slow hook path never delays the model's next round; failures are
       logged and swallowed)
     * ``cancel`` → :meth:`ReasoningLoop.cancel` and return
-    * ``approval`` → logged only (S5 wires this into an approval gate)
+    * ``approval`` → resolved against the per-stream prompt channel
+      (W3-3); without one it is logged and dropped
     * duplicate ``start`` / unknown kinds → ignored
     """
     async for frame in iterator:
@@ -7080,12 +7526,27 @@ async def _pump_inbound(
             loop.cancel(reason=reason)
             return
         elif kind == "approval":
-            # S5 will wire this into an approval gate; today we just log.
-            logger.debug(
-                "agent.chat.approval_received_but_not_wired",
-                call_id=frame.approval.call_id,
-                approved=frame.approval.approved,
-            )
+            ap = frame.approval
+            if approval_bridge is not None:
+                matched = approval_bridge.resolve(
+                    ap.call_id,
+                    bool(ap.approved),
+                    ap.scope or "once",
+                    ap.deny_message or "",
+                )
+                logger.info(
+                    "agent.chat.approval_decision_in",
+                    call_id=ap.call_id,
+                    approved=ap.approved,
+                    scope=ap.scope or "once",
+                    matched=matched,
+                )
+            else:
+                logger.debug(
+                    "agent.chat.approval_received_but_not_wired",
+                    call_id=ap.call_id,
+                    approved=ap.approved,
+                )
         elif kind == "start":
             logger.warning("agent.chat.duplicate_start_ignored")
         # Unknown kinds silently ignored — protobuf forward compatibility.

@@ -927,8 +927,15 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
     ) => {
       try {
         await submitApproval(turnId, {
+          // The route 400s without a call_id and, on deny, without a
+          // deny_message — both were missing before W3-3 wired the
+          // decision path end-to-end.
+          call_id: callId,
           approved: decision === "approved",
           scope,
+          ...(decision === "approved"
+            ? {}
+            : { deny_message: "Denied from web chat" }),
         });
       } catch (err) {
         // Leave the prompt open so the user can retry the decision —

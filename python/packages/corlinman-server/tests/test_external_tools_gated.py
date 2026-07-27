@@ -185,7 +185,12 @@ async def test_escape_hatch_restores_pre_w32_bypass() -> None:
 async def test_external_ask_rule_fail_closes_without_resolver() -> None:
     """The ``ask`` escalation must re-resolve under the EXTERNAL keys:
     with no resolver wired the call fail-closes to a denial instead of
-    silently degrading to default-allow (W3-2 ApprovalGate fix)."""
+    silently degrading to default-allow (W3-2 ApprovalGate fix).
+
+    W3-3: the fail-closed envelope is now the diagnosable
+    ``authz_no_channel`` (acceptance 4) — the caller did not declare
+    ``approval_capable`` and no resolver is wired, so no prompt channel
+    exists for the ask."""
     apply_permissions_config(
         {"rules": [{"tool": "mcp:github/*", "action": "ask"}]}
     )
@@ -194,7 +199,7 @@ async def test_external_ask_rule_fail_closes_without_resolver() -> None:
 
     frames = await _drive(servicer)
     assert _external_frames(frames) == []
-    assert "approval_denied" in json.dumps(provider.round2_messages)
+    assert "authz_no_channel" in json.dumps(provider.round2_messages)
 
 
 @pytest.mark.asyncio

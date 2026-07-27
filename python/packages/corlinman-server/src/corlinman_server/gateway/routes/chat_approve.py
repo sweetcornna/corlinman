@@ -48,6 +48,7 @@ __all__ = [
     "ApproveBody",
     "ApproveResponse",
     "ChatApproveState",
+    "broker_backed_state",
     "router",
 ]
 
@@ -62,10 +63,15 @@ class ApprovalDecision:
     * ``kind == "approved"`` — let the tool call proceed.
     * ``kind == "denied"`` — short-circuit with ``reason``.
     * ``kind == "timeout"`` — internal-only; never client-supplied.
+
+    ``scope`` (W3-3) carries the client's requested grant memory
+    (``once`` / ``session`` / ``always``) through to the agent, which
+    records it in the GrantStore on approval.
     """
 
     kind: Literal["approved", "denied", "timeout"]
     reason: str = ""
+    scope: str = "once"
 
 
 # ─── Gate protocol the route forwards to ─────────────────────────────
@@ -108,6 +114,33 @@ class ChatApproveState:
     """
 
     resolver: ApprovalResolver | None = None
+
+
+def broker_backed_state() -> ChatApproveState:
+    """Default production state (W3-3): resolve against the gateway
+    approval broker, which forwards the decision into the parked chat
+    stream as an ``ApprovalDecision`` client frame. An unknown call_id
+    (already decided / timed out agent-side) raises
+    :class:`NotFoundError` so the route answers 404.
+    """
+
+    async def _resolve(call_id: str, decision: ApprovalDecision) -> None:
+        # Local import — the broker pulls in the generated protobufs,
+        # which this thin route module otherwise never needs.
+        from corlinman_server.gateway.services.approval_broker import (  # noqa: PLC0415
+            get_approval_broker,
+        )
+
+        delivered = await get_approval_broker().decide(
+            call_id,
+            approved=decision.kind == "approved",
+            scope=decision.scope or "once",
+            deny_message=decision.reason or "",
+        )
+        if not delivered:
+            raise NotFoundError(call_id)
+
+    return ChatApproveState(resolver=_resolve)
 
 
 # ─── Request / response wire shapes ──────────────────────────────────
@@ -169,10 +202,13 @@ def router(state: ChatApproveState | None = None) -> APIRouter:
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
 
+        scope = (body.scope or "once").strip() or "once"
         decision = (
-            ApprovalDecision(kind="approved")
+            ApprovalDecision(kind="approved", scope=scope)
             if body.approved
-            else ApprovalDecision(kind="denied", reason=body.deny_message or "")
+            else ApprovalDecision(
+                kind="denied", reason=body.deny_message or "", scope=scope
+            )
         )
         label = decision.kind  # "approved" | "denied"
 
