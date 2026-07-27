@@ -38,6 +38,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { InfoTip } from "@/components/ui/tooltip";
 import {
   CorlinmanApiError,
   // Re-exported for the page to import alongside; used here directly.
@@ -208,9 +209,14 @@ export function CreateTenantDialog({
             />
             <p
               id="tenant-slug-hint"
-              className="text-[11px] text-sg-ink-3"
+              className="flex items-center gap-1 text-[11px] text-sg-ink-3"
             >
               {t("tenants.fieldSlugHint")}
+              <InfoTip
+                label={t("tenants.fieldSlugDetailLabel")}
+                content={t("tenants.fieldSlugDetail")}
+                data-testid="tenant-slug-detail-tip"
+              />
             </p>
             {errors.slug ? (
               <p

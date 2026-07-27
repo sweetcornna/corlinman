@@ -29,6 +29,7 @@ import { useTranslation } from "react-i18next";
 import { Check, ExternalLink, Loader2 } from "@/components/icons";
 
 import { Button } from "@/components/ui/button";
+import { Collapsible } from "@/components/ui/collapsible";
 import {
   Dialog,
   DialogContent,
@@ -39,6 +40,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { InfoTip } from "@/components/ui/tooltip";
 import {
   CorlinmanApiError,
   startAnthropicOAuth,
@@ -109,6 +111,9 @@ interface ProviderCopy {
   title: string;
   description: string;
   intro: string;
+  /** Folded long-form contract (callback mechanics / security note) —
+   * rendered inside a `Collapsible` so the visible copy stays one line. */
+  detail: string;
   loginButton: string;
   openingBrowser: string;
   awaitingCode: string;
@@ -119,6 +124,7 @@ const COPY_KEYS: Record<OAuthLoginProvider, ProviderCopy> = {
     title: "oauth.modalTitleAnthropic",
     description: "oauth.modalDescriptionAnthropic",
     intro: "oauth.introAnthropic",
+    detail: "oauth.detailAnthropic",
     loginButton: "oauth.loginButtonAnthropic",
     openingBrowser: "oauth.openingBrowserAnthropic",
     awaitingCode: "oauth.awaitingCodeAnthropic",
@@ -127,6 +133,7 @@ const COPY_KEYS: Record<OAuthLoginProvider, ProviderCopy> = {
     title: "oauth.modalTitleXai",
     description: "oauth.modalDescriptionXai",
     intro: "oauth.introXai",
+    detail: "oauth.detailXai",
     loginButton: "oauth.loginButtonXai",
     openingBrowser: "oauth.openingBrowserXai",
     awaitingCode: "oauth.awaitingCodeXai",
@@ -135,6 +142,7 @@ const COPY_KEYS: Record<OAuthLoginProvider, ProviderCopy> = {
     title: "oauth.modalTitleCodex",
     description: "oauth.modalDescriptionCodex",
     intro: "oauth.introCodex",
+    detail: "oauth.detailCodex",
     loginButton: "oauth.loginButtonCodex",
     openingBrowser: "oauth.openingBrowserCodex",
     awaitingCode: "oauth.awaitingCodeCodex",
@@ -143,6 +151,7 @@ const COPY_KEYS: Record<OAuthLoginProvider, ProviderCopy> = {
     title: "oauth.modalTitleGemini",
     description: "oauth.modalDescriptionGemini",
     intro: "oauth.introGemini",
+    detail: "oauth.detailGemini",
     loginButton: "oauth.loginButtonGemini",
     openingBrowser: "oauth.openingBrowserGemini",
     awaitingCode: "oauth.awaitingCodeGemini",
@@ -347,6 +356,12 @@ export function OAuthLoginModal({
           {phase === "idle" && (
             <div className="flex flex-col gap-3">
               <p className="text-sm text-sg-ink-2">{t(copy.intro)}</p>
+              <Collapsible
+                summary={t("oauth.detailSummary")}
+                data-testid="oauth-login-detail"
+              >
+                {t(copy.detail)}
+              </Collapsible>
               <Button
                 onClick={beginLogin}
                 data-testid="oauth-login-start"
@@ -403,10 +418,16 @@ export function OAuthLoginModal({
                   spellCheck={false}
                   data-testid="oauth-login-code"
                 />
-                <p className="text-[11px] text-sg-ink-3">
-                  {t("oauth.codeSplitHint", {
-                    example: "http://localhost:1455/auth/callback?code=...&state=...",
-                  })}
+                <p className="flex items-center gap-1 text-[11px] text-sg-ink-3">
+                  {t("oauth.codeSplitHint")}
+                  <InfoTip
+                    label={t("oauth.codeSplitDetailLabel")}
+                    content={t("oauth.codeSplitDetail", {
+                      example:
+                        "http://localhost:1455/auth/callback?code=...&state=...",
+                    })}
+                    data-testid="oauth-code-split-tip"
+                  />
                 </p>
               </div>
               <div className="flex flex-col gap-1">
