@@ -32,6 +32,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { FieldHint } from "@/components/ui/field-hint";
 import {
   ModelPickerDialog,
   type ModelPickerSelection,
@@ -1004,14 +1005,14 @@ function PersonaEditorDialog({
                 placeholder="grantley"
                 className="font-mono"
               />
-              <p className="text-[11px] text-sg-ink-3">
+              <FieldHint detail={t("persona.fieldIdDetail")}>
                 {existing
                   ? t("persona.fieldIdHint")
                   : t("persona.fieldIdAutoHint", {
                       defaultValue:
-                        "Auto-filled from the display name — edit to override. Lowercase a–z / 0–9 / hyphens; cannot be changed after creation.",
+                        "Auto-filled from the display name — edit to override.",
                     })}
-              </p>
+              </FieldHint>
               {errors.id ? (
                 <p className="text-xs text-destructive" data-testid="persona-id-error">
                   {errors.id}
@@ -1055,7 +1056,7 @@ function PersonaEditorDialog({
                 data-testid="persona-short-summary-input"
                 placeholder="..."
               />
-              <p className="text-[11px] text-sg-ink-3">{t("persona.fieldShortSummaryHint")}</p>
+              <FieldHint>{t("persona.fieldShortSummaryHint")}</FieldHint>
             </div>
 
             <fieldset
@@ -1155,7 +1156,7 @@ function PersonaEditorDialog({
                   "placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                 )}
               />
-              <p className="text-[11px] text-sg-ink-3">{t("persona.fieldSystemPromptHint")}</p>
+              <FieldHint>{t("persona.fieldSystemPromptHint")}</FieldHint>
               {errors.system_prompt ? (
                 <p className="text-xs text-destructive">{errors.system_prompt}</p>
               ) : null}

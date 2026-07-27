@@ -25,6 +25,7 @@ import {
 } from "@/components/icons";
 
 import { Button } from "@/components/ui/button";
+import { FieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -394,9 +395,7 @@ export function ProviderEditorDialog({
                   className="font-mono text-xs"
                   placeholder="my-local-llm"
                 />
-                <p className="text-[11px] text-sg-ink-3">
-                  {t("providers.fieldNameHint")}
-                </p>
+                <FieldHint>{t("providers.fieldNameHint")}</FieldHint>
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="provider-kind" className="text-xs">
@@ -445,9 +444,9 @@ export function ProviderEditorDialog({
                   className="font-mono text-xs"
                   placeholder="https://api.openai.com/v1"
                 />
-                <p className="text-[11px] text-sg-ink-3">
+                <FieldHint detail={t("providers.fieldBaseUrlDetail")}>
                   {t("providers.fieldBaseUrlHint")}
-                </p>
+                </FieldHint>
               </div>
             ) : null}
 

@@ -112,8 +112,11 @@ interface ProviderCopy {
   description: string;
   intro: string;
   /** Folded long-form contract (callback mechanics / security note) —
-   * rendered inside a `Collapsible` so the visible copy stays one line. */
+   * rendered inside a `Collapsible` so the visible copy stays one line.
+   * Split into lede + follow-up so each locale string stays one short
+   * sentence; the component joins them with a space. */
   detail: string;
+  detailMore: string;
   loginButton: string;
   openingBrowser: string;
   awaitingCode: string;
@@ -125,6 +128,7 @@ const COPY_KEYS: Record<OAuthLoginProvider, ProviderCopy> = {
     description: "oauth.modalDescriptionAnthropic",
     intro: "oauth.introAnthropic",
     detail: "oauth.detailAnthropic",
+    detailMore: "oauth.detailAnthropicMore",
     loginButton: "oauth.loginButtonAnthropic",
     openingBrowser: "oauth.openingBrowserAnthropic",
     awaitingCode: "oauth.awaitingCodeAnthropic",
@@ -134,6 +138,7 @@ const COPY_KEYS: Record<OAuthLoginProvider, ProviderCopy> = {
     description: "oauth.modalDescriptionXai",
     intro: "oauth.introXai",
     detail: "oauth.detailXai",
+    detailMore: "oauth.detailXaiMore",
     loginButton: "oauth.loginButtonXai",
     openingBrowser: "oauth.openingBrowserXai",
     awaitingCode: "oauth.awaitingCodeXai",
@@ -143,6 +148,7 @@ const COPY_KEYS: Record<OAuthLoginProvider, ProviderCopy> = {
     description: "oauth.modalDescriptionCodex",
     intro: "oauth.introCodex",
     detail: "oauth.detailCodex",
+    detailMore: "oauth.detailCodexMore",
     loginButton: "oauth.loginButtonCodex",
     openingBrowser: "oauth.openingBrowserCodex",
     awaitingCode: "oauth.awaitingCodeCodex",
@@ -152,6 +158,7 @@ const COPY_KEYS: Record<OAuthLoginProvider, ProviderCopy> = {
     description: "oauth.modalDescriptionGemini",
     intro: "oauth.introGemini",
     detail: "oauth.detailGemini",
+    detailMore: "oauth.detailGeminiMore",
     loginButton: "oauth.loginButtonGemini",
     openingBrowser: "oauth.openingBrowserGemini",
     awaitingCode: "oauth.awaitingCodeGemini",
@@ -360,7 +367,7 @@ export function OAuthLoginModal({
                 summary={t("oauth.detailSummary")}
                 data-testid="oauth-login-detail"
               >
-                {t(copy.detail)}
+                {`${t(copy.detail)} ${t(copy.detailMore)}`}
               </Collapsible>
               <Button
                 onClick={beginLogin}
@@ -388,7 +395,7 @@ export function OAuthLoginModal({
                 {t(copy.awaitingCode)}
                 <InfoTip
                   label={t("oauth.detailSummary")}
-                  content={t(copy.detail)}
+                  content={`${t(copy.detail)} ${t(copy.detailMore)}`}
                   data-testid="oauth-awaiting-detail-tip"
                 />
               </p>

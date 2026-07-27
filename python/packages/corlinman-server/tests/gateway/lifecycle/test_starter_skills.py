@@ -369,6 +369,169 @@ def test_seed_starter_skills_seeds_visual_output_quality(
     assert "no overlap" in body
 
 
+# ---------------------------------------------------------------------------
+# factory-pristine refresh path (post-#184 upgrade story)
+# ---------------------------------------------------------------------------
+
+
+def _make_bundle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Point the seeder at a private bundle with one nested + one flat skill."""
+    bundle = tmp_path / "bundle"
+    nested = bundle / "demo-skill"
+    (nested / "references").mkdir(parents=True)
+    (nested / "SKILL.md").write_text(
+        "---\nname: demo-skill\ndescription: v2\n---\n# v2 body\n",
+        encoding="utf-8",
+    )
+    (nested / "references" / "deep.md").write_text("deep detail v2\n", encoding="utf-8")
+    (bundle / "flat-skill.md").write_text(
+        "---\nname: flat-skill\ndescription: v2\n---\n# v2 flat\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CORLINMAN_BUNDLED_SKILLS_DIR", str(bundle))
+    return bundle
+
+
+def _register_factory_hash(
+    monkeypatch: pytest.MonkeyPatch, name: str, body: str
+) -> None:
+    """Record ``body`` as a historical factory revision of skill ``name``."""
+    import hashlib  # noqa: PLC0415
+
+    digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    table = dict(starter_skills._FACTORY_SKILL_MD_SHA256)
+    table[name] = table.get(name, frozenset()) | {digest}
+    monkeypatch.setattr(starter_skills, "_FACTORY_SKILL_MD_SHA256", table)
+
+
+def test_seed_refreshes_pristine_legacy_nested_skill(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A nested skill whose SKILL.md matches a recorded factory revision
+    is refreshed whole — new SKILL.md lands AND the references/ subtree
+    appears, which is exactly the #184 upgrade gap."""
+    _make_bundle(tmp_path, monkeypatch)
+    old_body = "---\nname: demo-skill\ndescription: v1\n---\n# v1 body\n"
+    _register_factory_hash(monkeypatch, "demo-skill", old_body)
+
+    target = tmp_path / "skills"
+    (target / "demo-skill").mkdir(parents=True)
+    (target / "demo-skill" / "SKILL.md").write_text(old_body, encoding="utf-8")
+
+    report = starter_skills.seed_starter_skills(target)
+
+    assert "demo-skill" in report.refreshed
+    assert "demo-skill" not in report.skipped
+    assert "v2 body" in (target / "demo-skill" / "SKILL.md").read_text("utf-8")
+    assert (
+        target / "demo-skill" / "references" / "deep.md"
+    ).read_text("utf-8") == "deep detail v2\n"
+
+
+def test_seed_refresh_preserves_operator_edits_in_nested_skill(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An operator-edited SKILL.md never matches a factory hash, so the
+    whole directory is left alone — no new references, no overwrite."""
+    _make_bundle(tmp_path, monkeypatch)
+    edited = "---\nname: demo-skill\ndescription: v1\n---\n# OPERATOR EDIT\n"
+
+    target = tmp_path / "skills"
+    (target / "demo-skill").mkdir(parents=True)
+    (target / "demo-skill" / "SKILL.md").write_text(edited, encoding="utf-8")
+
+    report = starter_skills.seed_starter_skills(target)
+
+    assert "demo-skill" in report.skipped
+    assert report.refreshed == ()
+    assert (target / "demo-skill" / "SKILL.md").read_text("utf-8") == edited
+    assert not (target / "demo-skill" / "references").exists()
+
+
+def test_seed_refresh_is_idempotent_and_preserves_usage_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After a refresh the target matches the bundle, so the next boot
+    skips it; runtime ``.usage.json`` bookkeeping survives the rmtree."""
+    _make_bundle(tmp_path, monkeypatch)
+    old_body = "---\nname: demo-skill\ndescription: v1\n---\n# v1 body\n"
+    _register_factory_hash(monkeypatch, "demo-skill", old_body)
+
+    target = tmp_path / "skills"
+    (target / "demo-skill").mkdir(parents=True)
+    (target / "demo-skill" / "SKILL.md").write_text(old_body, encoding="utf-8")
+    usage = '{"uses": 7}'
+    (target / "demo-skill" / ".usage.json").write_text(usage, encoding="utf-8")
+
+    first = starter_skills.seed_starter_skills(target)
+    assert "demo-skill" in first.refreshed
+    assert (target / "demo-skill" / ".usage.json").read_text("utf-8") == usage
+
+    second = starter_skills.seed_starter_skills(target)
+    assert second.refreshed == ()
+    assert "demo-skill" in second.skipped
+
+
+def test_seed_refreshes_pristine_flat_skill_and_keeps_edited_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flat-layout skills follow the same contract: recorded factory
+    revisions are upgraded in place, operator edits stay put."""
+    _make_bundle(tmp_path, monkeypatch)
+    old_body = "---\nname: flat-skill\ndescription: v1\n---\n# v1 flat\n"
+    _register_factory_hash(monkeypatch, "flat-skill", old_body)
+
+    target = tmp_path / "skills"
+    target.mkdir()
+    (target / "flat-skill.md").write_text(old_body, encoding="utf-8")
+
+    report = starter_skills.seed_starter_skills(target)
+    assert "flat-skill.md" in report.refreshed
+    assert "v2 flat" in (target / "flat-skill.md").read_text("utf-8")
+
+    # Now the operator edits it — the next seed must not clobber.
+    edited = "# my own notes\n"
+    (target / "flat-skill.md").write_text(edited, encoding="utf-8")
+    report2 = starter_skills.seed_starter_skills(target)
+    assert "flat-skill.md" in report2.skipped
+    assert (target / "flat-skill.md").read_text("utf-8") == edited
+
+
+def test_seed_migrates_pristine_legacy_flat_to_nested_layout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A skill that used to seed flat but now ships nested: the pristine
+    flat body is removed so the nested subtree can land without a
+    duplicate registry entry."""
+    _make_bundle(tmp_path, monkeypatch)
+    old_body = "---\nname: demo-skill\ndescription: v1\n---\n# v1 body\n"
+    _register_factory_hash(monkeypatch, "demo-skill", old_body)
+
+    target = tmp_path / "skills"
+    target.mkdir()
+    (target / "demo-skill.md").write_text(old_body, encoding="utf-8")
+
+    report = starter_skills.seed_starter_skills(target)
+
+    assert not (target / "demo-skill.md").exists()
+    assert "demo-skill" in report.copied
+    assert (target / "demo-skill" / "SKILL.md").is_file()
+
+
+def test_factory_hash_table_covers_the_four_split_skills() -> None:
+    """The hardcoded history table must keep an entry per split skill,
+    every hash a 64-char hex sha256 — a typo here silently disables the
+    upgrade path for existing deployments."""
+    table = starter_skills._FACTORY_SKILL_MD_SHA256
+    for name in ("configure-persona", "darwin-skill", "huashu-design", "nuwa-skill"):
+        assert name in table, f"missing factory-hash entry for {name}"
+        assert table[name], f"empty factory-hash set for {name}"
+        for digest in table[name]:
+            assert len(digest) == 64 and set(digest) <= set(
+                "0123456789abcdef"
+            ), f"{name}: malformed sha256 {digest!r}"
+
+
 def test_seed_starter_skills_no_bundle_source_is_quiet(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
