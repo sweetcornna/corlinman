@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import socket
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -142,11 +143,27 @@ async def test_server_recovers_before_accepting_requests(tmp_path: Path) -> None
     assert not socket_path.exists()
 
 
+async def _accept_and_close(
+    _reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+) -> None:
+    """Stand-in for a live manager: prove the socket answers, then hang up.
+
+    The handler MUST close its side. A stub that just returns leaves the
+    accepted connection open, and since Python 3.12 ``Server.wait_closed()``
+    genuinely waits for in-flight connections — so the teardown below would
+    block forever. That is not hypothetical: it wedged the whole ``py-test``
+    job on 3.12 (CI) while passing on 3.13 (dev machines).
+    """
+    writer.close()
+    with suppress(OSError):
+        await writer.wait_closed()
+
+
 @pytest.mark.asyncio
 async def test_server_refuses_active_socket(tmp_path: Path) -> None:
     socket_path = Path("/tmp") / f"cm-napcat-live-{tmp_path.name[-8:]}.sock"
     socket_path.unlink(missing_ok=True)
-    listener = await asyncio.start_unix_server(lambda _r, _w: None, path=socket_path)
+    listener = await asyncio.start_unix_server(_accept_and_close, path=socket_path)
     try:
         server = NapCatManagerServer(FakeManager(tmp_path), socket_path=socket_path)
         with pytest.raises(RuntimeError, match="another NapCat manager"):

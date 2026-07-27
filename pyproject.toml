@@ -129,11 +129,22 @@ asyncio_mode = "auto"
 # Use importlib so duplicate module names (e.g. ``tests/``) across uv workspace
 # members don't collide in ``sys.modules``.
 addopts = "--import-mode=importlib"
-# Per-test watchdog — a hung test FAILS with a dump instead of wedging
-# the suite to the CI 6h cap (thread method fires even when the event
-# loop itself is blocked).
+# Per-test watchdog — a hung test must FAIL, not wedge the suite.
+#
+# ``thread`` was the original choice because it fires even when the event
+# loop is blocked, but it cannot *interrupt* the test: it dumps stacks and
+# then kills the interpreter. So one hung test took down the whole py-test
+# job with no failing-test attribution — the run just ended at exit code 1
+# and every other test went unreported. That is the "py-test hangs in CI"
+# symptom operators kept re-running.
+#
+# ``signal`` raises inside the hung test instead (SIGALRM; both CI and dev
+# are Unix), so it fails with a normal traceback pointing at the blocking
+# line and the remaining tests still run. An event loop parked in
+# ``selector.poll()`` is interruptible this way — that is a plain syscall,
+# not a GIL-holding C call.
 timeout = 180
-timeout_method = "thread"
+timeout_method = "signal"
 consider_namespace_packages = true
 markers = [
     "live_llm: tests that hit real LLM APIs (cost money)",
