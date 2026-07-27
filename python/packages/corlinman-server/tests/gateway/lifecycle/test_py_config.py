@@ -427,6 +427,59 @@ def test_absent_web_search_renders_none() -> None:
     assert v["web_search"] is None
 
 
+def test_render_includes_agent_runtime_section() -> None:
+    """The agent's own knobs ride the sidecar for the same reason."""
+    v = render_py_config(
+        {
+            "providers": {},
+            "models": {"aliases": {}},
+            "agent_runtime": {
+                "max_rounds": 40,
+                "context_reserve_fraction": 0.2,
+                "enable_execute_code": True,
+                "sandbox_backend": "  Docker  ",
+            },
+        }
+    )
+
+    assert v["agent_runtime"] == {
+        "max_rounds": 40,
+        "context_reserve_fraction": 0.2,
+        "enable_execute_code": True,
+        "sandbox_backend": "Docker",
+    }
+
+
+def test_agent_runtime_omits_unset_and_unparseable_keys() -> None:
+    """Only what the operator set may be rendered.
+
+    An absent key must stay absent rather than being emitted as its
+    built-in default — ``None`` is what lets the legacy env layer still
+    apply per knob. An unparseable value is dropped here rather than
+    reaching the agent as a silently-ignored key.
+    """
+    v = render_py_config(
+        {
+            "providers": {},
+            "models": {"aliases": {}},
+            "agent_runtime": {
+                "max_rounds": "sixty",
+                "tool_result_cap": True,  # bool is an int subclass — not a cap
+                "sandbox_image": "   ",
+                "not_a_knob": 7,
+                "turn_output_budget": 90_000,
+            },
+        }
+    )
+
+    assert v["agent_runtime"] == {"turn_output_budget": 90_000}
+
+
+def test_absent_agent_runtime_renders_none() -> None:
+    v = render_py_config({"providers": {}, "models": {"aliases": {}}})
+    assert v["agent_runtime"] is None
+
+
 def test_default_py_config_path_uses_data_dir_env(tmp_path: Path) -> None:
     """``$CORLINMAN_DATA_DIR`` takes precedence over $HOME."""
     old = os.environ.get("CORLINMAN_DATA_DIR")

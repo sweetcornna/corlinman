@@ -36,6 +36,7 @@ from __future__ import annotations
 import os
 import sys
 import threading
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -66,6 +67,23 @@ def _hermetic_env(
             return
     for var in _HERMETIC_SCRUB_VARS:
         monkeypatch.delenv(var, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _reset_agent_runtime_defaults() -> Iterator[None]:
+    """Keep the ``[agent_runtime]`` block from leaking between tests.
+
+    The block is process-global by design (the agent applies it once from
+    the sidecar and every tool reads it live), so a test that configures a
+    round budget or flips ``enable_execute_code`` would silently reconfigure
+    every test that runs after it — the same hermeticity problem as the
+    leaked env vars above, one layer in.
+    """
+    from corlinman_agent.runtime_defaults import reset_agent_runtime_defaults
+
+    reset_agent_runtime_defaults()
+    yield
+    reset_agent_runtime_defaults()
 
 
 _EXIT_STATUS = 0

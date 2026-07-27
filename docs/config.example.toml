@@ -264,6 +264,84 @@ cheap = "claude-haiku-4-5-20251001"
 #                               # of this file — resolved gateway-side.
 
 # ---------------------------------------------------------------------------
+# [agent_runtime] — the agent process's own limits and capability switches.
+#
+# Same reachability story as [web_search] above: these were readable only
+# from CORLINMAN_* env vars, and the agent's systemd unit carries no
+# EnvironmentFile, so in a native deployment none of them could be set at
+# all. Every value below reaches the agent through the py-config.json
+# sidecar, applies on save (no restart), and outranks the matching env var.
+#
+# Everything is optional. A key you leave out is NOT pinned to the value
+# shown — it stays on the env var / built-in default, so you can tune one
+# knob without freezing the rest. The commented value is the current default.
+#
+# Not editable in the UI by design: these are tuning and safety knobs, not
+# everyday settings. Wrong values degrade the agent in ways that are hard to
+# attribute, so they live in the file where a change is deliberate.
+# ---------------------------------------------------------------------------
+# [agent_runtime]
+
+# -- Capability switches (change what the agent can do) ---------------------
+# execute_code runs model-written Python in a REPL. Off unless you opt in.
+# enable_execute_code = false
+# Sandbox for the agent's own shell: "local" runs on the host; "docker"
+# runs each spawned process in a short-lived `docker run --rm` container.
+# A misconfigured "docker" fails loudly at spawn rather than falling back.
+# sandbox_backend = "local"
+# sandbox_image = "python:3.12-slim-bookworm"
+# sandbox_user = ""             # e.g. "1000:1000" on Linux hosts where
+#                               # root-owned files in the bind mount hurt.
+# python = ""                   # interpreter for execute_code; blank = the
+#                               # one running the agent. Ignored on docker.
+# Let web_fetch reach private / loopback addresses. Development only —
+# this is the SSRF guard.
+# web_fetch_allow_private = false
+# Refuse to edit a file the model never read this turn.
+# require_read_before_edit = true
+# Require approval for every mutating tool call.
+# strict_mode = false
+
+# -- Round + context budgets ------------------------------------------------
+# Provider rounds in one turn before the loop short-circuits (floor 8).
+# max_rounds = 60
+# Per-tool-result character cap for results re-fed to the model (floor 1000).
+# tool_result_cap = 8000
+# A single result at or above this is written to a file and replaced with a
+# handle + preview instead of sitting in context forever (floor 16000).
+# tool_result_spill = 65536
+# Once one turn's cumulative tool output crosses this, every subsequent
+# oversized result spills regardless of its own size (floor 50000).
+# turn_output_budget = 400000
+# Flat compaction budget in estimated tokens. Unset (or 0) derives it per
+# model from the provider's declared context window, which is what you
+# want — setting it PINS every model to one number (floor 8000).
+# context_budget = 0
+# When deriving: hold back a slice of the window for the response.
+# context_reserve_fraction = 0.15
+# context_reserve_cap = 48000
+# Or reserve a fixed count instead (claude-code AUTOCOMPACT_BUFFER
+# semantics: window - buffer). Unset = use the fraction/cap above.
+# context_reserve_tokens = 0
+
+# -- Compaction behaviour ---------------------------------------------------
+# Budget fraction at which the summarizing path fires instead of the cheap
+# elision path. Clamped to (0.5, 1.0].
+# compact_summary_threshold = 0.95
+# Rounds the summarizer is skipped after a failure (floor 1).
+# compact_summary_cooldown_rounds = 5
+# Consecutive failures before it is disabled for the rest of the turn.
+# compact_summary_breaker_limit = 3
+
+# -- Background shell tasks / misc ------------------------------------------
+# shell_tasks_max = 8                     # concurrent background tasks
+# shell_task_max_lifetime_s = 1800        # watchdog ceiling per task
+# shell_task_max_log_bytes = 16777216     # spill-file cap per task
+# shell_task_read_max_bytes = 65536       # per-read window from that file
+# mailbox_maxsize = 1024                  # subagent mailbox bound
+# skill_refresh_interval_ms = 30000       # skill rescan debounce (0 = off)
+
+# ---------------------------------------------------------------------------
 # [subagent] — supervisor caps for model-facing subagent_spawn* tools.
 # ---------------------------------------------------------------------------
 [subagent]

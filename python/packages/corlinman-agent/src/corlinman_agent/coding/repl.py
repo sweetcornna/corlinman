@@ -9,9 +9,9 @@ model batch round-trips instead of re-establishing context every time.
 
 ## DISABLED BY DEFAULT
 
-``execute_code`` is **off** unless the operator opts in by setting
-``CORLINMAN_ENABLE_EXECUTE_CODE`` to a truthy value (``1`` / ``true`` /
-``yes`` / ``on``, case-insensitive). When disabled, the dispatcher
+``execute_code`` is **off** unless the operator opts in with
+``[agent_runtime].enable_execute_code = true`` (or the legacy
+``CORLINMAN_ENABLE_EXECUTE_CODE=1``). When disabled, the dispatcher
 returns a clear ``{"error": "execute_code_disabled", ...}`` envelope and
 never spawns anything. This mirrors the conservative posture of
 ``run_shell`` — code execution is a real capability with a real blast
@@ -39,7 +39,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import time
 import uuid
 from pathlib import Path
@@ -47,6 +46,7 @@ from typing import Any
 
 import structlog
 
+from corlinman_agent import runtime_defaults as _limits
 from corlinman_agent.coding._common import (
     CodingArgsInvalidError,
     decode_args,
@@ -102,9 +102,13 @@ _DRIVER_SRC = (
 
 
 def _enabled() -> bool:
-    """True iff the operator opted code-execution in via the env flag."""
-    raw = os.environ.get(_ENABLE_ENV, "")
-    return raw.strip().lower() in ("1", "true", "yes", "on")
+    """True iff the operator opted code-execution in.
+
+    ``[agent_runtime].enable_execute_code`` first, then the legacy
+    ``$CORLINMAN_ENABLE_EXECUTE_CODE``. Read per call, so flipping it in
+    the UI takes effect on the next turn.
+    """
+    return _limits.execute_code_enabled()
 
 
 def execute_code_tool_schema() -> dict[str, Any]:
@@ -292,7 +296,7 @@ async def dispatch_execute_code(
     """Execute a Python snippet in a persistent session. Never raises.
 
     Returns an ``{"error": "execute_code_disabled", ...}`` envelope
-    unchanged unless ``CORLINMAN_ENABLE_EXECUTE_CODE`` is truthy.
+    unchanged unless the operator opted in (see :func:`_enabled`).
     """
     if not _enabled():
         return json.dumps(
@@ -300,7 +304,8 @@ async def dispatch_execute_code(
                 "error": "execute_code_disabled",
                 "message": (
                     "code execution is disabled. Set "
-                    f"{_ENABLE_ENV}=1 to enable it (operator opt-in)."
+                    "[agent_runtime].enable_execute_code = true in config.toml "
+                    f"(or {_ENABLE_ENV}=1) to enable it — operator opt-in."
                 ),
             }
         )

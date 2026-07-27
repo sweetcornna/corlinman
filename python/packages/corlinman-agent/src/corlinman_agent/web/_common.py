@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import html
 import ipaddress
-import os
 import re
 import socket
 from html.parser import HTMLParser
@@ -20,6 +19,8 @@ from typing import Any, ClassVar
 
 import httpx
 import structlog
+
+from corlinman_agent import runtime_defaults as _limits
 
 logger = structlog.get_logger(__name__)
 
@@ -359,17 +360,14 @@ class WebFetchUnsafeHostError(Exception):
 
 
 def _allow_private_override() -> bool:
-    """Honour ``CORLINMAN_WEB_FETCH_ALLOW_PRIVATE=1`` for development.
+    """Honour ``[agent_runtime].web_fetch_allow_private`` for development.
 
-    Default off. The variable is read at every check so test fixtures
-    can flip it on/off via :meth:`monkeypatch.setenv`.
+    Default off — this is the SSRF guard. Resolved at every check (config,
+    then the legacy ``CORLINMAN_WEB_FETCH_ALLOW_PRIVATE``), so an operator
+    change applies immediately and test fixtures can still flip it via
+    :meth:`monkeypatch.setenv`.
     """
-    return os.environ.get("CORLINMAN_WEB_FETCH_ALLOW_PRIVATE", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    return _limits.web_fetch_allow_private()
 
 
 def _ip_is_unsafe(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str | None:

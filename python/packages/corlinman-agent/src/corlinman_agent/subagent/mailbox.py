@@ -9,7 +9,7 @@ Lifecycle
 ---------
 * Mailboxes are created lazily on first send or first recv.
 * Queues are **bounded** at :data:`DEFAULT_MAILBOX_MAXSIZE` slots
-  (override via the ``CORLINMAN_MAILBOX_MAXSIZE`` env var).  The
+  (override via ``[agent_runtime].mailbox_maxsize``).  The
   coordinator pattern is expected to be low-volume (a few inter-agent
   messages per task), but a misbehaving / flooding sender must not be
   able to grow a queue without bound.
@@ -46,9 +46,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import time
 from typing import TypedDict
+
+from corlinman_agent import runtime_defaults as _limits
 
 logger = logging.getLogger(__name__)
 
@@ -64,26 +65,24 @@ __all__ = [
 
 
 def _resolve_maxsize() -> int:
-    """Read the mailbox cap from the env, clamped to a sane positive int.
+    """Cap for a mailbox created right now.
 
-    ``CORLINMAN_MAILBOX_MAXSIZE`` overrides the built-in default of
-    1024.  A value <= 0 or unparseable falls back to the default (an
-    unbounded queue is never allowed here — that is the bug we are
-    fixing).
+    ``[agent_runtime].mailbox_maxsize`` first, then the legacy
+    ``CORLINMAN_MAILBOX_MAXSIZE``, then the built-in default.  A value
+    <= 0 falls back to the default — an unbounded queue is never allowed
+    here, that is the bug the bound exists to fix.
+
+    Resolved **per mailbox**, not at import: the sidecar carrying the
+    config is loaded after this module, so an import-time read would pin
+    every queue to the built-in default no matter what the operator set.
     """
-    raw = os.environ.get("CORLINMAN_MAILBOX_MAXSIZE")
-    if raw is None:
-        return 1024
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        return 1024
-    return value if value > 0 else 1024
+    return _limits.mailbox_maxsize()
 
 
-#: Bounded capacity of each mailbox queue.  Resolved once at import time
-#: from ``CORLINMAN_MAILBOX_MAXSIZE`` (default 1024).
-DEFAULT_MAILBOX_MAXSIZE: int = _resolve_maxsize()
+#: Built-in capacity of each mailbox queue, used when nothing overrides it.
+#: The live value is :func:`_resolve_maxsize`; this constant is the
+#: documented floor-case and stays a plain literal on purpose.
+DEFAULT_MAILBOX_MAXSIZE: int = 1024
 
 #: Namespace label used in logs / overflow warnings when a caller does
 #: not supply a ``tenant_id``.
@@ -131,14 +130,14 @@ def get_or_create_mailbox(
 ) -> asyncio.Queue[AgentMessage]:
     """Return the existing queue for *agent_id* or create a bounded one.
 
-    Queues are created with ``maxsize=DEFAULT_MAILBOX_MAXSIZE`` so they
-    can never grow without bound.  Mailboxes are isolated per
-    ``tenant_id``; omitting it uses the shared default namespace.
+    Queues are created bounded (see :func:`_resolve_maxsize`) so they can
+    never grow without bound.  Mailboxes are isolated per ``tenant_id``;
+    omitting it uses the shared default namespace.
     """
     key = _key(agent_id, tenant_id)
     queue = AGENT_MAILBOXES.get(key)
     if queue is None:
-        queue = asyncio.Queue(maxsize=DEFAULT_MAILBOX_MAXSIZE)
+        queue = asyncio.Queue(maxsize=_resolve_maxsize())
         AGENT_MAILBOXES[key] = queue
     return queue
 
@@ -176,7 +175,7 @@ async def send_to_agent(
     message was enqueued.  The caller surfaces this as ``queued_at`` in
     the tool result so the LLM has a relative ordering handle.
 
-    Mailboxes are bounded at :data:`DEFAULT_MAILBOX_MAXSIZE`.  If the
+    Mailboxes are bounded (see :func:`_resolve_maxsize`).  If the
     target mailbox is full, the **oldest** queued message is dropped to
     make room (and a warning logged); the put itself therefore never
     blocks.  Pass ``tenant_id`` to isolate the target across tenants;
@@ -206,7 +205,9 @@ async def send_to_agent(
             "to_agent_id=%s tenant_id=%s maxsize=%d dropped_from=%s",
             to_agent_id,
             tenant_id or _DEFAULT_TENANT,
-            DEFAULT_MAILBOX_MAXSIZE,
+            # The queue's own bound, not the built-in default — they differ
+            # whenever an operator configured one.
+            queue.maxsize,
             dropped["from_agent_id"] if dropped else "<none>",
         )
         queue.put_nowait(msg)

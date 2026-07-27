@@ -463,7 +463,9 @@ def _make_config_swap_fn(app: Any, state: Any) -> Any:
 
 #: Config sections :func:`_apply_agent_side_config` reads. A change to any
 #: of them must re-run the hook — see the comment in ``_config_swap_fn``.
-_AGENT_CONFIG_SECTIONS: frozenset[str] = frozenset({"voice", "models", "web_search"})
+_AGENT_CONFIG_SECTIONS: frozenset[str] = frozenset(
+    {"voice", "models", "web_search", "agent_runtime"}
+)
 
 
 def _apply_agent_side_config(cfg: Any) -> None:
@@ -528,6 +530,16 @@ def _apply_agent_side_config(cfg: Any) -> None:
             logger.info("gateway.web_search.defaults", **search.as_dict())
     except Exception as exc:  # pragma: no cover — never fatal
         logger.warning("gateway.web_search.config_failed", error=str(exc))
+
+    try:
+        from corlinman_agent.runtime_defaults import apply_agent_runtime_config
+
+        runtime = apply_agent_runtime_config(_block("agent_runtime"))
+        configured = runtime.as_dict()
+        if configured:
+            logger.info("gateway.agent_runtime.defaults", **configured)
+    except Exception as exc:  # pragma: no cover — never fatal
+        logger.warning("gateway.agent_runtime.config_failed", error=str(exc))
 
 
 def _make_chat_refresh_fn(state: Any) -> Any:
