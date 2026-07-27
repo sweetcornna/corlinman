@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import socket
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -142,11 +143,27 @@ async def test_server_recovers_before_accepting_requests(tmp_path: Path) -> None
     assert not socket_path.exists()
 
 
+async def _accept_and_close(
+    _reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+) -> None:
+    """Stand-in for a live manager: prove the socket answers, then hang up.
+
+    The handler MUST close its side. A stub that just returns leaves the
+    accepted connection open, and since Python 3.12 ``Server.wait_closed()``
+    genuinely waits for in-flight connections — so the teardown below would
+    block forever. That is not hypothetical: it wedged the whole ``py-test``
+    job on 3.12 (CI) while passing on 3.13 (dev machines).
+    """
+    writer.close()
+    with suppress(OSError):
+        await writer.wait_closed()
+
+
 @pytest.mark.asyncio
 async def test_server_refuses_active_socket(tmp_path: Path) -> None:
     socket_path = Path("/tmp") / f"cm-napcat-live-{tmp_path.name[-8:]}.sock"
     socket_path.unlink(missing_ok=True)
-    listener = await asyncio.start_unix_server(lambda _r, _w: None, path=socket_path)
+    listener = await asyncio.start_unix_server(_accept_and_close, path=socket_path)
     try:
         server = NapCatManagerServer(FakeManager(tmp_path), socket_path=socket_path)
         with pytest.raises(RuntimeError, match="another NapCat manager"):
@@ -157,6 +174,29 @@ async def test_server_refuses_active_socket(tmp_path: Path) -> None:
         socket_path.unlink(missing_ok=True)
 
 
+async def _socket_answers(path: Path) -> bool:
+    """Is something actually listening on ``path``?
+
+    Used instead of comparing inode numbers. A bound-then-closed socket
+    file and a live listener are indistinguishable by ``lstat``, and the
+    inode number is *not* a reliable "was it replaced?" signal: Linux
+    tmpfs happily hands the just-freed inode straight back, so the number
+    can be identical across an unlink+recreate. macOS APFS does not reuse
+    it, which is why an inode assertion passed on dev machines and failed
+    only in CI. Connectability is what the server actually promises.
+    """
+    try:
+        _reader, writer = await asyncio.wait_for(
+            asyncio.open_unix_connection(str(path)), timeout=1.0
+        )
+    except (OSError, TimeoutError):
+        return False
+    writer.close()
+    with suppress(OSError):
+        await writer.wait_closed()
+    return True
+
+
 @pytest.mark.asyncio
 async def test_server_replaces_only_stale_socket(tmp_path: Path) -> None:
     socket_path = Path("/tmp") / f"cm-napcat-stale-{tmp_path.name[-8:]}.sock"
@@ -164,16 +204,21 @@ async def test_server_replaces_only_stale_socket(tmp_path: Path) -> None:
     stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     stale.bind(str(socket_path))
     stale.close()
-    old_inode = socket_path.lstat().st_ino
+    # Precondition: the leftover file exists but nothing answers on it.
+    assert socket_path.exists()
+    assert not await _socket_answers(socket_path)
+
     server = NapCatManagerServer(FakeManager(tmp_path), socket_path=socket_path)
     task = asyncio.create_task(server.serve())
     try:
         for _ in range(100):
-            if socket_path.exists() and socket_path.lstat().st_ino != old_inode:
+            if socket_path.exists() and await _socket_answers(socket_path):
                 break
             await asyncio.sleep(0.01)
         assert socket_path.exists()
-        assert socket_path.lstat().st_ino != old_inode
+        # The stale file was replaced by a real listener rather than
+        # refused — the whole point of the "only stale" carve-out.
+        assert await _socket_answers(socket_path)
     finally:
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
