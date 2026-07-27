@@ -162,11 +162,12 @@ enabled = false
 # api_key = { env = "OPENAI_API_KEY" }
 # base_url = "https://api.openai.com/v1"
 
-# GPT-Live 走 WebRTC 实时会话，需要网关暴露 POST /v1/live 且具备 Live
-# attestation 能力；另需安装可选依赖 aiortc（`uv sync --extra voice`）。
+# OpenAI Realtime 走 WebRTC 实时会话（官方 POST /v1/realtime/calls，标准
+# API key 即可）；另需安装可选依赖 aiortc（`uv sync --extra voice`）。
+# base_url 留空即用官方地址，也可指向实现同一协议的中转。
 # [voice.backends.gpt_live]
 # api_key = { env = "OPENAI_API_KEY" }
-# base_url = "https://your-gateway.example.com"
+# base_url = "https://api.openai.com/v1"
 
 # Fish Audio 用 reference_id（声音克隆句柄）指定音色，没有固定音色表。
 # [voice.backends.fish]

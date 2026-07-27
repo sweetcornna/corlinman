@@ -22,8 +22,9 @@ Two wire shapes cover essentially every vendor:
     Fish Audio, ElevenLabs, Gemini and MiniMax; the same shape expresses
     any OpenAI-compatible relay or operator-defined provider.
 ``kind="webrtc_live"``
-    The GPT-Live realtime path: an SDP offer/answer handshake against
-    ``POST /v1/live``, then audio arrives on a media track. See
+    The OpenAI Realtime path: an SDP offer/answer handshake against the
+    official ``POST /v1/realtime/calls`` endpoint or a compatible relay,
+    then audio arrives on a media track. See
     :mod:`corlinman_agent.voice.gpt_live`.
 
 Design notes
@@ -31,7 +32,7 @@ Design notes
 *Voices are validated against the selected backend, never globally.* The
 old ``_VOICES`` tuple in ``tts.py`` listed six ids and coerced anything
 else to ``alloy``, which would have swallowed every voice shipped since
-2024 (``marin``, ``cedar``, the GPT-Live set, and every custom clone).
+2024 (``marin``, ``cedar``, and every custom clone).
 
 *Timbre, not gender.* Voice blurbs describe tone and delivery. We do not
 label synthetic voices with a gender.
@@ -156,19 +157,19 @@ def _v(
     )
 
 
-#: GPT-Live's nine remastered voices (2026-07-08 launch). These are the
-#: ChatGPT voice names the realtime ``session.audio`` block expects — they
-#: are NOT interchangeable with the ``/audio/speech`` set.
+#: Current public Realtime voices. The public API and ChatGPT product voice
+#: catalogs are separate; only ids documented for the API belong here.
 _GPT_LIVE_VOICES: tuple[VoiceDef, ...] = (
-    _v("cove", "Cove", "沉稳清晰，适合播报与长段讲述", "沉稳", recommended=True),
-    _v("juniper", "Juniper", "明亮利落，日常对话的稳妥选择", "明亮", recommended=True),
-    _v("ember", "Ember", "温暖偏低，念长句时不易发飘", "温暖"),
-    _v("breeze", "Breeze", "轻快通透，适合短提示与提醒", "轻快"),
-    _v("arbor", "Arbor", "从容平缓，叙述型内容的默认音色", "从容"),
-    _v("maple", "Maple", "亲和柔和，适合陪伴式回复", "柔和"),
-    _v("sol", "Sol", "干净中性，信息密度高时最省力", "中性"),
-    _v("spruce", "Spruce", "厚实沉着，适合正式播报", "厚实"),
-    _v("vale", "Vale", "轻盈舒缓，适合睡前与慢节奏内容", "轻盈"),
+    _v("marin", "Marin", "官方推荐的新一代音色，自然度最高", "自然", recommended=True),
+    _v("cedar", "Cedar", "官方推荐的新一代音色，偏沉稳", "沉稳", recommended=True),
+    _v("alloy", "Alloy", "中性均衡，通用默认", "中性"),
+    _v("ash", "Ash", "干脆利落，适合短句", "利落"),
+    _v("ballad", "Ballad", "叙事感强，适合讲故事", "叙事"),
+    _v("coral", "Coral", "明亮友好，适合客服口吻", "明亮"),
+    _v("echo", "Echo", "低沉平稳，适合正式内容", "低沉"),
+    _v("sage", "Sage", "沉着从容，适合说明性内容", "从容"),
+    _v("shimmer", "Shimmer", "柔和轻盈，适合温和提示", "柔和"),
+    _v("verse", "Verse", "富有表现力，适合朗读", "表现力"),
 )
 
 #: ``/v1/audio/speech`` voices. ``marin``/``cedar`` are the
@@ -281,7 +282,7 @@ class BackendDef:
     #: the picker shows a free-text field and skips catalog validation.
     free_form_voices: bool = False
     #: ``True`` when the provider honours a natural-language delivery
-    #: instruction (OpenAI ``instructions``, GPT-Live session prompt).
+    #: instruction (OpenAI ``instructions`` or Realtime session prompt).
     supports_instructions: bool = False
     supports_speed: bool = False
     http: HttpSynthSpec | None = None
@@ -316,18 +317,18 @@ class BackendDef:
 _BUILTIN_BACKENDS: tuple[BackendDef, ...] = (
     BackendDef(
         id="gpt_live",
-        label="GPT-Live",
+        label="OpenAI Realtime",
         kind="webrtc_live",
         description=(
-            "OpenAI GPT-Live 实时语音模型，经 WebRTC 会话生成音频。"
-            "需要网关暴露 POST /v1/live 且具备 Live attestation 能力。"
+            "OpenAI Realtime 实时语音模型，经 WebRTC 会话生成音频。"
+            "支持官方 POST /v1/realtime/calls 与旧 Sub2API /v1/live。"
         ),
-        base_url="",
+        base_url="https://api.openai.com/v1",
         api_key_env="OPENAI_API_KEY",
-        models=("gpt-live-1", "gpt-live-1-mini"),
+        models=("gpt-realtime-2.1", "gpt-realtime-2.1-mini"),
         voices=_GPT_LIVE_VOICES,
         formats=("opus", "mp3", "wav", "pcm"),
-        default_voice="cove",
+        default_voice="marin",
         supports_instructions=True,
     ),
     BackendDef(
@@ -631,9 +632,7 @@ def backend_from_config(backend_id: str, raw: Mapping[str, Any]) -> BackendDef |
             voices=voices or base.voices,
             formats=formats or base.formats,
             default_voice=str(raw.get("default_voice") or base.default_voice),
-            free_form_voices=bool(
-                raw.get("free_form_voices", base.free_form_voices)
-            ),
+            free_form_voices=bool(raw.get("free_form_voices", base.free_form_voices)),
             supports_instructions=bool(
                 raw.get("supports_instructions", base.supports_instructions)
             ),

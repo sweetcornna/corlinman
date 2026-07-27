@@ -1,15 +1,16 @@
-"""GPT-Live backend — speech via a WebRTC realtime session.
+"""OpenAI Realtime backend — speech via a WebRTC session.
 
-GPT-Live (``gpt-live-1`` / ``gpt-live-1-mini``, shipped 2026-07-08) has no
-REST speech endpoint. The only transport is a WebRTC session, which
-gateways expose as an SDP offer/answer exchange::
+Realtime models have no one-shot REST speech endpoint. The official API
+accepts an SDP offer and session configuration as multipart form data::
 
-    POST {base_url}/v1/live
-    {"sdp": "<offer sdp>", "session": {...realtime session json...}}
-      -> "<answer sdp>"            (raw) or {"sdp": "<answer sdp>"} (json)
+    POST {base_url}/v1/realtime/calls
+    multipart: sdp=application/sdp, session=application/json
+      -> 201 + <answer sdp>
 
-The Codex-flavoured alias ``POST /backend-api/codex/realtime/calls``
-takes the identical body, so :data:`LIVE_PATHS` tries both.
+Older Sub2API deployments expose JSON compatibility endpoints at
+``POST /v1/live`` or ``POST /backend-api/codex/realtime/calls``. The
+negotiator tries the public contract first, then those legacy paths only
+when the previous route is absent.
 
 Using a full-duplex conversational model for one-shot synthesis means we
 open the session, push a single user item, ask for one audio-only
@@ -20,7 +21,7 @@ Optional dependency
 -------------------
 ``aiortc`` (plus ``av``) is imported lazily through
 :func:`_import_webrtc`, mirroring how ``routes_voice/provider_openai.py``
-defers ``websockets``. A deployment that never enables GPT-Live does not
+defers ``websockets``. A deployment that never enables Realtime does not
 need the wheel, and one that does gets a precise
 ``gpt_live_dependency_missing`` envelope instead of an ImportError at
 boot.
@@ -46,11 +47,15 @@ logger = structlog.get_logger(__name__)
 __all__ = ["LIVE_PATHS", "probe_live_endpoint", "synthesize_gpt_live"]
 
 
-#: Gateway paths that accept the ``{"sdp", "session"}`` body, in order.
+#: Official multipart path, followed by legacy JSON gateway spellings.
 LIVE_PATHS: tuple[str, ...] = (
+    "/v1/realtime/calls",
     "/v1/live",
     "/backend-api/codex/realtime/calls",
 )
+
+_OFFICIAL_LIVE_PATH: str = LIVE_PATHS[0]
+_ROUTE_MISSING_STATUSES: frozenset[int] = frozenset({404, 405})
 
 #: Data channel the realtime protocol multiplexes its JSON events over.
 _EVENT_CHANNEL: str = "oai-events"
@@ -59,7 +64,7 @@ _EVENT_CHANNEL: str = "oai-events"
 _DEFAULT_TIMEOUT: float = 90.0
 
 #: Prefix that keeps a conversational model from answering the text
-#: instead of reading it. GPT-Live is an assistant, not a TTS engine, so
+#: instead of reading it. Realtime is an assistant, not a TTS engine, so
 #: the intent has to be stated explicitly.
 _VERBATIM_DIRECTIVE: str = (
     "You are acting as a text-to-speech engine. Read the user's message "
@@ -76,7 +81,7 @@ def _import_webrtc() -> tuple[Any, Any, Any]:
     except Exception as exc:  # noqa: BLE001 — any import failure degrades
         raise SynthesisError(
             "gpt_live_dependency_missing",
-            "GPT-Live 需要 aiortc — 请安装 `corlinman-agent[voice]` "
+            "OpenAI Realtime 需要 aiortc — 请安装 `corlinman-agent[voice]` "
             "或 `uv pip install aiortc`",
         ) from exc
     return RTCPeerConnection, RTCSessionDescription, MediaRecorder
@@ -146,10 +151,10 @@ def _classify_live_error(response: httpx.Response) -> SynthesisError:
             "网关拒绝 Live 会话：" + message,
             status_code=response.status_code,
         )
-    if response.status_code == 404:
+    if response.status_code in _ROUTE_MISSING_STATUSES:
         return SynthesisError(
             "live_endpoint_missing",
-            "网关未提供 /v1/live 实时会话转发：" + message,
+            "网关未提供 Realtime WebRTC 会话端点：" + message,
             status_code=response.status_code,
         )
     return SynthesisError(
@@ -170,14 +175,13 @@ async def _negotiate(
 ) -> str:
     """POST the offer, return the answer SDP.
 
-    Tries each path in :data:`LIVE_PATHS`; a 404 on the first is treated
-    as "this gateway uses the other spelling" and falls through, while any
-    other status is reported as-is.
+    The official endpoint uses multipart form data. Legacy Sub2API paths
+    use their historical JSON body. A missing route falls through to the
+    next spelling; every other failure is reported as-is.
     """
-    headers = {"Content-Type": "application/json"}
+    headers: dict[str, str] = {"Accept": "application/sdp, application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    body = {"sdp": offer_sdp, "session": dict(session)}
     root = (base_url or "").rstrip("/")
 
     client_kwargs: dict[str, Any] = {"timeout": timeout, "headers": headers}
@@ -187,19 +191,48 @@ async def _negotiate(
     last: SynthesisError | None = None
     async with httpx.AsyncClient(**client_kwargs) as client:
         for path in LIVE_PATHS:
-            response = await client.post(f"{root}{path}", json=body)
+            response = await _post_offer(
+                client,
+                url=f"{root}{path}",
+                path=path,
+                offer_sdp=offer_sdp,
+                session=session,
+            )
             if response.status_code < 400:
                 answer = _answer_sdp(response)
                 if not answer:
-                    raise SynthesisError(
-                        "live_bad_response", "网关返回了空的 answer SDP"
-                    )
+                    raise SynthesisError("live_bad_response", "网关返回了空的 answer SDP")
                 return answer
             error = _classify_live_error(response)
             last = error
-            if response.status_code != 404:
+            if response.status_code not in _ROUTE_MISSING_STATUSES:
                 raise error
     raise last or SynthesisError("live_endpoint_missing", "没有可用的 Live 端点")
+
+
+async def _post_offer(
+    client: httpx.AsyncClient,
+    *,
+    url: str,
+    path: str,
+    offer_sdp: str,
+    session: Mapping[str, Any],
+) -> httpx.Response:
+    """Send one offer using the wire shape required by ``path``."""
+    if path == _OFFICIAL_LIVE_PATH:
+        files = {
+            "sdp": (None, offer_sdp, "application/sdp"),
+            "session": (
+                None,
+                json.dumps(dict(session), ensure_ascii=False),
+                "application/json",
+            ),
+        }
+        return await client.post(url, files=files)
+    return await client.post(
+        url,
+        json={"sdp": offer_sdp, "session": dict(session)},
+    )
 
 
 async def probe_live_endpoint(
@@ -212,29 +245,46 @@ async def probe_live_endpoint(
     """Check whether the gateway can host a Live session at all.
 
     Returns the blocking :class:`SynthesisError`, or ``None`` when the
-    endpoint looks usable. Cheap because gateways validate the Live
-    *capability* (routing, group toggle, attestation) before they look at
-    the SDP or the model id — so a placeholder offer is enough to learn
-    whether a real session could ever succeed.
+    endpoint looks usable. The probe intentionally sends placeholder SDP.
+    The official endpoint answers with 400/422 after authentication because
+    that SDP is invalid; this proves the route and credential are usable.
+    Legacy Sub2API validates its platform attestation first, so its 503 still
+    surfaces as the actionable blocker it is.
 
     Used by the admin preview to give an operator the actionable failure
     ("this gateway cannot attest") instead of a downstream symptom such
     as a missing local WebRTC dependency.
     """
+    headers: dict[str, str] = {"Accept": "application/sdp, application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    client_kwargs: dict[str, Any] = {"timeout": timeout, "headers": headers}
+    if transport is not None:
+        client_kwargs["transport"] = transport
+    root = (base_url or "").rstrip("/")
+    placeholder = "v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\ns=-\r\nt=0 0\r\n"
+
     try:
-        await _negotiate(
-            base_url=base_url,
-            api_key=api_key,
-            offer_sdp="v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\ns=-\r\nt=0 0\r\n",
-            session={"type": "realtime"},
-            timeout=timeout,
-            transport=transport,
-        )
-    except SynthesisError as exc:
-        return exc
+        async with httpx.AsyncClient(**client_kwargs) as client:
+            last: SynthesisError | None = None
+            for path in LIVE_PATHS:
+                response = await _post_offer(
+                    client,
+                    url=f"{root}{path}",
+                    path=path,
+                    offer_sdp=placeholder,
+                    session={"type": "realtime"},
+                )
+                if response.status_code < 400:
+                    return None
+                if path == _OFFICIAL_LIVE_PATH and response.status_code in (400, 422):
+                    return None
+                last = _classify_live_error(response)
+                if response.status_code not in _ROUTE_MISSING_STATUSES:
+                    return last
+            return last
     except httpx.HTTPError as exc:
         return SynthesisError("live_unreachable", f"无法连接 Live 端点：{exc}")
-    return None
 
 
 async def synthesize_gpt_live(
@@ -252,7 +302,7 @@ async def synthesize_gpt_live(
     timeout: float = _DEFAULT_TIMEOUT,
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> int:
-    """Run one GPT-Live session and write the spoken audio to ``out_path``.
+    """Run one Realtime session and write the spoken audio to ``out_path``.
 
     Returns the number of bytes written. Raises :class:`SynthesisError` on
     every failure path so the caller can emit a uniform envelope.
@@ -316,11 +366,7 @@ async def synthesize_gpt_live(
         kind = str(event.get("type") or "")
         if kind == "error":
             err = event.get("error")
-            detail = (
-                str(err.get("message"))
-                if isinstance(err, Mapping)
-                else str(err or "unknown")
-            )
+            detail = str(err.get("message")) if isinstance(err, Mapping) else str(err or "unknown")
             failure["message"] = detail
             finished.set()
         elif kind in ("response.done", "response.completed"):
@@ -341,9 +387,7 @@ async def synthesize_gpt_live(
             timeout=timeout,
             transport=transport,
         )
-        await pc.setRemoteDescription(
-            rtc_desc_cls(sdp=answer_sdp, type="answer")
-        )
+        await pc.setRemoteDescription(rtc_desc_cls(sdp=answer_sdp, type="answer"))
 
         # Unconditional, matching aiortc's own examples. Gating this on
         # "did a track already arrive?" would almost always skip it: the
@@ -356,13 +400,11 @@ async def synthesize_gpt_live(
         except TimeoutError as exc:
             raise SynthesisError(
                 "live_timeout",
-                f"GPT-Live 会话在 {timeout:.0f}s 内没有返回完整音频",
+                f"Realtime 会话在 {timeout:.0f}s 内没有返回完整音频",
             ) from exc
 
         if failure:
-            raise SynthesisError(
-                "live_session_error", f"GPT-Live 会话报错：{failure['message']}"
-            )
+            raise SynthesisError("live_session_error", f"Realtime 会话报错：{failure['message']}")
     finally:
         with contextlib.suppress(Exception):
             await recorder.stop()
@@ -370,10 +412,10 @@ async def synthesize_gpt_live(
             await pc.close()
 
     if not out_path.exists():
-        raise SynthesisError("live_empty", "GPT-Live 会话结束但没有产生音频文件")
+        raise SynthesisError("live_empty", "Realtime 会话结束但没有产生音频文件")
     size = out_path.stat().st_size
     if size <= 0:
-        raise SynthesisError("live_empty", "GPT-Live 会话返回了空音频")
+        raise SynthesisError("live_empty", "Realtime 会话返回了空音频")
     logger.info(
         "voice.gpt_live.synthesized",
         model=model,

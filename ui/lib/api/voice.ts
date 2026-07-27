@@ -43,7 +43,7 @@ export interface VoiceDef {
 export interface VoiceBackend {
   id: string;
   label: string;
-  /** `"http"` = one request/response; `"webrtc_live"` = GPT-Live session. */
+  /** `"http"` = one request/response; `"webrtc_live"` = Realtime session. */
   kind: "http" | "webrtc_live";
   description: string;
   models: string[];

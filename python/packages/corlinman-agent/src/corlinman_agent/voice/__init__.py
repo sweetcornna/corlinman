@@ -14,7 +14,8 @@ Two transports cover every provider:
     One request, audio back (raw bytes or base64 in JSON). Built-ins:
     OpenAI ``/audio/speech``, Fish Audio, ElevenLabs, Gemini, MiniMax.
 ``kind="webrtc_live"``
-    GPT-Live's realtime session — see :mod:`corlinman_agent.voice.gpt_live`.
+    OpenAI Realtime's WebRTC session — see
+    :mod:`corlinman_agent.voice.gpt_live`.
 
 Public surface
 --------------

@@ -246,7 +246,7 @@ it.
 
 > Voice now has a dedicated backend registry and an admin page — see
 > [docs/voice.md](voice.md). The `[voice]` section is the preferred place
-> to configure TTS (it covers GPT-Live, OpenAI, Fish, ElevenLabs, Gemini,
+> to configure TTS (it covers OpenAI Realtime, OpenAI, Fish, ElevenLabs, Gemini,
 > MiniMax and any custom HTTP provider, with per-voice preview). The
 > provider-params route below still works and is the right choice when you
 > want a **per-persona** voice binding rather than a global default.

@@ -25,7 +25,7 @@ describe("listVoiceBackends", () => {
       vi.fn(async () =>
         jsonResponse(200, {
           backends: [
-            { id: "gpt_live", label: "GPT-Live", kind: "webrtc_live", custom: false },
+            { id: "gpt_live", label: "OpenAI Realtime", kind: "webrtc_live", custom: false },
             { id: "acme", label: "Acme", kind: "http", custom: true },
           ],
           formats: { mp3: "audio/mpeg" },

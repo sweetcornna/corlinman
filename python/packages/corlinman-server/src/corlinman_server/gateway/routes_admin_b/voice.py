@@ -346,7 +346,7 @@ def _backend_view(backend_id: str, voice_cfg: dict[str, Any]) -> BackendOut | No
 async def _probe_live(
     definition: Any, provider: Any, params: dict[str, Any]
 ) -> SynthesisError | None:
-    """Pre-flight a GPT-Live gateway; returns the blocking error, if any."""
+    """Pre-flight the Realtime endpoint; returns the blocking error, if any."""
     from corlinman_agent.voice.gpt_live import probe_live_endpoint
     from corlinman_agent.voice.synth import _live_base_url, resolve_credentials
 

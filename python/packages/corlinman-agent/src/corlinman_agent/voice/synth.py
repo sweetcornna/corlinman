@@ -8,7 +8,7 @@ Three callers share this module, and they must behave identically:
 
 :func:`synthesize` resolves the backend, voice, format, model and
 credentials, dispatches to the right driver (templated HTTP or the
-GPT-Live WebRTC session), writes the audio into the agent workspace and
+OpenAI Realtime WebRTC session), writes the audio into the agent workspace and
 returns a :class:`SynthesisResult`.
 """
 
@@ -188,9 +188,7 @@ def resolve_credentials(
     may_borrow = is_openai_backend or provider_is_bound
 
     if provider is not None and may_borrow:
-        candidate = getattr(provider, "_api_key", None) or getattr(
-            provider, "api_key", None
-        )
+        candidate = getattr(provider, "_api_key", None) or getattr(provider, "api_key", None)
         if not api_key and candidate:
             # Belt-and-braces even inside a bound adapter: an operator can
             # bind voice to a provider that happens to carry the OpenAI
@@ -218,11 +216,10 @@ def resolve_credentials(
 
 
 def _live_base_url(base_url: str) -> str:
-    """Strip a trailing ``/v1`` so ``/v1/live`` is not doubled.
+    """Strip a trailing ``/v1`` so Realtime paths are not doubled.
 
-    Chat providers are configured with a ``.../v1`` base, but the Live
-    handshake lives at the host root (``/v1/live`` and
-    ``/backend-api/codex/realtime/calls``).
+    Chat providers are configured with a ``.../v1`` base, while the
+    negotiator owns the full ``/v1/realtime/calls`` (or legacy) path.
     """
     root = (base_url or "").rstrip("/")
     if root.endswith("/v1"):
@@ -277,9 +274,7 @@ async def synthesize(request: SynthesisRequest) -> SynthesisResult:
     )
     backend = get_backend(backend_id)
     if backend is None:
-        raise SynthesisError(
-            "tts_unavailable", f"未知的语音后端: {backend_id}"
-        )
+        raise SynthesisError("tts_unavailable", f"未知的语音后端: {backend_id}")
 
     voice = resolve_voice(
         backend.id,
