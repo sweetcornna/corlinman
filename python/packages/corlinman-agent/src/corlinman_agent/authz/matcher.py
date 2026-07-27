@@ -140,16 +140,22 @@ def external_candidate_keys(plugin: str, tool: str) -> tuple[str, ...]:
     name) doubles as the stable grant/audit key:
 
     * the bare name — existing name-keyed rules and the ``"*"`` wildcard;
-    * ``plugin:<plugin>/<tool>`` — the gateway-plugin canonical form
-      (both the collapsed and the explicit two-part identity);
+    * ``plugin:<plugin>/<tool>`` — best-effort ONLY: the collapse means
+      the REAL plugin name is unrecoverable here, so a rule written as
+      ``plugin:file-ops/write`` can never fire at this EP (the emitted
+      candidate is ``plugin:write/write``). Precise ``plugin:`` scoping
+      is enforced at the gateway invoker, which holds the registry —
+      see ``gateway/grpc/plugin_invoker._precise_external_keys``;
     * ``mcp:<server>/<tool>`` for every underscore split of a
-      ``{server}_{tool}`` advertised name (the gateway advertises MCP
-      tools under that collapsed form; the agent cannot know which
-      underscore is the separator, so each split is offered — an
-      ``mcp:github/*`` rule then fires on ``github_create_issue``).
+      ``{server}_{tool}`` advertised name — deny-safe over-approximation
+      (an ``mcp:github/*`` rule fires on ``github_create_issue`` but a
+      split like ``mcp:git/hub_x`` may also match unintended rules); the
+      gateway invoker re-checks with the exact server prefix stripped.
 
-    The gateway-side second enforcement point (the plugin dispatcher)
-    knows the registry and re-checks with the EXACT canonical key.
+    Division of labour: this EP handles wildcard / bare-name / mode
+    verdicts pre-emptively (the frame never leaves the agent on deny);
+    the gateway invoker is the authoritative precise-key enforcement for
+    ``plugin:`` / ``mcp:`` scoped rules.
     """
     bare = (tool or plugin or "").strip()
     plugin_name = (plugin or "").strip()
@@ -221,8 +227,18 @@ class RuleMatch:
             if not tenant or not fnmatch.fnmatchcase(tenant, self.tenant):
                 return False
         if self.surface is not None:
+            # A subagent call carries surface="subagent" plus the spawning
+            # turn's surface in parent_surface. A surface-scoped rule fires
+            # when EITHER matches: ``surface="telegram"`` keeps binding the
+            # children a Telegram turn spawns (a child must never dodge its
+            # parent's surface-scoped rules), while ``surface="subagent"``
+            # can still target children specifically.
             surface = getattr(ctx, "surface", None)
-            if not _surface_matches(self.surface, surface):
+            parent_surface = getattr(ctx, "parent_surface", None)
+            if not (
+                _surface_matches(self.surface, surface)
+                or _surface_matches(self.surface, parent_surface)
+            ):
                 return False
         return True
 

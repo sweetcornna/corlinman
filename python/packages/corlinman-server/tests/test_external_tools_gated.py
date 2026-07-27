@@ -14,6 +14,7 @@ Drives the real gRPC servicer with a provider that calls a non-builtin
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
@@ -62,13 +63,22 @@ class _ToolThenDoneProvider:
         yield ProviderChunk(kind="done", finish_reason="stop")
 
 
-async def _drive(servicer: CorlinmanAgentServicer) -> list[agent_pb2.ToolCall]:
-    """Run one turn; return every yielded ToolCall frame."""
+async def _drive(
+    servicer: CorlinmanAgentServicer, *, respond_to_tools: bool = False
+) -> list[agent_pb2.ToolCall]:
+    """Run one turn; return every yielded ToolCall frame.
+
+    ``respond_to_tools`` makes the client feed a ToolResult back for
+    every non-builtin frame — required for the tests whose external call
+    is ALLOWED through, or the servicer would sit out its full 30s
+    ``tool_result_timeout`` waiting for a result that never comes.
+    """
     server = grpc.aio.server()
     agent_pb2_grpc.add_AgentServicer_to_server(servicer, server)
     port = server.add_insecure_port("127.0.0.1:0")
     await server.start()
     frames: list[agent_pb2.ToolCall] = []
+    outbound: asyncio.Queue[agent_pb2.ClientFrame] = asyncio.Queue()
     try:
         async with grpc.aio.insecure_channel(f"127.0.0.1:{port}") as channel:
             stub = agent_pb2_grpc.AgentStub(channel)
@@ -77,10 +87,26 @@ async def _drive(servicer: CorlinmanAgentServicer) -> list[agent_pb2.ToolCall]:
                 yield agent_pb2.ClientFrame(
                     start=agent_pb2.ChatStart(model="m", session_key="t::s1")
                 )
+                if respond_to_tools:
+                    while True:
+                        yield await outbound.get()
 
             async for frame in stub.Chat(client_frames()):
                 if frame.WhichOneof("kind") == "tool_call":
                     frames.append(frame.tool_call)
+                    if respond_to_tools and not frame.tool_call.plugin.startswith(
+                        "_builtin"
+                    ):
+                        await outbound.put(
+                            agent_pb2.ClientFrame(
+                                tool_result=agent_pb2.ToolResult(
+                                    call_id=frame.tool_call.call_id,
+                                    result_json=b'{"ok": true}',
+                                    is_error=False,
+                                    duration_ms=1,
+                                )
+                            )
+                        )
     finally:
         await servicer.aclose()
         await server.stop(grace=None)
@@ -136,7 +162,7 @@ async def test_bypass_mode_lets_external_tool_frame_through() -> None:
     provider = _ToolThenDoneProvider()
     servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: provider)
 
-    external = _external_frames(await _drive(servicer))
+    external = _external_frames(await _drive(servicer, respond_to_tools=True))
     assert [f.tool for f in external] == [_EXTERNAL_TOOL]
 
 
@@ -151,7 +177,7 @@ async def test_escape_hatch_restores_pre_w32_bypass() -> None:
     provider = _ToolThenDoneProvider()
     servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: provider)
 
-    external = _external_frames(await _drive(servicer))
+    external = _external_frames(await _drive(servicer, respond_to_tools=True))
     assert [f.tool for f in external] == [_EXTERNAL_TOOL]
 
 

@@ -229,16 +229,27 @@ class ServicePluginDispatcher:
                 f"could not serialize arguments for {name!r}: {exc}",
             )
 
+        # W3-2: preconsent is only claimed when the unified gate ACTUALLY
+        # evaluated this call (agent EP2 + the verification above). With
+        # the [permissions].external_tools_enforced escape hatch off, the
+        # gate never ran — sending True anyway would silently disable a
+        # bridge plugin's own approval plumbing, changing pre-W3-2
+        # behaviour for the exact deployments the hatch exists to protect.
+        try:
+            from corlinman_agent.authz import (  # noqa: PLC0415
+                resolve_external_tools_enforced,
+            )
+
+            gate_evaluated = bool(resolve_external_tools_enforced())
+        except Exception:  # noqa: BLE001 — flag is best-effort metadata
+            gate_evaluated = False
         request = plugin_pb2.PluginToolCall(
             call_id=f"svc-{int(time.monotonic() * 1000)}",
             plugin=name,
             tool=tool,
             args_json=args_json,
             session_key="agent",
-            # W3-2: the unified gate (agent EP2 + the verification above)
-            # has consented — tell the plugin bridge so it does not
-            # re-prompt through its own approval plumbing.
-            approval_preconsented=True,
+            approval_preconsented=gate_evaluated,
         )
         stub = plugin_pb2_grpc.PluginBridgeStub(channel)
         deadline_s = max(timeout_ms, 1) / 1000.0

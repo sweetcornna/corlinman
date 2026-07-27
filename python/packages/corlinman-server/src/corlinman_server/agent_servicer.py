@@ -3200,20 +3200,28 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         """The caller identity the gate's scope filters match against.
 
         W3-2: a subagent call resolves under ``surface="subagent"`` while
-        the originating surface rides along as ``parent_surface`` — the
-        child inherits the parent's grants/rules context but the audit log
-        can still tell who initiated the call.
+        the originating surface rides along as ``parent_surface``. The
+        matcher checks a rule's surface pattern against BOTH fields, so a
+        rule scoped ``surface="telegram"`` still binds the children a
+        Telegram turn spawns (a child can never dodge the parent's
+        surface-scoped rules by virtue of being a child) while
+        ``surface="subagent"`` can target children specifically.
+
+        ``tenant_id`` keeps the ``"default"`` single-tenant sentinel the
+        builtin dispatch path always used — dropping it would silently
+        unmatch every tenant-scoped rule on sessions without a
+        ``<tenant>::`` prefix.
         """
         surface = _extract_surface(start)
         session_key = getattr(start, "session_key", None) or None
         tenant = _extract_tenant_id(start) or (
-            session_key.split("::")[0] if session_key else None
+            session_key.split("::")[0] if session_key else "default"
         )
         return Subject(
             model=getattr(start, "model", None) or None,
             session_key=session_key,
             user_id=_extract_user_id(start),
-            tenant_id=tenant or None,
+            tenant_id=tenant or "default",
             surface="subagent" if subagent else surface,
             parent_surface=surface if subagent else None,
         )

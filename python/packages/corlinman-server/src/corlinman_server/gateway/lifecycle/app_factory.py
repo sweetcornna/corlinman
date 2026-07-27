@@ -591,9 +591,24 @@ def _warn_wildcard_deny_now_covers_external(cfg: Any) -> None:
         )
         if not wildcard_deny:
             return
-        mcp_cfg = cfg.get("mcp")
-        has_mcp = isinstance(mcp_cfg, dict) and bool(mcp_cfg.get("servers"))
-        has_plugins = bool(cfg.get("plugins"))
+        # External-tool evidence lives in the DATA DIR, not config.toml:
+        # MCP servers are marketplace-managed (mcp_servers.sqlite) and
+        # plugins are on-disk manifests under plugins/. (An earlier cut
+        # checked cfg["mcp"]["servers"] / cfg["plugins"] — keys that no
+        # deployment actually writes, so the note could never fire.) The
+        # invoker-side note (plugin_invoker._note_wildcard_deny_impact)
+        # additionally fires at first real impact, so even a data_dir this
+        # boot check cannot see still gets the upgrade warning.
+        server_cfg = cfg.get("server")
+        data_dir = (
+            server_cfg.get("data_dir") if isinstance(server_cfg, dict) else None
+        )
+        root = Path(str(data_dir)) if data_dir else Path(
+            os.environ.get("CORLINMAN_DATA_DIR", "") or (Path.home() / ".corlinman")
+        )
+        has_mcp = (root / "mcp_servers.sqlite").exists()
+        plugins_dir = root / "plugins"
+        has_plugins = plugins_dir.is_dir() and any(plugins_dir.iterdir())
         if not (has_mcp or has_plugins):
             return
         logger.error(
