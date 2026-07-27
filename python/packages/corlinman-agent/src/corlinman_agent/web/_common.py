@@ -360,10 +360,12 @@ class WebFetchUnsafeHostError(Exception):
 
 
 def _allow_private_override() -> bool:
-    """Honour ``CORLINMAN_WEB_FETCH_ALLOW_PRIVATE=1`` for development.
+    """Honour ``[agent_runtime].web_fetch_allow_private`` for development.
 
-    Default off. The variable is read at every check so test fixtures
-    can flip it on/off via :meth:`monkeypatch.setenv`.
+    Default off — this is the SSRF guard. Resolved at every check (config,
+    then the legacy ``CORLINMAN_WEB_FETCH_ALLOW_PRIVATE``), so an operator
+    change applies immediately and test fixtures can still flip it via
+    :meth:`monkeypatch.setenv`.
     """
     return _limits.web_fetch_allow_private()
 

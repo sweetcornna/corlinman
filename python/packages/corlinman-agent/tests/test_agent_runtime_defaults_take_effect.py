@@ -240,6 +240,33 @@ def test_web_fetch_private_override_is_reachable() -> None:
     assert web_fetch_allow_private() is True
 
 
+def test_mailbox_bound_is_resolved_per_queue() -> None:
+    """A mailbox created after the sidecar loads must honour the config.
+
+    ``DEFAULT_MAILBOX_MAXSIZE`` used to be assigned at import from the env,
+    and ``get_or_create_mailbox`` used that constant — so the queue bound
+    was frozen before any config could arrive. Exactly the trap this whole
+    section exists to close, so it gets its own test.
+    """
+    from corlinman_agent.subagent.mailbox import (
+        AGENT_MAILBOXES,
+        get_or_create_mailbox,
+    )
+
+    apply_agent_runtime_config({"mailbox_maxsize": 7})
+    try:
+        assert get_or_create_mailbox("cap-test", tenant_id="t").maxsize == 7
+    finally:
+        AGENT_MAILBOXES.pop("t\x00cap-test", None)
+
+
+def test_skill_refresh_interval_is_resolved_per_registry() -> None:
+    from corlinman_agent.skills.registry import _default_refresh_interval_ms
+
+    apply_agent_runtime_config({"skill_refresh_interval_ms": 0})
+    assert _default_refresh_interval_ms() == 0  # 0 disables the debounce
+
+
 def test_as_dict_reports_only_configured_keys() -> None:
     """The apply-time log line must not print two dozen ``None``s."""
     reported = AgentRuntimeDefaults(max_rounds=12, sandbox_backend="docker").as_dict()

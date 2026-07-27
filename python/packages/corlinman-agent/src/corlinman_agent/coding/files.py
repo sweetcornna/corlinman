@@ -50,10 +50,11 @@ def _require_read_before_edit() -> bool:
     When a :class:`FileState` is threaded (the production agent path),
     refuse to edit an existing file the model never read (or wrote) this
     turn — a blind edit to unseen bytes is the classic destructive
-    footgun. Default on; set ``CORLINMAN_REQUIRE_READ_BEFORE_EDIT=0``
-    (``false``/``no``) to disable, e.g. for tooling that edits files it
-    produced out-of-band. Read at call time so tests/operators can flip
-    it via the environment.
+    footgun. Default on; set
+    ``[agent_runtime].require_read_before_edit = false`` (or the legacy
+    ``CORLINMAN_REQUIRE_READ_BEFORE_EDIT=0``) to disable, e.g. for tooling
+    that edits files it produced out-of-band. Read at call time so an
+    operator's change takes effect on the next turn.
     """
     return _limits.require_read_before_edit()
 

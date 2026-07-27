@@ -35,13 +35,12 @@ _log = structlog.get_logger(__name__)
 #: by default. The chat handler calls ``refresh()`` at every turn
 #: boundary, which on a hot session was costing ~5-10ms / turn in
 #: ``rglob`` + ``stat()`` work for a directory that almost never changes
-#: between adjacent turns. 30 seconds is well below the operator
+#: between adjacent turns. The 30s default is well below the operator
 #: "I dropped a new SKILL.md in" expectation (they almost always pause
 #: at least that long before their next chat) and well above the
-#: per-turn cadence. Operators can override via
-#: ``CORLINMAN_SKILL_REFRESH_INTERVAL_MS`` (set 0 to disable debounce
-#: entirely; tests pass ``force=True`` for the same effect).
-_DEFAULT_SKILL_REFRESH_INTERVAL_MS: int = 30_000
+#: per-turn cadence. Operators override via
+#: ``[agent_runtime].skill_refresh_interval_ms`` (set 0 to disable the
+#: debounce entirely; tests pass ``force=True`` for the same effect).
 
 
 def _default_refresh_interval_ms() -> int:
@@ -451,9 +450,8 @@ class SkillRegistry:
         per known file plus one ``rglob`` on the root — single-digit ms
         for a directory of ~16 SKILL.md files on a warm filesystem.
 
-        Debounce — calls within ``self._min_interval_ms`` (default
-        :data:`_DEFAULT_SKILL_REFRESH_INTERVAL_MS`, overridable via
-        ``CORLINMAN_SKILL_REFRESH_INTERVAL_MS``) of the previous real
+        Debounce — calls within ``self._min_interval_ms`` (see
+        :func:`_default_refresh_interval_ms`) of the previous real
         scan short-circuit to an empty delta. The chat handler invokes
         :meth:`refresh` at every turn boundary; without this guard a
         hot session pays ~5-10ms / turn rglob+stat on a directory that

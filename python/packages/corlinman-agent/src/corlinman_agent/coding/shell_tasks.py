@@ -92,41 +92,28 @@ logger = structlog.get_logger(__name__)
 SHELL_TASK_OUTPUT_TOOL: str = "shell_task_output"
 SHELL_TASK_KILL_TOOL: str = "shell_task_kill"
 
-#: Default concurrency cap — the max number of simultaneously *running*
-#: background tasks. Overridable per-spawn via ``CORLINMAN_SHELL_TASKS_MAX``.
-_DEFAULT_MAX_CONCURRENT: int = 8
-#: Default max wall-clock lifetime (seconds) before the watchdog reaps a
-#: task and stamps it ``expired``. Overridable per-spawn via
-#: ``CORLINMAN_SHELL_TASK_MAX_LIFETIME_S``.
-_DEFAULT_MAX_LIFETIME_S: float = 1800.0
 #: How many terminal records to retain for polling after a task finishes.
 #: Oldest evicted first — a runaway spawner cannot grow this unboundedly.
 _TERMINAL_CAP: int = 64
 #: Bytes read from the child pipe per pump iteration before flushing to the
 #: spill file. 64 KiB balances syscall count against poll latency.
 _PUMP_CHUNK_BYTES: int = 65536
-#: Default cap on the bytes the pump appends to a task's spill file before it
-#: stamps ``log_capped`` and kills the child. The child's ``RLIMIT_FSIZE``
-#: does NOT bound this — the *parent* pump writes the file — so an unbounded
-#: chatty child would otherwise fill the disk. Overridable per-spawn via
-#: ``CORLINMAN_SHELL_TASK_MAX_LOG_BYTES``.
-_DEFAULT_MAX_LOG_BYTES: int = 16_777_216  # 16 MiB
-#: Floor for the log cap so a misconfigured tiny value still leaves room for
-#: at least a pump chunk + the marker line.
-_MIN_MAX_LOG_BYTES: int = 4096
+#: The bytes the pump may append to a task's spill file before it stamps
+#: ``log_capped`` and kills the child are bounded by
+#: :func:`~corlinman_agent.runtime_defaults.shell_task_max_log_bytes`. The
+#: child's ``RLIMIT_FSIZE`` does NOT bound this — the *parent* pump writes
+#: the file — so an unbounded chatty child would otherwise fill the disk.
 #: Appended to the spill file when a task trips the size cap, so a poller sees
 #: WHY the stream stopped. Encoded once (bytes) since the pump writes binary.
 _LOG_CAP_MARKER: bytes = "[log cap reached — task killed]\n".encode()
 
-#: Max bytes returned by a single ``shell_task_output`` read. A task can spill
-#: up to the 16 MiB log cap; without a per-read bound the model could pull the
-#: whole log into one tool result, which the servicer journals verbatim before
-#: the reasoning loop's own truncation. 64 KiB mirrors foreground
+#: A single ``shell_task_output`` read is bounded by
+#: :func:`~corlinman_agent.runtime_defaults.shell_task_read_max_bytes`. A task
+#: can spill up to the 16 MiB log cap; without a per-read bound the model could
+#: pull the whole log into one tool result, which the servicer journals verbatim
+#: before the reasoning loop's own truncation. The default mirrors foreground
 #: ``run_shell``'s inline order of magnitude; the poller pages the rest via the
-#: returned ``new_offset``. Overridable via ``CORLINMAN_SHELL_TASK_READ_MAX_BYTES``.
-_DEFAULT_READ_MAX_BYTES: int = 65536
-#: Floor for the per-read cap so a misconfigured tiny value still makes progress.
-_MIN_READ_MAX_BYTES: int = 4096
+#: returned ``new_offset``.
 
 #: Terminal states — a task in one of these never transitions again.
 _TERMINAL_STATES: frozenset[str] = frozenset(

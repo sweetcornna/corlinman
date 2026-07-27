@@ -18,7 +18,8 @@ can be dropped in via one env var without touching the tool dispatchers.
   process ("container == unit of kill") — NOT a long-lived container with
   ``docker exec``, whose PID tracking is fragile.
 * :func:`get_environment` selects the backend from
-  ``CORLINMAN_SANDBOX_BACKEND`` (default ``local``), read live per call.
+  ``[agent_runtime].sandbox_backend`` (default ``local``), read live per
+  call.
 
 ## Handles
 
@@ -601,14 +602,16 @@ ENV_SANDBOX_BACKEND = "CORLINMAN_SANDBOX_BACKEND"
 
 
 def get_environment(env: dict[str, str] | None = None) -> Environment:
-    """Pick a sandbox backend based on ``CORLINMAN_SANDBOX_BACKEND``.
+    """Pick a sandbox backend from ``[agent_runtime].sandbox_backend``.
 
     Defaults to :class:`LocalEnvironment` so existing deployments need no
-    env-var change. ``env`` is injectable for tests; production callers
-    pass ``None`` (reads ``os.environ``). The var is read LIVE on every
-    call — nothing is cached — so a per-call override takes effect
-    immediately. Backends are stateless, so returning a fresh instance is
-    cheap.
+    config change. Resolved LIVE on every call — nothing is cached — so a
+    change takes effect on the next spawn. Backends are stateless, so
+    returning a fresh instance is cheap.
+
+    ``env`` is a test seam: when a mapping is passed it is read verbatim
+    (legacy ``CORLINMAN_SANDBOX_BACKEND`` spelling) instead of consulting
+    the config layer. Production callers pass ``None``.
 
     The ``docker`` backend runs each spawned process in its own short-lived
     ``docker run --rm`` container, killed by container name (see

@@ -9,9 +9,9 @@ model batch round-trips instead of re-establishing context every time.
 
 ## DISABLED BY DEFAULT
 
-``execute_code`` is **off** unless the operator opts in by setting
-``CORLINMAN_ENABLE_EXECUTE_CODE`` to a truthy value (``1`` / ``true`` /
-``yes`` / ``on``, case-insensitive). When disabled, the dispatcher
+``execute_code`` is **off** unless the operator opts in with
+``[agent_runtime].enable_execute_code = true`` (or the legacy
+``CORLINMAN_ENABLE_EXECUTE_CODE=1``). When disabled, the dispatcher
 returns a clear ``{"error": "execute_code_disabled", ...}`` envelope and
 never spawns anything. This mirrors the conservative posture of
 ``run_shell`` — code execution is a real capability with a real blast
