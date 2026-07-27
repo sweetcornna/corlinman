@@ -97,6 +97,84 @@ def _surface_matches(pattern: str, value: str | None) -> bool:
     return value.strip().lower() in segments
 
 
+#: Characters that make a rule's ``tool`` field a glob rather than a literal.
+_GLOB_CHARS: tuple[str, ...] = ("*", "?", "[")
+
+
+def tool_pattern_matches(pattern: str, tool: str) -> bool:
+    """Match one rule ``tool`` field against a canonical tool key (C7).
+
+    Semantics are a strict superset of the historical exact-or-``"*"``
+    comparison: a pattern without glob characters still matches only its
+    literal spelling (so every pre-W3-2 rule behaves identically), while a
+    pattern carrying ``*`` / ``?`` / ``[`` is evaluated with
+    ``fnmatch.fnmatchcase`` so namespaced keys like ``mcp:github/*`` or
+    ``plugin:file-ops/*`` work as documented in the unified model.
+    """
+    if pattern == tool or pattern == "*":
+        return True
+    if any(ch in pattern for ch in _GLOB_CHARS):
+        return fnmatch.fnmatchcase(tool, pattern)
+    return False
+
+
+def glob_escape(text: str) -> str:
+    """Escape ``text`` so fnmatch treats every character literally.
+
+    Used by the ``[approvals]`` translator: an exact session key / plugin
+    name must self-match under fnmatch even if it happens to contain glob
+    metacharacters. ``[`` must be escaped first — the escape sequences
+    themselves introduce brackets.
+    """
+    return text.replace("[", "[[]").replace("*", "[*]").replace("?", "[?]")
+
+
+def external_candidate_keys(plugin: str, tool: str) -> tuple[str, ...]:
+    """Canonical candidate keys for an EXTERNAL (non-builtin) tool call (C7).
+
+    The OpenAI function-call path collapses ``plugin == tool ==
+    function.name`` before the call reaches the agent (see
+    ``ReasoningLoop._finalise_tool_call``), so the agent process cannot
+    always recover the real namespace. It therefore matches a rule against
+    EVERY plausible canonical spelling; the first entry (the bare advertised
+    name) doubles as the stable grant/audit key:
+
+    * the bare name — existing name-keyed rules and the ``"*"`` wildcard;
+    * ``plugin:<plugin>/<tool>`` — best-effort ONLY: the collapse means
+      the REAL plugin name is unrecoverable here, so a rule written as
+      ``plugin:file-ops/write`` can never fire at this EP (the emitted
+      candidate is ``plugin:write/write``). Precise ``plugin:`` scoping
+      is enforced at the gateway invoker, which holds the registry —
+      see ``gateway/grpc/plugin_invoker._precise_external_keys``;
+    * ``mcp:<server>/<tool>`` for every underscore split of a
+      ``{server}_{tool}`` advertised name — deny-safe over-approximation
+      (an ``mcp:github/*`` rule fires on ``github_create_issue`` but a
+      split like ``mcp:git/hub_x`` may also match unintended rules); the
+      gateway invoker re-checks with the exact server prefix stripped.
+
+    Division of labour: this EP handles wildcard / bare-name / mode
+    verdicts pre-emptively (the frame never leaves the agent on deny);
+    the gateway invoker is the authoritative precise-key enforcement for
+    ``plugin:`` / ``mcp:`` scoped rules.
+    """
+    bare = (tool or plugin or "").strip()
+    plugin_name = (plugin or "").strip()
+    if not bare:
+        return ()
+    keys: list[str] = [bare]
+    if plugin_name and plugin_name != bare:
+        keys.append(f"plugin:{plugin_name}/{bare}")
+    keys.append(f"plugin:{bare}/{bare}")
+    parts = bare.split("_")
+    for i in range(1, len(parts)):
+        server = "_".join(parts[:i])
+        name = "_".join(parts[i:])
+        if server and name:
+            keys.append(f"mcp:{server}/{name}")
+    # De-dup while preserving order (dict is insertion-ordered).
+    return tuple(dict.fromkeys(keys))
+
+
 @dataclass(frozen=True)
 class RuleMatch:
     """Optional context filters on a :class:`PermissionRule`.
@@ -149,8 +227,18 @@ class RuleMatch:
             if not tenant or not fnmatch.fnmatchcase(tenant, self.tenant):
                 return False
         if self.surface is not None:
+            # A subagent call carries surface="subagent" plus the spawning
+            # turn's surface in parent_surface. A surface-scoped rule fires
+            # when EITHER matches: ``surface="telegram"`` keeps binding the
+            # children a Telegram turn spawns (a child must never dodge its
+            # parent's surface-scoped rules), while ``surface="subagent"``
+            # can still target children specifically.
             surface = getattr(ctx, "surface", None)
-            if not _surface_matches(self.surface, surface):
+            parent_surface = getattr(ctx, "parent_surface", None)
+            if not (
+                _surface_matches(self.surface, surface)
+                or _surface_matches(self.surface, parent_surface)
+            ):
                 return False
         return True
 
@@ -201,7 +289,7 @@ class PermissionRule:
         matches here when the pattern is the catch-all ``"*"`` (so the
         args-aware resolve path is required to honour a narrowing pattern).
         """
-        if self.tool != tool and self.tool != "*":
+        if not tool_pattern_matches(self.tool, tool):
             return False
         if self.arg_pattern is not None and self.arg_pattern != "*":
             return False
@@ -224,7 +312,7 @@ class PermissionRule:
         rule like ``run_shell(rm:*)`` catches ``cd /tmp && rm -rf x`` and
         ``sh -c "rm -rf /"`` as well as the bare ``rm`` form.
         """
-        if self.tool != tool and self.tool != "*":
+        if not tool_pattern_matches(self.tool, tool):
             return False
         if self.match is not None and not self.match.is_empty():
             if not self.match.matches(ctx):
@@ -453,8 +541,11 @@ __all__ = [
     "MUTATING_TOOLS",
     "PermissionRule",
     "RuleMatch",
+    "external_candidate_keys",
     "extract_arg_candidates",
     "extract_primary_arg",
+    "glob_escape",
     "match_hook_rule",
     "parse_rule_list",
+    "tool_pattern_matches",
 ]

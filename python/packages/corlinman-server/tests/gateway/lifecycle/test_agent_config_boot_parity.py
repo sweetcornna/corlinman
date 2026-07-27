@@ -68,6 +68,13 @@ _CONFIG = {
             {"tool": "run_shell(rm:*)", "action": "deny", "note": "no rm"},
         ],
     },
+    # W3-2: the deprecated [approvals] section must translate identically
+    # on both boot paths (merged as LEADING permission rules, risk R7).
+    "approvals": {
+        "rules": [
+            {"plugin": "file-ops", "tool": "write", "mode": "deny"},
+        ],
+    },
 }
 
 
@@ -117,6 +124,11 @@ _EXPECTED = {
     "permissions_mode": "default",
     "permissions_strict": True,
     "permissions_rules": (
+        {
+            "tool": "plugin:file-ops/write",
+            "action": "deny",
+            "note": "translated from deprecated [[approvals.rules]]",
+        },
         {"tool": "*", "action": "allow"},
         {"tool": "run_shell(rm:*)", "action": "deny", "note": "no rm"},
     ),
@@ -160,7 +172,16 @@ def test_every_section_the_hook_reads_is_a_hot_reload_trigger() -> None:
     a block read by the hook but missing here would land in config.toml
     and stop there until the next restart."""
     assert _AGENT_CONFIG_SECTIONS == frozenset(
-        {"voice", "models", "web_search", "agent_runtime", "permissions"}
+        {
+            "voice",
+            "models",
+            "web_search",
+            "agent_runtime",
+            "permissions",
+            # deprecated, but still a trigger for its double-read window
+            # (the [approvals] translator must re-run when it changes).
+            "approvals",
+        }
     )
 
 

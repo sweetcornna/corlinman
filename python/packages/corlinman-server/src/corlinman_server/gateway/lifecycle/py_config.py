@@ -59,6 +59,10 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any, Final
 
+import structlog
+
+log = structlog.get_logger(__name__)
+
 #: Env var name the Python AI plane reads to locate the JSON drop.
 #: Mirrors ``corlinman_gateway::py_config::ENV_PY_CONFIG``.
 ENV_PY_CONFIG: Final[str] = "CORLINMAN_PY_CONFIG"
@@ -217,7 +221,12 @@ def render_py_config(
         # default_action / last_match_wins — is consumed by the agent-side
         # AuthzGate at call time. Same reachability story as the rest: the
         # sidecar is the only channel that works in a native deployment.
-        "permissions": _render_permissions(_attr(cfg, "permissions", None)),
+        # W3-2: the deprecated [approvals] section is translated into
+        # leading permission rules here (double-read window, risk R7), so
+        # the agent process only ever sees ONE merged block.
+        "permissions": _render_permissions(
+            _attr(cfg, "permissions", None), _attr(cfg, "approvals", None)
+        ),
         "embedding": embedding,
         "subagent": subagent,
         "tencent_safety": tencent_safety,
@@ -418,7 +427,27 @@ def _render_rule_list(raw: Any) -> tuple[list[dict[str, Any]], int]:
     return rules, dropped
 
 
-def _render_permissions(section: Any) -> dict[str, Any] | None:
+def _translated_approvals_rules(approvals: Any) -> list[dict[str, Any]]:
+    """Translate a deprecated ``[approvals]`` section (W3-2, plan §2.2).
+
+    Lazy import + best-effort: a translation failure must not take the
+    sidecar render down — it degrades to "no translated rules" with a
+    warning, and the operator's own ``[permissions]`` block still renders.
+    """
+    if approvals is None:
+        return []
+    try:
+        from corlinman_agent.authz.approvals_compat import (  # noqa: PLC0415
+            translate_approvals_rules,
+        )
+
+        return translate_approvals_rules(approvals)
+    except Exception as exc:  # noqa: BLE001 — never break the render
+        log.warning("gateway.py_config.approvals_translation_failed", error=str(exc))
+        return []
+
+
+def _render_permissions(section: Any, approvals: Any = None) -> dict[str, Any] | None:
     """Render the ``[permissions]`` block for the agent-process sidecar.
 
     Explicit key whitelist, and — as everywhere in this file — a key the
@@ -426,23 +455,33 @@ def _render_permissions(section: Any) -> dict[str, Any] | None:
     on the agent side, which is what lets the env layer still apply per
     knob. ``_dropped`` (rule count filtered out for shape problems) is a
     meta field for doctor/diagnostics; the agent-side parser ignores it.
+
+    ``approvals`` is the deprecated ``[approvals]`` section: its translated
+    rules are PREPENDED to the operator's ``[[permissions.rules]]`` so the
+    explicit block wins under last-match-wins (risk R7). Both rule sources
+    pass through the same whitelist filter.
     """
-    if section is None:
+    translated = _translated_approvals_rules(approvals)
+    if section is None and not translated:
         return None
     out: dict[str, Any] = {}
-    mode = _attr(section, "mode", None)
-    if isinstance(mode, str) and mode.strip():
-        out["mode"] = mode.strip()
-    for key in ("strict", "last_match_wins"):
-        value = _attr(section, key, None)
-        if isinstance(value, bool):
-            out[key] = value
-    default_action = _attr(section, "default_action", None)
-    if isinstance(default_action, str) and default_action.strip() in _PERMISSION_ACTIONS:
-        out["default_action"] = default_action.strip()
-    rules_raw = _attr(section, "rules", None)
-    if rules_raw is not None:
-        rules, dropped = _render_rule_list(rules_raw)
+    if section is not None:
+        mode = _attr(section, "mode", None)
+        if isinstance(mode, str) and mode.strip():
+            out["mode"] = mode.strip()
+        for key in ("strict", "last_match_wins", "external_tools_enforced"):
+            value = _attr(section, key, None)
+            if isinstance(value, bool):
+                out[key] = value
+        default_action = _attr(section, "default_action", None)
+        if isinstance(default_action, str) and default_action.strip() in _PERMISSION_ACTIONS:
+            out["default_action"] = default_action.strip()
+    rules_raw = _attr(section, "rules", None) if section is not None else None
+    combined: list[Any] = list(translated)
+    if isinstance(rules_raw, (list, tuple)):
+        combined.extend(rules_raw)
+    if combined or rules_raw is not None:
+        rules, dropped = _render_rule_list(combined)
         out["rules"] = rules
         if dropped:
             out["_dropped"] = dropped

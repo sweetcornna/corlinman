@@ -138,7 +138,7 @@ except Exception:  # noqa: BLE001 — degrade if the submodule lacks the symbols
     dispatch_memory_write = None  # type: ignore[assignment]
     _MEMORY_RW_AVAILABLE = False
 from corlinman_agent.approval_gate import ApprovalGate, ApprovalOutcome
-from corlinman_agent.authz import AuthzGate, Subject
+from corlinman_agent.authz import AuthzGate, Subject, external_candidate_keys
 from corlinman_agent.events import AttachmentAdded
 from corlinman_agent.permission import (
     ALLOW as _PERM_ALLOW,
@@ -2262,6 +2262,29 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                                     error=str(exc),
                                 )
                         continue
+                    # W3-2 / EP2: the unified permission gate now covers
+                    # EXTERNAL plugin/MCP tools too, under the canonical
+                    # namespace:name key space (C7). "*" finally matches
+                    # everything and plan/bypass modes apply (C4,
+                    # BREAKING; [permissions].external_tools_enforced =
+                    # false is the one-minor escape hatch). Runs BEFORE
+                    # the hook gate, mirroring the builtin path's order.
+                    _ext_perm_block = await self._external_permission_block(event, start)
+                    if _ext_perm_block is not None:
+                        loop.feed_tool_result(
+                            ToolResult(
+                                call_id=event.call_id,
+                                content=_ext_perm_block,
+                                is_error=True,
+                            )
+                        )
+                        await self._run_post_tool_hooks(
+                            event.tool,
+                            self._parse_args_dict(event.args_json),
+                            start,
+                            _ext_perm_block,
+                        )
+                        continue
                     # PreToolUse hook gate for EXTERNAL plugin/MCP tools —
                     # the blocking gate used to live only in the builtin
                     # dispatch path, so a PreToolUse hook with matcher="*"
@@ -2308,14 +2331,42 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                         )
                         continue
                     if _ext_mutated is not None:
+                        _ext_mutation_applied = False
                         try:
                             event.args_json = json.dumps(_ext_mutated).encode("utf-8")
+                            _ext_mutation_applied = True
                         except (TypeError, ValueError) as exc:
                             logger.warning(
                                 "agent.tool.hook_mutated_args_invalid",
                                 tool=event.tool,
                                 error=str(exc),
                             )
+                        if _ext_mutation_applied:
+                            # W3-2 hook-order fix: the gate above judged
+                            # the ORIGINAL args — a hook that rewrote them
+                            # must not smuggle a denied call past an
+                            # arg-scoped rule. Re-resolve with the
+                            # rewritten args (only when a mutation
+                            # actually landed, so the common path pays
+                            # nothing).
+                            _ext_perm_block = await self._external_permission_block(
+                                event, start
+                            )
+                            if _ext_perm_block is not None:
+                                loop.feed_tool_result(
+                                    ToolResult(
+                                        call_id=event.call_id,
+                                        content=_ext_perm_block,
+                                        is_error=True,
+                                    )
+                                )
+                                await self._run_post_tool_hooks(
+                                    event.tool,
+                                    self._parse_args_dict(event.args_json),
+                                    start,
+                                    _ext_perm_block,
+                                )
+                                continue
                     # Correlate for PostToolUse hooks — the external
                     # result returns through ``_pump_inbound`` carrying
                     # only a call_id (Codex #109: plugin/MCP tools were
@@ -2878,7 +2929,14 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                             "tool": child_event.tool,
                         }
                     )
-            result = await self._dispatch_builtin(child_event, start, provider, file_state)
+            # W3-2: the child resolves under surface="subagent" with the
+            # parent's surface as parent_surface, and its EXTERNAL tool
+            # calls go through the same unified gate (canonical keys) —
+            # the three hard refusals above deliberately stay BEFORE the
+            # gate: not even bypass mode may re-enable them.
+            result = await self._dispatch_builtin(
+                child_event, start, provider, file_state, subagent=True
+            )
             return result if isinstance(result, str) else json.dumps(result)
 
         return _execute
@@ -3026,6 +3084,8 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         start: AgentChatStart,
         provider: CorlinmanProvider,
         file_state: FileState | None = None,
+        *,
+        subagent: bool = False,
     ) -> str | list[dict[str, Any]]:
         """Dispatch a builtin tool, then fire post-tool hooks with the result.
 
@@ -3035,7 +3095,9 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         Post-tool hooks are fire-and-forget by contract: they can never
         block, mutate, or fail the call.
         """
-        result = await self._dispatch_builtin_inner(event, start, provider, file_state)
+        result = await self._dispatch_builtin_inner(
+            event, start, provider, file_state, subagent=subagent
+        )
         await self._run_post_tool_hooks(
             event.tool, self._parse_args_dict(event.args_json), start, result
         )
@@ -3132,6 +3194,135 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 except Exception as exc:  # noqa: BLE001 — advisory only
                     logger.warning("agent.tool.notification_hook_error", error=str(exc))
 
+    def _permission_subject(
+        self, start: AgentChatStart, *, subagent: bool = False
+    ) -> Subject:
+        """The caller identity the gate's scope filters match against.
+
+        W3-2: a subagent call resolves under ``surface="subagent"`` while
+        the originating surface rides along as ``parent_surface``. The
+        matcher checks a rule's surface pattern against BOTH fields, so a
+        rule scoped ``surface="telegram"`` still binds the children a
+        Telegram turn spawns (a child can never dodge the parent's
+        surface-scoped rules by virtue of being a child) while
+        ``surface="subagent"`` can target children specifically.
+
+        ``tenant_id`` keeps the ``"default"`` single-tenant sentinel the
+        builtin dispatch path always used — dropping it would silently
+        unmatch every tenant-scoped rule on sessions without a
+        ``<tenant>::`` prefix.
+        """
+        surface = _extract_surface(start)
+        session_key = getattr(start, "session_key", None) or None
+        tenant = _extract_tenant_id(start) or (
+            session_key.split("::")[0] if session_key else "default"
+        )
+        return Subject(
+            model=getattr(start, "model", None) or None,
+            session_key=session_key,
+            user_id=_extract_user_id(start),
+            tenant_id=tenant or "default",
+            surface="subagent" if subagent else surface,
+            parent_surface=surface if subagent else None,
+        )
+
+    async def _external_permission_block(
+        self,
+        event: ToolCallEvent,
+        start: AgentChatStart,
+        *,
+        subagent: bool = False,
+    ) -> str | None:
+        """EP2 (W3-2): run the unified gate over an EXTERNAL tool call.
+
+        Evaluates the canonical candidate keys (C7 — ``plugin:<p>/<t>`` /
+        ``mcp:<server>/<t>`` / the bare advertised name) against the SAME
+        rule set that guards builtins, so ``{"tool": "*", "action":
+        "deny"}`` and the ``plan``/``bypass`` modes finally cover plugin
+        and MCP tools (C4, BREAKING —
+        ``[permissions].external_tools_enforced = false`` is the escape
+        hatch). An ``ask`` verdict escalates to the approval gate exactly
+        like the builtin path. Returns ``None`` to proceed, else the JSON
+        error envelope to feed back as the tool result.
+
+        A legacy injected gate without ``resolve_external`` (tests pinning
+        the frozen ``PermissionGate``) keeps the historical behaviour of
+        not gating external tools.
+        """
+        resolve = getattr(self._permission_gate, "resolve_external", None)
+        if resolve is None:
+            return None
+        keys = external_candidate_keys(event.plugin, event.tool)
+        if not keys:
+            return None
+        perm_ctx = self._permission_subject(start, subagent=subagent)
+        args = self._parse_args_dict(event.args_json)
+        decision, rule_idx = resolve(keys, perm_ctx, args)
+        audit = self._permission_gate.audit_log_entry(
+            event.tool, perm_ctx, decision, rule_index=rule_idx
+        )
+        # Acceptance 5: every external decision lands in the gate audit
+        # log (with parent_surface / initiator for subagent calls).
+        logger.info(
+            "agent.authz.external_decision",
+            call_id=event.call_id,
+            initiator="subagent" if subagent else None,
+            **audit,
+        )
+        if decision == _PERM_ASK:
+            _outcome = await self._approval_decide(
+                event.tool, args, perm_ctx, external_keys=keys
+            )
+            if _APPROVALS_TOTAL is not None:
+                try:
+                    _APPROVALS_TOTAL.labels(
+                        decision="approved" if _outcome.allowed else "denied"
+                    ).inc()
+                except Exception:  # noqa: BLE001 — metric is best-effort
+                    pass
+            if not _outcome.allowed:
+                logger.info(
+                    "agent.permission.ask_denied",
+                    tool=event.tool,
+                    call_id=event.call_id,
+                    reason=_outcome.reason,
+                    external=True,
+                )
+                return json.dumps(
+                    {
+                        "error": (
+                            "approval_denied: "
+                            f"{_outcome.reason or 'tool requires approval'}"
+                        ),
+                        "tool": event.tool,
+                    }
+                )
+            decision = _PERM_ALLOW
+        if decision == _PERM_DENY:
+            logger.warning(
+                "agent.permission.denied",
+                call_id=event.call_id,
+                external=True,
+                **audit,
+            )
+            return json.dumps(
+                {
+                    "error": (
+                        f"permission_denied: tool {event.tool!r} is not "
+                        "permitted by the agent's permission rules"
+                    ),
+                    "tool": event.tool,
+                }
+            )
+        if decision == _PERM_LOG:
+            logger.info(
+                "agent.tool.logged",
+                tool=event.tool,
+                call_id=event.call_id,
+                external=True,
+            )
+        return None
+
     async def _run_pre_tool_hook_gate(
         self, event: ToolCallEvent, start: AgentChatStart
     ) -> tuple[bool, str, dict[str, Any] | None]:
@@ -3186,6 +3377,8 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         start: AgentChatStart,
         provider: CorlinmanProvider,
         file_state: FileState | None = None,
+        *,
+        subagent: bool = False,
     ) -> str | list[dict[str, Any]]:
         """Route an in-process builtin tool to its handler.
 
@@ -3225,23 +3418,47 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # arguments so per-channel / per-user / per-model / per-argument
         # rules (e.g. ``run_shell(rm:*)``) can selectively narrow what the
         # model is allowed to invoke.
-        perm_ctx = Subject(
-            model=getattr(start, "model", None) or None,
-            session_key=getattr(start, "session_key", None) or None,
-            user_id=_extract_user_id(start),
-            # W3-1 scope dimensions: rules may now narrow on tenant/surface.
-            tenant_id=_extract_tenant_id(start) or (tenant_id or None),
-            surface=_extract_surface(start),
-        )
+        perm_ctx = self._permission_subject(start, subagent=subagent)
         _perm_args = self._parse_args_dict(event.args_json)
-        decision, rule_idx = self._permission_gate.resolve_with_args(
-            event.tool, perm_ctx, _perm_args
-        )
+        # W3-2: a NON-builtin tool reaching this dispatcher (the subagent
+        # child-executor path — the main Chat loop routes external tools
+        # through its own EP2 branch) is judged under the canonical
+        # external key space, so "*" / plugin:/mcp: rules and plan/bypass
+        # modes cover the child's external calls too. The audit line
+        # carries initiator + parent_surface (acceptance 5).
+        _is_external_tool = event.tool not in BUILTIN_TOOLS
+        _gate_resolve_external = getattr(self._permission_gate, "resolve_external", None)
+        if _is_external_tool and _gate_resolve_external is not None:
+            _ext_keys = external_candidate_keys(event.plugin, event.tool)
+            decision, rule_idx = _gate_resolve_external(_ext_keys, perm_ctx, _perm_args)
+            logger.info(
+                "agent.authz.external_decision",
+                call_id=event.call_id,
+                initiator="subagent" if subagent else None,
+                **self._permission_gate.audit_log_entry(
+                    event.tool, perm_ctx, decision, rule_index=rule_idx
+                ),
+            )
+        else:
+            decision, rule_idx = self._permission_gate.resolve_with_args(
+                event.tool, perm_ctx, _perm_args
+            )
         if decision == _PERM_ASK:
             # Escalate to the approval gate (prompt-and-wait). When no
             # resolver is wired the gate fail-closes to deny, surfaced
-            # below as a permission_denied envelope.
-            _outcome = await self._approval_decide(event.tool, _perm_args, perm_ctx)
+            # below as a permission_denied envelope. External (child-path)
+            # calls carry their canonical keys so the gate's internal
+            # re-resolution stays on the external key space (W3-2).
+            _outcome = await self._approval_decide(
+                event.tool,
+                _perm_args,
+                perm_ctx,
+                external_keys=(
+                    external_candidate_keys(event.plugin, event.tool)
+                    if _is_external_tool and _gate_resolve_external is not None
+                    else None
+                ),
+            )
             if _APPROVALS_TOTAL is not None:
                 try:
                     _APPROVALS_TOTAL.labels(
@@ -3355,14 +3572,72 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             self._emit_tool_called(event, start, ok=False, duration_ms=0, error_code="hook_blocked")
             return json.dumps({"error": f"blocked by hook: {_reason}", "tool": event.tool})
         if _mutated is not None:
+            _mutation_applied = False
             try:
                 event.args_json = json.dumps(_mutated).encode("utf-8")
+                _mutation_applied = True
             except (TypeError, ValueError) as exc:
                 logger.warning(
                     "agent.tool.hook_mutated_args_invalid",
                     tool=event.tool,
                     error=str(exc),
                 )
+            if _mutation_applied:
+                # W3-2 hook-order fix (agent-gate §8.2): the gate at the
+                # top of this method judged the ORIGINAL args, and the
+                # PreToolUse hook ran AFTER it — so a hook rewriting
+                # ``run_shell(ls)`` into ``rm -rf`` used to sail past a
+                # ``run_shell(rm:*)`` deny rule. Re-resolve against the
+                # rewritten args; only paid when a mutation landed.
+                _perm_args = self._parse_args_dict(event.args_json)
+                if _is_external_tool and _gate_resolve_external is not None:
+                    _redecision, _re_idx = _gate_resolve_external(
+                        external_candidate_keys(event.plugin, event.tool),
+                        perm_ctx,
+                        _perm_args,
+                    )
+                else:
+                    _redecision, _re_idx = self._permission_gate.resolve_with_args(
+                        event.tool, perm_ctx, _perm_args
+                    )
+                if _redecision == _PERM_ASK:
+                    _re_outcome = await self._approval_decide(
+                        event.tool,
+                        _perm_args,
+                        perm_ctx,
+                        external_keys=(
+                            external_candidate_keys(event.plugin, event.tool)
+                            if _is_external_tool and _gate_resolve_external is not None
+                            else None
+                        ),
+                    )
+                    _redecision = _PERM_ALLOW if _re_outcome.allowed else _PERM_DENY
+                if _redecision == _PERM_DENY:
+                    _re_audit = self._permission_gate.audit_log_entry(
+                        event.tool, perm_ctx, _redecision, rule_index=_re_idx
+                    )
+                    logger.warning(
+                        "agent.permission.denied_after_hook_mutation",
+                        call_id=event.call_id,
+                        **_re_audit,
+                    )
+                    self._emit_tool_called(
+                        event,
+                        start,
+                        ok=False,
+                        duration_ms=0,
+                        error_code="permission_denied",
+                    )
+                    return json.dumps(
+                        {
+                            "error": (
+                                "permission_denied: a PreToolUse hook rewrote "
+                                f"the arguments of {event.tool!r} into a call "
+                                "the permission rules deny"
+                            ),
+                            "tool": event.tool,
+                        }
+                    )
 
         started_at = time.perf_counter()
         ok = True
@@ -4627,15 +4902,21 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         tool: str,
         args: dict[str, Any],
         ctx: PermissionContext,
+        *,
+        external_keys: tuple[str, ...] | None = None,
     ) -> ApprovalOutcome:
         """Run the unified approval gate for an ``ask`` verdict.
 
         Passes the FULL subject through (tenant / surface included) so a
         grant recorded by the resolver keys identically to the gate's own
-        later grant checks (W3-1).
+        later grant checks (W3-1). ``external_keys`` (W3-2) keeps the
+        gate's internal re-resolution on the external key space for
+        plugin/MCP calls.
         """
         gate = self._get_approval_gate()
-        return await gate.decide(tool, args=args, subject=ctx)
+        return await gate.decide(
+            tool, args=args, subject=ctx, external_keys=external_keys
+        )
 
     def _resolve_hook_runner(self) -> Any | None:
         """Resolve the pre-tool hook runner (CONTRACT C2-first).

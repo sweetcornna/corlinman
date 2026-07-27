@@ -48,6 +48,22 @@ def test_missing_surface_never_matches_declared_pattern() -> None:
     assert not m.matches(Subject(surface=""))
 
 
+def test_surface_rule_binds_subagent_via_parent_surface() -> None:
+    """W3-2 review fix: a child call (surface="subagent",
+    parent_surface=<origin>) must still be caught by rules scoped to the
+    ORIGIN surface — a child can never dodge its parent's surface-scoped
+    rules by virtue of being a child. ``surface="subagent"`` still
+    targets children specifically."""
+    child = Subject(surface="subagent", parent_surface="telegram")
+    assert RuleMatch(surface="telegram").matches(child)
+    assert RuleMatch(surface="subagent").matches(child)
+    assert not RuleMatch(surface="qq").matches(child)
+    # A plain (non-child) call is unaffected.
+    direct = Subject(surface="telegram")
+    assert RuleMatch(surface="telegram").matches(direct)
+    assert not RuleMatch(surface="subagent").matches(direct)
+
+
 # ---------------------------------------------------------------------------
 # tenant — fnmatch like the other glob scopes
 # ---------------------------------------------------------------------------

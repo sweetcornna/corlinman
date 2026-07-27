@@ -100,6 +100,13 @@ def _reset_authz_state() -> Iterator[None]:
     from corlinman_agent.authz.defaults import reset_permissions_defaults
     from corlinman_agent.authz.grants import reset_grant_store
 
+    # W3-2: the AuthzGate re-reads $CORLINMAN_PY_CONFIG on every resolve
+    # (mid-turn refresh, risk R2). A test that lets production code set the
+    # var via os.environ (not monkeypatch) would leave later tests reading
+    # a stale tmp sidecar that silently WIPES their applied [permissions]
+    # block — clear any leaked value up front; tests that need the var set
+    # it themselves (monkeypatch.setenv, inside the test body).
+    os.environ.pop("CORLINMAN_PY_CONFIG", None)
     reset_permissions_defaults()
     reset_grant_store()
     yield

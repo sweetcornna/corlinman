@@ -19,14 +19,20 @@ Layout:
 
 from __future__ import annotations
 
+from corlinman_agent.authz.approvals_compat import (
+    merge_approvals_into_permissions,
+    translate_approvals_rules,
+)
 from corlinman_agent.authz.defaults import (
     PermissionsDefaults,
     apply_permissions_config,
     get_permissions_defaults,
     reset_permissions_defaults,
+    resolve_external_tools_enforced,
 )
 from corlinman_agent.authz.gate import AuthzGate
 from corlinman_agent.authz.grants import GrantStore, get_grant_store, reset_grant_store
+from corlinman_agent.authz.matcher import external_candidate_keys
 from corlinman_agent.authz.model import Memory, PermissionMode, Subject
 
 __all__ = [
@@ -37,8 +43,12 @@ __all__ = [
     "PermissionsDefaults",
     "Subject",
     "apply_permissions_config",
+    "external_candidate_keys",
     "get_grant_store",
     "get_permissions_defaults",
+    "merge_approvals_into_permissions",
     "reset_grant_store",
     "reset_permissions_defaults",
+    "resolve_external_tools_enforced",
+    "translate_approvals_rules",
 ]

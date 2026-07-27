@@ -597,3 +597,76 @@ async def test_mcp_plugin_without_bridge_degrades(tmp_path: Path) -> None:
     result = await invoker("mcpkit", "search", b"{}")
     assert result.is_error is True
     assert json.loads(result.content)["error"] == "mcp_bridge_unavailable"
+
+
+# ─── W3-2 review fix: precise-key authz at the ONE execution funnel ──
+
+
+@pytest.mark.asyncio
+async def test_invoker_enforces_precise_plugin_key(tmp_path: Path) -> None:
+    """A ``plugin:<manifest>/<tool>`` scoped rule fires HERE — the agent
+    EP2 cannot recover the real plugin name from the OpenAI-collapsed
+    call (plugin == tool == function.name), so without this check every
+    [approvals]-translated rule was silently unenforced for sync/async/
+    mcp plugin kinds."""
+    from corlinman_agent.authz.defaults import apply_permissions_config
+
+    registry = PluginRegistry()
+    await registry.upsert(
+        _write_plugin(tmp_path, "file-ops", _ECHO_PLUGIN_SOURCE, tool="write")
+    )
+    invoker = build_registry_invoker(registry)
+
+    apply_permissions_config(
+        {"rules": [{"tool": "plugin:file-ops/write", "action": "deny"}]}
+    )
+    # The OpenAI-collapsed shape: plugin == tool == advertised name.
+    denied = await invoker("write", "write", json.dumps({}).encode("utf-8"))
+    assert denied.is_error
+    assert json.loads(denied.content)["error"] == "permission_denied"
+
+    # Clearing the block restores execution — same invoker, no rebuild.
+    apply_permissions_config(None)
+    ok = await invoker("write", "write", json.dumps({"x": 1}).encode("utf-8"))
+    assert ok.is_error is False
+
+
+@pytest.mark.asyncio
+async def test_invoker_escape_hatch_skips_precise_check(tmp_path: Path) -> None:
+    from corlinman_agent.authz.defaults import apply_permissions_config
+
+    registry = PluginRegistry()
+    await registry.upsert(
+        _write_plugin(tmp_path, "file-ops", _ECHO_PLUGIN_SOURCE, tool="write")
+    )
+    invoker = build_registry_invoker(registry)
+    apply_permissions_config(
+        {
+            "external_tools_enforced": False,
+            "rules": [{"tool": "plugin:file-ops/write", "action": "deny"}],
+        }
+    )
+    ok = await invoker("write", "write", json.dumps({}).encode("utf-8"))
+    assert ok.is_error is False
+
+
+def test_precise_external_keys_shapes() -> None:
+    """mcp entries strip the known ``{server}_`` prefix — no underscore
+    guessing; plugin entries use the real manifest name."""
+    from corlinman_server.gateway.grpc.plugin_invoker import (
+        _precise_external_keys,
+    )
+
+    assert _precise_external_keys("github", "mcp", "github_create_issue") == (
+        "github_create_issue",
+        "mcp:github/create_issue",
+    )
+    # A server whose name contains underscores stays unambiguous here.
+    assert _precise_external_keys("my_srv", "mcp", "my_srv_do_thing") == (
+        "my_srv_do_thing",
+        "mcp:my_srv/do_thing",
+    )
+    assert _precise_external_keys("file-ops", "sync", "write") == (
+        "write",
+        "plugin:file-ops/write",
+    )

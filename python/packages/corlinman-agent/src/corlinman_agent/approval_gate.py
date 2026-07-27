@@ -157,6 +157,7 @@ class ApprovalGate:
         session_key: str | None = None,
         user_id: str | None = None,
         subject: PermissionContext | None = None,
+        external_keys: tuple[str, ...] | None = None,
     ) -> ApprovalOutcome:
         """Resolve a tool call to a terminal allow/deny outcome.
 
@@ -169,6 +170,12 @@ class ApprovalGate:
         :class:`~corlinman_agent.authz.model.Subject` (tenant / surface
         included) instead of the flat kwargs, so grant-store keys derived
         downstream never lose the scope dimensions.
+
+        ``external_keys`` (W3-2) — for an EXTERNAL tool call the caller
+        passes the canonical candidate keys so the re-resolution here runs
+        under the external key space. Without this, an ``ask`` rule keyed
+        ``mcp:github/*`` would never re-match the bare tool name and the
+        escalation would silently degrade to the default action.
         """
         ctx = (
             subject
@@ -177,9 +184,13 @@ class ApprovalGate:
                 model=model, session_key=session_key, user_id=user_id
             )
         )
-        action, rule_index = self._permission_gate.resolve_with_args(
-            tool, ctx, args
-        )
+        resolve_external = getattr(self._permission_gate, "resolve_external", None)
+        if external_keys and resolve_external is not None:
+            action, rule_index = resolve_external(external_keys, ctx, args)
+        else:
+            action, rule_index = self._permission_gate.resolve_with_args(
+                tool, ctx, args
+            )
 
         if action == DENY:
             return ApprovalOutcome(

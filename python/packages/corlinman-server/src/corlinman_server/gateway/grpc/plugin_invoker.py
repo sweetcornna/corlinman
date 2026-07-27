@@ -86,6 +86,101 @@ DEFAULT_TOOL_TIMEOUT_MS = 30_000
 # ---------------------------------------------------------------------------
 
 
+def _precise_external_keys(
+    manifest_name: str, plugin_type: str, tool_name: str
+) -> tuple[str, ...]:
+    """Exact canonical keys (C7) for one registry-resolved external call.
+
+    ``mcp``-kind entries are the gateway's synthesized MCP bridges: the
+    manifest name IS the server and the advertised tool is
+    ``{server}_{tool}``, so the canonical bare tool is recovered by
+    stripping the known prefix — no underscore guessing (the agent EP2's
+    candidate-split heuristic exists only because it lacks the registry).
+    Every other kind is a gateway plugin: ``plugin:<manifest>/<tool>``.
+    The bare advertised name rides along for name-keyed and ``"*"`` rules.
+    """
+    keys = [tool_name]
+    if plugin_type == "mcp":
+        prefix = f"{manifest_name}_"
+        bare = tool_name[len(prefix):] if tool_name.startswith(prefix) else tool_name
+        keys.append(f"mcp:{manifest_name}/{bare}")
+    else:
+        keys.append(f"plugin:{manifest_name}/{tool_name}")
+    return tuple(dict.fromkeys(keys))
+
+
+def _authz_precise_deny(
+    state: dict[str, Any],
+    manifest: Any,
+    plugin_type: str,
+    tool_name: str,
+    args: Any,
+) -> ToolInvocation | None:
+    """Return a ``permission_denied`` invocation when the unified gate
+    denies this call under its EXACT canonical key; ``None`` = proceed.
+
+    Also owns the impact-time half of the R4 upgrade note: the first time
+    a bare ``"*"`` deny rule actually blocks an external tool, log the
+    ERROR-level breaking-change pointer (the boot-time check can only see
+    data_dir evidence; this one fires on the real event).
+    """
+    try:
+        from corlinman_agent.authz import AuthzGate, Subject  # noqa: PLC0415
+
+        if state["gate"] is None:
+            state["gate"] = AuthzGate()
+        gate = state["gate"]
+        keys = _precise_external_keys(
+            str(manifest.name), plugin_type, tool_name
+        )
+        action, rule_index = gate.resolve_external(
+            keys, Subject(), args if isinstance(args, dict) else None
+        )
+        if str(action) != "deny":
+            return None
+        rules = gate.rules
+        matched = (
+            rules[rule_index]
+            if rule_index is not None and 0 <= rule_index < len(rules)
+            else None
+        )
+        if (
+            matched is not None
+            and getattr(matched, "tool", "") == "*"
+            and not state["wildcard_note_logged"]
+        ):
+            state["wildcard_note_logged"] = True
+            log.error(
+                "plugin_invoker.wildcard_deny_now_covers_external",
+                plugin=str(manifest.name),
+                tool=tool_name,
+                detail=(
+                    'BREAKING (W3-2/C4): your {"tool": "*", "action": '
+                    '"deny"} rule now also blocks MCP/plugin tools — this '
+                    "call was just denied by it. Narrow the rule or set "
+                    "[permissions].external_tools_enforced = false "
+                    "(temporary escape hatch)."
+                ),
+            )
+        log.info(
+            "plugin_invoker.authz_denied",
+            plugin=str(manifest.name),
+            tool=tool_name,
+            key=keys[-1],
+        )
+        return _error_invocation(
+            "permission_denied",
+            f"tool {keys[-1]!r} is denied by the [permissions] policy",
+        )
+    except Exception as exc:  # noqa: BLE001 — verifier must not break dispatch
+        log.warning(
+            "plugin_invoker.authz_verify_failed",
+            tool=tool_name,
+            error=str(exc),
+        )
+        return None
+
+
 def build_registry_invoker(
     registry: Any | None,
     *,
@@ -130,6 +225,8 @@ PluginSupervisor`. When provided, ``service``-kind plugins are
         ServicePluginDispatcher(supervisor) if supervisor is not None else None
     )
     mcp_bridge = McpToolBridge(mcp_manager) if mcp_manager is not None else None
+    # One gate per invoker (call-time evaluator — cheap to hold).
+    authz_state: dict[str, Any] = {"gate": None, "wildcard_note_logged": False}
 
     async def _invoke(plugin: str, tool: str, args_json: bytes) -> ToolInvocation:
         if registry is None:
@@ -169,6 +266,24 @@ PluginSupervisor`. When provided, ``service``-kind plugins are
             return _error_invocation("bad_tool_arguments", str(exc))
 
         plugin_type = str(getattr(manifest.plugin_type, "value", manifest.plugin_type))
+
+        # W3-2 second enforcement point, PRECISE keys. This is the one
+        # funnel every external execution passes (sync/async/service/mcp),
+        # and the registry entry is in hand — so `plugin:<name>/<tool>` /
+        # `mcp:<server>/<tool>` scoped rules that the agent EP2 cannot
+        # recover from the OpenAI-collapsed call (plugin == tool ==
+        # function.name) ARE enforced here. Only a hard deny blocks; ask
+        # is trusted as already resolved by the agent EP (this hop has no
+        # prompt channel). The Subject is scope-less (no session context
+        # on this hop), so surface/tenant-scoped rules stay the agent
+        # EP's job. Fail-open on internal error — the verifier must not
+        # kill every plugin.
+        denied = _authz_precise_deny(
+            authz_state, manifest, plugin_type, tool_name, args
+        )
+        if denied is not None:
+            return denied
+
         timeout_ms = manifest.communication.timeout_ms or DEFAULT_TOOL_TIMEOUT_MS
 
         if plugin_type in ("sync", "async"):
