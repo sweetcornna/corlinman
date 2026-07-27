@@ -201,6 +201,13 @@ class _ReloadingProviderResolver:
         self._registry = ProviderRegistry([], data_dir=self._data_dir)
         self._aliases: dict[str, AliasEntry] = {}
         self._subagent_config: dict[str, Any] = {}
+        # G2 dense retrieval: the sidecar's "embedding" + "rag" blocks are
+        # stashed per reload so the standalone memory host's dense seam
+        # (wired in ``_serve``) reads live values through the properties
+        # below — the sidecar is the only config channel that reaches this
+        # process (no EnvironmentFile on the agent unit).
+        self._embedding_config: dict[str, Any] | None = None
+        self._rag_config: dict[str, Any] | None = None
         if path:
             self._reload_if_changed()
 
@@ -224,6 +231,7 @@ class _ReloadingProviderResolver:
         self._registry = ProviderRegistry(specs, data_dir=self._data_dir)
         self._aliases = aliases
         self._subagent_config = subagent_config
+        self._embedding_config, self._rag_config = _load_sidecar_rag_blocks(self._path)
         self._mtime = mtime
         event = "providers.registered" if is_first_load else "providers.reloaded"
         logger.info(
@@ -237,6 +245,24 @@ class _ReloadingProviderResolver:
     def aliases(self) -> dict[str, AliasEntry]:
         """Snapshot of the current alias map."""
         return dict(self._aliases)
+
+    @property
+    def registry(self) -> ProviderRegistry:
+        """The live registry (freshness-checked). Used by the dense seam."""
+        self._reload_if_changed()
+        return self._registry
+
+    @property
+    def embedding_config(self) -> dict[str, Any] | None:
+        """Live sidecar ``embedding`` block (freshness-checked)."""
+        self._reload_if_changed()
+        return self._embedding_config
+
+    @property
+    def rag_config(self) -> dict[str, Any] | None:
+        """Live sidecar ``rag`` block (freshness-checked)."""
+        self._reload_if_changed()
+        return self._rag_config
 
     @property
     def subagent_config(self) -> dict[str, Any]:
@@ -256,6 +282,67 @@ class _ReloadingProviderResolver:
             aliases=self._aliases,
             provider_hint=provider_hint,
         )
+
+
+def _load_sidecar_rag_blocks(
+    path: str | None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Read the ``embedding`` + ``rag`` blocks off the py-config sidecar.
+
+    Best-effort: any read/parse failure yields ``(None, None)`` — the
+    dense-retrieval seam then simply stays off, which is the correct
+    degraded behaviour (BM25-only, the pre-G2 status quo).
+    """
+    if not path:
+        return None, None
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 — never fatal
+        return None, None
+    if not isinstance(data, dict):
+        return None, None
+
+    def _block(key: str) -> dict[str, Any] | None:
+        value = data.get(key)
+        return value if isinstance(value, dict) else None
+
+    return _block("embedding"), _block("rag")
+
+
+def _wire_standalone_dense_seam(app_state: Any, resolver: Any) -> None:
+    """Attach the G2 dense-retrieval seam to the standalone memory host.
+
+    The agent process owns its LocalSqliteHost (built by
+    ``build_standalone_app_state``); without this bridge the [rag] dense
+    knobs saved in the UI would only ever affect the gateway's in-process
+    host while the dual-process deployment silently stayed BM25-only —
+    the exact "agent config blindness" failure mode. Best-effort: any
+    wiring failure keeps the legacy BM25 path fully intact.
+    """
+    host = getattr(app_state, "memory_host", None)
+    if host is None or not hasattr(host, "configure_dense") or resolver is None:
+        return
+    try:
+        from corlinman_providers.embedding_router import EmbeddingRouter
+
+        router = EmbeddingRouter(
+            registry_getter=lambda: resolver.registry,
+            config_getter=lambda: resolver.embedding_config,
+        )
+        host.configure_dense(
+            embed_many=router.embed,
+            config_getter=lambda: resolver.rag_config,
+        )
+        logger.info("agent.memory.dense_seam_wired")
+        # Same opt-in boot backfill as the gateway-embedded seam (review
+        # fix: backfill_vectors previously had no production caller).
+        from corlinman_server.gateway.lifecycle.c2_wiring import (  # noqa: PLC0415
+            _maybe_schedule_backfill,
+        )
+
+        _maybe_schedule_backfill(host, lambda: resolver.rag_config)
+    except Exception as exc:  # noqa: BLE001 — dense is an enhancement
+        logger.warning("agent.memory.dense_seam_failed", error=str(exc))
 
 
 def _apply_agent_config_from_sidecar(path: str | None) -> None:
@@ -588,6 +675,7 @@ async def _serve() -> int:
 
     tencent_policy_resolver = ReloadingTencentPolicyResolver(py_config_path)
 
+    resolver: _ReloadingProviderResolver | None = None
     if os.environ.get("CORLINMAN_TEST_MOCK_PROVIDER") is not None:
         # Test smoke path: leave provider_resolver unset so the Agent
         # servicer activates its offline mock provider instead of falling
@@ -622,6 +710,11 @@ async def _serve() -> int:
     standalone_app_state = await build_standalone_app_state(
         _resolve_execution_state_dir()
     )
+    # G2: dense retrieval for the standalone host — reads the sidecar's
+    # "embedding" + "rag" blocks live through the resolver, so admin
+    # config writes propagate without a restart. No-op in the mock path
+    # (no resolver) and whenever [rag].dense_enabled is off.
+    _wire_standalone_dense_seam(standalone_app_state, resolver)
     agent_servicer.set_app_state(standalone_app_state)
     agent_pb2_grpc.add_AgentServicer_to_server(agent_servicer, server)
 

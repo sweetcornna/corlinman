@@ -228,6 +228,11 @@ def render_py_config(
             _attr(cfg, "permissions", None), _attr(cfg, "approvals", None)
         ),
         "embedding": embedding,
+        # G2 dense retrieval: conversational-memory retrieval runs inside
+        # the agent process (its LocalSqliteHost), which never sees the
+        # gateway config snapshot — same reachability story as "voice" /
+        # "image" above, so the [rag] dense knobs ride the sidecar too.
+        "rag": _render_rag(_attr(cfg, "rag", None)),
         "subagent": subagent,
         "tencent_safety": tencent_safety,
         "qq_onebot_default_instance": (
@@ -236,6 +241,40 @@ def render_py_config(
         "qq_onebot": qq_onebot,
         "qq_onebot_instances": qq_onebot_instances,
     }
+
+
+def _render_rag(section: Any) -> dict[str, Any] | None:
+    """Render the ``[rag]`` dense-retrieval knobs for the agent sidecar.
+
+    Only well-typed values are forwarded: ``dense_enabled`` must be a
+    literal boolean and the two int knobs reject bools (``isinstance(raw,
+    bool)`` is checked before ``int`` — bools are ints in Python). The
+    agent-side shape layer (``LocalSqliteHost._dense_settings``) re-parses
+    defensively, so dropping a malformed key here just means "default".
+    """
+    if section is None:
+        return None
+    out: dict[str, Any] = {}
+    for key in ("dense_enabled", "backfill_on_start"):
+        value = _attr(section, key, None)
+        if isinstance(value, bool):
+            out[key] = value
+    for key in ("rrf_k", "dense_top_k"):
+        value = _attr(section, key, None)
+        if isinstance(value, bool):
+            continue
+        # Integral floats accepted — the shipped example writes
+        # ``rrf_k = 60.0`` and rejecting it silently pinned the default
+        # (review fix).
+        if isinstance(value, float) and value.is_integer():
+            value = int(value)
+        if not isinstance(value, int):
+            continue
+        out[key] = value
+    sim = _attr(section, "dense_min_similarity", None)
+    if not isinstance(sim, bool) and isinstance(sim, (int, float)):
+        out["dense_min_similarity"] = float(sim)
+    return out or None
 
 
 def _render_image(models: Any) -> dict[str, Any] | None:
