@@ -35,6 +35,7 @@ from corlinman_agent.voice.catalog import (
     resolve_voice,
     voice_params,
 )
+from corlinman_agent.voice.defaults import get_voice_defaults
 from corlinman_agent.voice.errors import SynthesisError
 from corlinman_agent.voice.gpt_live import synthesize_gpt_live
 from corlinman_agent.voice.http_backend import synthesize_http
@@ -264,9 +265,13 @@ async def synthesize(request: SynthesisRequest) -> SynthesisResult:
     if len(text) > MAX_INPUT_CHARS:
         text = text[:MAX_INPUT_CHARS]
 
+    # Operator config sits between the caller's own arguments and the env
+    # vars — see corlinman_agent.voice.defaults for why.
+    cfg = get_voice_defaults()
     backend_id = normalize_backend(
         request.backend
         or _param_str(request.params, "tts_backend", "backend")
+        or cfg.backend
         or os.environ.get("CORLINMAN_TTS_BACKEND")
         or ""
     )
@@ -280,6 +285,7 @@ async def synthesize(request: SynthesisRequest) -> SynthesisResult:
         backend.id,
         request.voice
         or _param_str(request.params, "voice", "reference_id")
+        or cfg.voice
         or os.environ.get("CORLINMAN_TTS_VOICE")
         or "",
     )
@@ -296,17 +302,20 @@ async def synthesize(request: SynthesisRequest) -> SynthesisResult:
 
     fmt: AudioFormat = resolve_format(
         backend.id,
-        request.fmt or _param_str(request.params, "format") or "",
+        request.fmt or _param_str(request.params, "format") or cfg.fmt or "",
     )
     model = resolve_model(
         backend.id,
         request.model
         or _param_str(request.params, "model", "tts_model")
+        or cfg.model
         or os.environ.get("CORLINMAN_TTS_MODEL")
         or "",
     )
-    instructions = request.instructions or _param_str(
-        request.params, "instructions"
+    instructions = (
+        request.instructions
+        or _param_str(request.params, "instructions")
+        or (cfg.instructions or None)
     )
     if instructions and not backend.supports_instructions:
         instructions = None
@@ -315,6 +324,8 @@ async def synthesize(request: SynthesisRequest) -> SynthesisResult:
         raw_speed = (request.params or {}).get("speed")
         if isinstance(raw_speed, (int, float)):
             speed = float(raw_speed)
+        elif cfg.speed is not None:
+            speed = cfg.speed
     if speed is not None and not backend.supports_speed:
         speed = None
 

@@ -118,10 +118,20 @@ Codex 风格的别名 `POST /backend-api/codex/realtime/calls` 请求体完全�
 
 ### 依赖与前置条件
 
-- **可选依赖 `aiortc`**：`uv sync --extra voice`。没装时返回
+- **可选依赖 `aiortc`**：`uv sync --extra voice`（仓库根目录即可）。没装时返回
   `gpt_live_dependency_missing`，不会在启动时炸。
-- **网关必须能做 Live attestation**。目前 Sub2API 的实现要求它自身跑在
-  macOS 上，否则任何请求都返回：
+- **网关必须能做 Live attestation**。这是 Sub2API 侧的硬性条件，源码里是
+  编译期分支（`liveattestation/attestation_darwin.go` vs
+  `attestation_unsupported.go`），三条同时满足才行：
+
+  1. Sub2API **跑在 macOS 上**（非 darwin 一律编译进 unsupported 分支）；
+  2. **Apple Silicon**——`runtime.GOARCH != "arm64"` 直接报
+     *"live attestation currently requires Apple Silicon"*；
+  3. 该机器上装有**官方 ChatGPT.app**（`/Applications/ChatGPT.app` 或
+     `~/Applications/ChatGPT.app`）——attestation 取自该 app 的 Apple
+     DeviceCheck 凭证。
+
+  任一不满足时返回：
 
   ```
   503 {"error":{"message":"Live attestation is unavailable: live attestation
@@ -131,6 +141,12 @@ Codex 风格的别名 `POST /backend-api/codex/realtime/calls` 请求体完全�
   这个门禁在校验 SDP 和模型 id **之前**触发，所以管理界面的试听会先做一次
   轻量探测（`probe_live_endpoint`），直接告诉你"网关无法 attest"，而不是让
   你先去装 `aiortc` 再发现一样跑不通。
+
+  换言之：**部署在 Linux VPS 上的 Sub2API 永远无法提供 GPT-Live**。要用它，
+  需要在一台装了 ChatGPT.app 的 Apple Silicon Mac 上跑一个 Sub2API 实例，
+  并把 `[voice.backends.gpt_live].base_url` 指向它。corlinman 这一侧的 WebRTC
+  链路已有回环测试覆盖（`test_gpt_live_webrtc_loopback.py`：真实 aiortc 对端
+  应答 SDP、推音轨、录出可播放文件），所以剩下的唯一变量就是网关。
 
 错误码：`live_attestation_unavailable` / `live_endpoint_missing` /
 `live_http_status` / `live_timeout` / `gpt_live_dependency_missing`。
@@ -182,7 +198,27 @@ Auth），前端 `<audio src>` 带 cookie 即可播放。
 > OpenAI 后端默认音色是 `alloy` 而不是推荐的 `marin` —— `marin`/`cedar` 只
 > 存在于 `gpt-4o-mini-tts`，仍钉在 `tts-1` 的部署用它们会 400。
 
-## 8. 相关环境变量
+## 8. 生效优先级与环境变量
 
-`CORLINMAN_TTS_BACKEND`、`CORLINMAN_TTS_MODEL`、`CORLINMAN_TTS_VOICE`、
-`CORLINMAN_TTS_TIMEOUT_SECS`。配置项优先级高于环境变量。
+音色/后端/模型的解析顺序，从高到低：
+
+1. 工具调用参数（模型显式点名某个音色）；
+2. persona / provider params（某个 persona 绑定了自己的音色）；
+3. **`[voice]` 配置**（管理界面里选的默认值）；
+4. `CORLINMAN_TTS_BACKEND` / `_MODEL` / `_VOICE` 环境变量；
+5. 后端内置默认值。
+
+配置**高于**环境变量：环境变量早于设置页存在，界面上改了值不应被宿主机上
+一条陈旧的 export 悄悄盖掉。
+
+`text_to_speech` 跑在 **agent 进程**里，它看不到网关的配置快照 —— `[voice]`
+是通过 `py-config.json` sidecar 送过去的（`_apply_voice_config_from_sidecar`），
+sidecar 每次重写都会重新应用，因此界面里保存即生效，无需重启 agent。
+`CORLINMAN_TTS_TIMEOUT_SECS` 仍只走环境变量。
+
+## 9. 与 /models 能力页的关系
+
+`/models` 的**能力**标签页把「对话 / 图片生成 / 语音」三个绑定并排显示：
+对话链接到路由页，图片生成可直接编辑（写 `[models].image_provider` /
+`image_model`），语音显示当前 `[voice]` 摘要并链接回本页做逐音色试听。
+语音的写入口只有这一处，避免两条写路径改同一份配置。

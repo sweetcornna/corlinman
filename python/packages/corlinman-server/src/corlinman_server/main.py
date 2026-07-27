@@ -220,6 +220,7 @@ class _ReloadingProviderResolver:
             return
         is_first_load = self._mtime is None
         specs, aliases, subagent_config = _load_config(self._path)
+        _apply_voice_config_from_sidecar(self._path)
         self._registry = ProviderRegistry(specs, data_dir=self._data_dir)
         self._aliases = aliases
         self._subagent_config = subagent_config
@@ -255,6 +256,46 @@ class _ReloadingProviderResolver:
             aliases=self._aliases,
             provider_hint=provider_hint,
         )
+
+
+def _apply_voice_config_from_sidecar(path: str | None) -> None:
+    """Push the sidecar's ``voice`` + ``image`` blocks into the agent process.
+
+    ``text_to_speech`` resolves its backend inside *this* process and never
+    touches the gateway's admin routes, so without this the operator's
+    ``[voice]`` choices would only ever affect the admin audition — the UI
+    would look wired while channels kept using the built-in default.
+
+    Runs on every sidecar reload, so a change saved in the UI takes effect
+    without restarting the agent. Never raises: a malformed custom backend
+    must not take the agent process down.
+    """
+    if not path:
+        return
+    try:
+        from corlinman_agent.voice import apply_voice_config
+
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        section = data.get("voice")
+        defaults = apply_voice_config(section if isinstance(section, dict) else None)
+
+        from corlinman_agent.image.defaults import apply_image_config
+
+        image_section = data.get("image")
+        img = apply_image_config(image_section if isinstance(image_section, dict) else None)
+        if img.configured:
+            logger.info(
+                "image.config_applied", provider=img.provider or None, model=img.model or None
+            )
+        if defaults.backend or defaults.voice:
+            logger.info(
+                "voice.config_applied",
+                backend=defaults.backend or None,
+                voice=defaults.voice or None,
+                model=defaults.model or None,
+            )
+    except Exception as exc:  # noqa: BLE001 — never fatal
+        logger.warning("voice.config_apply_failed", error=str(exc))
 
 
 def _load_config(

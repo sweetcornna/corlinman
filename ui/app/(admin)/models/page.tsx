@@ -37,16 +37,18 @@ import {
 import { ProvidersAdminContent } from "@/components/model-hub/providers-admin-content";
 import { OAuthPanel } from "@/components/model-hub/oauth-panel";
 import { RoutingSection } from "@/components/model-hub/routing-section";
+import { CapabilitiesSection } from "@/components/model-hub/capabilities-section";
 import { CredentialsAdvanced } from "@/components/model-hub/credentials-advanced";
 import { ProviderSetupFlow } from "@/components/model-hub/provider-setup-flow";
 import { useSetupStatus } from "@/lib/hooks/use-setup-status";
 
-const TABS = ["providers", "routing", "advanced"] as const;
+const TABS = ["providers", "routing", "capabilities", "advanced"] as const;
 type TabId = (typeof TABS)[number];
 
 const TAB_LABEL_KEYS: Record<TabId, string> = {
   providers: "modelHub.tabs.providers",
   routing: "modelHub.tabs.routing",
+  capabilities: "modelHub.tabs.capabilities",
   advanced: "modelHub.tabs.advanced",
 };
 
@@ -166,6 +168,10 @@ function ModelHub() {
       ) : tab === "routing" ? (
         <div className="flex flex-col gap-6" data-testid="model-hub-panel-routing">
           <RoutingSection key={routingSeed} />
+        </div>
+      ) : tab === "capabilities" ? (
+        <div className="flex flex-col gap-6" data-testid="model-hub-panel-capabilities">
+          <CapabilitiesSection />
         </div>
       ) : (
         <div className="flex flex-col gap-6" data-testid="model-hub-panel-advanced">

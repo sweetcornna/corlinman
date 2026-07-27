@@ -197,6 +197,13 @@ def render_py_config(
     return {
         "providers": providers,
         "aliases": aliases_out,
+        # The `text_to_speech` tool runs in the agent process, which never
+        # sees the gateway config snapshot. Without this the [voice] block
+        # would only reach the admin preview route and an operator's UI
+        # choice would never affect what channels actually send.
+        "voice": _render_voice(_attr(cfg, "voice", None)),
+        # Global image-generation binding; same rationale as "voice".
+        "image": _render_image(_attr(cfg, "models", None)),
         "embedding": embedding,
         "subagent": subagent,
         "tencent_safety": tencent_safety,
@@ -206,6 +213,39 @@ def render_py_config(
         "qq_onebot": qq_onebot,
         "qq_onebot_instances": qq_onebot_instances,
     }
+
+
+def _render_image(models: Any) -> dict[str, Any] | None:
+    """Render ``[models].image_provider`` / ``image_model`` for the agent."""
+    if models is None:
+        return None
+    out: dict[str, Any] = {}
+    for key in ("image_provider", "image_model"):
+        value = _attr(models, key, None)
+        if value not in (None, ""):
+            out[key] = value
+    return out or None
+
+
+def _render_voice(voice: Any) -> dict[str, Any] | None:
+    """Render the ``[voice]`` block for the agent-process sidecar.
+
+    Passed through nearly verbatim (including ``backends``, so a custom
+    provider defined in the UI is usable by the tool, not just by the
+    preview route). ``None`` when unset, which the reader treats as
+    "leave the built-in defaults alone".
+    """
+    if voice is None:
+        return None
+    out: dict[str, Any] = {}
+    for key in ("enabled", "backend", "voice", "model", "format", "instructions", "speed"):
+        value = _attr(voice, key, None)
+        if value not in (None, ""):
+            out[key] = value
+    backends = _attr(voice, "backends", None)
+    if isinstance(backends, Mapping):
+        out["backends"] = {str(k): dict(v) for k, v in backends.items() if isinstance(v, Mapping)}
+    return out or None
 
 
 def _render_qq_onebot_transports(

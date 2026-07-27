@@ -472,15 +472,19 @@ def _register_voice_backends(cfg: Any) -> None:
     Never fatal: a malformed custom backend must not take the gateway down.
     """
     try:
-        from corlinman_agent.voice import register_backends_from_config
+        from corlinman_agent.voice import apply_voice_config
 
         voice_cfg = cfg.get("voice") if isinstance(cfg, dict) else None
-        backends_cfg = (
-            voice_cfg.get("backends") if isinstance(voice_cfg, dict) else None
-        )
-        registered = register_backends_from_config(backends_cfg)
-        if registered:
-            logger.info("gateway.voice.custom_backends", backends=list(registered))
+        # Applies custom backends *and* the operator's default
+        # backend/voice/model, so the in-process agent path matches what
+        # the two-process sidecar path installs.
+        defaults = apply_voice_config(voice_cfg if isinstance(voice_cfg, dict) else None)
+        if defaults.backend or defaults.voice:
+            logger.info(
+                "gateway.voice.defaults",
+                backend=defaults.backend or None,
+                voice=defaults.voice or None,
+            )
     except Exception as exc:  # pragma: no cover — never fatal
         logger.warning("gateway.voice.backend_registration_failed", error=str(exc))
 

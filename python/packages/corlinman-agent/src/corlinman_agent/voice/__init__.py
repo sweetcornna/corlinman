@@ -50,6 +50,14 @@ from corlinman_agent.voice.catalog import (
     resolve_model,
     resolve_voice,
 )
+from corlinman_agent.voice.defaults import (
+    VoiceDefaults,
+    apply_voice_config,
+    get_voice_defaults,
+    reset_voice_defaults,
+    set_voice_defaults,
+    voice_defaults_from_config,
+)
 from corlinman_agent.voice.errors import SynthesisError
 from corlinman_agent.voice.synth import (
     MAX_INPUT_CHARS,
@@ -72,17 +80,23 @@ __all__ = [
     "SynthesisRequest",
     "SynthesisResult",
     "VoiceDef",
+    "VoiceDefaults",
     "all_backends",
+    "apply_voice_config",
     "backend_from_config",
     "get_backend",
+    "get_voice_defaults",
     "list_backend_ids",
     "normalize_backend",
     "register_backend",
     "register_backends_from_config",
     "reset_custom_backends",
+    "reset_voice_defaults",
     "resolve_credentials",
     "resolve_format",
     "resolve_model",
     "resolve_voice",
+    "set_voice_defaults",
     "synthesize",
+    "voice_defaults_from_config",
 ]

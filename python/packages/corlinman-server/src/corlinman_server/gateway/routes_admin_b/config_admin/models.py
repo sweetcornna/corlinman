@@ -365,4 +365,82 @@ def router() -> APIRouter:
             "aliases": dict(models_cfg.get("aliases") or {}),
         }
 
+    @r.get("/admin/models/capabilities", response_model=None)
+    async def get_capabilities():
+        """Which model serves each capability: chat, image, speech.
+
+        The model hub needs one place to answer "what actually runs when
+        the agent generates a picture or speaks?" — previously only chat
+        had a visible binding, image was implicit (first `image_capable`
+        provider, or the chat provider), and speech lived only under
+        /voice. Composed read-only from live config; each half is written
+        back through its own PUT so nothing is coupled.
+        """
+        cfg = dict(config_snapshot())
+        models_cfg = cfg.get("models") or {}
+        voice_cfg = cfg.get("voice") or {}
+        providers_cfg = cfg.get("providers") or {}
+
+        image_candidates: list[str] = []
+        if isinstance(providers_cfg, dict):
+            for name, entry in providers_cfg.items():
+                if not isinstance(entry, dict) or entry.get("enabled") is False:
+                    continue
+                if entry.get("image_capable") is True:
+                    image_candidates.append(str(name))
+
+        alias_names: list[str] = []
+        aliases_map = models_cfg.get("aliases") if isinstance(models_cfg, dict) else None
+        if isinstance(aliases_map, dict):
+            alias_names = sorted(str(k) for k in aliases_map)
+
+        return {
+            "text": {"model": str(models_cfg.get("default", "") or "")},
+            "image": {
+                "provider": str(models_cfg.get("image_provider", "") or ""),
+                "model": str(models_cfg.get("image_model", "") or ""),
+                # Slots that declared image_capable — a hint for the picker,
+                # not a constraint: an explicit binding always wins.
+                "capable_providers": image_candidates,
+            },
+            "voice": {
+                "enabled": bool(voice_cfg.get("enabled", True))
+                if isinstance(voice_cfg, dict)
+                else True,
+                "backend": str(voice_cfg.get("backend", "") or "")
+                if isinstance(voice_cfg, dict)
+                else "",
+                "model": str(voice_cfg.get("model", "") or "")
+                if isinstance(voice_cfg, dict)
+                else "",
+                "voice": str(voice_cfg.get("voice", "") or "")
+                if isinstance(voice_cfg, dict)
+                else "",
+            },
+            "aliases": alias_names,
+        }
+
+    @r.put("/admin/models/capabilities/image", response_model=None)
+    async def put_image_capability(body: dict[str, Any]):
+        """Bind the global image-generation model.
+
+        Writes ``[models].image_provider`` / ``image_model``, which the
+        agent honours between a persona binding and the chat-provider
+        fallback. Sending empty strings clears the binding.
+        """
+        provider = str(body.get("provider") or "").strip()
+        model = str(body.get("model") or "").strip()
+        state = get_admin_state()
+        cfg = dict(config_snapshot())
+        models_cfg = dict(cfg.get("models") or {})
+        for key, value in (("image_provider", provider), ("image_model", model)):
+            if value:
+                models_cfg[key] = value
+            else:
+                models_cfg.pop(key, None)
+        err = await _persist_alias_swap(state, models_cfg)
+        if err is not None:
+            return err
+        return {"status": "ok", "provider": provider, "model": model}
+
     return r

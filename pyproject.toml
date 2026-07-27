@@ -27,6 +27,13 @@ dependencies = [
     "corlinman-runtime",
 ]
 
+[project.optional-dependencies]
+# Re-exported from corlinman-agent so `uv sync --extra voice` works from the
+# workspace root. Without this the extra is only reachable as
+# `uv sync --package corlinman-agent --extra voice`, which is not what the
+# docs (or anyone's muscle memory) reach for.
+voice = ["corlinman-agent[voice]"]
+
 [tool.uv.sources]
 corlinman-grpc = { workspace = true }
 corlinman-providers = { workspace = true }
