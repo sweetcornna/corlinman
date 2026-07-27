@@ -28,12 +28,12 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-import pytest
-
-fastapi = pytest.importorskip("fastapi")
-jwt = pytest.importorskip("jwt")
-
 import httpx
+
+# Hard runtime deps now — a missing install must FAIL the suite, not
+# silently skip every OIDC test (review fix; was pytest.importorskip).
+import jwt
+import pytest
 from corlinman_server.gateway.routes_admin_a import auth as auth_mod
 from corlinman_server.gateway.routes_admin_a import oidc as oidc_mod
 from corlinman_server.gateway.routes_admin_a._session_store import (
@@ -95,6 +95,7 @@ def _mint_id_token(
         "aud": aud,
         "sub": "user-1",
         "email": email,
+        "email_verified": True,
         "nonce": nonce,
         "iat": now,
         "exp": now + exp_delta,
@@ -510,18 +511,36 @@ def test_login_404_when_disabled(state: AdminState) -> None:
     assert resp.json()["detail"]["error"] == "oidc_disabled"
 
 
-def test_redirect_param_is_sanitized(
-    state: AdminState, jwks_doc: dict[str, Any]
+def test_redirect_param_is_sanitized_end_to_end(
+    state: AdminState, rsa_key: Any, jwks_doc: dict[str, Any]
 ) -> None:
-    """Absolute/protocol-relative redirect targets collapse to '/'."""
-    _install_transport(_make_transport(jwks_doc))
-    client = _client()
+    """Route-driven (review fix — asserting on the private helper alone
+    could not fail if the route stopped calling it): a hostile
+    ``redirect`` survives the WHOLE flow only as '/'."""
+    _install_transport(
+        _make_transport(
+            jwks_doc,
+            id_token_factory=lambda form: _mint_id_token(
+                rsa_key, nonce=_nonce_holder["nonce"]
+            ),
+        )
+    )
     for evil in ("https://evil.example/", "//evil.example", "/\\evil"):
+        client = _client()
         resp = client.get("/auth/oidc/login", params={"redirect": evil})
         assert resp.status_code == 302
-        # The sanitized redirect lands in the txn; cheapest observable
-        # assertion: the helper itself.
-        assert oidc_mod._sanitize_redirect(evil) == "/"
+        params = dict(
+            urllib.parse.parse_qsl(
+                urllib.parse.urlsplit(resp.headers["location"]).query
+            )
+        )
+        _nonce_holder["nonce"] = params["nonce"]
+        done = client.get(
+            "/auth/oidc/callback",
+            params={"state": params["state"], "code": "authcode-1"},
+        )
+        assert done.status_code == 302
+        assert done.headers["location"] == "/"
 
 
 # ---------------------------------------------------------------------------
@@ -589,3 +608,117 @@ def test_password_login_wrong_password_still_401(state: AdminState) -> None:
         "/admin/login", json={"username": "admin", "password": "wrong"}
     )
     assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# W3-review security fixes
+# ---------------------------------------------------------------------------
+
+
+def test_unverified_email_is_rejected(
+    state: AdminState, rsa_key: Any, jwks_doc: dict[str, Any]
+) -> None:
+    """MAJOR review fix: a whitelisted but UNVERIFIED email must not mint
+    an admin session — on IdPs with self-asserted emails that is a full
+    whitelist bypass. Missing claim counts as unverified (strict)."""
+    for extra in ({"email_verified": False}, {"email_verified": None}):
+        _install_transport(
+            _make_transport(
+                jwks_doc,
+                id_token_factory=lambda form, e=extra: _mint_id_token(
+                    rsa_key, nonce=_nonce_holder["nonce"], extra=e
+                ),
+            )
+        )
+        client = _client()
+        params = _start_login(client)
+        _nonce_holder["nonce"] = params["nonce"]
+        resp = client.get(
+            "/auth/oidc/callback",
+            params={"state": params["state"], "code": "authcode-1"},
+        )
+        assert _oidc_error_of(resp) == "email_unverified"
+        oidc_mod._reset_caches_for_tests()
+
+
+def test_opt_out_admits_token_without_verified_claim(
+    state: AdminState, rsa_key: Any, jwks_doc: dict[str, Any]
+) -> None:
+    state.oidc_settings = _settings(require_verified_email=False)
+    _install_transport(
+        _make_transport(
+            jwks_doc,
+            id_token_factory=lambda form: _mint_id_token(
+                rsa_key, nonce=_nonce_holder["nonce"], extra={"email_verified": None}
+            ),
+        )
+    )
+    client = _client()
+    params = _start_login(client)
+    _nonce_holder["nonce"] = params["nonce"]
+    resp = client.get(
+        "/auth/oidc/callback",
+        params={"state": params["state"], "code": "authcode-1"},
+    )
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/chat"
+
+
+def test_callback_requires_browser_state_cookie(
+    state: AdminState, rsa_key: Any, jwks_doc: dict[str, Any]
+) -> None:
+    """Login-CSRF binding: a callback completed by a DIFFERENT browser
+    (no state cookie) is rejected even with a valid server-side state."""
+    _install_transport(
+        _make_transport(
+            jwks_doc,
+            id_token_factory=lambda form: _mint_id_token(
+                rsa_key, nonce=_nonce_holder["nonce"]
+            ),
+        )
+    )
+    starter = _client()
+    params = _start_login(starter)
+    _nonce_holder["nonce"] = params["nonce"]
+    victim = _client()  # fresh cookie jar — the attacker's forced browser
+    resp = victim.get(
+        "/auth/oidc/callback",
+        params={"state": params["state"], "code": "authcode-1"},
+    )
+    assert _oidc_error_of(resp) == "state_mismatch"
+
+
+def test_multi_aud_requires_matching_azp(
+    state: AdminState, rsa_key: Any, jwks_doc: dict[str, Any]
+) -> None:
+    """OIDC Core 3.1.3.7: multi-audience token minted for a sibling
+    client (azp != us) must be rejected even though aud contains us."""
+    _install_transport(
+        _make_transport(
+            jwks_doc,
+            id_token_factory=lambda form: _mint_id_token(
+                rsa_key,
+                nonce=_nonce_holder["nonce"],
+                aud=[CLIENT_ID, "other-client"],  # type: ignore[arg-type]
+                extra={"azp": "other-client"},
+            ),
+        )
+    )
+    client = _client()
+    params = _start_login(client)
+    _nonce_holder["nonce"] = params["nonce"]
+    resp = client.get(
+        "/auth/oidc/callback",
+        params={"state": params["state"], "code": "authcode-1"},
+    )
+    assert _oidc_error_of(resp) == "invalid_id_token"
+
+
+def test_login_start_is_rate_limited(
+    state: AdminState, jwks_doc: dict[str, Any]
+) -> None:
+    _install_transport(_make_transport(jwks_doc))
+    client = _client()
+    codes = [client.get("/auth/oidc/login").status_code for _ in range(12)]
+    assert codes[:10] == [302] * 10
+    assert codes[10] == 429 and codes[11] == 429

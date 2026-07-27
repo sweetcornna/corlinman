@@ -86,6 +86,45 @@ _TXN_TTL_SECS = 600.0
 #: attacker from ballooning memory by spamming ``/auth/oidc/login``.
 _TXN_MAX = 512
 
+#: Browser-binding cookie for the pending login's ``state`` (review fix:
+#: login-CSRF — the callback requires cookie == query state, so a forced
+#: cross-site callback cannot complete in a victim's browser).
+_STATE_COOKIE = "corlinman_oidc_state"
+
+#: Unauthenticated /auth/oidc/login window: max starts per IP per minute.
+_LOGIN_RATE_MAX = 10
+_LOGIN_RATE_WINDOW_S = 60.0
+_LOGIN_RATE: dict[str, list[float]] = {}
+_LOGIN_RATE_LOCK = threading.Lock()
+
+
+def _login_rate_limited(client_ip: str) -> bool:
+    """Sliding-window per-IP limiter for the unauthenticated login start.
+
+    In-memory (same lifetime as the txn table). Bounded: stale IPs are
+    pruned on every call, so the map cannot grow past active-window IPs.
+    """
+    now = time.monotonic()
+    with _LOGIN_RATE_LOCK:
+        stale = [
+            ip
+            for ip, ts in _LOGIN_RATE.items()
+            if not ts or now - ts[-1] > _LOGIN_RATE_WINDOW_S
+        ]
+        for ip in stale:
+            del _LOGIN_RATE[ip]
+        window = [
+            t
+            for t in _LOGIN_RATE.get(client_ip, [])
+            if now - t <= _LOGIN_RATE_WINDOW_S
+        ]
+        if len(window) >= _LOGIN_RATE_MAX:
+            _LOGIN_RATE[client_ip] = window
+            return True
+        window.append(now)
+        _LOGIN_RATE[client_ip] = window
+        return False
+
 #: Clock-skew allowance for exp/iat validation (seconds).
 _JWT_LEEWAY_SECS = 60
 
@@ -123,6 +162,12 @@ class OidcSettings:
     # proxy without forwarded headers). Must exactly match the redirect
     # URI registered at the IdP.
     redirect_url: str = ""
+    #: Review fix (major): the email claim is only trustworthy when the
+    #: IdP asserts ``email_verified: true`` — on IdPs that let users
+    #: self-assert an address, an unverified email walks straight through
+    #: the whitelist into a full admin session. Default STRICT; the
+    #: opt-out exists for IdPs that verify out-of-band but omit the claim.
+    require_verified_email: bool = True
 
 
 def _extract_section(obj: Any, key: str) -> Any:
@@ -167,6 +212,10 @@ def resolve_oidc_settings(config: Any) -> OidcSettings | None:
         d.lower().lstrip("@") for d in _coerce_str_tuple(oidc.get("allowed_domains"))
     )
     redirect_url = str(oidc.get("redirect_url") or "").strip()
+    raw_require_verified = oidc.get("require_verified_email")
+    require_verified_email = (
+        raw_require_verified if isinstance(raw_require_verified, bool) else True
+    )
 
     if enabled and (not issuer or not client_id):
         logger.warning(
@@ -194,6 +243,7 @@ def resolve_oidc_settings(config: Any) -> OidcSettings | None:
         allowed_emails=allowed_emails,
         allowed_domains=allowed_domains,
         redirect_url=redirect_url,
+        require_verified_email=require_verified_email,
     )
 
 
@@ -316,10 +366,14 @@ async def _get_discovery(settings: OidcSettings) -> dict[str, Any] | None:
     return payload
 
 
-async def _get_jwks(jwks_uri: str) -> dict[str, Any] | None:
-    doc = _JWKS_CACHE.cached(jwks_uri)
-    if doc is not None:
-        return doc
+async def _get_jwks(jwks_uri: str, *, force: bool = False) -> dict[str, Any] | None:
+    """``force=True`` bypasses the TTL cache — used exactly once when the
+    id_token names a ``kid`` the cached JWKS lacks (key rotation): without
+    it every SSO login fails for up to the full cache TTL."""
+    if not force:
+        doc = _JWKS_CACHE.cached(jwks_uri)
+        if doc is not None:
+            return doc
     if _JWKS_CACHE.in_failure_backoff(jwks_uri):
         return None
     try:
@@ -395,6 +449,8 @@ def _reset_caches_for_tests() -> None:
     _DISCOVERY_CACHE.reset()
     _JWKS_CACHE.reset()
     _TXNS.reset()
+    with _LOGIN_RATE_LOCK:
+        _LOGIN_RATE.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -418,10 +474,21 @@ def _sanitize_redirect(raw: str | None) -> str:
     return raw
 
 
-def _redirect_uri(request: Request, settings: OidcSettings) -> str:
+def _redirect_uri(
+    request: Request, settings: OidcSettings, admin_state: AdminState
+) -> str:
     if settings.redirect_url:
         return settings.redirect_url
-    return str(request.base_url).rstrip("/") + "/auth/oidc/callback"
+    base = str(request.base_url).rstrip("/")
+    # Review fix: behind the documented TLS-terminating proxy the gateway
+    # sees plain http — reuse the repo's trusted X-Forwarded-Proto
+    # resolution (same helper the session cookie's Secure flag uses) so
+    # the registered https redirect URI matches.
+    if base.startswith("http://") and _auth_mod._request_is_https(
+        request, admin_state
+    ):
+        base = "https://" + base[len("http://"):]
+    return base + "/auth/oidc/callback"
 
 
 def _login_error_redirect(code: str) -> RedirectResponse:
@@ -537,6 +604,14 @@ def _verify_id_token(
     token_nonce = claims.get("nonce")
     if not isinstance(token_nonce, str) or not hmac.compare_digest(token_nonce, nonce):
         raise OidcError("invalid_id_token", "nonce mismatch")
+    # OIDC Core 3.1.3.7 #4/#5: with multiple audiences the token must
+    # name US as the authorized party — otherwise an id_token minted for
+    # a sibling client that merely lists our client_id in aud is accepted.
+    aud = claims.get("aud")
+    if isinstance(aud, list) and len(aud) > 1:
+        azp = claims.get("azp")
+        if not isinstance(azp, str) or azp != settings.client_id:
+            raise OidcError("invalid_id_token", "azp missing/mismatched for multi-aud token")
     return claims
 
 
@@ -593,6 +668,16 @@ def router() -> APIRouter:
         if doc is None:
             return _login_error_redirect("discovery_failed")
 
+        # Review fix: /auth/oidc/login is unauthenticated — a cheap
+        # per-IP window stops one caller from churning the txn table's
+        # oldest-first eviction to wash out legitimate pending states.
+        client_ip = request.client.host if request.client else "unknown"
+        if _login_rate_limited(client_ip):
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail={"error": "rate_limited", "message": "retry later"},
+            )
+
         verifier, challenge = _generate_pkce_pair()
         state_value = secrets.token_urlsafe(32)
         nonce = secrets.token_urlsafe(32)
@@ -602,15 +687,44 @@ def router() -> APIRouter:
         params = {
             "response_type": "code",
             "client_id": settings.client_id,
-            "redirect_uri": _redirect_uri(request, settings),
+            "redirect_uri": _redirect_uri(request, settings, admin_state),
             "scope": " ".join(settings.scopes),
             "state": state_value,
             "nonce": nonce,
             "code_challenge": challenge,
             "code_challenge_method": "S256",
         }
-        authorize_url = f"{doc['authorization_endpoint']}?{urllib.parse.urlencode(params)}"
-        return RedirectResponse(url=authorize_url, status_code=status.HTTP_302_FOUND)
+        del challenge  # verifier/challenge never reach logs
+        # Merge properly: some IdPs advertise an authorization_endpoint
+        # that already carries a query string — a second bare "?" would
+        # produce a malformed URL (review fix).
+        _split = urllib.parse.urlsplit(str(doc["authorization_endpoint"]))
+        _query = urllib.parse.parse_qsl(_split.query, keep_blank_values=True)
+        _query.extend(params.items())
+        authorize_url = urllib.parse.urlunsplit(
+            (
+                _split.scheme,
+                _split.netloc,
+                _split.path,
+                urllib.parse.urlencode(_query),
+                "",
+            )
+        )
+        resp = RedirectResponse(url=authorize_url, status_code=status.HTTP_302_FOUND)
+        # Review fix (login-CSRF / session fixation): park the state in an
+        # HttpOnly cookie too — the callback requires cookie == query
+        # state, so a forced cross-site callback with an attacker's state
+        # cannot complete in a victim's browser.
+        resp.set_cookie(
+            _STATE_COOKIE,
+            state_value,
+            max_age=int(_TXN_TTL_SECS),
+            httponly=True,
+            samesite="lax",
+            secure=_auth_mod._session_cookie_secure(request, admin_state),
+            path="/auth/oidc",
+        )
+        return resp
 
     @r.get("/auth/oidc/callback", summary="OIDC redirect target — issues the admin session")
     async def oidc_callback(
@@ -638,6 +752,13 @@ def router() -> APIRouter:
             logger.warning("auth.oidc.state_mismatch")
             return _login_error_redirect("state_mismatch")
 
+        cookie_state = request.cookies.get(_STATE_COOKIE) or ""
+        if not hmac.compare_digest(cookie_state, state_value):
+            # The completing browser is not the one that started the
+            # flow — reject (login-CSRF binding, review fix).
+            logger.warning("auth.oidc.state_cookie_mismatch")
+            return _login_error_redirect("state_mismatch")
+
         code = qp.get("code") or ""
         if not code:
             return _login_error_redirect("missing_code")
@@ -651,7 +772,7 @@ def router() -> APIRouter:
                 token_endpoint=str(doc["token_endpoint"]),
                 code=code,
                 code_verifier=txn.code_verifier,
-                redirect_uri=_redirect_uri(request, settings),
+                redirect_uri=_redirect_uri(request, settings, admin_state),
                 settings=settings,
             )
         except OidcError as exc:
@@ -667,14 +788,32 @@ def router() -> APIRouter:
         if jwks is None:
             return _login_error_redirect("jwks_failed")
 
+        expected_issuer = str(doc.get("issuer") or settings.issuer)
         try:
-            claims = _verify_id_token(
-                id_token,
-                jwks=jwks,
-                settings=settings,
-                expected_issuer=str(doc.get("issuer") or settings.issuer),
-                nonce=txn.nonce,
-            )
+            try:
+                claims = _verify_id_token(
+                    id_token,
+                    jwks=jwks,
+                    settings=settings,
+                    expected_issuer=expected_issuer,
+                    nonce=txn.nonce,
+                )
+            except OidcError as exc:
+                # Key rotation (review fix): a kid the cached JWKS lacks
+                # gets exactly ONE forced refetch before failing — else
+                # every SSO login breaks for the full cache TTL.
+                if "no JWKS key matches" not in str(exc):
+                    raise
+                fresh = await _get_jwks(str(doc["jwks_uri"]), force=True)
+                if fresh is None:
+                    raise
+                claims = _verify_id_token(
+                    id_token,
+                    jwks=fresh,
+                    settings=settings,
+                    expected_issuer=expected_issuer,
+                    nonce=txn.nonce,
+                )
         except OidcError as exc:
             logger.warning("auth.oidc.id_token_rejected", error=str(exc))
             return _login_error_redirect("invalid_id_token")
@@ -684,6 +823,16 @@ def router() -> APIRouter:
             logger.warning("auth.oidc.email_missing")
             return _login_error_redirect("missing_email")
         email = email.strip().lower()
+
+        # Review fix (MAJOR): the whitelist is only as strong as the
+        # email's provenance. Require the IdP to assert
+        # ``email_verified: true`` — a missing claim counts as
+        # unverified (strict default; opt out via
+        # [auth.oidc].require_verified_email = false for IdPs that
+        # verify out-of-band but omit the claim).
+        if settings.require_verified_email and claims.get("email_verified") is not True:
+            logger.warning("auth.oidc.email_unverified", email=email)
+            return _login_error_redirect("email_unverified")
 
         if not _email_allowed(email, settings):
             logger.warning("auth.oidc.email_not_allowed", email=email)
