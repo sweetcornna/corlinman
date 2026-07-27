@@ -255,14 +255,25 @@ def _render_rag(section: Any) -> dict[str, Any] | None:
     if section is None:
         return None
     out: dict[str, Any] = {}
-    dense_enabled = _attr(section, "dense_enabled", None)
-    if isinstance(dense_enabled, bool):
-        out["dense_enabled"] = dense_enabled
+    for key in ("dense_enabled", "backfill_on_start"):
+        value = _attr(section, key, None)
+        if isinstance(value, bool):
+            out[key] = value
     for key in ("rrf_k", "dense_top_k"):
         value = _attr(section, key, None)
-        if isinstance(value, bool) or not isinstance(value, int):
+        if isinstance(value, bool):
+            continue
+        # Integral floats accepted — the shipped example writes
+        # ``rrf_k = 60.0`` and rejecting it silently pinned the default
+        # (review fix).
+        if isinstance(value, float) and value.is_integer():
+            value = int(value)
+        if not isinstance(value, int):
             continue
         out[key] = value
+    sim = _attr(section, "dense_min_similarity", None)
+    if not isinstance(sim, bool) and isinstance(sim, (int, float)):
+        out["dense_min_similarity"] = float(sim)
     return out or None
 
 

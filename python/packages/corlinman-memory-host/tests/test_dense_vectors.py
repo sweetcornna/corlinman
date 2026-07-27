@@ -268,8 +268,8 @@ async def test_backfill_stamps_missing_vectors_then_dense_works(
             await host.upsert(MemoryDoc(content=text))
 
         host.configure_dense(embed_many=embedder, config_getter=_dense_config)
-        stamped = await host.backfill_vectors(batch_size=2)
-        assert stamped == 3
+        report = await host.backfill_vectors(batch_size=2)
+        assert report.stamped == 3 and report.failed_ids == []
 
         async with host.store._conn.execute(
             "SELECT COUNT(*) FROM chunks WHERE vector IS NULL"
@@ -278,7 +278,7 @@ async def test_backfill_stamps_missing_vectors_then_dense_works(
         assert row is not None and int(row[0]) == 0
 
         # Idempotent: nothing left to stamp.
-        assert await host.backfill_vectors() == 0
+        assert (await host.backfill_vectors()).stamped == 0
 
         # Semantic retrieval now works over the backfilled corpus.
         hits = await host.query(MemoryQuery(text="purring cat", top_k=3))
@@ -292,7 +292,7 @@ async def test_backfill_without_embedder_is_a_noop(tmp_path: Path) -> None:
     host = await _open_host(tmp_path, "backfill-noop")
     try:
         await host.upsert(MemoryDoc(content="anything"))
-        assert await host.backfill_vectors() == 0
+        assert (await host.backfill_vectors()).stamped == 0
     finally:
         await host.close()
 
@@ -319,8 +319,12 @@ async def test_backfill_stops_on_embed_failure_and_reports_progress(
         host.configure_dense(
             embed_many=_FailsOnSecondBatch(), config_getter=_dense_config
         )
-        stamped = await host.backfill_vectors(batch_size=2)
-        assert stamped == 2  # first batch landed, failure stopped the loop
+        report = await host.backfill_vectors(batch_size=2)
+        # Review fix: a failed batch is SKIPPED, not fatal — the first
+        # batch landed, the failing batch's ids are reported, and the
+        # walk continued past it.
+        assert report.stamped == 2
+        assert len(report.failed_ids) >= 1
     finally:
         await host.close()
 
@@ -344,7 +348,7 @@ async def test_dense_settings_parse_bools_before_ints(tmp_path: Path) -> None:
                 "dense_top_k": "7",
             },
         )
-        enabled, rrf_k, dense_top_k = host._dense_settings()
+        enabled, rrf_k, dense_top_k, _min_sim = host._dense_settings()
         assert enabled is False  # 1 is not True
         assert rrf_k == 60  # bool rejected → default
         assert dense_top_k == 20  # str rejected → default
@@ -357,7 +361,7 @@ async def test_dense_settings_parse_bools_before_ints(tmp_path: Path) -> None:
                 "dense_top_k": 5,
             },
         )
-        assert host._dense_settings() == (True, 10, 5)
+        assert host._dense_settings() == (True, 10, 5, 0.3)
 
         # A raising getter degrades to off, never crashes retrieval.
         def _boom() -> Any:
@@ -367,3 +371,106 @@ async def test_dense_settings_parse_bools_before_ints(tmp_path: Path) -> None:
         assert host._dense_settings()[0] is False
     finally:
         await host.close()
+
+
+# ---------------------------------------------------------------------------
+# W3-review fixes: similarity floor / BM25-scale scores / dimension restamp
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dense_min_similarity_floor_drops_junk(tmp_path: Path) -> None:
+    """Review fix: without a cosine floor EVERY query returns the nearest
+    chunks by angle, however unrelated. Above-floor semantic hits pass;
+    orthogonal junk does not."""
+    host = await _open_host(tmp_path, "floor")
+    embedder = _ToyEmbedder()
+    host.configure_dense(
+        embed_many=embedder,
+        config_getter=lambda: _dense_config(dense_min_similarity=0.5),
+    )
+    try:
+        await host.upsert(MemoryDoc(content="feline whiskers everywhere"))
+        await host.upsert(MemoryDoc(content="quarterly budget spreadsheet"))
+        # Query in cat-space: the budget chunk's toy vector is (0,0,0.1) —
+        # tiny cosine vs the cat query — and must be floored out.
+        hits = await host.query(MemoryQuery(text="purring cat", top_k=5))
+        contents = [h.content for h in hits]
+        assert any("feline" in c for c in contents)
+        assert not any("budget" in c for c in contents)
+    finally:
+        await host.close()
+
+
+@pytest.mark.asyncio
+async def test_fused_scores_stay_on_bm25_scale(tmp_path: Path) -> None:
+    """Review fix (MAJOR): [memory.recall].min_score reads MemoryHit.score
+    on the BM25 scale — fused results must not leak raw RRF magnitudes
+    (~0.016..0.03). The fused scores span exactly this result set's own
+    BM25 range."""
+    host = await _open_host(tmp_path, "scale")
+    embedder = _ToyEmbedder()
+    host.configure_dense(embed_many=embedder, config_getter=_dense_config)
+    try:
+        await host.upsert(MemoryDoc(content="feline purrs on the mat"))
+        await host.upsert(MemoryDoc(content="feline chases the dog"))
+        plain = await host.query(MemoryQuery(text="feline", top_k=5))
+        bm25_scores = sorted((h.score for h in plain), reverse=True)
+        assert bm25_scores
+        # Same query with the dense leg fused in (BM25 leg non-empty —
+        # FTS5 treats multi-word MATCH as AND): scores stay in range.
+        fused = await host.query(MemoryQuery(text="feline", top_k=5))
+        assert fused
+        for h in fused:
+            assert h.score >= min(bm25_scores) - 1e-9
+            assert h.score <= max(bm25_scores) + 1e-9
+    finally:
+        await host.close()
+
+
+@pytest.mark.asyncio
+async def test_pure_semantic_hits_carry_cosine_scores(tmp_path: Path) -> None:
+    host = await _open_host(tmp_path, "pure-sem")
+    embedder = _ToyEmbedder()
+    host.configure_dense(embed_many=embedder, config_getter=_dense_config)
+    try:
+        await host.upsert(MemoryDoc(content="feline whiskers everywhere"))
+        # Zero shared tokens → BM25 leg empty → cosine similarity (0..1).
+        hits = await host.query(MemoryQuery(text="purring cat", top_k=5))
+        assert hits
+        assert all(0.0 <= h.score <= 1.0 for h in hits)
+    finally:
+        await host.close()
+
+
+@pytest.mark.asyncio
+async def test_backfill_restamps_dimension_mismatched_vectors(tmp_path: Path) -> None:
+    """Review fix: an embedding-model switch leaves old-dimension BLOBs
+    that search_dense skips — the NULL-only selection could never repair
+    them. Pass 2 re-stamps by byte-length mismatch."""
+    host = await _open_host(tmp_path, "restamp")
+    embedder = _ToyEmbedder()
+    host.configure_dense(embed_many=embedder, config_getter=_dense_config)
+    try:
+        cid = int(await host.upsert(MemoryDoc(content="feline purrs")))
+        # Simulate the OLD model's 2-dim vector.
+        await host.store.update_chunk_vector(cid, pack_vector([0.5, 0.5]))
+        report = await host.backfill_vectors()
+        assert report.stamped >= 1
+        async with host.store._conn.execute(
+            "SELECT vector FROM chunks WHERE id = ?", (cid,)
+        ) as cur:
+            row = await cur.fetchone()
+        assert row is not None
+        assert unpack_vector(row["vector"]) == pytest.approx([1.0, 0.0, 0.1])
+    finally:
+        await host.close()
+
+
+def test_cfg_int_accepts_integral_floats() -> None:
+    """Review fix: the shipped example writes ``rrf_k = 60.0``."""
+    from corlinman_memory_host.local_sqlite import _cfg_int
+
+    assert _cfg_int(60.0, default=1) == 60
+    assert _cfg_int(60.5, default=1) == 1  # non-integral still rejected
+    assert _cfg_int(True, default=1) == 1

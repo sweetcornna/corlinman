@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
@@ -168,7 +168,12 @@ _REASONING_UNSUPPORTED_PARAMS: tuple[str, ...] = (
 # character cap (~4 chars/token with headroom) so we never pull in a
 # tokenizer dependency; over-long chunks are truncated, never errored.
 _EMBED_MAX_BATCH = 2048
-_EMBED_MAX_INPUT_CHARS = 24000
+# Review fix: 24000 chars assumed ~4 chars/token (English); CJK — this
+# project's primary language — runs 1-2 tokens per CHAR, so 24000 chars
+# blows far past the 8192-token embedding window and 400s the batch.
+# 4000 chars stays inside the window for pure-CJK worst case (~8000
+# tokens) while keeping plenty of signal for retrieval.
+_EMBED_MAX_INPUT_CHARS = 4000
 
 # Vendors whose chat APIs enforce strict user/assistant alternation and
 # reject two consecutive same-role messages (DeepSeek, Qwen / QwQ via
@@ -760,32 +765,31 @@ class OpenAIProvider:
         # keeps 1:1 list alignment instead of erroring the whole batch.
         prepared = [(text[:_EMBED_MAX_INPUT_CHARS] or " ") for text in inputs]
 
-        async def _run() -> list[list[float]]:
+        async def _run_batch(batch: list[str]) -> list[list[float]]:
+            # Fresh client per recovery scope so a 401 retry picks up the
+            # refreshed key (same posture as chat_stream's open phase).
             client = self._make_client()
-            out: list[list[float]] = []
             try:
-                for start in range(0, len(prepared), _EMBED_MAX_BATCH):
-                    batch = prepared[start : start + _EMBED_MAX_BATCH]
-                    kwargs: dict[str, Any] = {"model": model, "input": batch}
-                    if extra:
-                        kwargs.update(extra)
-                    response = await client.embeddings.create(**kwargs)
-                    data = list(getattr(response, "data", None) or [])
-                    if len(data) != len(batch):
-                        raise FormatError(
-                            f"embeddings response carried {len(data)} vectors "
-                            f"for {len(batch)} inputs",
-                            provider=self.name,
-                            model=model,
-                        )
-                    # The API documents order-preservation but keys each
-                    # item with an explicit ``index`` — honour it so a
-                    # shuffling relay can't misalign vector ↔ input.
-                    data.sort(key=lambda item: int(getattr(item, "index", 0) or 0))
-                    for item in data:
-                        vector = getattr(item, "embedding", None) or []
-                        out.append([float(v) for v in vector])
-                return out
+                kwargs: dict[str, Any] = {"model": model, "input": batch}
+                if extra:
+                    kwargs.update(extra)
+                response = await client.embeddings.create(**kwargs)
+                data = list(getattr(response, "data", None) or [])
+                if len(data) != len(batch):
+                    raise FormatError(
+                        f"embeddings response carried {len(data)} vectors "
+                        f"for {len(batch)} inputs",
+                        provider=self.name,
+                        model=model,
+                    )
+                # The API documents order-preservation but keys each
+                # item with an explicit ``index`` — honour it so a
+                # shuffling relay can't misalign vector ↔ input.
+                data.sort(key=lambda item: int(getattr(item, "index", 0) or 0))
+                return [
+                    [float(v) for v in (getattr(item, "embedding", None) or [])]
+                    for item in data
+                ]
             except CorlinmanError:
                 raise
             except Exception as exc:
@@ -793,9 +797,24 @@ class OpenAIProvider:
             finally:
                 await _safe_close(client)
 
-        return await with_401_recovery(
-            _run, refresh=self._refresh_credential, provider=self.name
-        )
+        # Review fix: the 401-recovery boundary is PER BATCH — wrapping
+        # the whole loop meant a 401 on batch N re-issued (and re-billed)
+        # batches 1..N-1 after the key refresh.
+        out: list[list[float]] = []
+        for start in range(0, len(prepared), _EMBED_MAX_BATCH):
+            batch = prepared[start : start + _EMBED_MAX_BATCH]
+
+            def _bound(b: list[str] = batch) -> Awaitable[list[list[float]]]:
+                return _run_batch(b)
+
+            out.extend(
+                await with_401_recovery(
+                    _bound,
+                    refresh=self._refresh_credential,
+                    provider=self.name,
+                )
+            )
+        return out
 
     @classmethod
     def supports(cls, model: str) -> bool:

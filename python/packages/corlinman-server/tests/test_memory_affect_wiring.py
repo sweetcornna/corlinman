@@ -157,7 +157,7 @@ async def test_c2_wires_dense_seam_onto_memory_host(
             "embedding": {"provider": "openai", "model": "emb-3"},
             "rag": {"dense_enabled": True, "rrf_k": 30},
         }
-        assert host._dense_settings() == (True, 30, 20)
+        assert host._dense_settings() == (True, 30, 20, 0.3)
 
         doc_id = int(await host.upsert(MemoryDoc(content="dense wiring probe")))
         async with host.store._conn.execute(

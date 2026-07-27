@@ -530,6 +530,18 @@ hybrid_bm25_weight = 1.0
 hybrid_hnsw_weight = 1.0
 rrf_k = 60.0
 
+# -- G2 稠密向量检索(memory.sqlite 的记忆召回;默认关) ---------------------
+# dense_enabled = true 后,ingest 会调用 [embedding] 配置的模型写入向量
+# (花钱,必须显式 opt-in),检索用暴力余弦与 BM25 做 RRF 融合。
+# 分值语义:融合结果的 score 重标定回本次结果集的 BM25 区间,
+# [memory.recall].min_score 语义不变;纯语义命中(BM25 空)时 score 为
+# 余弦相似度(0..1)。
+# dense_enabled = false
+# dense_top_k = 20               # 稠密腿候选数
+# dense_min_similarity = 0.3     # 余弦下限,低于即丢弃(防无关旧块混入)
+# backfill_on_start = false      # 启动时后台补齐历史无向量 chunk(花钱,
+#                                # 显式 opt-in;失败批次跳过并记日志)
+
 # Sprint 9 T-B3-BE5 — EPA re-ranking boost. When `epa_enabled = true`, the
 # hybrid searcher multiplies each candidate's RRF score by the `dynamic_boost`
 # derived from its `chunk_epa` cache row (populated by the Python backfill

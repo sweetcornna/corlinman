@@ -334,6 +334,13 @@ def _wire_standalone_dense_seam(app_state: Any, resolver: Any) -> None:
             config_getter=lambda: resolver.rag_config,
         )
         logger.info("agent.memory.dense_seam_wired")
+        # Same opt-in boot backfill as the gateway-embedded seam (review
+        # fix: backfill_vectors previously had no production caller).
+        from corlinman_server.gateway.lifecycle.c2_wiring import (  # noqa: PLC0415
+            _maybe_schedule_backfill,
+        )
+
+        _maybe_schedule_backfill(host, lambda: resolver.rag_config)
     except Exception as exc:  # noqa: BLE001 — dense is an enhancement
         logger.warning("agent.memory.dense_seam_failed", error=str(exc))
 
