@@ -4,6 +4,34 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.47.0] — 2026-07-27 — 统一授权模型第三波（W3-3）：跨 surface 审批通道
+
+### Added
+- **审批到达人类所在的地方**(P4 W3-3):`ask` 判决不再「console 之外
+  一律静默拒绝」——QQ 群里出现文本菜单(y/1·s/2·a/3·n/0,仅发起人可
+  回复)、Telegram inline keyboard、web chat 审批卡(含「永久批准」),
+  批准按 once/session/always 落 GrantStore;渠道 always 授权默认收窄
+  到 (surface,user),console/web 保持全局。(#182)
+- 超时(300s)fail-closed 且**用户可见**:渠道提前 5s 发超时提示,迟到
+  回复得「已失效」回执;`--print`/无通道 surface 的错误信封改为可诊断
+  的 `authz_no_channel`。(#182)
+- `approval_requested` / `approval_decided` hook 事件点亮 evolution
+  observer;`corlinman_approvals_total` 增 surface 标签。(#182)
+- 子 agent 的 ask 汇入父回合的同一审批通道,授权归父 session。(#182)
+
+### Fixed
+- **voice 审批接线遗漏根治**(C1):bridge 先过统一 gate——默认 allow
+  的工具直接放行,deny 规则直接拒,只有真 `ask` 才走审批/fail-closed;
+  旧行为(无队列一律自动批准)是全产品唯一 fail-open 路径,已翻转。(#182)
+- 群内并发审批按**发起人**配对(不再 FIFO 错配);审批停等不再占住渠道
+  并发额度(消除 8 个 pending 即死锁派发循环);approve 决策按
+  (session, call_id) 作用域(任意已认证调用者不能再决策他人审批,
+  index 式 call_id 跨流不再碰撞)。(#182)
+
+### Changed
+- `/v1/chat/completions` 仅 **stream=true** 请求可参与审批;非流式客户
+  端遇 `ask` 保持即时 fail-closed(不会静默挂 300s)。(#182)
+
 ## [1.46.0] — 2026-07-27 — 统一授权模型第二波（W3-2）：外部工具纳管
 
 ### Added
