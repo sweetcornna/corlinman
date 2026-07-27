@@ -139,8 +139,12 @@ Sub2API 的 attestation 503 仍会原样显示。
 corlinman 的 WebRTC 链路有回环测试覆盖（`test_gpt_live_webrtc_loopback.py`：
 真实 aiortc 对端接收官方 multipart 请求、应答 SDP、推音轨并录出可播放文件）。
 
-错误码：`live_attestation_unavailable` / `live_endpoint_missing` /
-`live_http_status` / `live_timeout` / `gpt_live_dependency_missing`。
+错误码：`gpt_live_dependency_missing`（本地没装 aiortc）/
+`live_attestation_unavailable`（旧 Sub2API 的平台门禁）/ `live_endpoint_missing`
+（三条路径都不存在）/ `live_unreachable`（连不上）/ `live_http_status`（其余
+HTTP 失败，带上游状态码）/ `live_bad_response`（answer SDP 为空）/
+`live_session_error`（会话内 error 事件）/ `live_timeout` /
+`live_empty`（会话结束但没录到音频）。
 
 ## 5. 管理接口
 

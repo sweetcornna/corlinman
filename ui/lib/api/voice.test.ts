@@ -49,11 +49,11 @@ describe("putVoiceSettings", () => {
         return jsonResponse(200, { status: "ok" });
       }),
     );
-    await putVoiceSettings({ backend: "gpt_live", voice: "cove" });
+    await putVoiceSettings({ backend: "gpt_live", voice: "marin" });
     expect(calls[0].method).toBe("PUT");
     expect(JSON.parse(String(calls[0].body))).toEqual({
       backend: "gpt_live",
-      voice: "cove",
+      voice: "marin",
     });
   });
 
