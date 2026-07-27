@@ -56,6 +56,7 @@ from corlinman_memory_host.dense import (
     rrf_fuse,
     unpack_vector,
 )
+from corlinman_memory_host.hnsw import HnswIndex
 from corlinman_memory_host.types import (
     MemoryDoc,
     MemoryHit,
@@ -83,6 +84,16 @@ _DENSE_DEFAULT_TOP_K = 20
 #: returns SOMETHING — the nearest chunks by angle, however unrelated —
 #: and stuffing junk into the prompt is worse than returning nothing.
 _DENSE_DEFAULT_MIN_SIMILARITY = 0.3
+
+# ANN defaults (G2 phase 2). ``ann_enabled`` defaults OFF — the brute-force
+# scan is exact and, below a few thousand chunks, faster than maintaining a
+# graph; ANN is an opt-in for corpora where the O(n) decode+score per query
+# starts to hurt. Below ``ann_min_chunks`` the brute path is used even with
+# the flag on (small corpus: brute is both faster AND exact).
+_ANN_DEFAULT_MIN_CHUNKS = 1000
+#: Rebuild the in-memory index once this many delete / re-embed events (or
+#: 10% of the index, whichever is larger) have accumulated since the build.
+_ANN_STALE_REBUILD_MIN = 64
 
 
 def _cfg_int(raw: Any, *, default: int, minimum: int = 1) -> int:
@@ -115,6 +126,48 @@ class BackfillReport:
 
     def __int__(self) -> int:  # pragma: no cover — trivial
         return self.stamped
+
+
+@dataclass
+class _AnnScope:
+    """One lazily-built in-memory HNSW index per query scope (a namespace,
+    or ``None`` = whole store) plus the coarse staleness bookkeeping.
+
+    Invalidation is deliberately coarse-grained — known max chunk id +
+    a stale-write counter + the query dimension — instead of true
+    per-entry deletes (the pure-Python graph is append-only):
+
+    - ``known_max_id``: highest ``vector``-carrying chunk id the index
+      has seen (at build or via incremental insert). A DB ``MAX(id)``
+      above it means rows were written behind our back (another process
+      on the same file) → rebuild.
+    - ``stale_writes``: chunk deletions and re-embeddings since build.
+      Each leaves a dangling/outdated graph entry; candidates are always
+      re-scored against the live ``chunks.vector`` BLOBs so stale entries
+      can only cost recall, never surface wrong data. Past
+      ``max(_ANN_STALE_REBUILD_MIN, 10% of index)`` the graph has decayed
+      enough to rebuild.
+    - a query whose dimension differs from ``dim`` also rebuilds (the
+      operator switched embedding models; the fixed-dim graph can't
+      absorb the new vectors).
+
+    Trade-off: between rebuilds the index may transiently miss
+    re-embedded content and waste candidate slots on deleted rows (the
+    ANN leg over-fetches by ``stale_writes`` to compensate); in exchange
+    the hot path needs no tombstone bookkeeping. The index is never
+    persisted — a process restart rebuilds lazily from SQL on the first
+    ANN-eligible dense query.
+    """
+
+    index: HnswIndex
+    dim: int
+    known_max_id: int
+    stale_writes: int = 0
+    #: Incremental inserts parked by the WRITE path (append-only, cheap)
+    #: and drained into the graph off-loop before an ANN search — a
+    #: single pure-Python ``index.add`` costs tens of ms at real
+    #: embedding dims, far too much for the ingest hot path (review fix).
+    pending: list[tuple[int, bytes]] = field(default_factory=list)
 
 
 def _cfg_float(raw: Any, *, default: float, minimum: float = 0.0) -> float:
@@ -283,6 +336,14 @@ class _SqliteStore:
         self._conn = conn
         self._lock = asyncio.Lock()
         self._memory_host_schema_ready = False
+        # G2 phase 2: lazily-built in-memory ANN indexes, keyed by query
+        # scope (namespace or None = all). Never persisted — a restart
+        # rebuilds on the first dense query. Empty until the first
+        # ANN-enabled query over a large-enough scope.
+        self._ann_scopes: dict[str | None, _AnnScope] = {}
+        #: At-most-one in-flight background index build (review fix: the
+        #: build runs off-loop; queries brute-scan until it lands).
+        self._ann_build_task: asyncio.Task[None] | None = None
 
     @classmethod
     async def open(cls, path: str | Path) -> _SqliteStore:
@@ -348,7 +409,9 @@ class _SqliteStore:
             )
             await self._conn.commit()
             assert cur.lastrowid is not None
-            return int(cur.lastrowid)
+            chunk_id = int(cur.lastrowid)
+            self._ann_note_insert(chunk_id, vector, namespace)
+            return chunk_id
 
     async def update_chunk_vector(self, chunk_id: int, vector: bytes | None) -> None:
         """Stamp (or clear) a chunk's embedding BLOB. Used by backfill."""
@@ -357,6 +420,16 @@ class _SqliteStore:
                 "UPDATE chunks SET vector = ? WHERE id = ?", (vector, chunk_id)
             )
             await self._conn.commit()
+            if self._ann_scopes:
+                # Route the ANN bookkeeping to the right namespace scope; a
+                # backfill-stamped chunk (NULL → vector) becomes an
+                # incremental insert, a re-embed becomes a stale-write.
+                async with self._conn.execute(
+                    "SELECT namespace FROM chunks WHERE id = ?", (chunk_id,)
+                ) as cur:
+                    row = await cur.fetchone()
+                if row is not None:
+                    self._ann_note_vector_update(chunk_id, vector, str(row["namespace"]))
 
     async def chunks_missing_vector(
         self,
@@ -414,17 +487,35 @@ class _SqliteStore:
         query_vector: Sequence[float],
         top_k: int,
         namespace: str | None = None,
+        *,
+        ann_enabled: bool = False,
+        ann_min_chunks: int = _ANN_DEFAULT_MIN_CHUNKS,
     ) -> list[tuple[int, float]]:
-        """Brute-force cosine top-k over the stored embedding BLOBs.
+        """Cosine top-k over the stored embedding BLOBs.
 
-        Phase-1 scan (no ANN — HNSW is phase 2): every non-NULL vector in
-        scope is decoded and scored. Blobs whose dimension doesn't match
-        the query (stale rows from a model swap, corrupt data) are skipped
-        rather than erroring. Returns ``(chunk_id, cosine)`` sorted by
-        score descending with an ascending-id tie-break.
+        Default path is the exact brute-force scan: every non-NULL vector
+        in scope is decoded and scored. Blobs whose dimension doesn't
+        match the query (stale rows from a model swap, corrupt data) are
+        skipped rather than erroring. Returns ``(chunk_id, cosine)``
+        sorted by score descending with an ascending-id tie-break.
+
+        With ``ann_enabled`` (G2 phase 2) AND at least ``ann_min_chunks``
+        vector-carrying chunks in scope, candidate selection goes through
+        a lazily-built in-memory HNSW graph instead (see
+        :meth:`_search_dense_ann`); candidates are re-scored against the
+        live BLOBs, so scores keep the exact brute semantics. Any ANN
+        trouble — small corpus, build failure, staleness — falls back to
+        the brute scan below, which is never modified by the ANN path.
         """
         if top_k <= 0 or not query_vector:
             return []
+        query = list(query_vector)
+        if ann_enabled:
+            ann_hits = await self._search_dense_ann(
+                query, top_k, namespace, ann_min_chunks
+            )
+            if ann_hits is not None:
+                return ann_hits
         sql = "SELECT id, vector FROM chunks WHERE vector IS NOT NULL"
         params: tuple[Any, ...] = ()
         if namespace is not None:
@@ -432,7 +523,6 @@ class _SqliteStore:
             params = (namespace,)
         async with self._conn.execute(sql, params) as cur:
             rows = await cur.fetchall()
-        query = list(query_vector)
         scored: list[tuple[int, float]] = []
         for r in rows:
             vector = unpack_vector(r["vector"])
@@ -441,6 +531,205 @@ class _SqliteStore:
             scored.append((int(r["id"]), cosine_similarity(query, vector)))
         scored.sort(key=lambda pair: (-pair[1], pair[0]))
         return scored[:top_k]
+
+    # ---- ANN (G2 phase 2) --------------------------------------------------
+
+    async def _search_dense_ann(
+        self,
+        query: list[float],
+        top_k: int,
+        namespace: str | None,
+        ann_min_chunks: int,
+    ) -> list[tuple[int, float]] | None:
+        """ANN leg of :meth:`search_dense`. Returns ``None`` — "use the
+        brute scan" — for every non-answer: scope below ``ann_min_chunks``
+        (small corpus: brute is both faster AND exact), index build
+        failure, or any unexpected error. Never raises: the index is an
+        accelerator, and index trouble must not take retrieval down.
+
+        Candidate ids from the graph are re-scored against the live
+        ``chunks.vector`` BLOBs with the same skip semantics as the brute
+        path (deleted rows drop out of the ``IN`` fetch, dimension
+        mismatches are skipped), so a stale graph entry can only cost
+        recall — never surface a deleted chunk or an outdated score.
+        """
+        # Review fix: ONE global index only. Per-namespace scopes doubled
+        # (or worse) the resident vector copies; namespaced recalls are
+        # typically small collections where the brute scan is already
+        # exact and fast — they simply stay on it.
+        if namespace is not None:
+            return None
+        try:
+            sql = (
+                "SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS max_id "
+                "FROM chunks WHERE vector IS NOT NULL"
+            )
+            async with self._conn.execute(sql) as cur:
+                row = await cur.fetchone()
+            count = int(row["n"]) if row is not None else 0
+            db_max_id = int(row["max_id"]) if row is not None else 0
+            if count == 0 or count < ann_min_chunks:
+                return None
+            scope = self._ann_scopes.get(None)
+            if scope is not None and self._ann_scope_stale(
+                scope, query_dim=len(query), db_max_id=db_max_id, db_count=count
+            ):
+                self._ann_scopes.pop(None, None)
+                scope = None
+            if scope is None:
+                # Review fix: the build runs OFF-loop in a background
+                # task — the old inline build blocked the event loop in
+                # multi-second chunks (measured 67 s total at dim=1536,
+                # n=1000). This query — and every query until the build
+                # lands — answers via the exact brute scan.
+                self._ann_spawn_build(dim=len(query), db_max_id=db_max_id)
+                return None
+            if scope.pending:
+                # Drain parked inserts off-loop before searching; the
+                # drain is awaited by THIS query only (loop stays free).
+                batch = scope.pending
+                scope.pending = []
+                await asyncio.to_thread(self._ann_drain_batch, scope, batch)
+            # Over-fetch by the stale-write count: deleted / re-embedded
+            # rows may occupy candidate slots and then be dropped or
+            # re-ranked by the live re-score below.
+            candidates = scope.index.search(query, top_k + scope.stale_writes)
+            if not candidates:
+                return []
+            ids = [cid for cid, _ in candidates]
+            placeholders = ",".join("?" * len(ids))
+            async with self._conn.execute(
+                f"SELECT id, vector FROM chunks WHERE id IN ({placeholders})",
+                ids,
+            ) as cur:
+                rows = await cur.fetchall()
+            scored: list[tuple[int, float]] = []
+            for r in rows:
+                vector = unpack_vector(r["vector"])
+                if vector is None or len(vector) != len(query):
+                    continue
+                scored.append((int(r["id"]), cosine_similarity(query, vector)))
+            scored.sort(key=lambda pair: (-pair[1], pair[0]))
+            return scored[:top_k]
+        except Exception as exc:  # noqa: BLE001 — degrade to brute, never crash
+            logger.warning("memory.ann.query_failed (falling back to brute): %s", exc)
+            return None
+
+    @staticmethod
+    def _ann_scope_stale(
+        scope: _AnnScope, *, query_dim: int, db_max_id: int, db_count: int
+    ) -> bool:
+        """Coarse-grained invalidation — see :class:`_AnnScope`."""
+        if scope.dim != query_dim:
+            return True  # embedding-model swap: the fixed-dim graph is dead
+        if db_max_id > scope.known_max_id:
+            return True  # rows written behind our back (another process)
+        # Review fix: external deletes / re-embeds leave MAX(id) intact —
+        # the row COUNT dropping below what the graph accounts for is the
+        # free signal the old check ignored.
+        accounted = len(scope.index) + len(scope.pending) - scope.stale_writes
+        if db_count < accounted:
+            return True
+        threshold = max(_ANN_STALE_REBUILD_MIN, len(scope.index) // 10)
+        return scope.stale_writes > threshold
+
+    def _ann_spawn_build(self, *, dim: int, db_max_id: int) -> None:
+        """Kick the global index build as a background task (at most one
+        in flight). The graph construction — the CPU-heavy part — runs in
+        a worker thread via ``asyncio.to_thread``; queries keep answering
+        via the brute scan until the built scope is installed."""
+        task = self._ann_build_task
+        if task is not None and not task.done():
+            return
+
+        async def _build() -> None:
+            try:
+                sql = "SELECT id, vector FROM chunks WHERE vector IS NOT NULL"
+                async with self._conn.execute(sql) as cur:
+                    rows = await cur.fetchall()
+                pairs = [(int(r["id"]), bytes(r["vector"])) for r in rows]
+
+                def _construct() -> HnswIndex:
+                    index = HnswIndex(dim)
+                    for chunk_id, blob in pairs:
+                        vector = unpack_vector(blob)
+                        if vector is None or len(vector) != dim:
+                            continue
+                        index.add(chunk_id, vector)
+                    return index
+
+                index = await asyncio.to_thread(_construct)
+                self._ann_scopes[None] = _AnnScope(
+                    index=index, dim=dim, known_max_id=db_max_id
+                )
+                logger.info(
+                    "memory.ann.index_built: dim=%d size=%d", dim, len(index)
+                )
+            except Exception as exc:  # noqa: BLE001 — brute keeps serving
+                logger.warning("memory.ann.build_failed: %s", exc)
+
+        self._ann_build_task = asyncio.get_running_loop().create_task(_build())
+
+    @staticmethod
+    def _ann_drain_batch(
+        scope: _AnnScope, batch: list[tuple[int, bytes]]
+    ) -> None:
+        """Off-loop drain of parked incremental inserts (worker thread)."""
+        for chunk_id, blob in batch:
+            vector = unpack_vector(blob)
+            if vector is None:
+                continue
+            scope.index.add(chunk_id, vector)
+            if chunk_id > scope.known_max_id:
+                scope.known_max_id = chunk_id
+
+    def _ann_note_insert(
+        self, chunk_id: int, vector: bytes | None, namespace: str
+    ) -> None:
+        """Incremental-insert bookkeeping after a chunk INSERT. A no-op
+        until some scope has actually been built (lazy posture: no query,
+        no index). ``HnswIndex.add`` returns ``False`` on a dimension
+        mismatch or degenerate vector — rows the brute scan skips too, so
+        silently leaving them out of the graph is consistent."""
+        if vector is None:
+            return
+        scope = self._ann_scopes.get(None)
+        if scope is None:
+            return
+        # Cheap append only (review fix): a synchronous ``index.add`` on
+        # the write path cost tens of ms per chunk under the store lock.
+        # The parked pair is drained into the graph off-loop by the next
+        # ANN query. known_max_id advances NOW so the external-write
+        # staleness check doesn't misfire on our own insert.
+        scope.pending.append((chunk_id, bytes(vector)))
+        if chunk_id > scope.known_max_id:
+            scope.known_max_id = chunk_id
+
+    def _ann_note_vector_update(
+        self, chunk_id: int, vector: bytes | None, namespace: str
+    ) -> None:
+        """Bookkeeping after ``UPDATE chunks SET vector``. A chunk already
+        in the graph keeps its OLD vector there (the graph is append-only)
+        → count a stale write; the live re-score hides the staleness until
+        the rebuild threshold trips. A chunk NOT in the graph (backfill
+        stamping a NULL row) becomes an incremental insert."""
+        scope = self._ann_scopes.get(None)
+        if scope is None:
+            return
+        if chunk_id in scope.index:
+            scope.stale_writes += 1
+        elif vector is not None:
+            scope.pending.append((chunk_id, bytes(vector)))
+            if chunk_id > scope.known_max_id:
+                scope.known_max_id = chunk_id
+
+    def _ann_note_delete(self, chunk_id: int) -> None:
+        """Bookkeeping after a chunk DELETE: the graph entry dangles (it
+        can never be returned — the live re-score drops ids missing from
+        the DB) and counts toward the rebuild threshold."""
+        for scope in self._ann_scopes.values():
+            if chunk_id in scope.index:
+                scope.stale_writes += 1
 
     async def delete_chunk_by_id(self, chunk_id: int) -> None:
         async with self._lock:
@@ -460,6 +749,7 @@ class _SqliteStore:
                     (int(row["file_id"]), int(row["file_id"])),
                 )
             await self._conn.commit()
+            self._ann_note_delete(chunk_id)
 
     async def list_namespace_prefixes_for_suffix(self, suffix: str) -> list[str]:
         """Return distinct namespace prefixes ending in ``suffix``."""
@@ -495,6 +785,10 @@ class _SqliteStore:
                 if table == "chunks":
                     moved = cur.rowcount
             await self._conn.commit()
+            # Namespace membership changed wholesale — per-namespace ANN
+            # scopes are all invalid. Drop them; the next dense query
+            # rebuilds lazily.
+            self._ann_scopes.clear()
         return moved
 
     async def query_chunks_by_ids(self, ids: list[int]) -> list[_ChunkRow]:
@@ -998,6 +1292,30 @@ class LocalSqliteHost(MemoryHost):
         )
         return enabled, rrf_k, dense_top_k, min_sim
 
+    def _ann_settings(self) -> tuple[bool, int]:
+        """Parse ``(ann_enabled, ann_min_chunks)`` from the live ``[rag]``
+        section (G2 phase 2). Same defensive posture as
+        :meth:`_dense_settings`: ``ann_enabled`` only honours a literal
+        boolean ``True``, ``ann_min_chunks`` accepts integral floats and
+        falls back to the default on anything malformed, and a raising
+        getter degrades to "off"."""
+        getter = self._dense_config_getter
+        if getter is None:
+            return False, _ANN_DEFAULT_MIN_CHUNKS
+        try:
+            raw = getter()
+        except Exception:  # noqa: BLE001 — config trouble must not break retrieval
+            raw = None
+        if not isinstance(raw, dict):
+            return False, _ANN_DEFAULT_MIN_CHUNKS
+        enabled = raw.get("ann_enabled") is True
+        min_chunks = _cfg_int(
+            raw.get("ann_min_chunks"),
+            default=_ANN_DEFAULT_MIN_CHUNKS,
+            minimum=0,
+        )
+        return enabled, min_chunks
+
     async def _maybe_embed_vector(self, content: str) -> bytes | None:
         """Embed one chunk for ingest, or ``None`` when dense is off / the
         embedding fails. Ingest must never crash on the embedding path —
@@ -1035,8 +1353,13 @@ class LocalSqliteHost(MemoryHost):
             query_vector = [float(v) for v in vectors[0]] if vectors else []
             if not query_vector:
                 return bm25_hits
+            ann_enabled, ann_min_chunks = self._ann_settings()
             dense_hits = await self._store.search_dense(
-                query_vector, dense_top_k, req.namespace
+                query_vector,
+                dense_top_k,
+                req.namespace,
+                ann_enabled=ann_enabled,
+                ann_min_chunks=ann_min_chunks,
             )
         except Exception as exc:  # noqa: BLE001 — degrade to BM25, never crash
             logger.warning("memory.dense.query_failed: %s", exc)
