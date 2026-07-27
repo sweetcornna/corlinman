@@ -44,10 +44,12 @@ def test_command_pattern_sugar_parses_arg_pattern() -> None:
 
 
 def test_run_shell_rm_pattern_denies_only_rm() -> None:
+    # W3-1 / C3: last-match-wins default — catch-all first, narrowing
+    # deny last (later overrides earlier).
     gate = PermissionGate(
         [
-            PermissionRule(tool="run_shell(rm:*)", action=DENY),
             PermissionRule(tool="*", action=ALLOW),
+            PermissionRule(tool="run_shell(rm:*)", action=DENY),
         ]
     )
     rm = gate.resolve_with_args("run_shell", _CTX, {"command": "rm -rf /tmp/x"})
@@ -88,7 +90,10 @@ def test_last_match_wins_lets_later_rule_override() -> None:
     assert out[0] == DENY
 
 
-def test_first_match_wins_default() -> None:
+def test_last_match_wins_default() -> None:
+    # W3-1 / C3: the constructor default flipped first-match → last-match
+    # (both code paths now agree). The LATER narrowing deny overrides the
+    # earlier broad allow.
     gate = PermissionGate(
         [
             PermissionRule(tool="run_shell", action=ALLOW),
@@ -96,7 +101,16 @@ def test_first_match_wins_default() -> None:
         ]
     )
     out = gate.resolve_with_args("run_shell", _CTX, {"command": "rm x"})
-    assert out[0] == ALLOW
+    assert out[0] == DENY
+    # Opting back into the legacy order still works per-instance.
+    legacy = PermissionGate(
+        [
+            PermissionRule(tool="run_shell", action=ALLOW),
+            PermissionRule(tool="run_shell(rm:*)", action=DENY),
+        ],
+        last_match_wins=False,
+    )
+    assert legacy.resolve_with_args("run_shell", _CTX, {"command": "rm x"})[0] == ALLOW
 
 
 def test_layered_sources_project_beats_global() -> None:

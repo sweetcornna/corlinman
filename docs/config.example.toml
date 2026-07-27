@@ -342,6 +342,44 @@ cheap = "claude-haiku-4-5-20251001"
 # skill_refresh_interval_ms = 30000       # skill rescan debounce (0 = off)
 
 # ---------------------------------------------------------------------------
+# [permissions] — the unified authorization model (audit W3-1).
+#
+# One rule language for the agent's tool gate. Reaches the agent through
+# the py-config.json sidecar, applies on save (rules even land MID-turn on
+# the next tool call), and outranks the legacy CORLINMAN_AGENT_PERMISSIONS
+# / _PERMISSION_MODE / _STRICT_MODE env vars and the settings.json file
+# layers. Everything is optional; unset keys fall through to env → files →
+# built-in defaults.
+#
+# Evaluation is LAST-MATCH-WINS: later rules override earlier ones (the
+# same order that lets this config layer override env). Write catch-alls
+# first and specific rules last:
+#
+#   [[permissions.rules]]
+#   tool   = "*"
+#   action = "allow"
+#
+#   [[permissions.rules]]
+#   tool   = "run_shell(rm:*)"     # tool(pattern) sugar: arg-narrowed rule
+#   action = "deny"
+#   note   = "no destructive shell"  # shows up in the audit log
+#
+#   [[permissions.rules]]
+#   tool   = "qzone_publish"
+#   action = "ask"                 # prompts; approvals can be remembered
+#   memory = "session"             # once | session | always
+#   [permissions.rules.scope]      # all declared scopes must match (AND)
+#   surface = "qq|telegram"        # exact | alternation, NOT a glob
+#   tenant  = "acme*"              # fnmatch
+#   user    = "admin*"             # fnmatch
+#
+# [permissions]
+# mode = "default"           # default | acceptEdits | plan | bypass
+# strict = false             # deny mutating tools unless a rule allows
+# default_action = "allow"   # verdict when no rule/mode/strict decided
+# last_match_wins = true     # set false only to restore the pre-W3-1 order
+
+# ---------------------------------------------------------------------------
 # [subagent] — supervisor caps for model-facing subagent_spawn* tools.
 # ---------------------------------------------------------------------------
 [subagent]

@@ -28,7 +28,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from corlinman_agent.permission_settings import persist_allow_rule
+from corlinman_agent.authz.grants import get_grant_store
 
 from corlinman_server.console.brain import Brain, BrainSession, new_session_key
 from corlinman_server.console.commands import (
@@ -865,12 +865,14 @@ async def run_console(
 
         wire = getattr(brain, "set_approval_resolver", None)
         if callable(wire):
-            # A "persist" answer writes a durable allow rule into this
-            # deployment's user settings layer (same data_dir the gate reads
-            # back from), so the grant survives the session — the E1 payoff.
+            # W3-1: interactive grants live in the shared GrantStore (session
+            # grants in-memory, "always" grants durable in
+            # <data_dir>/authz/grants.sqlite3) — the SAME store the servicer's
+            # AuthzGate consults, so an approval recorded here short-circuits
+            # the next identical ask without a second prompt.
             app.approval_resolver = ConsoleApprovalResolver(
                 build_console_prompter(renderer),
-                persist=lambda tool: persist_allow_rule(tool, data_dir=data_dir),
+                grant_store=get_grant_store(data_dir),
             )
             wire(app.approval_resolver)
 

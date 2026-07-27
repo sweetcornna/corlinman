@@ -481,7 +481,15 @@ DEFAULT_SECTIONS: tuple[str, ...] = (
     "embedding",
     "channels",
     "rag",
+    # deprecated ([approvals] is dead config, migrating to [permissions] in
+    # W3-2) but kept so a change during the double-read period still
+    # triggers a reload.
     "approvals",
+    # W3-1: explicitly registered — do NOT rely on the unknown-section
+    # fallback in diff_sections (fact M6: agent_runtime shipped depending
+    # on it; both are now listed).
+    "permissions",
+    "agent_runtime",
     "scheduler",
     "logging",
     "hooks",

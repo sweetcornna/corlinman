@@ -517,11 +517,18 @@ def require_read_before_edit() -> bool:
 
 
 def strict_mode_enabled() -> bool:
-    """Whether every mutating tool call needs explicit approval."""
-    configured = get_agent_runtime_defaults().strict_mode
-    if configured is not None:
-        return configured
-    return _env_bool("CORLINMAN_AGENT_STRICT_MODE") or False
+    """Whether every mutating tool call needs explicit approval.
+
+    W3-1: delegates to the ONE strict-precedence chain in
+    :func:`corlinman_agent.authz.defaults.resolve_strict`
+    (``[permissions].strict`` > ``[agent_runtime].strict_mode`` > env) so
+    the two former copies of this chain can never disagree again. Lazy
+    import — ``authz.defaults`` reads this module's ``[agent_runtime]``
+    block, so a top-level import either way would be a cycle.
+    """
+    from corlinman_agent.authz.defaults import resolve_strict  # noqa: PLC0415
+
+    return resolve_strict()
 
 
 def sandbox_backend() -> str:

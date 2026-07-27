@@ -23,10 +23,13 @@ _CTX = PermissionContext()
 
 
 def _gate() -> PermissionGate:
+    # W3-1 / C3: the default is last-match-wins, so the catch-all allow
+    # comes FIRST and the narrowing deny comes LAST (later overrides
+    # earlier — the same rule that lets the config layer override env).
     return PermissionGate(
         [
-            PermissionRule(tool="run_shell(rm:*)", action=DENY),
             PermissionRule(tool="*", action=ALLOW),
+            PermissionRule(tool="run_shell(rm:*)", action=DENY),
         ]
     )
 

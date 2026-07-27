@@ -138,6 +138,7 @@ except Exception:  # noqa: BLE001 — degrade if the submodule lacks the symbols
     dispatch_memory_write = None  # type: ignore[assignment]
     _MEMORY_RW_AVAILABLE = False
 from corlinman_agent.approval_gate import ApprovalGate, ApprovalOutcome
+from corlinman_agent.authz import AuthzGate, Subject
 from corlinman_agent.events import AttachmentAdded
 from corlinman_agent.permission import (
     ALLOW as _PERM_ALLOW,
@@ -155,7 +156,6 @@ from corlinman_agent.permission import (
     PermissionContext,
     PermissionGate,
 )
-from corlinman_agent.permission_settings import build_permission_gate
 from corlinman_agent.persona import (
     PERSONA_ATTACH_ASSET_FROM_ATTACHMENT_TOOL,
     PERSONA_ATTACH_ASSET_FROM_DATA_TOOL,
@@ -1234,7 +1234,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         context_assembler: Any | None = None,
         hook_bus: Any | None = None,
         hook_runner: Any | None = None,
-        permission_gate: PermissionGate | None = None,
+        permission_gate: PermissionGate | AuthzGate | None = None,
         event_emitter: Any | None = None,
         subagent_dispatcher: Any | None = None,
         subagent_config: Mapping[str, Any] | None = None,
@@ -1356,25 +1356,26 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # returns ``{"error": "blocked by hook: ..."}`` to the model.
         # ``None`` means no shell hook enforcement (all tools proceed).
         self._hook_runner = hook_runner
-        # T3.1 permission gate — declarative allow/deny/log per tool.
-        # Constructed from the layered settings loader when not explicitly
-        # supplied (E1: <data_dir>/settings.json + ./.corlinman/
-        # settings.local.json + env, env still the final word; with no
-        # settings file this is byte-identical to the old from_env()).
-        self._permission_gate = (
-            permission_gate if permission_gate is not None else build_permission_gate()
+        # T3.1 permission gate — declarative allow/deny/ask/log per tool.
+        # W3-1: the default is now the CALL-TIME AuthzGate, which re-reads
+        # the [permissions] config layer, the CORLINMAN_AGENT_* env layer
+        # and the settings files on every resolve — so a rule saved in the
+        # UI takes effect on the next tool call, no restart (fixes fact
+        # M5's construction-time freeze). Tests may still inject a frozen
+        # PermissionGate snapshot; both share the same call surface.
+        self._permission_gate: PermissionGate | AuthzGate = (
+            permission_gate if permission_gate is not None else AuthzGate()
         )
         # gap permissions-no-ask-action: the unified approval gate wraps the
         # permission gate + an optional prompt-and-wait resolver. Lazily
         # built on the first ``ask`` verdict so deployments that never use
-        # the ``ask`` action don't pay for it. The resolver (if any) is
-        # resolved from ``app_state.approval_resolver`` at build time.
+        # the ``ask`` action don't pay for it.
         self._approval_gate: ApprovalGate | None = None
-        # CMP-04: an explicitly-wired prompt-and-wait approval resolver. When
-        # set (via :meth:`set_approval_resolver`) it overrides the
-        # ``app_state.approval_resolver`` lookup so a deployment without a
-        # gateway AppState (the standalone server) can still make ``ask``
-        # verdicts interactive instead of always fail-closing to deny.
+        # CMP-04 (narrowed by W3-1 / C8): the ONLY prompt-and-wait approval
+        # resolver source is explicit injection via
+        # :meth:`set_approval_resolver` — the old
+        # ``app_state.approval_resolver`` fallback was dead code (the
+        # gateway AppState never carried the field, fact M4).
         self._approval_resolver: Any | None = None
         # CONTRACT C2/C3: optional gateway AppState. Set by the lifespan via
         # :meth:`set_app_state` so the hook-runner / approval-resolver /
@@ -3224,10 +3225,13 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # arguments so per-channel / per-user / per-model / per-argument
         # rules (e.g. ``run_shell(rm:*)``) can selectively narrow what the
         # model is allowed to invoke.
-        perm_ctx = PermissionContext(
+        perm_ctx = Subject(
             model=getattr(start, "model", None) or None,
             session_key=getattr(start, "session_key", None) or None,
             user_id=_extract_user_id(start),
+            # W3-1 scope dimensions: rules may now narrow on tenant/surface.
+            tenant_id=_extract_tenant_id(start) or (tenant_id or None),
+            surface=_extract_surface(start),
         )
         _perm_args = self._parse_args_dict(event.args_json)
         decision, rule_idx = self._permission_gate.resolve_with_args(
@@ -4350,23 +4354,20 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
 
         new_mode = self.set_permission_mode("default")
         # Drop mode-scoped interactive grants so nothing leaks across the
-        # plan → default boundary. Both resolver sources the approval gate
-        # can read (set_approval_resolver AND app_state.approval_resolver —
-        # see _get_approval_gate's CMP-04 fallback) are reset so a future
-        # gateway-side resolver can't dodge the Codex #104 boundary rule.
-        # Best-effort: a resolver without a ``reset`` (or one that throws)
-        # must not fail the mode switch.
-        app_state = getattr(self, "_app_state", None)
-        for resolver in (
-            getattr(self, "_approval_resolver", None),
-            getattr(app_state, "approval_resolver", None),
-        ):
-            reset = getattr(resolver, "reset", None)
-            if callable(reset):
-                try:
-                    reset()
-                except Exception as exc:  # noqa: BLE001 — reset must not fail the switch
-                    logger.warning("agent.exit_plan_mode.reset_error", error=str(exc))
+        # plan → default boundary (Codex #104). ``set_permission_mode``
+        # already invalidates the AuthzGate's session grants; resetting the
+        # explicitly-wired resolver covers any resolver-local cache too.
+        # W3-1 / C8: the ``app_state.approval_resolver`` sweep is gone with
+        # the dead lookup path itself (fact M4 — the field never existed on
+        # the gateway AppState). Best-effort: a resolver without ``reset``
+        # (or one that throws) must not fail the mode switch.
+        resolver = getattr(self, "_approval_resolver", None)
+        reset = getattr(resolver, "reset", None)
+        if callable(reset):
+            try:
+                reset()
+            except Exception as exc:  # noqa: BLE001 — reset must not fail the switch
+                logger.warning("agent.exit_plan_mode.reset_error", error=str(exc))
 
         result: dict[str, Any] = {"status": "ok", "mode": new_mode}
         if plan_str is not None:
@@ -4553,25 +4554,18 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
     def _get_approval_gate(self) -> ApprovalGate:
         """Lazily build the unified approval gate around the permission gate.
 
-        The optional prompt-and-wait resolver is read from
-        ``app_state.approval_resolver`` (an async callable) when present, so
-        a deployment that wires a channel-side approval surface gets
-        interactive ``ask`` verdicts; otherwise the gate fail-closes
+        The optional prompt-and-wait resolver is the one explicitly wired
+        via :meth:`set_approval_resolver`; otherwise the gate fail-closes
         ``ask`` to deny. Built once and reused.
+
+        W3-1 / C8: the old ``app_state.approval_resolver`` fallback is
+        GONE — the gateway ``AppState`` never carried that field (fact M4),
+        so the branch was dead in every gateway deployment and only risked
+        accidentally treating an unrelated object's attribute as a
+        resolver. Explicit injection is the one path.
         """
         if self._approval_gate is None:
-            # CMP-04: prefer an explicitly-wired resolver (set via
-            # :meth:`set_approval_resolver` — works in the standalone server
-            # with no gateway AppState), falling back to
-            # ``app_state.approval_resolver``. When neither is present the
-            # gate stays fail-closed for ``ask`` but logs a clear warning so
-            # an operator can see the verdict is denying for lack of a wired
-            # approval surface rather than by policy.
             resolver = getattr(self, "_approval_resolver", None)
-            if resolver is None:
-                app_state = getattr(self, "_app_state", None)
-                if app_state is not None:
-                    resolver = getattr(app_state, "approval_resolver", None)
             if resolver is None:
                 logger.warning(
                     "agent.approval.no_resolver_wired",
@@ -4611,12 +4605,12 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
     def set_app_state(self, app_state: Any | None) -> None:
         """Wire the gateway AppState (CONTRACT C2/C3).
 
-        Lets the hook-runner / approval-resolver / memory-host lookups that
-        read ``self._app_state`` resolve to a real object. Resets the cached
-        approval gate so it re-resolves the resolver from the new state.
+        Lets the hook-runner / memory-host lookups that read
+        ``self._app_state`` resolve to a real object. (The approval
+        resolver is NOT sourced from here since W3-1 / C8 — only
+        :meth:`set_approval_resolver` wires one.)
         """
         self._app_state = app_state
-        self._approval_gate = None
 
     def set_hook_runner(self, hook_runner: Any | None) -> None:
         """Wire the pre-tool :class:`HookRunner` (BUG-01).
@@ -4634,15 +4628,14 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         args: dict[str, Any],
         ctx: PermissionContext,
     ) -> ApprovalOutcome:
-        """Run the unified approval gate for an ``ask`` verdict."""
+        """Run the unified approval gate for an ``ask`` verdict.
+
+        Passes the FULL subject through (tenant / surface included) so a
+        grant recorded by the resolver keys identically to the gate's own
+        later grant checks (W3-1).
+        """
         gate = self._get_approval_gate()
-        return await gate.decide(
-            tool,
-            args=args,
-            model=ctx.model,
-            session_key=ctx.session_key,
-            user_id=ctx.user_id,
-        )
+        return await gate.decide(tool, args=args, subject=ctx)
 
     def _resolve_hook_runner(self) -> Any | None:
         """Resolve the pre-tool hook runner (CONTRACT C2-first).
@@ -6686,6 +6679,33 @@ def _extract_tenant_id(start: AgentChatStart) -> str:
         if isinstance(raw, str) and raw.strip():
             return raw.strip()
     return ""
+
+
+#: Surfaces derivable from a session-key prefix when no channel binding is
+#: present (the servicer-assembly surfaces). Closed set — see Subject.
+_PREFIX_SURFACES: frozenset[str] = frozenset(
+    {"console", "web", "voice", "scheduler"}
+)
+
+
+def _extract_surface(start: AgentChatStart) -> str | None:
+    """Derive the caller surface for permission-scope matching (W3-1).
+
+    A channel binding's ``channel`` field is authoritative (qq / telegram /
+    discord / ...). Without a binding, fall back to the session-key prefix
+    for the servicer-assembled surfaces (``console:<id>``, ``web|...``).
+    ``None`` when nothing is derivable — per the matcher contract a missing
+    surface never matches a rule that declares one.
+    """
+    binding = _channel_binding_from_start(start)
+    if binding is not None:
+        return binding["channel"] or None
+    session_key = getattr(start, "session_key", None) or ""
+    for sep in (":", "|"):
+        head, found, _ = session_key.partition(sep)
+        if found and head.strip().lower() in _PREFIX_SURFACES:
+            return head.strip().lower()
+    return None
 
 
 def _extract_user_id(start: AgentChatStart) -> str | None:

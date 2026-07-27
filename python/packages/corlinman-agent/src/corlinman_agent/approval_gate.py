@@ -121,7 +121,7 @@ class ApprovalGate:
 
     def __init__(
         self,
-        permission_gate: PermissionGate | None = None,
+        permission_gate: PermissionGate | Any | None = None,
         *,
         resolver: ApprovalResolver | None = None,
         ask_timeout_s: float | None = 300.0,
@@ -141,7 +141,7 @@ class ApprovalGate:
         self._ask_timeout_s = ask_timeout_s
 
     @property
-    def permission_gate(self) -> PermissionGate:
+    def permission_gate(self) -> PermissionGate | Any:
         return self._permission_gate
 
     @property
@@ -156,6 +156,7 @@ class ApprovalGate:
         model: str | None = None,
         session_key: str | None = None,
         user_id: str | None = None,
+        subject: PermissionContext | None = None,
     ) -> ApprovalOutcome:
         """Resolve a tool call to a terminal allow/deny outcome.
 
@@ -163,9 +164,18 @@ class ApprovalGate:
         (``log`` is observer-only and treated as allow here), ``deny``
         short-circuits, and ``ask`` escalates to the resolver (or
         fail-closed deny when none is wired).
+
+        ``subject`` (W3-1) — the caller may pass a fully-populated
+        :class:`~corlinman_agent.authz.model.Subject` (tenant / surface
+        included) instead of the flat kwargs, so grant-store keys derived
+        downstream never lose the scope dimensions.
         """
-        ctx = PermissionContext(
-            model=model, session_key=session_key, user_id=user_id
+        ctx = (
+            subject
+            if subject is not None
+            else PermissionContext(
+                model=model, session_key=session_key, user_id=user_id
+            )
         )
         action, rule_index = self._permission_gate.resolve_with_args(
             tool, ctx, args

@@ -464,7 +464,7 @@ def _make_config_swap_fn(app: Any, state: Any) -> Any:
 #: Config sections :func:`_apply_agent_side_config` reads. A change to any
 #: of them must re-run the hook — see the comment in ``_config_swap_fn``.
 _AGENT_CONFIG_SECTIONS: frozenset[str] = frozenset(
-    {"voice", "models", "web_search", "agent_runtime"}
+    {"voice", "models", "web_search", "agent_runtime", "permissions"}
 )
 
 
@@ -540,6 +540,18 @@ def _apply_agent_side_config(cfg: Any) -> None:
             logger.info("gateway.agent_runtime.defaults", **configured)
     except Exception as exc:  # pragma: no cover — never fatal
         logger.warning("gateway.agent_runtime.config_failed", error=str(exc))
+
+    # W3-1: same [permissions] apply as main._apply_agent_config_from_sidecar
+    # — both call apply_permissions_config so the two boot modes can't drift.
+    try:
+        from corlinman_agent.authz.defaults import apply_permissions_config
+
+        perms = apply_permissions_config(_block("permissions"))
+        perm_configured = perms.as_dict()
+        if perm_configured:
+            logger.info("gateway.permissions.defaults", **perm_configured)
+    except Exception as exc:  # pragma: no cover — never fatal
+        logger.warning("gateway.permissions.config_failed", error=str(exc))
 
 
 def _make_chat_refresh_fn(state: Any) -> Any:
