@@ -1,6 +1,6 @@
 """``/admin/skills*`` — Skill library + ClawHub browse/install surface.
 
-W1.3 of ``docs/PLAN_SKILL_HUB.md``. Wires the admin UI's Skill library to:
+W1.3 of ``docs/archive/PLAN_SKILL_HUB.md``. Wires the admin UI's Skill library to:
 
 * the existing per-profile :class:`SkillRegistry` (read of installed skills)
 * the new :class:`ClawHubClient` (search / featured / detail browse)

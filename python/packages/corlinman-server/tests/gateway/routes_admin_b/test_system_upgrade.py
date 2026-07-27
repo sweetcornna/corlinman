@@ -2,7 +2,7 @@
 and friends).
 
 Eight focused cases covering the validation matrix in
-``docs/PLAN_ONE_CLICK_UPGRADE.md`` §1 W1.3:
+``docs/archive/PLAN_ONE_CLICK_UPGRADE.md`` §1 W1.3:
 
 1. typed-confirmation mismatch → 400
 2. no upgrader wired → 503

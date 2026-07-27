@@ -1,7 +1,7 @@
 """W2.2 — scheduler ``system.update_check`` builtin contract tests.
 
 Asserts the three-branch behaviour spelled out in
-``docs/PLAN_AUTO_UPDATE.md`` §2 Wave 2/W2.2:
+``docs/archive/PLAN_AUTO_UPDATE.md`` §2 Wave 2/W2.2:
 
 * No live checker on ``context.app_state`` → ``{ok: False, reason: "checker_unavailable"}``
 * Live checker → returns the right dict shape from ``UpdateStatus``

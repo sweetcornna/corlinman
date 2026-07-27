@@ -1,6 +1,6 @@
 """``CorlinmanChannel`` — first-class channel for the admin UI's in-app chat.
 
-Wave 3 of ``docs/PLAN_IN_APP_CHAT.md``. The other channels in this
+Wave 3 of ``docs/archive/PLAN_IN_APP_CHAT.md``. The other channels in this
 package (``qq`` / ``telegram`` / ``discord`` / ``slack`` / ``feishu`` /
 ``qq_official`` / ``wechat_official``) are *transport-driven*: they open
 a long-poll / WebSocket / webhook receiver and produce
@@ -448,7 +448,7 @@ class CorlinmanChannel:
         The signature is present so the HTTP route can wire its
         ``POST /api/channels/corlinman/edit/{msg_id}`` endpoint today and
         return a typed 503; the actual implementation lands with the
-        Wave 4 Telegram-parity work (``docs/PLAN_IN_APP_CHAT.md`` §3).
+        Wave 4 Telegram-parity work (``docs/archive/PLAN_IN_APP_CHAT.md`` §3).
         """
         raise UnsupportedError(
             f"edit not supported by channel={self.CHANNEL_ID} "

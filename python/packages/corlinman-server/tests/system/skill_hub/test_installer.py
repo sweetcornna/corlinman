@@ -1,6 +1,6 @@
 """Tests for :func:`corlinman_server.system.skill_hub.install_skill`.
 
-W1.4 of ``docs/PLAN_SKILL_HUB.md``. Covers the installer pipeline that
+W1.4 of ``docs/archive/PLAN_SKILL_HUB.md``. Covers the installer pipeline that
 materialises a downloaded ClawHub tarball into ``<profile_skills_dir>/
 <slug>/`` with a sidecar ``.openclaw-meta.json`` recording provenance,
 plus the matching uninstall path.

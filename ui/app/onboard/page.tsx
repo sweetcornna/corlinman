@@ -3,7 +3,7 @@
 /**
  * First-run onboarding wizard — 6-step reshape (2026-05-28).
  *
- * Step order (locked — see docs/PLAN_FIRST_RUN_WIZARD.md):
+ * Step order (locked — see docs/archive/PLAN_FIRST_RUN_WIZARD.md):
  *   1. API config        (skippable, handoff to /admin/credentials)
  *   2. Change username   (required)
  *   3. Change password   (required, gated — once past, can't go back to step 2)

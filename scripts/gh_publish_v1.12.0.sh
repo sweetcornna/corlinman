@@ -39,10 +39,10 @@ mkissue() { # title  body
 
 echo "== 3/3  follow-up issues =="
 mkissue "[status-card] public GET /status/{token} route (HIGH)" \
-"Verify the signed token (gateway/status_token.verify_status_token) -> read the per-turn journal (list_session_turns / get_session_turn_ids) -> return {session_key, status, turns[], current_step} JSON. Mounts at root via routes/register.build_app_router (auth gates only /v1/ + /admin/*, so /status is public). Without it the agent_status_card link 404s. See docs/PLAN_AGENT_STATUS_CARD.md."
+"Verify the signed token (gateway/status_token.verify_status_token) -> read the per-turn journal (list_session_turns / get_session_turn_ids) -> return {session_key, status, turns[], current_step} JSON. Mounts at root via routes/register.build_app_router (auth gates only /v1/ + /admin/*, so /status is public). Without it the agent_status_card link 404s. See docs/archive/PLAN_AGENT_STATUS_CARD.md."
 
 mkissue "[status-card] public status UI page ui/app/status/[token]/page.tsx (HIGH)" \
-"Standalone public page (outside (admin)). Render current status + work trajectory reusing EventTimeline / ToolCallCard / SubagentCard read-only (strip kill buttons), driven by the token endpoints. Needs a live app run to verify. See docs/PLAN_AGENT_STATUS_CARD.md."
+"Standalone public page (outside (admin)). Render current status + work trajectory reusing EventTimeline / ToolCallCard / SubagentCard read-only (strip kill buttons), driven by the token endpoints. Needs a live app run to verify. See docs/archive/PLAN_AGENT_STATUS_CARD.md."
 
 mkissue "[status-card] trajectory privacy / redaction for the public card (MED)" \
 "Tool-call args/results on the public status card may carry sensitive content. Add a redaction pass or a per-deployment 'what the public card shows' toggle before wide use."

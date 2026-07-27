@@ -1,7 +1,7 @@
 """``corlinman_server.gateway.channels_runtime`` — channel bootstrap.
 
 Parcel **P3** of the Python-port runtime-completion plan
-(``docs/PLAN_PORT_COMPLETION.md`` §3, contract in
+(``docs/archive/PLAN_PORT_COMPLETION.md`` §3, contract in
 ``docs/contracts/runtime-wiring.md``).
 
 The Rust gateway spawned every enabled inbound channel adapter at boot.

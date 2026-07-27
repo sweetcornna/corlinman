@@ -1,7 +1,7 @@
 """``grpc_backend`` — Parcel **P4** chat-backend wiring (full agent path).
 
 Parcel **P4** of the Python-port runtime-completion plan
-(``docs/PLAN_PORT_COMPLETION.md`` §3, Wave 1). See
+(``docs/archive/PLAN_PORT_COMPLETION.md`` §3, Wave 1). See
 ``docs/contracts/runtime-wiring.md`` §4 for the ``ChatBackend`` contract
 and §2 for the sibling-``bootstrap`` seam this module feeds.
 

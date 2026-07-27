@@ -1,6 +1,6 @@
 """Tool name constants + OpenAI-shaped schemas for the ``persona.*`` family.
 
-Mirrors the wire contract documented in ``docs/PLAN_PERSONA_STUDIO.md``
+Mirrors the wire contract documented in ``docs/archive/PLAN_PERSONA_STUDIO.md``
 W3: seven builtin tools that let the agent read + mutate the persona
 registry mid-conversation (typical use: the ``/persona`` wizard skill
 walks the user through ``persona_create`` → ``persona_attach_asset_from_url``).

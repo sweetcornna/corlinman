@@ -1,6 +1,6 @@
 """Background dispatch for ``subagent_spawn`` with ``run_in_background=true``.
 
-W1.3 of ``docs/PLAN_MULTI_AGENT.md`` §2 Wave 1/W1.3.
+W1.3 of ``docs/archive/PLAN_MULTI_AGENT.md`` §2 Wave 1/W1.3.
 
 The dispatcher is the bridge between the synchronous tool-call site
 (``dispatch_subagent_spawn`` in the agent package) and the long-running
@@ -217,7 +217,7 @@ class AsyncSubagentDispatcher:
     # The four call sites are `subagent.dispatched` (right after admit),
     # `subagent.completed` (terminal success), `subagent.failed`
     # (timeout / failure / factory raise) and `subagent.killed`
-    # (operator pressed Kill). See `docs/PLAN_MULTI_AGENT.md` W3.1.
+    # (operator pressed Kill). See `docs/archive/PLAN_MULTI_AGENT.md` W3.1.
     # ------------------------------------------------------------------
 
     async def _audit(

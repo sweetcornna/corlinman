@@ -1,6 +1,6 @@
 """Per-persona asset registry: emoji packs + reference images.
 
-Backs the Persona Studio (see ``docs/PLAN_PERSONA_STUDIO.md`` W1).
+Backs the Persona Studio (see ``docs/archive/PLAN_PERSONA_STUDIO.md`` W1).
 Each persona owns two asset buckets:
 
 * ``emoji`` — labelled stickers / facial-expression images the agent

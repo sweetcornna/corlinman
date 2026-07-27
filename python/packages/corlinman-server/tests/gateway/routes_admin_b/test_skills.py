@@ -1,6 +1,6 @@
 """Tests for the W1.3 ``/admin/skills`` + ``/admin/skills/hub/*`` routes.
 
-W1.4 of ``docs/PLAN_SKILL_HUB.md``. Two surfaces under test:
+W1.4 of ``docs/archive/PLAN_SKILL_HUB.md``. Two surfaces under test:
 
 * ``/admin/skills`` (and ``DELETE /admin/skills/{name}``) — the
   installed-list endpoint that tags each row with origin

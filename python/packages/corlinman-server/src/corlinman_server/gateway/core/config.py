@@ -5,7 +5,7 @@ half). This is the **keystone sibling** the gateway entrypoint
 lazy-imports: when it is absent ``entrypoint._load_config`` logs
 ``gateway.sibling_missing module=...core.config`` and the gateway boots
 in degraded mode. Landing this module is Parcel P0 of the Python-port
-runtime-completion plan (see ``docs/PLAN_PORT_COMPLETION.md`` §0–§3 and
+runtime-completion plan (see ``docs/archive/PLAN_PORT_COMPLETION.md`` §0–§3 and
 ``docs/contracts/runtime-wiring.md``).
 
 What it does

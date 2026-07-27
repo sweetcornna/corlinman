@@ -3,7 +3,7 @@
 > **Status**: locked by Parcel **P0** (2026-05-21). Wave-1 parcels
 > (P1–P4) and Wave-2 parcels code against this document. Changing a
 > contract here is a coordination event — ping the other parcel owners.
-> **Source of truth**: `docs/PLAN_PORT_COMPLETION.md` §2 (this file is
+> **Source of truth**: `docs/archive/PLAN_PORT_COMPLETION.md` §2 (this file is
 > §2 fixed into a contract).
 
 ## 0. Why this exists

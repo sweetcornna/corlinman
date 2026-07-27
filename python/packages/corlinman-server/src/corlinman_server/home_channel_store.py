@@ -1,6 +1,6 @@
 """Per-user "home channel" assignment store + first-chat tip flag.
 
-Companion to the W3 first-run wizard (see ``docs/PLAN_FIRST_RUN_WIZARD.md``
+Companion to the W3 first-run wizard (see ``docs/archive/PLAN_FIRST_RUN_WIZARD.md``
 Agent D's slice).
 
 Two responsibilities, one SQLite file:

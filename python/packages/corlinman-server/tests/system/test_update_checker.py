@@ -1,7 +1,7 @@
 """Tests for :class:`corlinman_server.system.UpdateChecker` (W1.1).
 
 Covers the documented behaviour in
-``docs/PLAN_AUTO_UPDATE.md`` §2 Wave 1/W1.1:
+``docs/archive/PLAN_AUTO_UPDATE.md`` §2 Wave 1/W1.1:
 
 * 200 OK with newer/equal/older tag — ``available`` flag flips correctly
 * 304 Not Modified — cache returned, ``last_checked_at`` stamped fresh

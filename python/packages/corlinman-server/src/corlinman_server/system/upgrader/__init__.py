@@ -1,6 +1,6 @@
 """``corlinman_server.system.upgrader`` — one-click upgrade backend.
 
-W1.1 of ``docs/PLAN_ONE_CLICK_UPGRADE.md`` §2 Wave 1/W1.1.
+W1.1 of ``docs/archive/PLAN_ONE_CLICK_UPGRADE.md`` §2 Wave 1/W1.1.
 
 This module owns the abstract upgrade contract
 (:class:`UpgraderProtocol`), the Docker SDK implementation

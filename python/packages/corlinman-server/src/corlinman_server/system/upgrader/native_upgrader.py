@@ -1,6 +1,6 @@
 """Native-mode :class:`UpgraderProtocol` implementation.
 
-W1.2 of ``docs/PLAN_ONE_CLICK_UPGRADE.md`` §2 Wave 1.
+W1.2 of ``docs/archive/PLAN_ONE_CLICK_UPGRADE.md`` §2 Wave 1.
 
 Architecture
 ------------

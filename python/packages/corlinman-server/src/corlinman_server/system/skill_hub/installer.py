@@ -1,6 +1,6 @@
 """Skill installer / uninstaller pipeline.
 
-W1.2 of ``docs/PLAN_SKILL_HUB.md``. Takes a ClawHub tarball through to a
+W1.2 of ``docs/archive/PLAN_SKILL_HUB.md``. Takes a ClawHub tarball through to a
 fully-extracted skill bundle inside
 ``<data_dir>/profiles/<profile>/skills/<slug>/``.
 

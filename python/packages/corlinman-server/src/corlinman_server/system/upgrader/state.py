@@ -1,6 +1,6 @@
 """Shared in-memory + persistent state tracker for one-click upgrades.
 
-W1.1 of ``docs/PLAN_ONE_CLICK_UPGRADE.md`` §2 Wave 1/W1.1.
+W1.1 of ``docs/archive/PLAN_ONE_CLICK_UPGRADE.md`` §2 Wave 1/W1.1.
 
 Design contract
 ---------------

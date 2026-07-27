@@ -1,7 +1,7 @@
 """``corlinman_server.gateway.services`` sibling-``bootstrap`` seam.
 
 Parcel **P2** of the Python-port runtime-completion plan
-(``docs/PLAN_PORT_COMPLETION.md`` §3, Wave 1). See
+(``docs/archive/PLAN_PORT_COMPLETION.md`` §3, Wave 1). See
 ``docs/contracts/runtime-wiring.md`` §2 for the seam contract.
 
 The gateway lifespan (``gateway/lifecycle/entrypoint.py``) iterates a

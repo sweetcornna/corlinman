@@ -1,7 +1,7 @@
 """``DirectProviderBackend`` — a fast-path :class:`ChatBackend`.
 
 Parcel **P2** of the Python-port runtime-completion plan
-(``docs/PLAN_PORT_COMPLETION.md`` §3, Wave 1). See
+(``docs/archive/PLAN_PORT_COMPLETION.md`` §3, Wave 1). See
 ``docs/contracts/runtime-wiring.md`` §4 for the contract this module
 implements.
 

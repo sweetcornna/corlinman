@@ -1,6 +1,6 @@
 """GitHub-releases update checker with ETag-aware persistent cache.
 
-W1.1 of ``docs/PLAN_AUTO_UPDATE.md`` §2 Wave 1.
+W1.1 of ``docs/archive/PLAN_AUTO_UPDATE.md`` §2 Wave 1.
 
 Design contract
 ---------------

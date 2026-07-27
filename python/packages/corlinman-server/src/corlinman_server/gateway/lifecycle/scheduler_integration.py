@@ -106,7 +106,7 @@ def _register_default_update_check_job(
     """Stash a default ``system.update_check`` :class:`SchedulerJob` on ``app.state``.
 
     Behaviour matrix (matches the spec in W2.2 of
-    ``docs/PLAN_AUTO_UPDATE.md``):
+    ``docs/archive/PLAN_AUTO_UPDATE.md``):
 
     * ``[system.update_check] enabled = false`` — *not* called (the
       caller guards on ``update_cfg.enabled`` first).

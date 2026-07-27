@@ -1810,7 +1810,7 @@ All notable changes to corlinman are documented here. Format follows
 > config: `[console]` block (small_fast_model / auto_route / compaction).
 
 ### Added
-- **`corlinman console` — interactive CLI agent console** (`docs/PLAN_CLI_CONSOLE.md`).
+- **`corlinman console` — interactive CLI agent console** (`docs/archive/PLAN_CLI_CONSOLE.md`).
   A terminal REPL that hosts the *full* agent brain in-process (builtin tools,
   `subagent.spawn*` multi-agent fan-out, memory, journal — identical wiring to
   production, served on a private per-process UDS), or attaches to a running
@@ -1826,7 +1826,7 @@ All notable changes to corlinman are documented here. Format follows
     `/model` choice always wins.
   - Sessions persist in the same `agent_journal.sqlite` the gateway uses;
     `/resume <key>` replays a session's journaled turns into the window.
-- **claude-code parity wave 1** (`docs/PLAN_CLAUDECODE_PARITY.md`, matrix in
+- **claude-code parity wave 1** (`docs/archive/PLAN_CLAUDECODE_PARITY.md`, matrix in
   `docs/parity-matrix-2026-06-11.json`):
   - **Cross-channel session commands** — `/new`(/新会话), `/model`(/模型) and
     `/usage`(/用量) now work on EVERY surface (QQ/Telegram/Discord/Slack/
@@ -2063,7 +2063,7 @@ All notable changes to corlinman are documented here. Format follows
   `grpc/placeholder`, `grpc/plugin_invoker`, `services/chat_service`,
   `services/direct_backend`, `evolution/curator`) split into cohesive siblings.
 - Documentation: `docs/architecture-modules.md`, `docs/modularization-plan.md`,
-  and `docs/PLAN_decompose_cores.md` updated to reflect the completed structure;
+  and `docs/archive/PLAN_decompose_cores.md` updated to reflect the completed structure;
   `CONTRIBUTING.md` / PR template carry the module map + owner-areas.
 
 ### Fixed
@@ -2644,7 +2644,7 @@ All notable changes to corlinman are documented here. Format follows
   `source="inline"`). Reuses the existing runner / supervisor / blackboard via a
   shared `_run_child_under_slot` helper. `tools_allowed=["*"]` inherits the
   parent's tools, bounded by `tool_allowlist` ∩ parent (escalation rejected).
-  See `docs/PLAN_DYNAMIC_SUBAGENTS.md`.
+  See `docs/archive/PLAN_DYNAMIC_SUBAGENTS.md`.
 - **Existing-agent call surfaced** — `subagent.spawn` / `subagent.spawn_many`
   are now **advertised** to the main agent (they were dispatch-only, so the
   model never saw them). No logic change.
@@ -2653,7 +2653,7 @@ All notable changes to corlinman are documented here. Format follows
   the `agent_status_card` builtin tool that mints a
   `<CORLINMAN_PUBLIC_URL>/status/<token>` link for the current session. The
   public route + UI page are tracked follow-ups (see
-  `docs/PLAN_AGENT_STATUS_CARD.md`); the tool returns a clear `public_url_unset`
+  `docs/archive/PLAN_AGENT_STATUS_CARD.md`); the tool returns a clear `public_url_unset`
   envelope until an operator opts in.
 
 ### Fixed
@@ -3408,7 +3408,7 @@ behavior changes operators should know:
   cross-encoder rerank (`bge-reranker-v2-m3`)" were all aspirational —
   zero matches in `python/packages/**/src/`. Now described as "SQLite
   FTS5 (BM25) today; HNSW + RRF + cross-encoder rerank on the roadmap"
-  with a link to `docs/PLAN_PORT_COMPLETION.md`. Chinese section
+  with a link to `docs/archive/PLAN_PORT_COMPLETION.md`. Chinese section
   mirrored. (#QUAL-004)
 - Bonus: Chinese `doctor` count corrected `21 项 → 9 项` to match
   the actual `doctor.py` check registry. (#QUAL-005)
@@ -3992,7 +3992,7 @@ behavior changes operators should know:
 
 ### Plan
 
-[`docs/PLAN_IN_APP_CHAT.md`](docs/PLAN_IN_APP_CHAT.md) — full design
+[`docs/archive/PLAN_IN_APP_CHAT.md`](docs/archive/PLAN_IN_APP_CHAT.md) — full design
 document with the 4-wave breakdown, architecture decisions, file
 structure, and risk register that drove this release.
 
@@ -4000,7 +4000,7 @@ structure, and risk register that drove this release.
 ## [1.7.0] — 2026-05-28 — First-run wizard + 主聊天窗口 + image-provider probe
 
 > Lands the **first-run wizard initiative**
-> ([`docs/PLAN_FIRST_RUN_WIZARD.md`](docs/PLAN_FIRST_RUN_WIZARD.md))
+> ([`docs/archive/PLAN_FIRST_RUN_WIZARD.md`](docs/archive/PLAN_FIRST_RUN_WIZARD.md))
 > shipped by 6 parallel agents: a 6-step onboarding flow (API config →
 > rename admin → change default password → persona choice → image API →
 > done) that gates step order so the username-then-password change can
@@ -4027,7 +4027,7 @@ structure, and risk register that drove this release.
   configure-separate / skip, with a 409 fallback when the current
   provider doesn't support image generation. Persona skill grew a
   Stage -1 entry gate so most operators can opt out of the 7-stage
-  voice interview in one click. ([`docs/PLAN_FIRST_RUN_WIZARD.md`])
+  voice interview in one click. ([`docs/archive/PLAN_FIRST_RUN_WIZARD.md`])
 - **`/sethome` + home-channel store** — new `home_channel_store`
   SQLite module (tables `home_channels`, `first_chat_tips_shown`);
   channel-side `/sethome` (`/主页`) handler pins the active
@@ -4074,7 +4074,7 @@ structure, and risk register that drove this release.
 ## [1.6.0] — 2026-05-26 — Persona Studio + frontend overhaul + QQ/Telegram fixes
 
 > Lands the eight-wave **Persona Studio** initiative
-> ([`docs/PLAN_PERSONA_STUDIO.md`](docs/PLAN_PERSONA_STUDIO.md)) plus a
+> ([`docs/archive/PLAN_PERSONA_STUDIO.md`](docs/archive/PLAN_PERSONA_STUDIO.md)) plus a
 > sweep of frontend repairs and prod-channel bug fixes that were
 > blocking real bot traffic.
 >
@@ -4211,7 +4211,7 @@ structure, and risk register that drove this release.
 > starter skills (the 16 in-wheel defaults from v1.4) stay read-only:
 > the UI disables the Delete button and the server returns 409
 > `bundled_protected` on bypass. Plan at
-> [`docs/PLAN_SKILL_HUB.md`](docs/PLAN_SKILL_HUB.md); operator deep-dive
+> [`docs/archive/PLAN_SKILL_HUB.md`](docs/archive/PLAN_SKILL_HUB.md); operator deep-dive
 > at [`docs/skill-hub.md`](docs/skill-hub.md).
 
 ### Added
@@ -4318,7 +4318,7 @@ structure, and risk register that drove this release.
 > tools. The wildcard `"*"` is honoured only on a card's
 > `tools_allowed`; caller-side `tool_allowlist` rejects `"*"`
 > literally. Plan at
-> [`docs/PLAN_MULTI_AGENT.md`](docs/PLAN_MULTI_AGENT.md); operator
+> [`docs/archive/PLAN_MULTI_AGENT.md`](docs/archive/PLAN_MULTI_AGENT.md); operator
 > deep-dive at [`docs/multi-agent.md`](docs/multi-agent.md).
 
 ### Added
@@ -4407,7 +4407,7 @@ structure, and risk register that drove this release.
 > must retype the exact tag) + tag whitelisted against GitHub releases
 > + no downgrade by default + single in-flight + structured audit log
 > in the UI. Plan at
-> [`docs/PLAN_ONE_CLICK_UPGRADE.md`](docs/PLAN_ONE_CLICK_UPGRADE.md);
+> [`docs/archive/PLAN_ONE_CLICK_UPGRADE.md`](docs/archive/PLAN_ONE_CLICK_UPGRADE.md);
 > ops doc cross-link from `docs/system-updates.md`.
 
 ### Added
@@ -4514,7 +4514,7 @@ structure, and risk register that drove this release.
 > No in-app one-click upgrade — the gateway can't sudo into the host —
 > but the operator-driven flow is now first-class instead of "check the
 > repo by hand." Plan at
-> [`docs/PLAN_AUTO_UPDATE.md`](docs/PLAN_AUTO_UPDATE.md); operator doc
+> [`docs/archive/PLAN_AUTO_UPDATE.md`](docs/archive/PLAN_AUTO_UPDATE.md); operator doc
 > at [`docs/system-updates.md`](docs/system-updates.md).
 
 ### Added
@@ -4656,7 +4656,7 @@ structure, and risk register that drove this release.
 > live but never landed in main; new observability endpoints exist in
 > main but not yet on live), then ports the hermes `EnvPage` paste-
 > only credentials pattern + two-column `ModelPickerDialog`. Plan at
-> [`docs/PLAN_UI_FIXES.md`](docs/PLAN_UI_FIXES.md).
+> [`docs/archive/PLAN_UI_FIXES.md`](docs/archive/PLAN_UI_FIXES.md).
 
 ### Added
 

@@ -4,7 +4,7 @@ A terminal REPL that hosts (or attaches to) the corlinman agent brain and
 streams its reasoning, tool calls, and answers — the CLI counterpart of the
 web ``/chat`` playground and the channel adapters.
 
-Design notes live in ``docs/PLAN_CLI_CONSOLE.md``. The console is a *client*
+Design notes live in ``docs/archive/PLAN_CLI_CONSOLE.md``. The console is a *client*
 of the same internal chat contract every other surface uses
 (:class:`corlinman_server.gateway_api.InternalChatRequest` →
 ``AsyncIterator[InternalChatEvent]``); it adds no second agent loop.

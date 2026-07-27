@@ -1,4 +1,4 @@
-"""``qzone.daily_publish`` — W6 of ``docs/PLAN_PERSONA_STUDIO.md``.
+"""``qzone.daily_publish`` — W6 of ``docs/archive/PLAN_PERSONA_STUDIO.md``.
 
 Drives a one-turn agent chat under a persona's voice and asserts the
 turn ends by calling the ``qzone_publish`` tool (W5). The job metadata

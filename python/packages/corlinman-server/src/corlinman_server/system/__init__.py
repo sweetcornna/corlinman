@@ -1,6 +1,6 @@
 """``corlinman_server.system`` — process-wide system metadata + update-checker.
 
-W1.1 of ``docs/PLAN_AUTO_UPDATE.md``. Houses the GitHub-releases update
+W1.1 of ``docs/archive/PLAN_AUTO_UPDATE.md``. Houses the GitHub-releases update
 checker, its persisted-cache schema, and the runtime-config dataclass
 the gateway lifecycle reads from ``[system.update_check]``.
 

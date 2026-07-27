@@ -207,7 +207,7 @@ prefer the emitter path — it's the same stream the UI sees.
 
 ### Admin UI fixes (May 2026)
 
-Tracking issue: [`docs/PLAN_UI_FIXES.md`](PLAN_UI_FIXES.md). This round
+Tracking issue: [`docs/archive/PLAN_UI_FIXES.md`](archive/PLAN_UI_FIXES.md). This round
 reconciles a split-brain state between `main` and the live deployment
 at `corlinman.cornna.xyz`: the live gateway shipped a handful of admin
 endpoints (`replay`, `provider test`, `provider/{name}/models`,

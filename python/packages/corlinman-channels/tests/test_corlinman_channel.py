@@ -1,6 +1,6 @@
 """Tests for :mod:`corlinman_channels.web` — CorlinmanChannel core surface.
 
-Covers W3 of ``docs/PLAN_IN_APP_CHAT.md``:
+Covers W3 of ``docs/archive/PLAN_IN_APP_CHAT.md``:
 
 * :meth:`CorlinmanChannel.ingest` — produces a well-formed
   :class:`InboundEvent` with the expected binding shape.

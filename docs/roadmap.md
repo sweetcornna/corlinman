@@ -14,7 +14,7 @@
 
 ## 近期（P1）
 
-- **稠密向量 RAG** —— 当前检索是 SQLite FTS5（BM25）关键词检索；补齐稠密向量（HNSW）+ RRF 融合 + cross-encoder rerank（`bge-reranker-v2-m3`）的混合检索。设计见 [`PLAN_PORT_COMPLETION.md`](PLAN_PORT_COMPLETION.md)。
+- **稠密向量 RAG** —— 当前检索是 SQLite FTS5（BM25）关键词检索；补齐稠密向量（HNSW）+ RRF 融合 + cross-encoder rerank（`bge-reranker-v2-m3`）的混合检索。设计见 [`PLAN_PORT_COMPLETION.md`](archive/PLAN_PORT_COMPLETION.md)。
 - **claude-code parity 收尾** —— Dim 4 sandbox-backend 抽象（XL）；Dim 5 剩余（`/mcp` 控制台命令、`.mcp.json` scopes、client resources、sampling completer 生产接线）；[#108](https://github.com/sweetcornna/corlinman/issues/108) items 1（进程级 live-registry feed）+ 2（in-progress user bubble）；Dim 9 residuals（prompt/agent evaluators、`pre_compact` / `session_*` emitters、Notification/Setup/FileChanged、exit-2 rewake、stream-json hook lines）。
 - **渠道状态流对齐** —— 目前 Telegram 有可变 spinner 状态条；补齐 Discord / Slack / Feishu 的同等流式状态。
 - **OIDC 登录** —— 替代 basic auth。

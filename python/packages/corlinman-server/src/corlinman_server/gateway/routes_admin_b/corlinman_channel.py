@@ -1,6 +1,6 @@
 """``/api/channels/corlinman/*`` — HTTP surface for the in-app chat channel.
 
-Wave 3 of ``docs/PLAN_IN_APP_CHAT.md``. Pairs with
+Wave 3 of ``docs/archive/PLAN_IN_APP_CHAT.md``. Pairs with
 :class:`corlinman_channels.web.CorlinmanChannel`: this module exposes the
 HTTP surface the browser hits while the channel object owns the
 per-session outbound queues + the inbound event shape.

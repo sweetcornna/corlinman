@@ -9,7 +9,7 @@ Original two routes:
   provider (zero-credential path).
 
 First-run wizard additions (Wave 2 — see
-``docs/PLAN_FIRST_RUN_WIZARD.md``):
+``docs/archive/PLAN_FIRST_RUN_WIZARD.md``):
 
 * ``POST /admin/onboard/finalize-account``         — rename the admin
   user (B1). Reuses the username-change service logic from

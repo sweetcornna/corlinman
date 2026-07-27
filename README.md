@@ -132,7 +132,7 @@ drops; untrusted plugins can demand human approval per call. Authoring guide:
 
 **Memory** has two auditable layers: per-session message history in SQLite, and
 a SQLite FTS5 (BM25) knowledge base exposed through `/admin/rag` (dense
-vectors + rerank are on the [roadmap](docs/PLAN_PORT_COMPLETION.md)).
+vectors + rerank are on the [roadmap](docs/archive/PLAN_PORT_COMPLETION.md)).
 
 **Governance** — per-tool approvals (`allow`/`deny`/`prompt`, prompt parks the
 call for a human click or auto-denies after 5 min), per-channel rate limits,

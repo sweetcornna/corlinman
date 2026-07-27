@@ -1,7 +1,7 @@
 """``/admin/providers/{name}/probe-image`` — image-capability probe.
 
 Wave 2 first-run wizard, contract §C1 in
-``docs/PLAN_FIRST_RUN_WIZARD.md``. The wizard's "image generation API"
+``docs/archive/PLAN_FIRST_RUN_WIZARD.md``. The wizard's "image generation API"
 step gives the operator three choices:
 
 * **skip**     — no image surface; agent loop reports

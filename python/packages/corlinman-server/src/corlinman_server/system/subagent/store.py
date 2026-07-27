@@ -1,6 +1,6 @@
 """Persistent + in-memory tracker for background ``subagent_spawn`` requests.
 
-W1.3 of ``docs/PLAN_MULTI_AGENT.md`` §2 Wave 1/W1.3.
+W1.3 of ``docs/archive/PLAN_MULTI_AGENT.md`` §2 Wave 1/W1.3.
 
 Design mirrors :class:`corlinman_server.system.upgrader.state.UpgradeStateStore`
 field-for-field — same atomic JSON persistence (``$DATA_DIR/.subagent-state.json``),
