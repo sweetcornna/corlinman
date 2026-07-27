@@ -32,14 +32,16 @@ def test_explicit_rule_wins_over_default() -> None:
     assert g.decide("read_file") == ALLOW
 
 
-def test_first_match_wins() -> None:
+def test_last_match_wins() -> None:
+    # W3-1 / C3: default flipped to last-match-wins — catch-alls go
+    # first, specifics later (later overrides earlier).
     g = PermissionGate(
         [
-            PermissionRule(tool="run_shell", action=ALLOW),
             PermissionRule(tool="*", action=DENY),
+            PermissionRule(tool="run_shell", action=ALLOW),
         ]
     )
-    assert g.decide("run_shell") == ALLOW  # specific rule first
+    assert g.decide("run_shell") == ALLOW  # later specific rule wins
     assert g.decide("read_file") == DENY  # wildcard catches the rest
 
 
@@ -125,14 +127,15 @@ def test_task_control_honours_arg_scoped_run_shell_grant() -> None:
 
 
 def test_task_control_rescued_from_wildcard_deny() -> None:
-    """Codex #112 r7: an allowlist ``[run_shell allow, * deny]`` lets the
-    model start a bg task, so the follow-up poll (shell_task_output) and kill
-    (shell_task_kill) must inherit the run_shell grant instead of being
-    swallowed by the ``*`` catch-all deny."""
+    """Codex #112 r7: an allowlist ``[* deny, run_shell allow]`` (C3
+    last-match-wins ordering) lets the model start a bg task, so the
+    follow-up poll (shell_task_output) and kill (shell_task_kill) must
+    inherit the run_shell grant instead of being swallowed by the ``*``
+    catch-all deny."""
     g = PermissionGate(
         [
-            PermissionRule(tool="run_shell", action=ALLOW),
             PermissionRule(tool="*", action=DENY),
+            PermissionRule(tool="run_shell", action=ALLOW),
         ]
     )
     assert g.decide("run_shell") == ALLOW
@@ -149,8 +152,9 @@ def test_task_control_denied_when_run_shell_denied() -> None:
     start."""
     g = PermissionGate(
         [
-            PermissionRule(tool="run_shell", action=DENY),
+            # C3 last-match-wins ordering: catch-all first, specific last.
             PermissionRule(tool="*", action=ALLOW),
+            PermissionRule(tool="run_shell", action=DENY),
         ]
     )
     assert g.decide("run_shell") == DENY
@@ -321,23 +325,27 @@ def test_session_pattern_match() -> None:
 
 
 def test_user_pattern_match() -> None:
-    """``match.user_pattern = 'admin*'`` only fires for admin-prefixed users."""
+    """``match.user_pattern = 'admin*'`` only fires for admin-prefixed users.
+
+    C3 last-match-wins ordering: the broad deny goes first, the scoped
+    allow last (later overrides earlier for the contexts it matches).
+    """
     g = PermissionGate(
         [
+            PermissionRule(tool="run_shell", action=DENY),
             PermissionRule(
                 tool="run_shell",
                 action=ALLOW,
                 match=RuleMatch(user_pattern="admin*"),
             ),
-            PermissionRule(tool="run_shell", action=DENY),
         ]
     )
-    # Admin users match the first (allow) rule.
+    # Admin users match the later (allow) rule, which overrides the deny.
     assert g.decide_with_context("run_shell", user_id="admin") == ALLOW
     assert g.decide_with_context("run_shell", user_id="admin-2") == ALLOW
-    # Non-admin users fall through to the second (deny) rule.
+    # Non-admin users only match the broad deny.
     assert g.decide_with_context("run_shell", user_id="alice") == DENY
-    # Missing user_id → first rule can't match → fall through to deny.
+    # Missing user_id → scoped rule can't match → the deny stands.
     assert g.decide_with_context("run_shell") == DENY
 
 
@@ -382,9 +390,14 @@ def test_all_match_fields_must_match() -> None:
     )
 
 
-def test_first_match_wins_order_preserved() -> None:
-    """Two rules with conflicting actions — first one declared wins."""
-    # Order A: allow then deny.
+def test_last_match_wins_order_preserved() -> None:
+    """Two rules with conflicting actions — LAST one declared wins (C3).
+
+    The same two orderings as before the flip, with mirrored verdicts:
+    declaration order still matters, only the winning end changed.
+    """
+    # Order A: scoped allow then broad deny — the later deny wins even
+    # for the scoped context.
     g_allow_first = PermissionGate(
         [
             PermissionRule(
@@ -399,11 +412,11 @@ def test_first_match_wins_order_preserved() -> None:
         g_allow_first.decide_with_context(
             "run_shell", model="claude-sonnet-4-5"
         )
-        == ALLOW
+        == DENY
     )
 
-    # Order B: deny then allow — first rule (wildcard tool match w/o
-    # ``match`` block) fires before the more-specific allow.
+    # Order B: broad deny then scoped allow — the later allow overrides
+    # the deny for the contexts it matches.
     g_deny_first = PermissionGate(
         [
             PermissionRule(tool="run_shell", action=DENY),
@@ -418,8 +431,10 @@ def test_first_match_wins_order_preserved() -> None:
         g_deny_first.decide_with_context(
             "run_shell", model="claude-sonnet-4-5"
         )
-        == DENY
+        == ALLOW
     )
+    # A non-matching context only sees the broad deny in either order.
+    assert g_deny_first.decide_with_context("run_shell", model="gpt-x") == DENY
 
 
 def test_audit_log_entry_captures_resolved_decision() -> None:

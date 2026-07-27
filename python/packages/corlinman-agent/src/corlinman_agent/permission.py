@@ -1,464 +1,94 @@
-"""Declarative permission gate for builtin tool calls.
+"""Declarative permission gate for builtin tool calls (legacy facade).
 
-A small, opinionated layer between the model's tool call and the actual
-dispatch. Mirrors the opencode / Claude Code allow/deny/log idea, scoped
-to what is actually useful for a chat-bot deployment:
+W3-1 (unified authorization): the matching core and the domain objects
+moved to :mod:`corlinman_agent.authz` — this module re-exports them under
+their historical names so every existing import keeps working, and keeps
+:class:`PermissionGate` as the **compiled snapshot evaluator** the
+call-time :class:`corlinman_agent.authz.gate.AuthzGate` rebuilds whenever
+any config layer changes. New code should prefer ``corlinman_agent.authz``.
 
-- a per-tool action: ``allow`` / ``deny`` / ``log``
-- a wildcard rule (``*``) for "everything else"
-- a "strict mode" preset that flips every mutating tool to ``deny``
-  unless an explicit ``allow`` rule overrides it
-- **context-aware matching** — a rule may optionally narrow itself to a
-  particular model, channel session, or end-user by attaching a
-  ``match`` block (all sub-fields must match for the rule to fire).
+Config sources (in precedence order, decision C5):
 
-The gate is read at servicer construction (from env or an explicit rule
-list) and consulted in ``_dispatch_builtin`` before any builtin tool
-runs. A ``deny`` short-circuits with a ``permission_denied`` envelope
-the model can read and react to.
-
-Config sources (in precedence order):
-
-1. **``$CORLINMAN_AGENT_PERMISSIONS``** — JSON list of rules; the first
-   match wins. Each rule has shape::
+1. the ``[permissions]`` config block (via the py-config sidecar);
+2. **``$CORLINMAN_AGENT_PERMISSIONS``** — JSON list of rules. Each rule::
 
        {
-           "tool":   "<name>" | "*",
-           "action": "allow" | "deny" | "log",
-           "match":  {                              # OPTIONAL
-               "model":            "<fnmatch glob>",
-               "session_pattern":  "<fnmatch glob>",
-               "user_pattern":     "<fnmatch glob>"
+           "tool":   "<name>" | "*" | "<name>(<arg glob>)",
+           "action": "allow" | "deny" | "ask" | "log",
+           "scope":  {                              # OPTIONAL
+               "model":   "<fnmatch glob>",
+               "session": "<fnmatch glob>",
+               "user":    "<fnmatch glob>",
+               "tenant":  "<fnmatch glob>",
+               "surface": "qq|telegram"             # exact alternation
            }
        }
 
-   When ``match`` is omitted the rule behaves like a legacy tool-only
-   rule (matches every context). When ``match`` is present, **every**
-   declared sub-field must match the caller's context via
-   :func:`fnmatch.fnmatchcase` for the rule to apply. A missing context
-   value (e.g. ``user_id=None``) never matches a non-empty pattern.
+   ``match`` (with ``session_pattern`` / ``user_pattern``) remains the
+   accepted legacy alias for ``scope``.
+3. the project / user settings files (``permission_settings``).
 
-   Example — deny ``run_shell`` only when both the model is a Claude
-   variant and the user_id is a guest::
-
-       [
-           {
-               "tool":   "run_shell",
-               "action": "deny",
-               "match":  {"model": "claude-*", "user_pattern": "guest*"}
-           }
-       ]
-
-2. **``$CORLINMAN_AGENT_STRICT_MODE``** = ``1`` — denies every mutating
-   tool (write_file, edit_file, apply_patch, run_shell, revert_changes,
-   qzone_publish, memory_write, send_attachment, text_to_speech) unless
-   rule (1) explicitly allows it.
-3. otherwise the default is ``allow`` for every tool.
+Rule evaluation is **last-match-wins by default** (decision C3 — layered
+precedence requires it; ``CORLINMAN_AGENT_PERMISSION_LAST_MATCH_WINS=0``
+restores the historical first-match order explicitly).
 """
 
 from __future__ import annotations
 
-import fnmatch
-import json
 import os
-import shlex
-from dataclasses import dataclass
-from enum import Enum
 from typing import Any
 
+import structlog
+
 from corlinman_agent import runtime_defaults as _limits
-
-ALLOW: str = "allow"
-DENY: str = "deny"
-LOG: str = "log"
-#: ``ask`` — defer to an interactive approval prompt (routed through the
-#: :class:`~corlinman_agent.approval_gate.ApprovalGate`). gap
-#: ``permissions-no-ask-action``: previously the gate only knew
-#: allow/deny/log, so there was no way to express "let a human decide".
-ASK: str = "ask"
-_VALID_ACTIONS = (ALLOW, DENY, LOG, ASK)
-
-
-class PermissionMode(str, Enum):
-    """Coarse operating mode layered ABOVE the per-tool rule list.
-
-    gap ``permissions-no-permission-mode``. Mirrors Claude Code's
-    permission modes. The mode is consulted only when the rule list does
-    not produce an explicit ``allow`` / ``deny`` / ``ask`` for a tool:
-
-    * :attr:`DEFAULT` — fall through to the gate's ``default_action`` /
-      strict-mode fallback (legacy behaviour).
-    * :attr:`ACCEPT_EDITS` — auto-allow file-edit tools (write/edit/patch)
-      without prompting; everything else falls through to default.
-    * :attr:`PLAN` — deny every mutating tool (planning only, no side
-      effects); read-only tools still fall through to default.
-    * :attr:`BYPASS` — allow everything (no gating). Operator opt-in for
-      trusted automation.
-
-    Stored as lowercase strings to match a ``mode = "..."`` config knob.
-    """
-
-    DEFAULT = "default"
-    ACCEPT_EDITS = "acceptEdits"
-    PLAN = "plan"
-    BYPASS = "bypass"
-
-    @classmethod
-    def coerce(cls, raw: Any) -> PermissionMode:
-        """Best-effort parse; unknown / falsy values map to :attr:`DEFAULT`."""
-        if isinstance(raw, PermissionMode):
-            return raw
-        if isinstance(raw, str):
-            for member in cls:
-                if member.value.lower() == raw.strip().lower():
-                    return member
-        return cls.DEFAULT
-
-
-#: File-editing tools that :attr:`PermissionMode.ACCEPT_EDITS` auto-allows.
-_EDIT_TOOLS: frozenset[str] = frozenset(
-    {"write_file", "edit_file", "notebook_edit", "apply_patch", "revert_changes"}
+from corlinman_agent.authz.matcher import (
+    _EDIT_TOOLS,
+    _PERMISSION_TOOL_ALIAS,
+    _TASK_CONTROL_TOOLS,
+    MUTATING_TOOLS,
+    PermissionRule,
+    RuleMatch,
+    extract_arg_candidates,
+    extract_primary_arg,
+    match_hook_rule,
+    parse_rule_list,
+)
+from corlinman_agent.authz.model import (
+    _VALID_ACTIONS,
+    ALLOW,
+    ASK,
+    DENY,
+    LOG,
+    PermissionMode,
+    Subject,
 )
 
-#: The "mutating" tools — strict mode flips these to ``deny`` by default.
-#: Read-only tools (read/list/search/web/calc/todo/subagent/blackboard)
-#: stay allowed in strict mode because they have no blast radius on
-#: their own.
-MUTATING_TOOLS: frozenset[str] = frozenset(
-    {
-        "write_file",
-        "edit_file",
-        "notebook_edit",
-        "apply_patch",
-        "run_shell",
-        "revert_changes",
-        # ``render_document`` writes a rendered artifact into the workspace
-        # — same blast radius as write_file, so plan/strict deny it too.
-        "render_document",
-        # ``qzone_publish`` writes externally — posts a 说说 to QQ空间
-        # via the user's logged-in QQ account. Treat as mutating so
-        # strict-mode deployments must explicitly opt in.
-        "qzone_publish",
-        # ``memory_write`` persists state to the agent's long-term memory
-        # store — a durable side effect that survives the turn.
-        "memory_write",
-        # ``send_attachment`` / ``text_to_speech`` push content OUT to the
-        # chat channel (a file / a synthesised audio clip). Outbound side
-        # effects with real blast radius, so strict mode must opt in.
-        "send_attachment",
-        "text_to_speech",
-        # ``shell_task_kill`` terminates a running background shell process
-        # group — a real side effect, so plan/strict mode must deny it by
-        # default. (It also inherits run_shell's verdict via
-        # ``_PERMISSION_TOOL_ALIAS`` below, so an explicit run_shell allow
-        # rule lets the model terminate the tasks it started.)
-        "shell_task_kill",
-    }
-)
+logger = structlog.get_logger(__name__)
 
-#: Permission aliases — a tool that inherits another tool's verdict entirely
-#: (rules + mode + strict). ``shell_task_kill`` is the teardown surface of
-#: ``run_shell``, so it resolves WITH run_shell's identity: allowed wherever
-#: run_shell is (an explicit allow rule) and denied in plan/strict by
-#: default exactly like run_shell. Without this, run_shell — whose schema
-#: now advertises ``run_in_background=true`` — could start a background task
-#: the model is then forbidden to ``shell_task_kill`` (Codex #112 r6).
-#: Mirrors the run_shell⇒task-tools implication the skill / subagent
-#: allowlists already carry. (``shell_task_output`` is read-only and stays
-#: allowed by default in every mode, so it needs no alias — but it DOES
-#: participate in the task-control rescue below so a ``*``-deny catch-all
-#: can't strand it.)
-_PERMISSION_TOOL_ALIAS: dict[str, str] = {
-    "shell_task_kill": "run_shell",
-}
-
-#: The background-shell task-control surface: poll a task's output and
-#: terminate it. Both operate ONLY on tasks the caller's session already
-#: started (the registry's session-ownership gate confines them), so their
-#: permission tracks the *grant to start* tasks, not run_shell's per-command
-#: scoping. The argless control call carries no command, so an arg-scoped
-#: ``run_shell(npm:*)`` allow can never match it and a ``*``-deny catch-all
-#: would swallow it — stranding the model with a task it can neither poll nor
-#: kill until the watchdog expires. ``_can_start_shell_tasks`` rescues exactly
-#: that case: if the session may start SOME task, it may control its own tasks
-#: (Codex #112 r7).
-_TASK_CONTROL_TOOLS: frozenset[str] = frozenset(
-    {"shell_task_output", "shell_task_kill"}
-)
-
-
-@dataclass(frozen=True)
-class RuleMatch:
-    """Optional context filters on a :class:`PermissionRule`.
-
-    All non-empty fields must match the caller's context via
-    :func:`fnmatch.fnmatchcase` for the parent rule to fire. An empty
-    field is treated as "don't care" (matches anything, including a
-    missing context value).
-    """
-
-    model: str | None = None
-    session_pattern: str | None = None
-    user_pattern: str | None = None
-
-    def is_empty(self) -> bool:
-        """True when no filter is declared — the rule matches any context."""
-        return (
-            self.model is None
-            and self.session_pattern is None
-            and self.user_pattern is None
-        )
-
-    def matches(self, ctx: PermissionContext) -> bool:
-        """Return True if ``ctx`` satisfies every declared filter.
-
-        A missing context value (``None`` / empty string) is treated as
-        a non-match against any non-empty pattern — we don't want a rule
-        keyed on ``user_pattern="admin*"`` to fire on anonymous calls.
-        """
-        if self.model is not None:
-            if not ctx.model or not fnmatch.fnmatchcase(ctx.model, self.model):
-                return False
-        if self.session_pattern is not None:
-            if not ctx.session_key or not fnmatch.fnmatchcase(
-                ctx.session_key, self.session_pattern
-            ):
-                return False
-        if self.user_pattern is not None:
-            if not ctx.user_id or not fnmatch.fnmatchcase(
-                ctx.user_id, self.user_pattern
-            ):
-                return False
-        return True
-
-
-@dataclass(frozen=True)
-class PermissionContext:
-    """Caller context passed to :meth:`PermissionGate.decide_with_context`.
-
-    All fields are optional — a tool-only rule (no ``match`` block) will
-    match a fully-empty context. Channel-aware rules need
-    ``session_key`` / ``user_id`` populated from the chat ``start``
-    frame and its ``binding`` (the QQ/Telegram sender).
-    """
-
-    model: str | None = None
-    session_key: str | None = None
-    user_id: str | None = None
-
-
-@dataclass(frozen=True)
-class PermissionRule:
-    """One rule: a tool name (or ``"*"``) and the action to take.
-
-    Optional ``match`` narrows the rule to a particular model / session
-    / user. When ``match`` is :data:`None` the rule fires for any
-    context (legacy behaviour).
-
-    gap ``permissions-no-per-arg-rules``: ``arg_pattern`` narrows a rule to
-    a particular argument value. Two spellings, mirroring Claude Code's
-    ``Bash(rm:*)`` / opencode's command globs:
-
-    * The ``tool(pattern)`` sugar in a rule's ``tool`` string is parsed at
-      construction — e.g. ``"run_shell(rm:*)"`` sets ``tool="run_shell"``
-      and ``arg_pattern="rm:*"``.
-    * ``arg_pattern`` may also be supplied explicitly.
-
-    The pattern is matched (fnmatch, case-sensitive) against the call's
-    *primary argument* — for ``run_shell`` that is the ``command`` arg's
-    first token + ``:`` + the full command (so ``rm:*`` matches any
-    ``rm ...`` invocation), and for file tools it is the ``path`` arg.
-    Falling back to the whole JSON when no primary arg is found.
-    """
-
-    tool: str
-    action: str
-    match: RuleMatch | None = None
-    arg_pattern: str | None = None
-
-    def __post_init__(self) -> None:
-        if self.action not in _VALID_ACTIONS:
-            raise ValueError(
-                f"invalid permission action {self.action!r}; "
-                f"expected one of {_VALID_ACTIONS}"
-            )
-        # Parse the ``tool(pattern)`` sugar once at construction. ``frozen``
-        # dataclasses forbid plain attribute assignment, so use
-        # ``object.__setattr__`` to backfill the parsed fields.
-        if self.arg_pattern is None and "(" in self.tool and self.tool.endswith(")"):
-            head, _, tail = self.tool.partition("(")
-            pattern = tail[:-1].strip()
-            object.__setattr__(self, "tool", head.strip())
-            if pattern:
-                object.__setattr__(self, "arg_pattern", pattern)
-
-    def applies_to(self, tool: str, ctx: PermissionContext) -> bool:
-        """First-match-wins predicate combining tool + context check.
-
-        Legacy / args-unaware: a rule carrying an ``arg_pattern`` only
-        matches here when the pattern is the catch-all ``"*"`` (so the
-        args-aware :meth:`PermissionGate.resolve_with_args` is required to
-        honour a narrowing pattern). This keeps the old tool+ctx call sites
-        from accidentally over-matching an arg-scoped rule.
-        """
-        if self.tool != tool and self.tool != "*":
-            return False
-        if self.arg_pattern is not None and self.arg_pattern != "*":
-            return False
-        if self.match is None or self.match.is_empty():
-            return True
-        return self.match.matches(ctx)
-
-    def applies_to_args(
-        self,
-        tool: str,
-        ctx: PermissionContext,
-        arg_value: str | list[str] | None,
-    ) -> bool:
-        """Args-aware predicate: tool + context + optional arg pattern.
-
-        ``arg_value`` may be a single string OR a list of candidate strings
-        (e.g. ``run_shell`` resolves every command basename across compound
-        segments — see :func:`extract_arg_candidates`). When a list is given
-        the rule fires if its pattern matches **any** candidate, so a deny
-        rule like ``run_shell(rm:*)`` catches ``cd /tmp && rm -rf x`` and
-        ``sh -c "rm -rf /"`` as well as the bare ``rm`` form.
-        """
-        if self.tool != tool and self.tool != "*":
-            return False
-        if self.match is not None and not self.match.is_empty():
-            if not self.match.matches(ctx):
-                return False
-        if self.arg_pattern is None or self.arg_pattern == "*":
-            return True
-        if arg_value is None:
-            return False
-        candidates = [arg_value] if isinstance(arg_value, str) else arg_value
-        return any(
-            fnmatch.fnmatchcase(candidate, self.arg_pattern)
-            for candidate in candidates
-        )
-
-
-def extract_primary_arg(tool: str, args: dict[str, Any] | None) -> str | None:
-    """Return the value a per-arg rule matches against for ``tool``.
-
-    For ``run_shell`` the value is ``<first-token>:<full command>`` so a
-    pattern like ``rm:*`` matches any ``rm ...`` invocation while ``*`` and
-    a bare-command glob still work. For file tools (write/edit/read/patch)
-    it is the ``path`` arg. Otherwise the first string value in ``args``.
-    ``None`` when nothing usable is present.
-    """
-    if not isinstance(args, dict) or not args:
-        return None
-    if tool == "run_shell":
-        command = args.get("command")
-        if isinstance(command, str) and command.strip():
-            try:
-                tokens = shlex.split(command)
-            except ValueError:
-                tokens = command.split()
-            head = tokens[0] if tokens else command.strip().split(" ", 1)[0]
-            return f"{head}:{command.strip()}"
-        return None
-    if tool in _EDIT_TOOLS or tool in ("read_file", "list_files", "search_files"):
-        path = args.get("path") or args.get("file") or args.get("filename")
-        if isinstance(path, str) and path:
-            return path
-    for value in args.values():
-        if isinstance(value, str) and value:
-            return value
-    return None
-
-
-def extract_arg_candidates(
-    tool: str, args: dict[str, Any] | None
-) -> str | list[str] | None:
-    """Return ALL per-arg match candidates for ``tool``.
-
-    Like :func:`extract_primary_arg` but, for ``run_shell``, resolves EVERY
-    command basename across compound / piped / sh-dash-c / env-prefixed /
-    path-qualified forms (via
-    :func:`corlinman_agent.coding.shell.extract_command_names`) and returns one
-    ``"<basename>:<full command>"`` candidate per resolved command. A per-arg
-    deny rule (``run_shell(rm:*)``) then fires if it matches ANY candidate —
-    closing the SEC-05 bypass where only the first shlex token was matched.
-
-    For every other tool it delegates to :func:`extract_primary_arg` (a single
-    string). ``None`` when nothing usable is present.
-    """
-    if not isinstance(args, dict) or not args:
-        return None
-    if tool == "run_shell":
-        command = args.get("command")
-        if not isinstance(command, str) or not command.strip():
-            return None
-        command = command.strip()
-        # Lazy import to avoid a hard coupling at module import time; the
-        # shell helper lives in the coding subpackage.
-        try:
-            from corlinman_agent.coding.shell import extract_command_names
-
-            names = extract_command_names(command)
-        except Exception:  # noqa: BLE001 — degrade to the legacy single value
-            names = []
-        if not names:
-            # Fall back to the legacy first-token form so an empty resolution
-            # never silently disables a deny rule.
-            single = extract_primary_arg(tool, args)
-            return single
-        return [f"{name}:{command}" for name in names]
-    return extract_primary_arg(tool, args)
-
-
-def match_hook_rule(rule: str, tool: str, args: dict[str, Any] | None = None) -> bool:
-    """Evaluate one permission-rule string against a tool call.
-
-    The declarative-hooks ``if`` matcher (``corlinman-hooks`` cannot import
-    this package, so the grammar is injected as this callable). Reuses the
-    exact ``tool(pattern)`` sugar and arg-candidate extraction the
-    permission gate uses — the rule grammar is designed once and shared,
-    per the parity-matrix contract.
-
-    ``rule`` examples: ``"run_shell(git push*)"`` (natural command-prefix
-    form), ``"run_shell(git:*)"`` (the permission gate's basename form —
-    both work here), ``"write_file(*.ts)"``, ``"run_shell"`` (any args),
-    ``"*"`` (any tool). Unparseable rules return ``False`` (the hook
-    group is skipped, never the tool call).
-
-    Scope note: for ``run_shell`` the raw command string is added as an
-    extra match candidate ON TOP of the gate's ``basename:command``
-    candidates, so the documented claude-style spelling fires too. This
-    widening is hook-local — it only selects which hook groups run; the
-    permission gate's own rule semantics are untouched.
-    """
-    text = str(rule or "").strip()
-    if not text:
-        return False
-    try:
-        parsed = PermissionRule(tool=text, action="allow")
-    except ValueError:
-        return False
-    candidates = extract_arg_candidates(tool, args)
-    if tool == "run_shell" and isinstance(args, dict):
-        raw_command = args.get("command")
-        if isinstance(raw_command, str) and raw_command.strip():
-            merged = [candidates] if isinstance(candidates, str) else list(candidates or [])
-            merged.append(raw_command.strip())
-            candidates = merged
-    return parsed.applies_to_args(tool, PermissionContext(), candidates)
+#: Historical name — the caller context is now the authz ``Subject`` (which
+#: adds ``tenant_id`` / ``surface`` / ``parent_surface`` on top of the
+#: legacy model / session_key / user_id triple).
+PermissionContext = Subject
 
 
 class PermissionGate:
     """Decides whether a builtin tool call should run.
 
-    Rules are checked first-match-wins. The first rule whose ``tool``
-    matches (exact or ``"*"``) **and** whose optional ``match`` block
-    satisfies the caller's context decides. If nothing matches:
+    Rules are checked **last-match-wins by default** (C3): with layered
+    rule sources stacked least- to most-specific, the last matching rule —
+    i.e. the most specific layer's — decides. Pass
+    ``last_match_wins=False`` for the historical first-match order. If
+    nothing matches:
 
     - in strict mode, ``MUTATING_TOOLS`` default to ``deny`` and the
       rest default to ``allow``;
     - otherwise the gate's ``default_action`` (constructor arg) decides.
+
+    NOTE (W3-1): this class evaluates a FROZEN configuration snapshot. The
+    production gate is :class:`corlinman_agent.authz.gate.AuthzGate`, which
+    rebuilds one of these whenever any config layer changes — do not wire a
+    long-lived ``PermissionGate`` directly into a servicer unless the
+    configuration is intentionally pinned (tests).
     """
 
     __slots__ = ("_default", "_last_match_wins", "_mode", "_rules", "_strict")
@@ -470,7 +100,7 @@ class PermissionGate:
         default_action: str = ALLOW,
         strict: bool = False,
         mode: PermissionMode | str = PermissionMode.DEFAULT,
-        last_match_wins: bool = False,
+        last_match_wins: bool = True,
     ) -> None:
         if default_action not in _VALID_ACTIONS:
             raise ValueError(
@@ -481,11 +111,11 @@ class PermissionGate:
         self._default = default_action
         self._strict = strict
         self._mode = PermissionMode.coerce(mode)
-        # gap permissions-no-per-arg-rules: when ``last_match_wins`` is set
-        # the LAST matching rule decides (opencode / shell-config semantics)
-        # instead of the first. Layered rule sources stack later (more
-        # specific) layers AFTER earlier ones, so last-match-wins lets a
-        # project-level rule override a global default.
+        # C3: ``last_match_wins`` now defaults to True everywhere — layered
+        # rule sources stack later (more specific) layers AFTER earlier
+        # ones, and the layer precedence contract (config > env > project >
+        # user) only holds if a later layer's matching rule overrides an
+        # earlier one's.
         self._last_match_wins = last_match_wins
 
     @property
@@ -521,7 +151,7 @@ class PermissionGate:
         return None
 
     def decide(self, tool: str) -> str:
-        """Return ``"allow" | "deny" | "log"`` for ``tool``.
+        """Return ``"allow" | "deny" | "log" | "ask"`` for ``tool``.
 
         Legacy shim — delegates to :meth:`decide_with_context` with an
         empty context. Rules carrying ``match`` filters never fire here
@@ -537,8 +167,8 @@ class PermissionGate:
         session_key: str | None = None,
         user_id: str | None = None,
     ) -> str:
-        """Context-aware decision; first matching rule wins (or last when
-        ``last_match_wins`` is set)."""
+        """Context-aware decision; last matching rule wins (or first when
+        ``last_match_wins`` is unset)."""
         ctx = PermissionContext(
             model=model, session_key=session_key, user_id=user_id
         )
@@ -612,9 +242,9 @@ class PermissionGate:
     ) -> tuple[str, int | None]:
         """Args-aware decision honouring per-argument / command patterns.
 
-        gap ``permissions-no-per-arg-rules``. The primary argument value is
-        extracted via :func:`extract_primary_arg` and matched against each
-        rule's ``arg_pattern`` (fnmatch). Match order respects
+        The primary argument value is extracted via
+        :func:`extract_arg_candidates` and matched against each rule's
+        ``arg_pattern`` (fnmatch). Match order respects
         ``last_match_wins``. ``BYPASS`` mode short-circuits to ``allow``
         before any rule; ``acceptEdits`` / ``plan`` apply only when no rule
         matched.
@@ -695,11 +325,12 @@ class PermissionGate:
         Callers can either pass the ``rule_index`` they already resolved
         (cheap) or omit it and we'll re-resolve here. The returned dict
         is JSON-safe and contains: ``tool``, ``decision``, ``model``,
-        ``session_key``, ``user_id``, ``rule_index``, ``strict``.
+        ``session_key``, ``user_id``, ``rule_index``, ``strict``, ``mode``
+        (plus the matched rule's ``note`` when one is set).
         """
         if rule_index is None:
             _, rule_index = self.resolve(tool, ctx)
-        return {
+        entry: dict[str, Any] = {
             "tool": tool,
             "decision": decision,
             "model": ctx.model,
@@ -709,6 +340,11 @@ class PermissionGate:
             "strict": self._strict,
             "mode": self._mode.value,
         }
+        if rule_index is not None and 0 <= rule_index < len(self._rules):
+            note = self._rules[rule_index].note
+            if note:
+                entry["note"] = note
+        return entry
 
     @classmethod
     def from_env(cls) -> PermissionGate:
@@ -718,15 +354,16 @@ class PermissionGate:
         - ``CORLINMAN_AGENT_STRICT_MODE`` — truthy enables strict mode.
         - ``CORLINMAN_AGENT_PERMISSION_MODE`` — one of
           ``default``/``acceptEdits``/``plan``/``bypass``.
-        - ``CORLINMAN_AGENT_PERMISSION_LAST_MATCH_WINS`` — truthy flips the
-          gate to last-match-wins ordering.
+        - ``CORLINMAN_AGENT_PERMISSION_LAST_MATCH_WINS`` — explicit override
+          of the rule-evaluation order. **Default is now last-match-wins**
+          (C3); set the var to ``0``/``false`` to restore first-match.
 
         Malformed JSON or invalid actions log a warning and degrade to
         the default (allow-all) — never raises into agent boot.
         """
         rules = parse_rule_list(os.environ.get("CORLINMAN_AGENT_PERMISSIONS", ""))
-        # ``[agent_runtime].strict_mode`` outranks the env var; the rest of
-        # the permission surface is still env-only (audit W3).
+        # ``[permissions].strict`` / ``[agent_runtime].strict_mode`` outrank
+        # the env var (the deduplicated resolve_strict chain).
         strict = _limits.strict_mode_enabled()
         mode = PermissionMode.coerce(
             os.environ.get("CORLINMAN_AGENT_PERMISSION_MODE", "")
@@ -736,7 +373,13 @@ class PermissionGate:
             .strip()
             .lower()
         )
-        last_match_wins = lmw_raw in ("1", "true", "yes", "on")
+        if lmw_raw:
+            last_match_wins = lmw_raw in ("1", "true", "yes", "on")
+        else:
+            # C3: flipped default. Warn (with the verdict diff) when the
+            # flip actually changes an env-only deployment's behaviour.
+            last_match_wins = True
+            warn_on_last_match_flip(rules)
         return cls(
             rules, strict=strict, mode=mode, last_match_wins=last_match_wins
         )
@@ -759,6 +402,8 @@ class PermissionGate:
         overrides an earlier one — the standard "project beats global"
         precedence. Each layer is parsed tolerantly; a bad layer is skipped.
         """
+        import json as _json  # noqa: PLC0415 — tiny helper, avoid module dep
+
         rules: list[PermissionRule] = []
         for layer in layers:
             if layer is None:
@@ -766,85 +411,54 @@ class PermissionGate:
             if isinstance(layer, str):
                 rules.extend(parse_rule_list(layer))
             elif isinstance(layer, list):
-                rules.extend(parse_rule_list(json.dumps(layer)))
+                rules.extend(parse_rule_list(_json.dumps(layer)))
         return cls(
             rules, strict=strict, mode=mode, last_match_wins=last_match_wins
         )
 
 
-def parse_rule_list(raw: str) -> list[PermissionRule]:
-    """Parse a JSON rule list (the ``CORLINMAN_AGENT_PERMISSIONS`` shape).
+#: Fingerprints already warned about — once per rule set per process, so a
+#: gate rebuilt on every config generation doesn't spam the log.
+_FLIP_WARNED: set[tuple[tuple[str, str, str | None], ...]] = set()
 
-    Each entry is ``{"tool": ..., "action": ..., "match": {...}?,
-    "arg_pattern": ...?}``. The ``tool(pattern)`` sugar inside ``tool`` is
-    honoured by :class:`PermissionRule`. Tolerant: a non-list, a non-dict
-    entry, an invalid action, or a missing tool is skipped — never raises.
+
+def warn_on_last_match_flip(rules: list[PermissionRule]) -> None:
+    """C3 migration WARN: log the verdict diff caused by the order flip.
+
+    Called for env-only deployments (no explicit LAST_MATCH_WINS setting,
+    no config/file layer). Compares each rule-named tool's args-unaware
+    verdict under first-match vs last-match and logs one WARN with the
+    per-tool diff when any changed. Cheap (only runs over the declared
+    tools) and memoized per rule-set fingerprint.
     """
-    raw = (raw or "").strip()
-    if not raw:
-        return []
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        return []
-    if not isinstance(parsed, list):
-        return []
-    rules: list[PermissionRule] = []
-    for entry in parsed:
-        if not isinstance(entry, dict):
-            continue
-        tool = entry.get("tool")
-        action = entry.get("action")
-        if not isinstance(tool, str) or not tool.strip():
-            continue
-        if action not in _VALID_ACTIONS:
-            continue
-        match_block = _parse_match(entry.get("match"))
-        arg_pattern = entry.get("arg_pattern")
-        if not isinstance(arg_pattern, str) or not arg_pattern:
-            arg_pattern = None
-        try:
-            rules.append(
-                PermissionRule(
-                    tool=tool.strip(),
-                    action=action,
-                    match=match_block,
-                    arg_pattern=arg_pattern,
-                )
-            )
-        except ValueError:
-            continue
-    return rules
-
-
-def _parse_match(raw: Any) -> RuleMatch | None:
-    """Parse the optional ``match`` block on an env-supplied rule.
-
-    Tolerant: anything that's not a dict, or whose declared fields are
-    not strings, degrades to "no filter" (``None``) — the rule still
-    fires for any context. We never raise here because permissions are
-    config-driven and a typo shouldn't crash the agent.
-    """
-    if not isinstance(raw, dict):
-        return None
-    model = raw.get("model")
-    session = raw.get("session_pattern")
-    user = raw.get("user_pattern")
-    fields = [
-        ("model", model),
-        ("session_pattern", session),
-        ("user_pattern", user),
-    ]
-    kwargs: dict[str, str] = {}
-    for name, value in fields:
-        if value is None:
-            continue
-        if not isinstance(value, str) or not value:
-            continue
-        kwargs[name] = value
-    if not kwargs:
-        return None
-    return RuleMatch(**kwargs)
+    if len(rules) < 2:
+        return
+    fingerprint = tuple((r.tool, r.action, r.arg_pattern) for r in rules)
+    if fingerprint in _FLIP_WARNED:
+        return
+    _FLIP_WARNED.add(fingerprint)
+    tools = {r.tool for r in rules if r.tool and r.tool != "*"}
+    if not tools:
+        return
+    first = PermissionGate(list(rules), last_match_wins=False)
+    last = PermissionGate(list(rules), last_match_wins=True)
+    diff: dict[str, str] = {}
+    for tool in sorted(tools):
+        before = first.decide(tool)
+        after = last.decide(tool)
+        if before != after:
+            diff[tool] = f"{before} -> {after}"
+    if diff:
+        logger.warning(
+            "agent.permission.last_match_wins_flipped",
+            detail=(
+                "rule evaluation is now last-match-wins by default (C3); "
+                "these env-configured verdicts changed — set "
+                "CORLINMAN_AGENT_PERMISSION_LAST_MATCH_WINS=0 to restore "
+                "the old order, or reorder the rules"
+            ),
+            diff=diff,
+        )
 
 
 __all__ = [
@@ -860,5 +474,7 @@ __all__ = [
     "RuleMatch",
     "extract_arg_candidates",
     "extract_primary_arg",
+    "match_hook_rule",
     "parse_rule_list",
+    "warn_on_last_match_flip",
 ]

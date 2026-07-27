@@ -25,6 +25,10 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from corlinman_agent.authz.defaults import (
+    get_permissions_defaults,
+    reset_permissions_defaults,
+)
 from corlinman_agent.image.defaults import get_image_defaults, reset_image_defaults
 from corlinman_agent.runtime_defaults import (
     get_agent_runtime_defaults,
@@ -56,6 +60,14 @@ _CONFIG = {
         "enable_execute_code": True,
         "sandbox_backend": "docker",
     },
+    "permissions": {
+        "mode": "default",
+        "strict": True,
+        "rules": [
+            {"tool": "*", "action": "allow"},
+            {"tool": "run_shell(rm:*)", "action": "deny", "note": "no rm"},
+        ],
+    },
 }
 
 
@@ -66,6 +78,7 @@ def _clean() -> Iterator[None]:
         reset_image_defaults()
         reset_web_search_defaults()
         reset_agent_runtime_defaults()
+        reset_permissions_defaults()
 
     _reset()
     yield
@@ -85,6 +98,9 @@ def _installed() -> dict[str, object]:
         "max_rounds": runtime.max_rounds,
         "execute_code": runtime.enable_execute_code,
         "sandbox_backend": runtime.sandbox_backend,
+        "permissions_mode": get_permissions_defaults().mode,
+        "permissions_strict": get_permissions_defaults().strict,
+        "permissions_rules": get_permissions_defaults().rules,
     }
 
 
@@ -98,6 +114,12 @@ _EXPECTED = {
     "max_rounds": 24,
     "execute_code": True,
     "sandbox_backend": "docker",
+    "permissions_mode": "default",
+    "permissions_strict": True,
+    "permissions_rules": (
+        {"tool": "*", "action": "allow"},
+        {"tool": "run_shell(rm:*)", "action": "deny", "note": "no rm"},
+    ),
 }
 
 
@@ -124,6 +146,7 @@ def test_the_two_paths_agree(tmp_path: Path) -> None:
     reset_image_defaults()
     reset_web_search_defaults()
     reset_agent_runtime_defaults()
+    reset_permissions_defaults()
 
     sidecar = tmp_path / "py-config.json"
     sidecar.write_text(json.dumps(render_py_config(_CONFIG)), encoding="utf-8")
@@ -137,7 +160,7 @@ def test_every_section_the_hook_reads_is_a_hot_reload_trigger() -> None:
     a block read by the hook but missing here would land in config.toml
     and stop there until the next restart."""
     assert _AGENT_CONFIG_SECTIONS == frozenset(
-        {"voice", "models", "web_search", "agent_runtime"}
+        {"voice", "models", "web_search", "agent_runtime", "permissions"}
     )
 
 

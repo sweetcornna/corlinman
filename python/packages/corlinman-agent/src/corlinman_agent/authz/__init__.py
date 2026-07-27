@@ -1,0 +1,44 @@
+"""Unified authorization model (audit W3 / P4).
+
+One rule language, evaluated by :class:`~corlinman_agent.authz.gate.AuthzGate`
+at **call time** (never frozen at construction), with three grant memories
+(``once`` / ``session`` / ``always``) stored in
+:class:`~corlinman_agent.authz.grants.GrantStore`.
+
+Layout:
+
+* :mod:`~corlinman_agent.authz.model` — domain objects (Subject / Memory /
+  PermissionMode / action constants).
+* :mod:`~corlinman_agent.authz.matcher` — the matching core, extracted from
+  ``corlinman_agent.permission`` (rule syntax is unchanged).
+* :mod:`~corlinman_agent.authz.defaults` — the ``[permissions]`` config
+  shape layer (same paradigm as :mod:`corlinman_agent.runtime_defaults`).
+* :mod:`~corlinman_agent.authz.gate` — the call-time evaluator.
+* :mod:`~corlinman_agent.authz.grants` — memoried interactive grants.
+"""
+
+from __future__ import annotations
+
+from corlinman_agent.authz.defaults import (
+    PermissionsDefaults,
+    apply_permissions_config,
+    get_permissions_defaults,
+    reset_permissions_defaults,
+)
+from corlinman_agent.authz.gate import AuthzGate
+from corlinman_agent.authz.grants import GrantStore, get_grant_store, reset_grant_store
+from corlinman_agent.authz.model import Memory, PermissionMode, Subject
+
+__all__ = [
+    "AuthzGate",
+    "GrantStore",
+    "Memory",
+    "PermissionMode",
+    "PermissionsDefaults",
+    "Subject",
+    "apply_permissions_config",
+    "get_grant_store",
+    "get_permissions_defaults",
+    "reset_grant_store",
+    "reset_permissions_defaults",
+]

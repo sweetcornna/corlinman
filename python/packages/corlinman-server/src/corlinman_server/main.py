@@ -338,6 +338,18 @@ def _apply_agent_config_from_sidecar(path: str | None) -> None:
     except Exception as exc:  # noqa: BLE001 — never fatal
         logger.warning("agent_runtime.config_apply_failed", error=str(exc))
 
+    # W3-1: the [permissions] block feeds the call-time AuthzGate. Own try
+    # block — one bad rule list must not cost the process the blocks above.
+    try:
+        from corlinman_agent.authz.defaults import apply_permissions_config
+
+        perms = apply_permissions_config(_block("permissions"))
+        perm_configured = perms.as_dict()
+        if perm_configured:
+            logger.info("permissions.config_applied", **perm_configured)
+    except Exception as exc:  # noqa: BLE001 — never fatal
+        logger.warning("permissions.config_apply_failed", error=str(exc))
+
 
 def _load_config(
     path: str | None = None,

@@ -213,6 +213,11 @@ def render_py_config(
         # sandbox backend — has the same reachability problem, so it rides
         # the sidecar too.
         "agent_runtime": _render_agent_runtime(_attr(cfg, "agent_runtime", None)),
+        # W3-1: the [permissions] block — rules / mode / strict /
+        # default_action / last_match_wins — is consumed by the agent-side
+        # AuthzGate at call time. Same reachability story as the rest: the
+        # sidecar is the only channel that works in a native deployment.
+        "permissions": _render_permissions(_attr(cfg, "permissions", None)),
         "embedding": embedding,
         "subagent": subagent,
         "tencent_safety": tencent_safety,
@@ -329,6 +334,118 @@ def _render_agent_runtime(section: Any) -> dict[str, Any] | None:
         value = _attr(section, key, None)
         if isinstance(value, str) and value.strip():
             out[key] = value.strip()
+    return out or None
+
+
+#: Valid rule actions / memories — mirrors ``corlinman_agent.authz``. Kept
+#: literal here so the gateway renderer has no import-time dependency on
+#: the agent package's internals.
+_PERMISSION_ACTIONS: frozenset[str] = frozenset({"allow", "deny", "ask", "log"})
+_PERMISSION_MEMORIES: frozenset[str] = frozenset({"once", "session", "always"})
+#: String keys accepted inside a rule's ``scope`` (new) / ``match``
+#: (legacy alias) table.
+_PERMISSION_SCOPE_KEYS: tuple[str, ...] = (
+    "model",
+    "session",
+    "session_pattern",
+    "user",
+    "user_pattern",
+    "tenant",
+    "surface",
+)
+
+
+def _render_scope(raw: Any) -> dict[str, str] | None:
+    """Whitelist-filter one ``scope`` / ``match`` table (strings only)."""
+    if not isinstance(raw, Mapping):
+        return None
+    out: dict[str, str] = {}
+    for key in _PERMISSION_SCOPE_KEYS:
+        value = raw.get(key)
+        if isinstance(value, str) and value.strip():
+            out[key] = value.strip()
+    return out or None
+
+
+def _render_rule_list(raw: Any) -> tuple[list[dict[str, Any]], int]:
+    """Whitelist-filter the ``[[permissions.rules]]`` array.
+
+    Structured data, not a scalar — every rule is rebuilt field by field so
+    a typo'd key is dropped HERE (visibly, via the dropped counter) instead
+    of travelling to the agent as a silently-ignored key. Returns
+    ``(rules, dropped_count)``; a rule without a valid ``tool`` + ``action``
+    is dropped entirely.
+    """
+    if not isinstance(raw, list):
+        return [], 0
+    rules: list[dict[str, Any]] = []
+    dropped = 0
+    for entry in raw:
+        if not isinstance(entry, Mapping):
+            dropped += 1
+            continue
+        tool = entry.get("tool")
+        action = entry.get("action")
+        if (
+            not isinstance(tool, str)
+            or not tool.strip()
+            or not isinstance(action, str)
+            or action.strip() not in _PERMISSION_ACTIONS
+        ):
+            dropped += 1
+            continue
+        rendered: dict[str, Any] = {
+            "tool": tool.strip(),
+            "action": action.strip(),
+        }
+        arg_pattern = entry.get("arg_pattern")
+        if isinstance(arg_pattern, str) and arg_pattern.strip():
+            rendered["arg_pattern"] = arg_pattern.strip()
+        note = entry.get("note")
+        if isinstance(note, str) and note.strip():
+            rendered["note"] = note.strip()
+        memory = entry.get("memory")
+        if isinstance(memory, str) and memory.strip().lower() in _PERMISSION_MEMORIES:
+            rendered["memory"] = memory.strip().lower()
+        scope = _render_scope(entry.get("scope"))
+        if scope is not None:
+            rendered["scope"] = scope
+        else:
+            legacy = _render_scope(entry.get("match"))
+            if legacy is not None:
+                rendered["match"] = legacy
+        rules.append(rendered)
+    return rules, dropped
+
+
+def _render_permissions(section: Any) -> dict[str, Any] | None:
+    """Render the ``[permissions]`` block for the agent-process sidecar.
+
+    Explicit key whitelist, and — as everywhere in this file — a key the
+    operator did not set is NOT emitted: ``None`` means "not configured"
+    on the agent side, which is what lets the env layer still apply per
+    knob. ``_dropped`` (rule count filtered out for shape problems) is a
+    meta field for doctor/diagnostics; the agent-side parser ignores it.
+    """
+    if section is None:
+        return None
+    out: dict[str, Any] = {}
+    mode = _attr(section, "mode", None)
+    if isinstance(mode, str) and mode.strip():
+        out["mode"] = mode.strip()
+    for key in ("strict", "last_match_wins"):
+        value = _attr(section, key, None)
+        if isinstance(value, bool):
+            out[key] = value
+    default_action = _attr(section, "default_action", None)
+    if isinstance(default_action, str) and default_action.strip() in _PERMISSION_ACTIONS:
+        out["default_action"] = default_action.strip()
+    rules_raw = _attr(section, "rules", None)
+    if rules_raw is not None:
+        rules, dropped = _render_rule_list(rules_raw)
+        out["rules"] = rules
+        if dropped:
+            out["_dropped"] = dropped
     return out or None
 
 

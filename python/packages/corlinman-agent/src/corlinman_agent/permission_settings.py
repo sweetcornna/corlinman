@@ -14,8 +14,8 @@ This module is the missing loader. Rule layers, least to most specific:
    (``project_dir`` defaults to the process CWD). ``settings.local.json``
    mirrors the Claude Code convention: machine-local, expected to be
    gitignored.
-3. ``CORLINMAN_AGENT_PERMISSIONS`` — the env layer, still the final word
-   so existing deployments keep their exact behaviour.
+3. ``CORLINMAN_AGENT_PERMISSIONS`` — the env layer (above both files;
+   below the ``[permissions]`` config block, decision C5).
 
 File schema (everything optional, parsed tolerantly)::
 
@@ -23,14 +23,18 @@ File schema (everything optional, parsed tolerantly)::
                      "mode": "default|acceptEdits|plan|bypass",
                      "strict": false}}
 
-``mode`` / ``strict`` follow env > project > user precedence. When NO
-settings file contributes anything the builder returns
-``PermissionGate.from_env()`` verbatim — a settings-less deployment is
-byte-identical to the pre-E1 behaviour (including its first-match-wins
-default). With file layers present the gate stacks last-match-wins so a
-later (more specific) layer's rule overrides an earlier one; an explicit
-``CORLINMAN_AGENT_PERMISSION_LAST_MATCH_WINS`` env var still wins either
-way.
+``mode`` / ``strict`` follow the deduplicated
+:mod:`corlinman_agent.authz.defaults` chain (config > env > project >
+user). When NO settings file contributes anything the builder returns
+``PermissionGate.from_env()`` verbatim. Rule evaluation is
+last-match-wins (C3) so a later (more specific) layer's rule overrides an
+earlier one; an explicit ``CORLINMAN_AGENT_PERMISSION_LAST_MATCH_WINS``
+env var still wins either way.
+
+W3-1 note: the PRODUCTION gate is now
+:class:`corlinman_agent.authz.gate.AuthzGate`, which re-reads all of these
+layers at call time. This builder remains for compatibility (it returns a
+frozen snapshot).
 """
 
 from __future__ import annotations
@@ -44,7 +48,11 @@ from typing import Any
 
 import structlog
 
-from corlinman_agent import runtime_defaults as _limits
+from corlinman_agent.authz.defaults import (
+    resolve_last_match_wins,
+    resolve_mode,
+    resolve_strict,
+)
 from corlinman_agent.permission import PermissionGate, PermissionMode
 
 logger = structlog.get_logger(__name__)
@@ -119,11 +127,12 @@ def build_permission_gate(
     data_dir: Path | str | None = None,
     project_dir: Path | str | None = None,
 ) -> PermissionGate:
-    """Build the production gate from settings files + environment.
+    """Build a frozen gate snapshot from settings files + environment.
 
-    The env layer keeps its historical final word: env rules stack last,
-    and an env-declared ``mode`` / ``strict`` overrides any file's. With
-    no settings file contributing anything this returns
+    Env rules stack last among these layers, and an env-declared ``mode``
+    / ``strict`` overrides any file's (the ``[permissions]`` config block,
+    when present, outranks even those — see ``authz.defaults``). With no
+    settings file contributing anything this returns
     ``PermissionGate.from_env()`` unchanged.
     """
     user_rules, user_mode, user_strict = _read_permissions_block(
@@ -139,32 +148,14 @@ def build_permission_gate(
 
     env_rules_raw = os.environ.get("CORLINMAN_AGENT_PERMISSIONS", "")
 
-    # Config outranks the env var, which in turn outranks the settings
-    # files — same order the rest of the agent uses.
-    cfg_strict = _limits.get_agent_runtime_defaults().strict_mode
-    strict_env = os.environ.get("CORLINMAN_AGENT_STRICT_MODE", "").strip().lower()
-    if cfg_strict is not None:
-        strict = cfg_strict
-    elif strict_env:
-        strict = strict_env in ("1", "true", "yes", "on")
-    elif proj_strict is not None:
-        strict = proj_strict
-    elif user_strict is not None:
-        strict = user_strict
-    else:
-        strict = False
+    # W3-1: the strict / mode precedence chains are deduplicated into
+    # corlinman_agent.authz.defaults — config > env > project > user.
+    strict = resolve_strict(proj_strict, user_strict)
+    mode = PermissionMode.coerce(resolve_mode(proj_mode, user_mode))
 
-    mode_env = os.environ.get("CORLINMAN_AGENT_PERMISSION_MODE", "").strip()
-    mode = PermissionMode.coerce(mode_env or proj_mode or user_mode or "")
-
-    lmw_env = (
-        os.environ.get("CORLINMAN_AGENT_PERMISSION_LAST_MATCH_WINS", "")
-        .strip()
-        .lower()
-    )
     # Layer precedence (project beats user, env beats both) NEEDS
-    # last-match-wins; only an explicit env opt-out flips it.
-    last_match_wins = lmw_env in ("1", "true", "yes", "on") if lmw_env else True
+    # last-match-wins; only an explicit opt-out flips it (C3).
+    last_match_wins = resolve_last_match_wins()
 
     return PermissionGate.from_layered_sources(
         user_rules,
@@ -181,11 +172,19 @@ def persist_allow_rule(
 ) -> Path:
     """Durably grant ``tool`` by appending an allow rule to the USER layer.
 
-    Backs the console's persist answer: the settings file is read (a
-    corrupt file is replaced rather than crashing the grant), the rule is
-    appended once (idempotent), and the file is written atomically
-    (tmp + rename) so a crash mid-write can't half-corrupt the settings
-    every future gate build reads. Returns the settings path.
+    .. deprecated:: W3-1
+        The production write path moved to the
+        :class:`corlinman_agent.authz.grants.GrantStore` — an interactive
+        "always" answer records an args-scoped grant there instead of
+        flattening it into a global unconditional allow rule. The settings
+        file keeps being READ (operator-written policy); this writer stays
+        only for compatibility and is no longer called by the console.
+
+    The settings file is read (a corrupt file is replaced rather than
+    crashing the grant), the rule is appended once (idempotent), and the
+    file is written atomically (tmp + rename) so a crash mid-write can't
+    half-corrupt the settings every future gate build reads. Returns the
+    settings path.
     """
     path = user_settings_path(data_dir)
     data: dict[str, Any] = {}

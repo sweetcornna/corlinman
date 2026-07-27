@@ -86,6 +86,27 @@ def _reset_agent_runtime_defaults() -> Iterator[None]:
     reset_agent_runtime_defaults()
 
 
+@pytest.fixture(autouse=True)
+def _reset_authz_state() -> Iterator[None]:
+    """Keep the ``[permissions]`` singleton + grant store test-hermetic.
+
+    Both are process-global by design (W3-1: the agent applies the config
+    block once from the sidecar and the AuthzGate reads it live; the
+    GrantStore is shared between the gate and the console resolver). A test
+    that installs a deny rule or records a grant would silently reconfigure
+    every test that runs after it — same hermeticity problem as the
+    ``[agent_runtime]`` block above.
+    """
+    from corlinman_agent.authz.defaults import reset_permissions_defaults
+    from corlinman_agent.authz.grants import reset_grant_store
+
+    reset_permissions_defaults()
+    reset_grant_store()
+    yield
+    reset_permissions_defaults()
+    reset_grant_store()
+
+
 _EXIT_STATUS = 0
 
 

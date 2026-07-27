@@ -1,9 +1,18 @@
 """Interactive console approval resolver (ABSORB_MATRIX Dim 3, slice 2).
 
-Covers the resolver's y/always/No semantics (deny-by-default on anything
-unexpected), the session-scoped always-allow cache, the renderer-pausing
-prompter, and — the load-bearing check — the resolver driving the REAL
-``ApprovalGate`` so an ``ask`` permission rule becomes interactive.
+W3-1 rewrote the resolver around the shared :class:`GrantStore` and the
+unified memory vocabulary (C2 — once / session / always):
+
+* grants are **argument-scoped** — approving ``run_shell ls`` no longer
+  silences the prompt for ``run_shell rm -rf /`` (the old
+  ``always_allow: set[str]`` cache did exactly that, agent-gate §8.7);
+* ``p`` records a durable GrantStore row instead of appending a global
+  unconditional allow rule to ``settings.json``.
+
+Covers the y/session/always/No semantics (deny-by-default on anything
+unexpected), grant arg-specificity, the renderer-pausing prompter, and —
+the load-bearing check — the resolver driving the REAL ``ApprovalGate``
+so an ``ask`` permission rule becomes interactive.
 """
 
 from __future__ import annotations
@@ -11,6 +20,7 @@ from __future__ import annotations
 import io
 from typing import Any
 
+from corlinman_agent.authz.grants import GrantStore
 from corlinman_server.console.approval import (
     ConsoleApprovalResolver,
     build_console_prompter,
@@ -30,27 +40,39 @@ class _ScriptedPrompter:
         return self._answers.pop(0)
 
 
+def _resolver(
+    prompter: _ScriptedPrompter, tmp_path: Any = None
+) -> ConsoleApprovalResolver:
+    """Resolver with an ISOLATED store — tests must not share the global."""
+    return ConsoleApprovalResolver(prompter, grant_store=GrantStore(tmp_path))
+
+
 async def test_yes_allows_once_and_asks_again() -> None:
     prompter = _ScriptedPrompter("y", "yes")
-    resolver = ConsoleApprovalResolver(prompter)
+    resolver = _resolver(prompter)
     assert await resolver("run_shell", {"command": "rm x"}, None) is True
     assert await resolver("run_shell", {"command": "rm y"}, None) is True
     assert len(prompter.calls) == 2  # "y" is once-only — asked again
 
 
-async def test_always_caches_for_the_session() -> None:
-    prompter = _ScriptedPrompter("a")
-    resolver = ConsoleApprovalResolver(prompter)
+async def test_session_grant_is_arg_scoped() -> None:
+    """Acceptance 6 (design plan W3-1): 'a' grants THIS call's argument
+    shape for the session — a different command still prompts."""
+    prompter = _ScriptedPrompter("a", "n")
+    resolver = _resolver(prompter)
     assert await resolver("run_shell", {"command": "ls"}, None) is True
-    # Second call: no prompt at all.
-    assert await resolver("run_shell", {"command": "rm -rf /"}, None) is True
+    # Identical call: covered by the session grant, no prompt.
+    assert await resolver("run_shell", {"command": "ls"}, None) is True
     assert len(prompter.calls) == 1
-    assert resolver.always_allow == {"run_shell"}
+    # DIFFERENT args: the grant does not stretch — prompts again ("n").
+    assert await resolver("run_shell", {"command": "rm -rf /"}, None) is False
+    assert len(prompter.calls) == 2
+    assert resolver.session_grant_tools() == {"run_shell"}
 
 
 async def test_anything_else_denies() -> None:
     prompter = _ScriptedPrompter("n", "", "whatever", "  NO  ")
-    resolver = ConsoleApprovalResolver(prompter)
+    resolver = _resolver(prompter)
     for _ in range(4):
         assert await resolver("write_file", {"path": "x"}, None) is False
 
@@ -59,40 +81,34 @@ async def test_prompter_failure_fails_closed() -> None:
     async def _boom(desc: str) -> str:
         raise RuntimeError("tty gone")
 
-    resolver = ConsoleApprovalResolver(_boom)
+    resolver = ConsoleApprovalResolver(_boom, grant_store=GrantStore())
     assert await resolver("run_shell", {}, None) is False
 
 
-async def test_persist_answer_grants_and_persists() -> None:
-    """'p' allows, caches for the session, AND calls the persist hook (E1
-    — the durable variant of 'always')."""
-    persisted: list[str] = []
-    resolver = ConsoleApprovalResolver(
-        _ScriptedPrompter("p"), persist=persisted.append
-    )
+async def test_always_answer_is_durable_across_stores(tmp_path: Any) -> None:
+    """'p' records a durable always grant: a FRESH store on the same
+    data_dir (a new process, in production) still honours it — and the
+    rules file is not involved at all (the old persist path appended a
+    global unconditional allow rule to settings.json)."""
+    resolver = _resolver(_ScriptedPrompter("p"), tmp_path)
     assert await resolver("run_shell", {"command": "ls"}, None) is True
-    assert persisted == ["run_shell"]
-    assert resolver.always_allow == {"run_shell"}
-    # No further prompt this session.
-    assert await resolver("run_shell", {"command": "pwd"}, None) is True
+
+    fresh = ConsoleApprovalResolver(
+        _ScriptedPrompter(), grant_store=GrantStore(tmp_path)
+    )
+    # No prompt — the durable grant covers the identical call.
+    assert await fresh("run_shell", {"command": "ls"}, None) is True
+    # …but only that argument shape.
+    assert (tmp_path / "authz" / "grants.sqlite3").exists()
+    assert not (tmp_path / "settings.json").exists()
 
 
-async def test_persist_answer_failure_degrades_to_session_grant() -> None:
-    """A persist hook that raises must not turn an approval into a deny —
-    the grant degrades to session-scoped."""
-
-    def _boom(tool: str) -> None:
-        raise OSError("disk full")
-
-    resolver = ConsoleApprovalResolver(_ScriptedPrompter("persist"), persist=_boom)
-    assert await resolver("run_shell", {}, None) is True
-    assert resolver.always_allow == {"run_shell"}
-
-
-async def test_persist_answer_without_hook_acts_like_always() -> None:
-    resolver = ConsoleApprovalResolver(_ScriptedPrompter("p"))
-    assert await resolver("write_file", {}, None) is True
-    assert resolver.always_allow == {"write_file"}
+async def test_always_answer_stays_arg_scoped(tmp_path: Any) -> None:
+    prompter = _ScriptedPrompter("p", "n")
+    resolver = _resolver(prompter, tmp_path)
+    assert await resolver("run_shell", {"command": "ls"}, None) is True
+    assert await resolver("run_shell", {"command": "rm -rf /"}, None) is False
+    assert len(prompter.calls) == 2
 
 
 async def test_args_preview_truncates_and_survives_bad_args() -> None:
@@ -102,7 +118,7 @@ async def test_args_preview_truncates_and_survives_bad_args() -> None:
         seen.append(desc)
         return "n"
 
-    resolver = ConsoleApprovalResolver(_capture)
+    resolver = ConsoleApprovalResolver(_capture, grant_store=GrantStore())
     await resolver("run_shell", {"command": "x" * 500}, None)
     assert len(seen[0]) < 260  # preview capped
     # Non-JSON-serializable args must not break the prompt.
@@ -135,12 +151,12 @@ async def test_console_prompter_pauses_live_and_prints_request() -> None:
 
 async def test_resolver_drives_the_real_approval_gate() -> None:
     """End-to-end contract: an ``ask`` permission rule + this resolver =
-    interactive allow/deny through the REAL ApprovalGate (which previously
-    fail-closed everywhere because nothing wired a resolver)."""
+    interactive allow/deny through the REAL ApprovalGate. The 'a' grant
+    covers the exact argument shape only."""
     from corlinman_agent.approval_gate import ApprovalGate, ApprovalVerdict
     from corlinman_agent.permission import ASK, PermissionGate, PermissionRule
 
-    resolver = ConsoleApprovalResolver(_ScriptedPrompter("y", "n", "a"))
+    resolver = _resolver(_ScriptedPrompter("y", "n", "a", "n"))
     gate = ApprovalGate(
         PermissionGate([PermissionRule(tool="run_shell", action=ASK)]),
         resolver=resolver,
@@ -153,13 +169,16 @@ async def test_resolver_drives_the_real_approval_gate() -> None:
     assert second.verdict is ApprovalVerdict.DENY
 
     third = await gate.decide("run_shell", args={"command": "ls"})
-    assert third.verdict is ApprovalVerdict.ALLOW  # "a" → cached…
-    fourth = await gate.decide("run_shell", args={"command": "ls -la"})
-    assert fourth.verdict is ApprovalVerdict.ALLOW  # …no further prompt
+    assert third.verdict is ApprovalVerdict.ALLOW  # "a" → session grant…
+    fourth = await gate.decide("run_shell", args={"command": "ls"})
+    assert fourth.verdict is ApprovalVerdict.ALLOW  # …same args: no prompt
+    # Different args: the grant does not stretch — prompts again ("n").
+    fifth = await gate.decide("run_shell", args={"command": "ls -la"})
+    assert fifth.verdict is ApprovalVerdict.DENY
 
 
-def test_permissions_command_lists_always_allowed(monkeypatch: Any) -> None:
-    """/permissions (no args) surfaces the session's always-allow set."""
+def test_permissions_command_lists_session_grants(monkeypatch: Any) -> None:
+    """/permissions (no args) surfaces the session's granted tool names."""
     import asyncio
 
     from corlinman_server.console.commands import dispatch
@@ -168,28 +187,29 @@ def test_permissions_command_lists_always_allowed(monkeypatch: Any) -> None:
 
     app = StubApp()
     app.session.brain = _PermBrain()
-    resolver = ConsoleApprovalResolver(_ScriptedPrompter())
-    resolver.always_allow.add("run_shell")
+    store = GrantStore()
+    resolver = ConsoleApprovalResolver(_ScriptedPrompter(), grant_store=store)
+    store.record(None, "run_shell", {"command": "ls"}, "session")
     app.approval_resolver = resolver
 
     text = asyncio.run(dispatch(app, "/permissions")) or ""
     assert "always-allowed this session: run_shell" in text
 
 
-async def test_reset_clears_always_cache() -> None:
-    """resolver.reset() drops the always grants (Codex #104 — the cache
+async def test_reset_clears_session_grants() -> None:
+    """resolver.reset() drops the session grants (Codex #104 — a grant
     must not outlive the session it was granted in)."""
     prompter = _ScriptedPrompter("a", "n")
-    resolver = ConsoleApprovalResolver(prompter)
+    resolver = _resolver(prompter)
     assert await resolver("run_shell", {}, None) is True
     resolver.reset()
-    assert resolver.always_allow == set()
+    assert resolver.session_grant_tools() == set()
     assert await resolver("run_shell", {}, None) is False  # asked again
 
 
-async def test_new_and_clear_reset_always_cache() -> None:
-    """/new and /clear start a fresh session — always grants must not leak
-    across the boundary (Codex #104)."""
+async def test_new_and_clear_reset_session_grants() -> None:
+    """/new and /clear start a fresh session — session grants must not
+    leak across the boundary (Codex #104)."""
     import io as _io
 
     from corlinman_server.console.brain import BrainSession
@@ -205,25 +225,25 @@ async def test_new_and_clear_reset_always_cache() -> None:
     class _App:
         def __init__(self) -> None:
             self.session = BrainSession(brain=_IdleBrain(), model="m")
-            self.approval_resolver = ConsoleApprovalResolver(_ScriptedPrompter("a"))
+            self.approval_resolver = _resolver(_ScriptedPrompter("a"))
             self.renderer = type("R", (), {"console": _Console(file=_io.StringIO())})()
 
     app = _App()
     await app.approval_resolver("run_shell", {}, None)
-    assert app.approval_resolver.always_allow == {"run_shell"}
+    assert app.approval_resolver.session_grant_tools() == {"run_shell"}
     await dispatch(app, "/new")
-    assert app.approval_resolver.always_allow == set()
+    assert app.approval_resolver.session_grant_tools() == set()
 
     app2 = _App()
     await app2.approval_resolver("run_shell", {}, None)
     await dispatch(app2, "/clear")
-    assert app2.approval_resolver.always_allow == set()
+    assert app2.approval_resolver.session_grant_tools() == set()
 
 
-async def test_permission_mode_switch_resets_always_cache() -> None:
-    """Switching permission modes (notably into /plan) clears the always
-    cache (Codex #104) — a cached run_shell grant must not keep mutating
-    the workspace in plan mode."""
+async def test_permission_mode_switch_resets_session_grants() -> None:
+    """Switching permission modes (notably into /plan) clears the session
+    grants (Codex #104) — a cached run_shell grant must not keep mutating
+    the workspace in plan mode. Acceptance 7 of the W3-1 plan."""
     import io as _io
 
     from corlinman_server.console.brain import BrainSession
@@ -249,15 +269,15 @@ async def test_permission_mode_switch_resets_always_cache() -> None:
     class _App:
         def __init__(self) -> None:
             self.session = BrainSession(brain=_GatedBrain(), model="m")
-            self.approval_resolver = ConsoleApprovalResolver(_ScriptedPrompter("a"))
+            self.approval_resolver = _resolver(_ScriptedPrompter("a"))
             self.renderer = type("R", (), {"console": _Console(file=_io.StringIO())})()
 
     app = _App()
     await app.approval_resolver("run_shell", {}, None)
-    assert app.approval_resolver.always_allow == {"run_shell"}
+    assert app.approval_resolver.session_grant_tools() == {"run_shell"}
     out = await dispatch(app, "/plan")
     assert isinstance(out, str) and "plan" in out
-    assert app.approval_resolver.always_allow == set()
+    assert app.approval_resolver.session_grant_tools() == set()
 
 
 async def test_concurrent_approvals_are_serialized() -> None:
@@ -277,30 +297,10 @@ async def test_concurrent_approvals_are_serialized() -> None:
         in_flight -= 1
         return "y"
 
-    resolver = ConsoleApprovalResolver(_slow_prompter)
+    resolver = ConsoleApprovalResolver(_slow_prompter, grant_store=GrantStore())
     results = await asyncio.gather(
         resolver("run_shell", {"command": "a"}, None),
         resolver("write_file", {"path": "b"}, None),
     )
     assert results == [True, True]
     assert max_in_flight == 1
-
-
-async def test_persist_answer_is_durable_across_gate_rebuild(tmp_path: Any) -> None:
-    """End-to-end E1: a 'persist' answer, wired to the real
-    ``persist_allow_rule``, must make a freshly-built permission gate decide
-    ``allow`` for the tool — the grant survives the session that granted it."""
-    from corlinman_agent.permission import ALLOW
-    from corlinman_agent.permission_settings import (
-        build_permission_gate,
-        persist_allow_rule,
-    )
-
-    resolver = ConsoleApprovalResolver(
-        _ScriptedPrompter("p"),
-        persist=lambda tool: persist_allow_rule(tool, data_dir=tmp_path),
-    )
-    assert await resolver("run_shell", {"command": "ls"}, None) is True
-
-    gate = build_permission_gate(data_dir=tmp_path, project_dir=tmp_path / "proj")
-    assert gate.decide("run_shell") == ALLOW

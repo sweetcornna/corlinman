@@ -314,7 +314,10 @@ async def _cmd_permissions(app: Any, args: str) -> str:
             "usage: /permissions <mode>   (/plan toggles plan mode)",
         ]
         resolver = getattr(app, "approval_resolver", None)
-        always = sorted(getattr(resolver, "always_allow", ()) or ())
+        # W3-1: session grants live in the GrantStore (arg-scoped) — list
+        # the granted tool names; the old ``always_allow`` set is gone.
+        lister = getattr(resolver, "session_grant_tools", None)
+        always = sorted(lister() if callable(lister) else ())
         if always:
             lines.append(f"always-allowed this session: {', '.join(always)}")
         return "\n".join(lines)
