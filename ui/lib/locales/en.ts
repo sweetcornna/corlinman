@@ -11,6 +11,7 @@ export const en = {
     saving: "Saving…",
     cancel: "Cancel",
     close: "Close",
+    details: "Details",
     confirm: "Confirm",
     delete: "Delete",
     remove: "Remove",
@@ -61,16 +62,16 @@ export const en = {
     submitting: "Signing in...",
     invalidCredentials: "Invalid username or password",
     adminNotConfigured: "Admin credentials not configured (config.toml [admin])",
-    sessionHint: "Session backed by argon2 · HttpOnly cookie.",
+    sessionHint: "Session stored securely — verified server-side.",
     forgotPassword: "Forgot password?",
     forgotPasswordBody:
       "Ask your server administrator to reset the admin password on the host, then sign in again.",
     resetIntro:
-      "Self-service reset uses a one-time token written to the gateway host. Clicking below mints the token; you'll SSH in to read it, then paste it back here with a new password.",
+      "Self-service reset: click below to generate a one-time token, read it from the token file on the server, then paste it back here with a new password.",
     resetMint: "Generate reset token",
-    resetStep1Title: "Step 1 · SSH in and read the token",
+    resetStep1Title: "Step 1 · Read the token on the server",
     resetStep1Body:
-      "On the gateway host (you need shell access — same operator-proves-ownership model as editing config.toml), copy the value printed by:",
+      "Sign in to the server that runs the gateway, run the command below and copy its output:",
     resetCountdown: "Token expires in {{m}}:{{s}}",
     resetTokenLabel: "Reset token",
     resetPlaceholder: "paste here",
@@ -98,7 +99,7 @@ export const en = {
     onboardBuildLabel: "first-run",
     onboardTitle: "Set up the admin account",
     onboardSubtitle:
-      "First-run setup — pick a username and password. Both are written to config.toml as argon2id.",
+      "First-run setup — pick a username and password. Credentials are stored securely.",
     onboardConfirmPassword: "Confirm password",
     onboardSubmit: "Create admin",
     onboardHint:
@@ -437,23 +438,33 @@ export const en = {
     modalTitleCodex: "Connect Codex (ChatGPT)",
     modalTitleGemini: "Connect Gemini (Google)",
     modalDescriptionAnthropic:
-      "Use your Anthropic console account to authorise corlinman. No password leaves your browser — the code-exchange runs server-side.",
-    modalDescriptionXai:
-      "Use your xAI account to authorise corlinman. No password leaves your browser — the code-exchange runs server-side.",
+      "Authorise corlinman with your Anthropic account.",
+    modalDescriptionXai: "Authorise corlinman with your xAI account.",
     modalDescriptionCodex:
-      "Use your ChatGPT subscription to authorise corlinman. OpenAI redirects to localhost:1455 (which won't load), but the URL bar shows ?code=…&state=… — copy the URL or just the code back here.",
-    modalDescriptionGemini:
-      "Use your Google account to authorise corlinman. The redirect lands on localhost:8085 (which won't load); copy the URL or just the code from the address bar back here.",
+      "Authorise corlinman with your ChatGPT subscription.",
+    modalDescriptionGemini: "Authorise corlinman with your Google account.",
 
     // Modal — phase copy
     introAnthropic:
-      "You will be redirected to the Anthropic console in a new tab. After signing in, copy the displayed code (and state token) and paste them back here.",
+      "A new tab will open the Anthropic sign-in page; once done, paste the returned code back here.",
     introXai:
-      "You will be redirected to xAI in a new tab. After signing in, copy the displayed code (and state token) and paste them back here.",
+      "A new tab will open the xAI sign-in page; once done, paste the returned code back here.",
     introCodex:
-      "You will be redirected to ChatGPT in a new tab. The post-auth redirect to localhost:1455 will fail — but the URL bar's ?code=… is exactly what to paste here.",
+      "A new tab will open the ChatGPT sign-in page; once done, paste the returned code back here.",
     introGemini:
-      "You will be redirected to Google in a new tab. The redirect to localhost:8085 will fail — copy the ?code=… value from the address bar back here.",
+      "A new tab will open the Google sign-in page; once done, paste the returned code back here.",
+
+    // Modal — folded long-form detail (Collapsible body; the visible
+    // description/intro above stays one sentence each).
+    detailSummary: "How the sign-in works",
+    detailAnthropic:
+      "You sign in on Anthropic's page — your password never touches corlinman. Only the authorisation code (plus state) comes back here, and the token exchange runs server-side.",
+    detailXai:
+      "You sign in on xAI's page — your password never touches corlinman. Only the authorisation code (plus state) comes back here, and the token exchange runs server-side.",
+    detailCodex:
+      "After signing in, the browser lands on a local address that won't load — that's expected. The ?code=…&state=… in the URL bar is what you paste back; copying the whole URL works too. The token exchange runs server-side.",
+    detailGemini:
+      "After signing in, the browser lands on a local address that won't load — that's expected. The ?code=… in the URL bar is what you paste back; copying the whole URL works too. The token exchange runs server-side.",
     loginButtonAnthropic: "Login with Anthropic",
     loginButtonXai: "Login with xAI",
     loginButtonCodex: "Login with ChatGPT",
@@ -474,7 +485,10 @@ export const en = {
     codeLabel: "Code",
     codePlaceholder: "Paste the full callback URL or just the code",
     codeSplitHint:
-      "Paste the full callback URL (e.g. {{example}}) and we'll auto-extract code + state. CODE#STATE and bare codes work too.",
+      "Paste the full callback URL or just the code — state is picked up automatically.",
+    codeSplitDetail:
+      "Three paste formats are accepted: the full callback URL (e.g. {{example}}), a CODE#STATE pair, or the bare code.",
+    codeSplitDetailLabel: "Paste format details",
     stateLabel: "State",
     statePlaceholder:
       "State token (auto-filled if you pasted CODE#STATE)",
@@ -864,7 +878,7 @@ export const en = {
     },
     title: "QQ Channel",
     subtitle:
-      "`/admin/channels/qq/status` · `/keywords` · `/reconnect`. Runtime state depends on corlinman-channels exposure.",
+      "Live status, group keywords and reconnect controls for the QQ channel.",
     groupKeywords: "Group keywords",
     groupKeywordsHint: "Press Enter to add a keyword chip; × to remove.",
     addGroup: "+ Group",
@@ -956,7 +970,7 @@ export const en = {
         messagesUnknownSender: "unknown sender",
         offlineTitle: "QQ channel offline",
         offlineHint:
-          "The panels below will populate once `/admin/channels/qq/status` responds.",
+          "The panels below will refresh once the channel comes back online.",
       },
       accountOfflineTitle: "QQ account offline",
       accountOfflineBody:
@@ -1026,7 +1040,7 @@ export const en = {
         photoPreviewCopyFail: "Copy failed",
         photoPreviewNone: "No image selected.",
         sendTestTitle: "Send test message",
-        sendTestDescription: "Calls POST /admin/channels/telegram/send.",
+        sendTestDescription: "Sends a test message to this channel through the gateway.",
         sendTestChatId: "Chat ID",
         sendTestChatIdHint: "Numeric chat_id for groups (negative) or DMs, or `@username`.",
         sendTestMessage: "Message",
@@ -1093,7 +1107,7 @@ export const en = {
         routeGroup: "Channel",
         lastErrorBanner: "Last dispatch error",
         sendTestTitle: "Send test message",
-        sendTestDescription: "Calls POST /admin/channels/discord/send.",
+        sendTestDescription: "Sends a test message to this channel through the gateway.",
         sendTestTarget: "Channel ID",
         sendTestTargetHint: "Numeric Discord channel id to post into.",
         sendTestTargetPlaceholder: "e.g. 1234567890",
@@ -1150,7 +1164,7 @@ export const en = {
         routeGroup: "Channel",
         lastErrorBanner: "Last dispatch error",
         sendTestTitle: "Send test message",
-        sendTestDescription: "Calls POST /admin/channels/slack/send.",
+        sendTestDescription: "Sends a test message to this channel through the gateway.",
         sendTestTarget: "Channel ID",
         sendTestTargetHint: "Slack channel id (e.g. C0123ABCD) to post into.",
         sendTestTargetPlaceholder: "e.g. C0123ABCD",
@@ -1207,7 +1221,7 @@ export const en = {
         routeGroup: "Chat",
         lastErrorBanner: "Last dispatch error",
         sendTestTitle: "Send test message",
-        sendTestDescription: "Calls POST /admin/channels/feishu/send.",
+        sendTestDescription: "Sends a test message to this channel through the gateway.",
         sendTestTarget: "Chat ID",
         sendTestTargetHint: "Feishu chat id (e.g. oc_xxx) to post into.",
         sendTestTargetPlaceholder: "e.g. oc_xxxxxxxx",
@@ -1223,7 +1237,7 @@ export const en = {
       tp: {
         title: "WeChat Official",
         subtitle:
-          "`/admin/channels/wechat_official/status`. Config + status only — no live inbox.",
+          "Config + status only — no live inbox.",
         state: {
           configured: "Configured",
           notConfigured: "Not configured",
@@ -1243,14 +1257,14 @@ export const en = {
         configEmpty: "No non-secret config keys exposed.",
         offlineTitle: "WeChat Official offline",
         offlineHint:
-          "The panel below will populate once `/admin/channels/wechat_official/status` responds.",
+          "The panel below will populate once the channel comes back online.",
       },
     },
     qq_official: {
       tp: {
         title: "QQ Official Bot",
         subtitle:
-          "`/admin/channels/qq_official/status`. Config + status only — no live inbox.",
+          "Config + status only — no live inbox.",
         state: {
           configured: "Configured",
           notConfigured: "Not configured",
@@ -1270,7 +1284,7 @@ export const en = {
         configEmpty: "No non-secret config keys exposed.",
         offlineTitle: "QQ Official Bot offline",
         offlineHint:
-          "The panel below will populate once `/admin/channels/qq_official/status` responds.",
+          "The panel below will populate once the channel comes back online.",
       },
     },
   },
@@ -1646,7 +1660,8 @@ export const en = {
       title: "Add custom provider",
       desc: "Register a non-built-in provider against one of the supported transport kinds. Saves are written to config.toml and hot-reloaded.",
       slugLabel: "Slug",
-      slugInvalid: "Must match ^[a-z0-9][a-z0-9_-]{0,31}$ (start with letter/digit; lowercase only).",
+      slugInvalid:
+        "Lowercase letters, digits, hyphens or underscores; must start with a letter or digit; max 32 characters.",
       slugHint: "Lowercase letters, digits, hyphens, underscores. Up to 32 chars.",
       kindLabel: "Kind",
       kindLoading: "Loading…",
@@ -1764,7 +1779,7 @@ export const en = {
     custom: {
       title: "Custom providers",
       subtitle:
-        "Operator-defined providers registered via /admin/providers/custom. The transport kind picks which built-in protocol (OpenAI-compatible, Anthropic, etc.) ferries the requests.",
+        "Providers you register yourself — pick the transport kind that matches their API.",
       add: "Add custom provider",
       loadFailed: "Load failed: {{msg}}",
       emptyTitle: "No custom providers yet.",
@@ -1915,7 +1930,7 @@ export const en = {
   tenants: {
     title: "Tenants",
     subtitle:
-      "`/admin/tenants` — multi-tenant registry. Each tenant owns its own data dir and admin login.",
+      "Multi-tenant registry — each tenant owns its own data dir and admin login.",
     add: "+ New tenant",
     create: "Create tenant",
     creating: "Creating…",
@@ -1936,7 +1951,11 @@ export const en = {
     modalDesc:
       "Slug must start with a letter and contain only lowercase letters, digits, or hyphens. It cannot be changed after creation.",
     fieldSlug: "Slug",
-    fieldSlugHint: "Used in URLs as `?tenant=<slug>`; server regex is ^[a-z][a-z0-9-]{0,62}$.",
+    fieldSlugHint:
+      "Starts with a lowercase letter; lowercase letters, digits and hyphens only.",
+    fieldSlugDetail:
+      "Appears in URLs (?tenant=<slug>). Server-side rule: ^[a-z][a-z0-9-]{0,62}$.",
+    fieldSlugDetailLabel: "Slug rule details",
     fieldSlugPlaceholder: "acme",
     fieldDisplayName: "Display name",
     fieldDisplayNameHint: "Optional; falls back to the slug if empty.",
@@ -1972,7 +1991,8 @@ export const en = {
     count_other: "{{count}} profiles",
     slugLabel: "Slug",
     slugHint: "lowercase letters, digits, `_` or `-`; max 64 chars.",
-    slugInvalid: "Invalid slug — must match ^[a-z0-9][a-z0-9_-]{0,63}$.",
+    slugInvalid:
+      "Invalid slug — lowercase letters, digits, hyphens or underscores; must start with a letter or digit; max 64 characters.",
     slugPlaceholder: "research-bot",
     cloneFromLabel: "Clone from",
     cloneFromHint:
@@ -2049,7 +2069,7 @@ export const en = {
         "`corlinman.toml` · {{n}} sections · {{dirty}} pending changes waiting to be saved.",
       heroLeadClean:
         "`corlinman.toml` · {{n}} sections · everything is in sync, ready for your next edit.",
-      heroLeadOffline: "Couldn't reach `/admin/config`. Retry shortly or check the gateway.",
+      heroLeadOffline: "Couldn't load the configuration. Retry shortly or check the gateway.",
       lastSavedVersion: "Live version {{v}}",
       ctaSave: "Save",
       ctaValidate: "Validate",
@@ -2073,7 +2093,7 @@ export const en = {
       rawToggleShow: "Show raw TOML",
       rawToggleHide: "Hide raw TOML",
       offlineBlockTitle: "Config endpoint offline",
-      offlineBlockHint: "Couldn't load `/admin/config`. Retry shortly.",
+      offlineBlockHint: "Couldn't load the configuration. Retry shortly.",
       pendingBarLead: "{{n}} unsaved changes",
       pendingBarLeadSingular: "1 unsaved change",
       discardChanges: "Discard",

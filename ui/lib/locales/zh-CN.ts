@@ -11,6 +11,7 @@ export const zhCN = {
     saving: "保存中…",
     cancel: "取消",
     close: "关闭",
+    details: "详情",
     confirm: "确认",
     delete: "删除",
     remove: "移除",
@@ -68,11 +69,10 @@ export const zhCN = {
     forgotPasswordBody:
       "请联系服务器管理员在主机上重置管理员密码后重新登录。",
     resetIntro:
-      "通过网关主机文件挑战自助重置：点击下方按钮生成一次性令牌，SSH 上主机读出来粘回这里，配新密码即可。",
+      "自助重置：先点击下方按钮生成一次性令牌，再到服务器上读取令牌文件，粘贴回来即可设置新密码。",
     resetMint: "生成重置令牌",
-    resetStep1Title: "步骤 1 · SSH 上主机读取令牌",
-    resetStep1Body:
-      "在网关主机上执行以下命令（需要 root SSH，跟手改 config.toml 是同一道关），把输出复制下来：",
+    resetStep1Title: "步骤 1 · 在服务器上读取令牌",
+    resetStep1Body: "登录运行网关的服务器，执行以下命令并复制输出：",
     resetCountdown: "令牌将在 {{m}}:{{s}} 后过期",
     resetTokenLabel: "粘贴令牌",
     resetPlaceholder: "粘贴到这里",
@@ -94,8 +94,7 @@ export const zhCN = {
     buildLabel: "M6 管理台",
     onboardBuildLabel: "首次配置",
     onboardTitle: "初始化管理员账号",
-    onboardSubtitle:
-      "首次启动设置 —— 请设置用户名与密码，将以 argon2id 写入 config.toml。",
+    onboardSubtitle: "首次启动设置 —— 请设置用户名与密码，凭据将安全存储。",
     onboardConfirmPassword: "确认密码",
     onboardSubmit: "创建管理员",
     onboardHint: "初始化仅一次。之后可以在右上角用户菜单中修改密码。",
@@ -424,24 +423,32 @@ export const zhCN = {
     modalTitleXai: "连接 xAI",
     modalTitleCodex: "连接 Codex (ChatGPT)",
     modalTitleGemini: "连接 Gemini (Google)",
-    modalDescriptionAnthropic:
-      "使用 Anthropic console 账户授权 corlinman。密码不会离开浏览器 —— 兑换 code 在服务端进行。",
-    modalDescriptionXai:
-      "使用 xAI 账户授权 corlinman。密码不会离开浏览器 —— 兑换 code 在服务端进行。",
-    modalDescriptionCodex:
-      "用 ChatGPT 订阅账号授权 corlinman。OpenAI 回调会指向 localhost:1455（连不通），但 URL 栏会出现 ?code=…&state=…；把整段 URL 或 code 拷贝回这里。",
-    modalDescriptionGemini:
-      "用 Google 账号授权 corlinman。回调指向 localhost:8085（连不通），URL 栏会带 code=…；把整段 URL 或 code 拷贝回这里。",
+    modalDescriptionAnthropic: "使用 Anthropic 账号授权 corlinman。",
+    modalDescriptionXai: "使用 xAI 账号授权 corlinman。",
+    modalDescriptionCodex: "使用 ChatGPT 订阅账号授权 corlinman。",
+    modalDescriptionGemini: "使用 Google 账号授权 corlinman。",
 
     // Modal — phase copy
     introAnthropic:
-      "将在新标签页打开 Anthropic console。登录后请将返回的 code（与 state token）粘贴回此处。",
+      "将在新标签页打开 Anthropic 登录页，完成登录后把返回的 code 粘贴回这里。",
     introXai:
-      "将在新标签页打开 xAI 登录页。登录后请将返回的 code（与 state token）粘贴回此处。",
+      "将在新标签页打开 xAI 登录页，完成登录后把返回的 code 粘贴回这里。",
     introCodex:
-      "将在新标签页打开 ChatGPT 登录页。OpenAI 回跳到 localhost:1455 会失败，但浏览器 URL 栏的 ?code=… 就是要回填的内容。",
+      "将在新标签页打开 ChatGPT 登录页，完成登录后把返回的 code 粘贴回这里。",
     introGemini:
-      "将在新标签页打开 Google 登录页。回跳到 localhost:8085 会失败，URL 栏的 ?code=… 就是要回填的内容。",
+      "将在新标签页打开 Google 登录页，完成登录后把返回的 code 粘贴回这里。",
+
+    // Modal — folded long-form detail (Collapsible body; the visible
+    // description/intro above stays one sentence each).
+    detailSummary: "登录流程详情",
+    detailAnthropic:
+      "登录在 Anthropic 页面完成，密码不会离开你的浏览器；此处只回填授权 code（连同 state），令牌兑换在服务端进行。",
+    detailXai:
+      "登录在 xAI 页面完成，密码不会离开你的浏览器；此处只回填授权 code（连同 state），令牌兑换在服务端进行。",
+    detailCodex:
+      "登录完成后浏览器会跳到一个打不开的本地地址，这是正常现象；此时地址栏里的 ?code=…&state=… 就是要回填的内容，把整段地址或 code 复制回来即可。令牌兑换在服务端进行。",
+    detailGemini:
+      "登录完成后浏览器会跳到一个打不开的本地地址，这是正常现象；此时地址栏里的 ?code=… 就是要回填的内容，把整段地址或 code 复制回来即可。令牌兑换在服务端进行。",
     loginButtonAnthropic: "使用 Anthropic 登录",
     loginButtonXai: "使用 xAI 登录",
     loginButtonCodex: "使用 ChatGPT 登录",
@@ -457,8 +464,10 @@ export const zhCN = {
     openManually: "手动打开",
     codeLabel: "Code",
     codePlaceholder: "粘贴回调 URL 或 code（state 会自动识别）",
-    codeSplitHint:
-      "可以粘贴完整回调 URL（如 {{example}}），自动识别 code 和 state；也支持 CODE#STATE 或裸 code。",
+    codeSplitHint: "粘贴完整回调地址或单独的 code 均可，state 会自动识别。",
+    codeSplitDetail:
+      "支持三种粘贴格式：完整回调 URL（如 {{example}}）、CODE#STATE 组合、或裸 code。",
+    codeSplitDetailLabel: "粘贴格式详情",
     stateLabel: "State",
     statePlaceholder: "State token（若粘贴 CODE#STATE 会自动填充）",
     exchanging: "正在兑换 code 为令牌…",
@@ -841,8 +850,7 @@ export const zhCN = {
       saveFailed: "保存失败：{{msg}}",
     },
     title: "QQ 通道",
-    subtitle:
-      "`/admin/channels/qq/status` · `/keywords` · `/reconnect`。运行时状态取决于 corlinman-channels 暴露。",
+    subtitle: "QQ 通道的实时状态、群关键词与重连管理。",
     groupKeywords: "群组关键词",
     groupKeywordsHint: "按 Enter 添加关键词；× 移除。",
     addGroup: "+ 群组",
@@ -930,7 +938,7 @@ export const zhCN = {
         messagesOffline: "网关离线 —— 流已暂停。",
         messagesUnknownSender: "未知发送者",
         offlineTitle: "QQ 通道离线",
-        offlineHint: "`/admin/channels/qq/status` 恢复后将自动刷新。",
+        offlineHint: "通道状态恢复后将自动刷新。",
       },
       accountOfflineTitle: "QQ 账号已下线",
       accountOfflineBody:
@@ -1000,7 +1008,7 @@ export const zhCN = {
         photoPreviewCopyFail: "复制失败",
         photoPreviewNone: "未选择图片。",
         sendTestTitle: "发送测试消息",
-        sendTestDescription: "调用 POST /admin/channels/telegram/send。",
+        sendTestDescription: "通过网关向该渠道发送一条测试消息。",
         sendTestChatId: "Chat ID",
         sendTestChatIdHint: "群组或私聊的数字 chat_id，或 `@username`。",
         sendTestMessage: "消息",
@@ -1066,7 +1074,7 @@ export const zhCN = {
         routeGroup: "频道",
         lastErrorBanner: "最近派发错误",
         sendTestTitle: "发送测试消息",
-        sendTestDescription: "调用 POST /admin/channels/discord/send。",
+        sendTestDescription: "通过网关向该渠道发送一条测试消息。",
         sendTestTarget: "频道 ID",
         sendTestTargetHint: "要发送到的 Discord 频道数字 id。",
         sendTestTargetPlaceholder: "例如 1234567890",
@@ -1122,7 +1130,7 @@ export const zhCN = {
         routeGroup: "频道",
         lastErrorBanner: "最近派发错误",
         sendTestTitle: "发送测试消息",
-        sendTestDescription: "调用 POST /admin/channels/slack/send。",
+        sendTestDescription: "通过网关向该渠道发送一条测试消息。",
         sendTestTarget: "频道 ID",
         sendTestTargetHint: "要发送到的 Slack 频道 id（例如 C0123ABCD）。",
         sendTestTargetPlaceholder: "例如 C0123ABCD",
@@ -1178,7 +1186,7 @@ export const zhCN = {
         routeGroup: "会话",
         lastErrorBanner: "最近派发错误",
         sendTestTitle: "发送测试消息",
-        sendTestDescription: "调用 POST /admin/channels/feishu/send。",
+        sendTestDescription: "通过网关向该渠道发送一条测试消息。",
         sendTestTarget: "会话 ID",
         sendTestTargetHint: "要发送到的飞书会话 id（例如 oc_xxx）。",
         sendTestTargetPlaceholder: "例如 oc_xxxxxxxx",
@@ -1193,8 +1201,7 @@ export const zhCN = {
     wechat_official: {
       tp: {
         title: "微信公众号",
-        subtitle:
-          "`/admin/channels/wechat_official/status`。仅配置 + 状态 —— 无实时收件箱。",
+        subtitle: "仅配置与状态 —— 无实时收件箱。",
         state: {
           configured: "已配置",
           notConfigured: "未配置",
@@ -1212,15 +1219,13 @@ export const zhCN = {
         configReadOnly: "只读",
         configEmpty: "未暴露任何非机密配置项。",
         offlineTitle: "微信公众号离线",
-        offlineHint:
-          "当 `/admin/channels/wechat_official/status` 响应后，下方面板将填充数据。",
+        offlineHint: "通道状态恢复后，下方面板将自动填充。",
       },
     },
     qq_official: {
       tp: {
         title: "QQ 官方 Bot",
-        subtitle:
-          "`/admin/channels/qq_official/status`。仅配置 + 状态 —— 无实时收件箱。",
+        subtitle: "仅配置与状态 —— 无实时收件箱。",
         state: {
           configured: "已配置",
           notConfigured: "未配置",
@@ -1238,8 +1243,7 @@ export const zhCN = {
         configReadOnly: "只读",
         configEmpty: "未暴露任何非机密配置项。",
         offlineTitle: "QQ 官方 Bot 离线",
-        offlineHint:
-          "当 `/admin/channels/qq_official/status` 响应后，下方面板将填充数据。",
+        offlineHint: "通道状态恢复后，下方面板将自动填充。",
       },
     },
   },
@@ -1611,7 +1615,8 @@ export const zhCN = {
       title: "新增自定义 provider",
       desc: "将一个非内置 provider 注册到受支持的传输类型上。保存写入 config.toml 并热更新。",
       slugLabel: "Slug",
-      slugInvalid: "需匹配 ^[a-z0-9][a-z0-9_-]{0,31}$（以字母/数字开头；仅小写）。",
+      slugInvalid:
+        "仅限小写字母、数字、连字符或下划线，以字母或数字开头，最长 32 字符。",
       slugHint: "小写字母、数字、连字符、下划线，最长 32 字符。",
       kindLabel: "类型",
       kindLoading: "加载中…",
@@ -1867,8 +1872,7 @@ export const zhCN = {
 
   tenants: {
     title: "租户",
-    subtitle:
-      "`/admin/tenants` — 多租户注册表。每个租户拥有独立的数据目录与管理员账户。",
+    subtitle: "多租户注册表 —— 每个租户拥有独立的数据目录与管理员账户。",
     add: "+ 新增租户",
     create: "新建租户",
     creating: "创建中…",
@@ -1889,7 +1893,10 @@ export const zhCN = {
     modalDesc:
       "Slug 必须以字母开头且只能包含小写字母、数字或连字符。一旦创建即不可修改。",
     fieldSlug: "Slug",
-    fieldSlugHint: "用于 URL `?tenant=<slug>`；服务端正则 ^[a-z][a-z0-9-]{0,62}$。",
+    fieldSlugHint: "以小写字母开头，只含小写字母、数字和连字符。",
+    fieldSlugDetail:
+      "会出现在 URL 中（?tenant=<slug>）。服务端校验规则：^[a-z][a-z0-9-]{0,62}$。",
+    fieldSlugDetailLabel: "Slug 规则详情",
     fieldSlugPlaceholder: "acme",
     fieldDisplayName: "显示名称",
     fieldDisplayNameHint: "可选；留空时使用 slug。",
@@ -1925,7 +1932,8 @@ export const zhCN = {
     count_other: "{{count}} 个 profile",
     slugLabel: "Slug",
     slugHint: "小写字母、数字、`_` 或 `-`；最多 64 字符。",
-    slugInvalid: "Slug 不合法 —— 必须匹配 ^[a-z0-9][a-z0-9_-]{0,63}$。",
+    slugInvalid:
+      "Slug 不合法 —— 仅限小写字母、数字、连字符或下划线，以字母或数字开头，最长 64 字符。",
     slugPlaceholder: "research-bot",
     cloneFromLabel: "克隆自",
     cloneFromHint: "会从所选父级复制 SOUL.md、MEMORY.md、USER.md 与 skills 目录。",
@@ -2000,7 +2008,7 @@ export const zhCN = {
         "`corlinman.toml` · {{n}} 个分区 · 有 {{dirty}} 处待保存的改动。",
       heroLeadClean:
         "`corlinman.toml` · {{n}} 个分区 · 一切已就绪，等待你的下一次编辑。",
-      heroLeadOffline: "无法加载 `/admin/config`。请稍后重试或检查网关。",
+      heroLeadOffline: "无法加载配置。请稍后重试或检查网关。",
       lastSavedVersion: "当前版本 {{v}}",
       ctaSave: "保存",
       ctaValidate: "校验",
@@ -2024,7 +2032,7 @@ export const zhCN = {
       rawToggleShow: "展开原始 TOML",
       rawToggleHide: "收起原始 TOML",
       offlineBlockTitle: "配置接口离线",
-      offlineBlockHint: "无法加载 `/admin/config`。稍后重试。",
+      offlineBlockHint: "无法加载配置。稍后重试。",
       pendingBarLead: "有 {{n}} 处改动未保存",
       pendingBarLeadSingular: "有 1 处改动未保存",
       discardChanges: "放弃",
