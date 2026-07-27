@@ -1,4 +1,4 @@
-"""Voice backend registry, templating engine and GPT-Live negotiation.
+"""Voice backend registry, templating engine and Realtime negotiation.
 
 The templating engine is the load-bearing piece: every vendor we support
 (and every user-defined backend) is a row of data run through
@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import base64
 import json
+from email.parser import BytesParser
+from email.policy import default
 from types import SimpleNamespace
 
 import httpx
@@ -32,6 +34,7 @@ from corlinman_agent.voice.gpt_live import (
     _classify_live_error,
     _negotiate,
     build_session,
+    probe_live_endpoint,
 )
 from corlinman_agent.voice.synth import _live_base_url, resolve_credentials
 
@@ -103,9 +106,19 @@ def test_openai_default_voice_is_universally_supported() -> None:
 def test_gpt_live_catalog_matches_shipped_voice_set() -> None:
     voices = {v.id for v in get_backend("gpt_live").voices}
     assert voices == {
-        "arbor", "breeze", "cove", "ember", "juniper",
-        "maple", "sol", "spruce", "vale",
+        "alloy",
+        "ash",
+        "ballad",
+        "cedar",
+        "coral",
+        "echo",
+        "marin",
+        "sage",
+        "shimmer",
+        "verse",
     }
+    assert get_backend("gpt_live").default_model == "gpt-realtime-2.1"
+    assert get_backend("gpt_live").default_voice == "marin"
 
 
 def test_resolve_voice_coerces_unknown_but_keeps_new_ones() -> None:
@@ -136,8 +149,13 @@ async def test_openai_shape(tmp_path) -> None:
     seen, transport = _capture()
     await synthesize(
         SynthesisRequest(
-            text="你好", backend="openai", voice="marin", fmt="mp3",
-            params={"api_key": "sk-x"}, out_dir=tmp_path, transport=transport,
+            text="你好",
+            backend="openai",
+            voice="marin",
+            fmt="mp3",
+            params={"api_key": "sk-x"},
+            out_dir=tmp_path,
+            transport=transport,
         )
     )
     assert seen["url"] == "https://api.openai.com/v1/audio/speech"
@@ -154,8 +172,11 @@ async def test_unset_optionals_are_dropped_not_blanked(tmp_path) -> None:
     seen, transport = _capture()
     await synthesize(
         SynthesisRequest(
-            text="hi", backend="openai", params={"api_key": "k"},
-            out_dir=tmp_path, transport=transport,
+            text="hi",
+            backend="openai",
+            params={"api_key": "k"},
+            out_dir=tmp_path,
+            transport=transport,
         )
     )
     # instructions/speed are in the template but unset for this call.
@@ -167,8 +188,12 @@ async def test_speed_placeholder_stays_numeric(tmp_path) -> None:
     seen, transport = _capture()
     await synthesize(
         SynthesisRequest(
-            text="hi", backend="openai", speed=1.25,
-            params={"api_key": "k"}, out_dir=tmp_path, transport=transport,
+            text="hi",
+            backend="openai",
+            speed=1.25,
+            params={"api_key": "k"},
+            out_dir=tmp_path,
+            transport=transport,
         )
     )
     assert seen["body"]["speed"] == 1.25
@@ -179,8 +204,13 @@ async def test_instructions_dropped_for_backend_without_support(tmp_path) -> Non
     seen, transport = _capture()
     await synthesize(
         SynthesisRequest(
-            text="hi", backend="fish", voice="ref-1", instructions="慢一点",
-            params={"api_key": "fk"}, out_dir=tmp_path, transport=transport,
+            text="hi",
+            backend="fish",
+            voice="ref-1",
+            instructions="慢一点",
+            params={"api_key": "fk"},
+            out_dir=tmp_path,
+            transport=transport,
         )
     )
     assert "instructions" not in seen["body"]
@@ -190,8 +220,12 @@ async def test_header_carried_model_and_freeform_voice(tmp_path) -> None:
     seen, transport = _capture()
     await synthesize(
         SynthesisRequest(
-            text="hi", backend="fish", voice="ref-1",
-            params={"api_key": "fk"}, out_dir=tmp_path, transport=transport,
+            text="hi",
+            backend="fish",
+            voice="ref-1",
+            params={"api_key": "fk"},
+            out_dir=tmp_path,
+            transport=transport,
         )
     )
     assert seen["url"] == "https://api.fish.audio/v1/tts"
@@ -203,8 +237,12 @@ async def test_placeholder_inside_path(tmp_path) -> None:
     seen, transport = _capture()
     await synthesize(
         SynthesisRequest(
-            text="hi", backend="elevenlabs", voice="VOICE7",
-            params={"api_key": "xk"}, out_dir=tmp_path, transport=transport,
+            text="hi",
+            backend="elevenlabs",
+            voice="VOICE7",
+            params={"api_key": "xk"},
+            out_dir=tmp_path,
+            transport=transport,
         )
     )
     assert seen["url"].endswith("/text-to-speech/VOICE7")
@@ -222,17 +260,22 @@ async def test_query_auth_and_nested_body_and_b64_response(tmp_path) -> None:
             200,
             json={
                 "candidates": [
-                    {"content": {"parts": [{"inlineData": {
-                        "data": base64.b64encode(b"PCM!").decode()
-                    }}]}}
+                    {
+                        "content": {
+                            "parts": [{"inlineData": {"data": base64.b64encode(b"PCM!").decode()}}]
+                        }
+                    }
                 ]
             },
         )
 
     result = await synthesize(
         SynthesisRequest(
-            text="hi", backend="gemini", voice="Kore",
-            params={"api_key": "gk"}, out_dir=tmp_path,
+            text="hi",
+            backend="gemini",
+            voice="Kore",
+            params={"api_key": "gk"},
+            out_dir=tmp_path,
             transport=httpx.MockTransport(handler),
         )
     )
@@ -249,8 +292,11 @@ async def test_bad_b64_path_reports_precisely(tmp_path) -> None:
     with pytest.raises(SynthesisError) as excinfo:
         await synthesize(
             SynthesisRequest(
-                text="hi", backend="gemini", params={"api_key": "gk"},
-                out_dir=tmp_path, transport=httpx.MockTransport(handler),
+                text="hi",
+                backend="gemini",
+                params={"api_key": "gk"},
+                out_dir=tmp_path,
+                transport=httpx.MockTransport(handler),
             )
         )
     assert excinfo.value.code == "tts_bad_response"
@@ -263,8 +309,11 @@ async def test_http_status_carries_upstream_code(tmp_path) -> None:
     with pytest.raises(SynthesisError) as excinfo:
         await synthesize(
             SynthesisRequest(
-                text="hi", backend="openai", params={"api_key": "k"},
-                out_dir=tmp_path, transport=httpx.MockTransport(handler),
+                text="hi",
+                backend="openai",
+                params={"api_key": "k"},
+                out_dir=tmp_path,
+                transport=httpx.MockTransport(handler),
             )
         )
     assert excinfo.value.code == "tts_http_status"
@@ -280,9 +329,7 @@ def test_provider_key_is_borrowed_for_bound_voice_provider(monkeypatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("FISH_AUDIO_API_KEY", raising=False)
     provider = SimpleNamespace(_api_key="fish-key", _base_url="https://fish.example")
-    key, base = resolve_credentials(
-        get_backend("fish"), provider, {}, provider_is_bound=True
-    )
+    key, base = resolve_credentials(get_backend("fish"), provider, {}, provider_is_bound=True)
     assert key == "fish-key"
     assert base == "https://fish.example"
 
@@ -298,9 +345,7 @@ def test_bound_provider_key_beats_the_global_env_var(monkeypatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("FISH_AUDIO_API_KEY", "fk-global")
     provider = SimpleNamespace(_api_key="fk-persona", _base_url="https://fish.example")
-    key, base = resolve_credentials(
-        get_backend("fish"), provider, {}, provider_is_bound=True
-    )
+    key, base = resolve_credentials(get_backend("fish"), provider, {}, provider_is_bound=True)
     assert key == "fk-persona"
     assert base == "https://fish.example"
 
@@ -322,9 +367,7 @@ def test_unbound_chat_provider_is_never_borrowed_by_a_third_party_backend(
     """
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("FISH_AUDIO_API_KEY", raising=False)
-    chat_provider = SimpleNamespace(
-        _api_key="sk-chat-relay", _base_url="https://relay.example/v1"
-    )
+    chat_provider = SimpleNamespace(_api_key="sk-chat-relay", _base_url="https://relay.example/v1")
     key, base = resolve_credentials(get_backend("fish"), chat_provider, {})
     assert key is None
     # ...and its base_url must not be borrowed either.
@@ -336,9 +379,7 @@ def test_openai_key_is_not_leaked_to_third_party_backend(monkeypatch) -> None:
     monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
     provider = SimpleNamespace(_api_key="sk-openai")
     # Even an explicitly bound adapter must not forward the OpenAI key.
-    key, _ = resolve_credentials(
-        get_backend("elevenlabs"), provider, {}, provider_is_bound=True
-    )
+    key, _ = resolve_credentials(get_backend("elevenlabs"), provider, {}, provider_is_bound=True)
     assert key is None
 
 
@@ -386,8 +427,11 @@ async def test_custom_backend_from_config_is_fully_usable(tmp_path) -> None:
     seen, transport = _capture()
     result = await synthesize(
         SynthesisRequest(
-            text="试听", backend="acme", params={"api_key": "tok"},
-            out_dir=tmp_path, transport=transport,
+            text="试听",
+            backend="acme",
+            params={"api_key": "tok"},
+            out_dir=tmp_path,
+            transport=transport,
         )
     )
     assert seen["url"] == "https://acme.test/say"
@@ -428,7 +472,7 @@ def test_reset_drops_custom_but_keeps_builtins() -> None:
 
 
 # --------------------------------------------------------------------------
-# GPT-Live
+# OpenAI Realtime
 # --------------------------------------------------------------------------
 
 
@@ -440,11 +484,11 @@ def test_live_base_url_strips_v1_suffix() -> None:
 
 
 def test_session_requests_audio_only_and_pins_voice() -> None:
-    session = build_session(model="gpt-live-1", voice="cove", instructions="慢一点")
+    session = build_session(model="gpt-realtime-2.1", voice="marin", instructions="慢一点")
     assert session["type"] == "realtime"
-    assert session["model"] == "gpt-live-1"
+    assert session["model"] == "gpt-realtime-2.1"
     assert session["output_modalities"] == ["audio"]
-    assert session["audio"]["output"]["voice"] == "cove"
+    assert session["audio"]["output"]["voice"] == "marin"
     # No mic is attached, so server VAD must be off or it waits forever.
     assert session["audio"]["input"]["turn_detection"] is None
     assert "verbatim" in session["instructions"]
@@ -460,6 +504,7 @@ def test_session_requests_audio_only_and_pins_voice() -> None:
             "live_attestation_unavailable",
         ),
         (404, {"error": {"message": "404 page not found"}}, "live_endpoint_missing"),
+        (405, {"error": {"message": "method not allowed"}}, "live_endpoint_missing"),
         (401, {"error": {"message": "bad key"}}, "live_http_status"),
     ],
 )
@@ -475,13 +520,16 @@ def test_answer_sdp_accepts_raw_and_json() -> None:
     assert "JSON" in _answer_sdp(wrapped)
 
 
-async def test_negotiate_falls_through_404_to_codex_alias() -> None:
+@pytest.mark.parametrize("missing_status", [404, 405])
+async def test_negotiate_falls_through_missing_routes_to_codex_alias(
+    missing_status: int,
+) -> None:
     tried: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         tried.append(request.url.path)
-        if request.url.path == "/v1/live":
-            return httpx.Response(404, text="404 page not found")
+        if request.url.path != "/backend-api/codex/realtime/calls":
+            return httpx.Response(missing_status, text="route not available")
         return httpx.Response(200, text="v=0\r\nANSWER\r\n")
 
     answer = await _negotiate(
@@ -492,7 +540,11 @@ async def test_negotiate_falls_through_404_to_codex_alias() -> None:
         timeout=5,
         transport=httpx.MockTransport(handler),
     )
-    assert tried == ["/v1/live", "/backend-api/codex/realtime/calls"]
+    assert tried == [
+        "/v1/realtime/calls",
+        "/v1/live",
+        "/backend-api/codex/realtime/calls",
+    ]
     assert "ANSWER" in answer
 
 
@@ -501,38 +553,106 @@ async def test_negotiate_reports_attestation_without_trying_alias() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         tried.append(request.url.path)
+        if request.url.path == "/v1/realtime/calls":
+            return httpx.Response(404, text="404 page not found")
         return httpx.Response(
             503, json={"error": {"message": "Live attestation is unavailable: macOS only"}}
         )
 
     with pytest.raises(SynthesisError) as excinfo:
         await _negotiate(
-            base_url="https://gw.test", api_key="k", offer_sdp="v=0\r\n",
-            session={}, timeout=5, transport=httpx.MockTransport(handler),
+            base_url="https://gw.test",
+            api_key="k",
+            offer_sdp="v=0\r\n",
+            session={},
+            timeout=5,
+            transport=httpx.MockTransport(handler),
         )
     assert excinfo.value.code == "live_attestation_unavailable"
     assert excinfo.value.status_code == 503
     # A non-404 is authoritative — no point retrying the other spelling.
-    assert tried == ["/v1/live"]
+    assert tried == ["/v1/realtime/calls", "/v1/live"]
 
 
-async def test_negotiate_sends_sdp_and_session_object() -> None:
+def _multipart_parts(request: httpx.Request) -> dict[str, bytes]:
+    """Parse an httpx multipart request with the stdlib MIME parser."""
+    content_type = request.headers["content-type"]
+    envelope = (
+        f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode() + request.content
+    )
+    message = BytesParser(policy=default).parsebytes(envelope)
+    return {
+        str(part.get_param("name", header="content-disposition")): part.get_payload(decode=True)
+        for part in message.iter_parts()
+    }
+
+
+async def test_negotiate_uses_official_multipart_contract() -> None:
     seen: dict[str, object] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        seen["body"] = json.loads(request.content)
+        seen["path"] = request.url.path
+        seen["parts"] = _multipart_parts(request)
+        seen["content_type"] = request.headers.get("content-type")
         seen["auth"] = request.headers.get("authorization")
+        return httpx.Response(201, text="v=0\r\nOK\r\n")
+
+    await _negotiate(
+        base_url="https://gw.test",
+        api_key="k",
+        offer_sdp="v=0\r\nOFFER\r\n",
+        session=build_session(model="gpt-realtime-2.1", voice="marin", instructions=None),
+        timeout=5,
+        transport=httpx.MockTransport(handler),
+    )
+    parts = seen["parts"]
+    assert seen["path"] == "/v1/realtime/calls"
+    assert str(seen["content_type"]).startswith("multipart/form-data; boundary=")
+    assert b"OFFER" in parts["sdp"]
+    session = json.loads(parts["session"])
+    assert session["model"] == "gpt-realtime-2.1"
+    assert session["audio"]["output"]["voice"] == "marin"
+    assert seen["auth"] == "Bearer k"
+
+
+async def test_negotiate_keeps_legacy_sub2api_json_contract() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/realtime/calls":
+            return httpx.Response(404, text="missing")
+        seen["path"] = request.url.path
+        seen["body"] = json.loads(request.content)
+        seen["content_type"] = request.headers.get("content-type")
         return httpx.Response(200, text="v=0\r\nOK\r\n")
 
     await _negotiate(
-        base_url="https://gw.test", api_key="k",
+        base_url="https://gw.test",
+        api_key="k",
         offer_sdp="v=0\r\nOFFER\r\n",
-        session=build_session(model="gpt-live-1", voice="cove", instructions=None),
-        timeout=5, transport=httpx.MockTransport(handler),
+        session={"type": "realtime", "model": "legacy"},
+        timeout=5,
+        transport=httpx.MockTransport(handler),
     )
-    assert "OFFER" in seen["body"]["sdp"]
-    assert isinstance(seen["body"]["session"], dict)
-    assert seen["auth"] == "Bearer k"
+    assert seen["path"] == "/v1/live"
+    assert seen["content_type"] == "application/json"
+    assert seen["body"] == {
+        "sdp": "v=0\r\nOFFER\r\n",
+        "session": {"type": "realtime", "model": "legacy"},
+    }
+
+
+async def test_probe_accepts_official_invalid_sdp_as_capability_proof() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/realtime/calls"
+        return httpx.Response(400, json={"error": {"message": "invalid SDP offer"}})
+
+    error = await probe_live_endpoint(
+        base_url="https://api.openai.test",
+        api_key="k",
+        transport=httpx.MockTransport(handler),
+    )
+    assert error is None
 
 
 async def test_gpt_live_without_aiortc_degrades_precisely(tmp_path, monkeypatch) -> None:
@@ -545,7 +665,9 @@ async def test_gpt_live_without_aiortc_degrades_precisely(tmp_path, monkeypatch)
     with pytest.raises(SynthesisError) as excinfo:
         await synthesize(
             SynthesisRequest(
-                text="hi", backend="gpt_live", params={"api_key": "k"},
+                text="hi",
+                backend="gpt_live",
+                params={"api_key": "k"},
                 out_dir=tmp_path,
             )
         )

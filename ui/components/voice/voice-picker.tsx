@@ -22,7 +22,7 @@ interface VoicePickerProps {
  * Voice selector for one backend.
  *
  * Two shapes, chosen by the backend rather than by id — a catalog
- * backend (GPT-Live, OpenAI, Gemini) renders selectable cards, while a
+ * backend (OpenAI Realtime, OpenAI, Gemini) renders selectable cards, while a
  * clone backend (`free_form_voices`: Fish, ElevenLabs, MiniMax) has no
  * fixed catalog and gets a free-text field for the handle. Anything the
  * server adds later, including operator-defined backends, lands in one

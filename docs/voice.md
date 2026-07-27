@@ -21,7 +21,7 @@ UI 里完全平级，都有试听、都能被渠道使用。
 
 | id | 传输 | 说明 |
 | --- | --- | --- |
-| `gpt_live` | WebRTC | GPT-Live 实时模型（`gpt-live-1` / `gpt-live-1-mini`），9 个音色 |
+| `gpt_live` | WebRTC | OpenAI Realtime（`gpt-realtime-2.1` / `gpt-realtime-2.1-mini`），10 个音色 |
 | `openai` | HTTP | `/v1/audio/speech`，13 个音色，兼容任何 OpenAI 形状的中转 |
 | `fish` | HTTP | Fish Audio，音色 = `reference_id`（声音克隆句柄） |
 | `elevenlabs` | HTTP | 音色 = `voice_id`，走 path 占位符 |
@@ -32,7 +32,7 @@ UI 里完全平级，都有试听、都能被渠道使用。
 
 - `kind = "http"` —— 一次请求拿到音频（响应体是音频，或音频是 JSON 里的
   base64 字段）。
-- `kind = "webrtc_live"` —— GPT-Live 的实时会话，见 §4。
+- `kind = "webrtc_live"` —— OpenAI Realtime 的 WebRTC 会话，见 §4。
 
 ## 2. 接入自定义 TTS
 
@@ -98,19 +98,23 @@ base_url = "https://your-relay.example.com/v1"
 **一条硬性保护**：如果 adapter 的 key 和 `OPENAI_API_KEY` 完全相同，而目标
 后端不是 OpenAI 系，则**不借用** —— 避免把 OpenAI 凭据泄漏给第三方主机。
 
-## 4. GPT-Live（WebRTC）
+## 4. OpenAI Realtime（WebRTC）
 
-GPT-Live 没有 REST 语音端点，唯一通道是 WebRTC 会话。网关把它暴露成一次
-SDP offer/answer 交换：
+Realtime 模型没有一次请求返回音频文件的 REST 端点，而是通过 WebRTC 会话
+返回音轨。官方 API 使用 multipart SDP offer/answer 交换：
 
 ```
-POST {base_url}/v1/live
-{"sdp": "<offer sdp>", "session": { ...realtime session json... }}
-  -> "<answer sdp>"   （裸 SDP）或 {"sdp": "<answer sdp>"}（JSON）
+POST {base_url}/v1/realtime/calls
+Authorization: Bearer <standard OpenAI API key>
+multipart/form-data:
+  sdp      (application/sdp)
+  session  (application/json)
+  -> 201 + 裸 answer SDP
 ```
 
-Codex 风格的别名 `POST /backend-api/codex/realtime/calls` 请求体完全相同，
-代码会依次尝试两个路径（前者 404 才继续）。
+corlinman 仍兼容旧 Sub2API：官方路径返回 404/405 时，再尝试 JSON
+`POST /v1/live` 和 `POST /backend-api/codex/realtime/calls`。除此以外的错误
+不会被回退掩盖。
 
 合成流程：开会话 → 推一条用户消息 → 请求一次纯音频回复 → 录制入站音轨 →
 拆会话。本地永远不挂麦克风（transceiver 是 `recvonly`，且
@@ -120,36 +124,27 @@ Codex 风格的别名 `POST /backend-api/codex/realtime/calls` 请求体完全�
 
 - **可选依赖 `aiortc`**：`uv sync --extra voice`（仓库根目录即可）。没装时返回
   `gpt_live_dependency_missing`，不会在启动时炸。
-- **网关必须能做 Live attestation**。这是 Sub2API 侧的硬性条件，源码里是
-  编译期分支（`liveattestation/attestation_darwin.go` vs
-  `attestation_unsupported.go`），三条同时满足才行：
+- **官方 OpenAI API 不需要 macOS 伪装或 ChatGPT.app attestation**。标准 API
+  key 可在任意服务端平台调用 `/v1/realtime/calls`。默认
+  `base_url = "https://api.openai.com/v1"`，也可指向实现同一协议的中转。
+- **旧 Sub2API `/v1/live` 仍受其 DeviceCheck 限制**：如果该中转返回
+  `live_attestation_unavailable`，伪造 User-Agent、`runtime.GOOS` 或系统字段
+  都无效，因为凭据由 Apple DeviceCheck 签发。应升级中转以支持官方 Realtime
+  API，或直接为 `gpt_live` 配置标准 OpenAI API key；corlinman 不绕过该门禁。
 
-  1. Sub2API **跑在 macOS 上**（非 darwin 一律编译进 unsupported 分支）；
-  2. **Apple Silicon**——`runtime.GOARCH != "arm64"` 直接报
-     *"live attestation currently requires Apple Silicon"*；
-  3. 该机器上装有**官方 ChatGPT.app**（`/Applications/ChatGPT.app` 或
-     `~/Applications/ChatGPT.app`）——attestation 取自该 app 的 Apple
-     DeviceCheck 凭证。
+管理界面的轻量探测会先试官方 multipart 路径。官方端点对占位 SDP 返回
+400/422，说明路由和鉴权已通过，因此探测视为可用；401/403、网络错误以及旧
+Sub2API 的 attestation 503 仍会原样显示。
 
-  任一不满足时返回：
+corlinman 的 WebRTC 链路有回环测试覆盖（`test_gpt_live_webrtc_loopback.py`：
+真实 aiortc 对端接收官方 multipart 请求、应答 SDP、推音轨并录出可播放文件）。
 
-  ```
-  503 {"error":{"message":"Live attestation is unavailable: live attestation
-       is only supported when Sub2API runs on macOS; ..."}}
-  ```
-
-  这个门禁在校验 SDP 和模型 id **之前**触发，所以管理界面的试听会先做一次
-  轻量探测（`probe_live_endpoint`），直接告诉你"网关无法 attest"，而不是让
-  你先去装 `aiortc` 再发现一样跑不通。
-
-  换言之：**部署在 Linux VPS 上的 Sub2API 永远无法提供 GPT-Live**。要用它，
-  需要在一台装了 ChatGPT.app 的 Apple Silicon Mac 上跑一个 Sub2API 实例，
-  并把 `[voice.backends.gpt_live].base_url` 指向它。corlinman 这一侧的 WebRTC
-  链路已有回环测试覆盖（`test_gpt_live_webrtc_loopback.py`：真实 aiortc 对端
-  应答 SDP、推音轨、录出可播放文件），所以剩下的唯一变量就是网关。
-
-错误码：`live_attestation_unavailable` / `live_endpoint_missing` /
-`live_http_status` / `live_timeout` / `gpt_live_dependency_missing`。
+错误码：`gpt_live_dependency_missing`（本地没装 aiortc）/
+`live_attestation_unavailable`（旧 Sub2API 的平台门禁）/ `live_endpoint_missing`
+（三条路径都不存在）/ `live_unreachable`（连不上）/ `live_http_status`（其余
+HTTP 失败，带上游状态码）/ `live_bad_response`（answer SDP 为空）/
+`live_session_error`（会话内 error 事件）/ `live_timeout` /
+`live_empty`（会话结束但没录到音频）。
 
 ## 5. 管理接口
 
@@ -191,7 +186,8 @@ Auth），前端 `<audio src>` 带 cookie 即可播放。
 音色**按所选后端校验**，不再全局硬编码。未知 id 会回退到该后端默认音色；
 克隆型后端（Fish / ElevenLabs / MiniMax）没有固定音色表，任何非空值原样透传。
 
-- GPT-Live（9 个）：Arbor、Breeze、Cove、Ember、Juniper、Maple、Sol、Spruce、Vale
+- OpenAI Realtime（10 个）：Marin、Cedar、Alloy、Ash、Ballad、Coral、Echo、
+  Sage、Shimmer、Verse（官方推荐 Marin / Cedar）
 - OpenAI（13 个）：Marin、Cedar（新一代，推荐）+ Alloy、Ash、Ballad、Coral、
   Echo、Fable、Nova、Onyx、Sage、Shimmer、Verse
 

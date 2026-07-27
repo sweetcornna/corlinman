@@ -25,7 +25,7 @@ describe("listVoiceBackends", () => {
       vi.fn(async () =>
         jsonResponse(200, {
           backends: [
-            { id: "gpt_live", label: "GPT-Live", kind: "webrtc_live", custom: false },
+            { id: "gpt_live", label: "OpenAI Realtime", kind: "webrtc_live", custom: false },
             { id: "acme", label: "Acme", kind: "http", custom: true },
           ],
           formats: { mp3: "audio/mpeg" },
@@ -49,11 +49,11 @@ describe("putVoiceSettings", () => {
         return jsonResponse(200, { status: "ok" });
       }),
     );
-    await putVoiceSettings({ backend: "gpt_live", voice: "cove" });
+    await putVoiceSettings({ backend: "gpt_live", voice: "marin" });
     expect(calls[0].method).toBe("PUT");
     expect(JSON.parse(String(calls[0].body))).toEqual({
       backend: "gpt_live",
-      voice: "cove",
+      voice: "marin",
     });
   });
 

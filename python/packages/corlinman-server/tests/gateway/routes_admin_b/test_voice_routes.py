@@ -8,7 +8,7 @@ Pins the contract the voice settings page depends on:
 * secrets round-trip as ``***REDACTED***`` — the UI never holds plaintext
   and never blanks a stored key by echoing the sentinel back;
 * preview returns a playable ``/v1/files`` url, and a provider failure
-  surfaces the upstream code (notably GPT-Live's attestation 503) instead
+  surfaces the upstream code (notably a legacy Sub2API attestation 503) instead
   of a blind 500.
 
 Same fixture pattern as ``test_credentials.py`` — mount just this router,
@@ -124,8 +124,21 @@ def test_catalog_exposes_voice_metadata_for_the_picker(client: TestClient) -> No
     live = backends["gpt_live"]
     assert live["kind"] == "webrtc_live"
     assert {v["id"] for v in live["voices"]} == {
-        "arbor", "breeze", "cove", "ember", "juniper",
-        "maple", "sol", "spruce", "vale",
+        "alloy",
+        "ash",
+        "ballad",
+        "cedar",
+        "coral",
+        "echo",
+        "marin",
+        "sage",
+        "shimmer",
+        "verse",
+    }
+    assert live["default_voice"] == "marin"
+    assert {v["id"] for v in live["voices"] if v["recommended"]} == {
+        "marin",
+        "cedar",
     }
     assert live["supports_instructions"] is True
 
@@ -186,9 +199,7 @@ def test_credential_set_reflects_config_and_env(
     monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
     monkeypatch.delenv("FISH_AUDIO_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    _set_snapshot(
-        admin_state, {"voice": {"backends": {"fish": {"api_key": "fk-1"}}}}
-    )
+    _set_snapshot(admin_state, {"voice": {"backends": {"fish": {"api_key": "fk-1"}}}})
     backends = {b["id"]: b for b in client.get("/admin/voice/backends").json()["backends"]}
     assert backends["fish"]["credential_set"] is True
     assert backends["elevenlabs"]["credential_set"] is False
@@ -218,12 +229,10 @@ def test_openai_backend_can_ride_the_configured_chat_provider(
 # ---------------------------------------------------------------------------
 
 
-def test_put_settings_persists_and_round_trips(
-    client: TestClient, admin_state: AdminState
-) -> None:
+def test_put_settings_persists_and_round_trips(client: TestClient, admin_state: AdminState) -> None:
     resp = client.put(
         "/admin/voice/settings",
-        json={"backend": "gpt-live", "voice": "cove", "format": "mp3", "enabled": True},
+        json={"backend": "gpt-live", "voice": "marin", "format": "mp3", "enabled": True},
     )
     assert resp.status_code == 200
     _reload(admin_state)
@@ -231,11 +240,11 @@ def test_put_settings_persists_and_round_trips(
     on_disk = tomllib.loads(admin_state.config_path.read_text(encoding="utf-8"))
     # The alias spelling is folded on write, so config stays canonical.
     assert on_disk["voice"]["backend"] == "gpt_live"
-    assert on_disk["voice"]["voice"] == "cove"
+    assert on_disk["voice"]["voice"] == "marin"
 
     got = client.get("/admin/voice/settings").json()
     assert got["backend"] == "gpt_live"
-    assert got["voice"] == "cove"
+    assert got["voice"] == "marin"
 
 
 def test_put_rejects_unknown_format(client: TestClient) -> None:
