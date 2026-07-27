@@ -157,17 +157,22 @@ async def test_child_executor_refuses_exit_plan_mode() -> None:
     assert resolver.reset_calls == 0
 
 
-async def test_dispatch_resets_app_state_resolver_too() -> None:
-    """The approval gate can source its resolver from EITHER
-    ``set_approval_resolver`` or ``app_state.approval_resolver`` (CMP-04
-    fallback) — the plan-boundary reset must cover both so a gateway-side
-    resolver can't dodge the Codex #104 rule."""
+async def test_dispatch_ignores_app_state_resolver_field() -> None:
+    """W3-1 / C8: ``set_approval_resolver`` is the ONLY resolver source —
+    the old ``app_state.approval_resolver`` fallback was dead code (the
+    gateway AppState never carried the field, fact M4; the embedded
+    console wires the servicer explicitly, console/app.py). Pin the
+    removal: a stray ``approval_resolver`` attribute on app_state is
+    neither consulted nor reset, while the explicitly-injected resolver
+    still gets its Codex #104 plan-boundary reset."""
     servicer = _servicer()
     servicer.set_permission_mode("plan")
-    app_resolver = _RecordingResolver()
+    injected = _RecordingResolver()
+    servicer.set_approval_resolver(injected)
+    stray = _RecordingResolver()
 
     class _AppState:
-        approval_resolver = app_resolver
+        approval_resolver = stray
 
     servicer.set_app_state(_AppState())
 
@@ -178,4 +183,5 @@ async def test_dispatch_resets_app_state_resolver_too() -> None:
 
     assert payload["status"] == "ok"
     assert servicer.get_permission_mode() == "default"
-    assert app_resolver.reset_calls == 1
+    assert injected.reset_calls == 1  # the real source is reset…
+    assert stray.reset_calls == 0  # …the dead-path field is ignored (C8)
