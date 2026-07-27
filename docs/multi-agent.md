@@ -179,7 +179,9 @@ registry** (it's an ephemeral `AgentCard` with `source="inline"`, `source_path=N
   "name": "subagent_spawn_inline",
   "parameters": {
     "goal": str,                  # required — the child's only user-turn
-    "system_prompt": str,         # required — the temporary agent's instructions/persona
+    "system_prompt": str,         # required — ADDED to the fixed behavioural
+                                  # baseline (see "Behavioural baseline" below);
+                                  # it cannot relax or replace those rules
     "name": str?,                 # optional slug (a-z0-9-) for the activity panel; default "inline"
     "description": str?,          # 3-5 word task label for UI
     "tool_allowlist": list[str]?, # subset of the PARENT's tools (omit = inherit all, [] = pure LLM)
@@ -329,6 +331,29 @@ API callers (Python SDK, `curl`) can pin the same way by passing
 ---
 
 ## Caps and safety
+
+### Behavioural baseline
+
+Every child — registry spawn, `spawn_many`, `spawn_inline`, and background
+dispatch alike — runs under a **non-overridable behavioural floor**
+(`SUBAGENT_BASELINE_PROMPT` in
+`corlinman_agent/subagent/runner.py`), prepended as the first block of the
+child's system message by `_build_child_messages` (the single choke point
+all spawn paths share). It encodes the subset of the main agent's rules
+that protects the caller: truthful reporting, verify-before-done,
+read-before-edit, scope discipline, and a hard stop on irreversible
+actions (a child has no channel to ask for sign-off, so it must never
+need one).
+
+The card's own `system_prompt` — including a model-authored
+`spawn_inline` prompt — lands **after** the baseline and is additive:
+it can specialise the child but cannot relax or replace the floor.
+There is deliberately no config switch to disable it. One side effect:
+`TurnStart.system_message_preview` (a 200-char prefix) now shows the
+baseline for every child rather than the per-card persona — same
+trade-off the main agent already makes with `_CODING_SYSTEM_PROMPT`.
+
+### Supervisor caps
 
 Supervisor caps live in
 `python/packages/corlinman-subagent/src/corlinman_subagent/supervisor.py`:
