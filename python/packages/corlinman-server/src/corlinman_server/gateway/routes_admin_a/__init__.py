@@ -50,6 +50,9 @@ from corlinman_server.gateway.routes_admin_a import (
     channels as _channels,
 )
 from corlinman_server.gateway.routes_admin_a import (
+    oidc as _oidc,
+)
+from corlinman_server.gateway.routes_admin_a import (
     password_reset as _password_reset,
 )
 from corlinman_server.gateway.routes_admin_a import (
@@ -107,6 +110,7 @@ def build_router() -> APIRouter:
         _authz_grants,
         _channels,
         _identity,
+        _oidc,
         _password_reset,
         _personas,
         _profiles,

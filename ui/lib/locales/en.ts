@@ -61,6 +61,13 @@ export const en = {
     submit: "Sign in",
     submitting: "Signing in...",
     invalidCredentials: "Invalid username or password",
+    ssoSignIn: "Sign in with SSO",
+    oidcFailed: "SSO sign-in failed. Try again or use password sign-in.",
+    oidcErrors: {
+      email_not_allowed: "This account is not on the SSO allowlist.",
+      state_mismatch: "SSO session expired or was tampered with — try again.",
+      discovery_failed: "The identity provider is unreachable right now.",
+    },
     adminNotConfigured: "Admin credentials not configured (config.toml [admin])",
     sessionHint: "Session stored securely — verified server-side.",
     forgotPassword: "Forgot password?",

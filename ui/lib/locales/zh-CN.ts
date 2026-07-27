@@ -63,6 +63,13 @@ export const zhCN = {
     submit: "登录",
     submitting: "登录中...",
     invalidCredentials: "用户名或密码错误",
+    ssoSignIn: "使用 SSO 登录",
+    oidcFailed: "SSO 登录失败，请重试或改用密码登录。",
+    oidcErrors: {
+      email_not_allowed: "该账号不在 SSO 白名单内。",
+      state_mismatch: "SSO 会话已过期或被篡改，请重新发起登录。",
+      discovery_failed: "身份提供方暂时不可达。",
+    },
     adminNotConfigured: "管理员凭据未配置 (config.toml [admin])",
     sessionHint: "会话安全存储，服务端加密校验。",
     forgotPassword: "忘记密码？",

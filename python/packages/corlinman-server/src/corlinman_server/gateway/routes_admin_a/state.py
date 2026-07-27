@@ -100,6 +100,13 @@ class AdminState:
     # CIDR list of reverse proxies allowed to supply ``X-Forwarded-Proto``;
     # wired from ``[server].trusted_forwarded_proto_proxies``.
     trusted_forwarded_proto_proxies: tuple[str, ...] = ()
+    # Resolved ``[auth.oidc]`` settings (an ``oidc.OidcSettings``
+    # instance) for the inbound SSO login flow (G3). ``None`` → OIDC is
+    # not configured; the ``/auth/oidc/*`` routes answer with their
+    # "disabled" envelopes and the login page hides the SSO button.
+    # Typed loose (``Any``) to keep this dataclass importable without
+    # dragging the oidc module into every test's import graph.
+    oidc_settings: Any | None = None
 
     # -- /admin/approvals --------------------------------------------
     #

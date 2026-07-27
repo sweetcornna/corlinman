@@ -57,6 +57,11 @@ dependencies = [
     "corlinman-providers",
     "corlinman-grpc",
     "corlinman-hooks",
+    # Inbound OIDC SSO login (G3): the /auth/oidc/callback route
+    # verifies the IdP-issued id_token signature (JWKS / RS256-family)
+    # before minting an admin session. [crypto] pulls `cryptography`
+    # for the asymmetric algorithms; HS* is deliberately never used.
+    "pyjwt[crypto]>=2.9",
     "corlinman-replay",
     "corlinman-channels",
     "corlinman-content-policy",
