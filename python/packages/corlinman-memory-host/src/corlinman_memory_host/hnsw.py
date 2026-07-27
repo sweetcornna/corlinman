@@ -37,6 +37,7 @@ from __future__ import annotations
 import heapq
 import math
 import random
+from array import array
 from collections.abc import Sequence
 
 #: Max links per node on the upper layers (layer 0 gets ``2 * M``) — the
@@ -83,7 +84,10 @@ class HnswIndex:
         self._ml = 1.0 / math.log(self._m)
         self._rng = random.Random(seed)
         # Parallel per-node arrays (internal node id = list index).
-        self._vectors: list[tuple[float, ...]] = []
+        # ``array('f')`` — 4 bytes/dim, same layout as the SQLite BLOBs;
+        # tuples of boxed floats cost ~8x more RSS (review fix: at
+        # dim=1536 the tuple graph measured ~50 KB per chunk).
+        self._vectors: list[array] = []
         self._external_ids: list[int] = []
         self._id_to_node: dict[int, int] = {}
         # node -> level -> list of neighbour node ids. A node's list has
@@ -108,16 +112,16 @@ class HnswIndex:
     # ---- distances ---------------------------------------------------------
 
     @staticmethod
-    def _normalize(vector: Sequence[float]) -> tuple[float, ...] | None:
+    def _normalize(vector: Sequence[float]) -> array | None:
         norm_sq = 0.0
         for x in vector:
             norm_sq += x * x
         if norm_sq <= 0.0 or not math.isfinite(norm_sq):
             return None
         inv = 1.0 / math.sqrt(norm_sq)
-        return tuple(x * inv for x in vector)
+        return array("f", (x * inv for x in vector))
 
-    def _dist(self, node: int, q: tuple[float, ...]) -> float:
+    def _dist(self, node: int, q: array) -> float:
         """Cosine distance between stored ``node`` and normalized ``q``."""
         dot = 0.0
         for x, y in zip(self._vectors[node], q, strict=True):
@@ -175,7 +179,7 @@ class HnswIndex:
             self._entry = node
         return True
 
-    def _greedy_closest(self, q: tuple[float, ...], ep: int, level: int) -> int:
+    def _greedy_closest(self, q: array, ep: int, level: int) -> int:
         best = ep
         best_d = self._dist(ep, q)
         improved = True
@@ -191,7 +195,7 @@ class HnswIndex:
 
     def _search_layer(
         self,
-        q: tuple[float, ...],
+        q: array,
         entry_point: int,
         ef: int,
         level: int,
@@ -222,7 +226,7 @@ class HnswIndex:
 
     def _select_neighbors(
         self,
-        q: tuple[float, ...],
+        q: array,
         candidates: list[tuple[float, int]],
         m: int,
     ) -> list[tuple[float, int]]:

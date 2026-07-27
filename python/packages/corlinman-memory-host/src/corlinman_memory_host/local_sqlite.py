@@ -163,6 +163,11 @@ class _AnnScope:
     dim: int
     known_max_id: int
     stale_writes: int = 0
+    #: Incremental inserts parked by the WRITE path (append-only, cheap)
+    #: and drained into the graph off-loop before an ANN search — a
+    #: single pure-Python ``index.add`` costs tens of ms at real
+    #: embedding dims, far too much for the ingest hot path (review fix).
+    pending: list[tuple[int, bytes]] = field(default_factory=list)
 
 
 def _cfg_float(raw: Any, *, default: float, minimum: float = 0.0) -> float:
@@ -336,6 +341,9 @@ class _SqliteStore:
         # rebuilds on the first dense query. Empty until the first
         # ANN-enabled query over a large-enough scope.
         self._ann_scopes: dict[str | None, _AnnScope] = {}
+        #: At-most-one in-flight background index build (review fix: the
+        #: build runs off-loop; queries brute-scan until it lands).
+        self._ann_build_task: asyncio.Task[None] | None = None
 
     @classmethod
     async def open(cls, path: str | Path) -> _SqliteStore:
@@ -545,31 +553,43 @@ class _SqliteStore:
         mismatches are skipped), so a stale graph entry can only cost
         recall — never surface a deleted chunk or an outdated score.
         """
+        # Review fix: ONE global index only. Per-namespace scopes doubled
+        # (or worse) the resident vector copies; namespaced recalls are
+        # typically small collections where the brute scan is already
+        # exact and fast — they simply stay on it.
+        if namespace is not None:
+            return None
         try:
             sql = (
                 "SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS max_id "
                 "FROM chunks WHERE vector IS NOT NULL"
             )
-            params: tuple[Any, ...] = ()
-            if namespace is not None:
-                sql += " AND namespace = ?"
-                params = (namespace,)
-            async with self._conn.execute(sql, params) as cur:
+            async with self._conn.execute(sql) as cur:
                 row = await cur.fetchone()
             count = int(row["n"]) if row is not None else 0
             db_max_id = int(row["max_id"]) if row is not None else 0
             if count == 0 or count < ann_min_chunks:
                 return None
-            scope = self._ann_scopes.get(namespace)
+            scope = self._ann_scopes.get(None)
             if scope is not None and self._ann_scope_stale(
-                scope, query_dim=len(query), db_max_id=db_max_id
+                scope, query_dim=len(query), db_max_id=db_max_id, db_count=count
             ):
+                self._ann_scopes.pop(None, None)
                 scope = None
             if scope is None:
-                scope = await self._ann_build_scope(
-                    namespace, dim=len(query), db_max_id=db_max_id
-                )
-                self._ann_scopes[namespace] = scope
+                # Review fix: the build runs OFF-loop in a background
+                # task — the old inline build blocked the event loop in
+                # multi-second chunks (measured 67 s total at dim=1536,
+                # n=1000). This query — and every query until the build
+                # lands — answers via the exact brute scan.
+                self._ann_spawn_build(dim=len(query), db_max_id=db_max_id)
+                return None
+            if scope.pending:
+                # Drain parked inserts off-loop before searching; the
+                # drain is awaited by THIS query only (loop stays free).
+                batch = scope.pending
+                scope.pending = []
+                await asyncio.to_thread(self._ann_drain_batch, scope, batch)
             # Over-fetch by the stale-write count: deleted / re-embedded
             # rows may occupy candidate slots and then be dropped or
             # re-ranked by the live re-score below.
@@ -597,47 +617,71 @@ class _SqliteStore:
 
     @staticmethod
     def _ann_scope_stale(
-        scope: _AnnScope, *, query_dim: int, db_max_id: int
+        scope: _AnnScope, *, query_dim: int, db_max_id: int, db_count: int
     ) -> bool:
         """Coarse-grained invalidation — see :class:`_AnnScope`."""
         if scope.dim != query_dim:
             return True  # embedding-model swap: the fixed-dim graph is dead
         if db_max_id > scope.known_max_id:
             return True  # rows written behind our back (another process)
+        # Review fix: external deletes / re-embeds leave MAX(id) intact —
+        # the row COUNT dropping below what the graph accounts for is the
+        # free signal the old check ignored.
+        accounted = len(scope.index) + len(scope.pending) - scope.stale_writes
+        if db_count < accounted:
+            return True
         threshold = max(_ANN_STALE_REBUILD_MIN, len(scope.index) // 10)
         return scope.stale_writes > threshold
 
-    async def _ann_build_scope(
-        self, namespace: str | None, *, dim: int, db_max_id: int
-    ) -> _AnnScope:
-        """Full index build from the ``vector`` column (in-memory only,
-        never persisted). Rows that the brute scan would skip — NULL,
-        undecodable, or dimension-mismatched blobs — are skipped here too,
-        so the candidate universe matches the brute path exactly. Yields
-        to the event loop periodically: a build over thousands of chunks
-        takes a while in pure Python and must not starve the process."""
-        sql = "SELECT id, vector FROM chunks WHERE vector IS NOT NULL"
-        params: tuple[Any, ...] = ()
-        if namespace is not None:
-            sql += " AND namespace = ?"
-            params = (namespace,)
-        async with self._conn.execute(sql, params) as cur:
-            rows = await cur.fetchall()
-        index = HnswIndex(dim)
-        for i, r in enumerate(rows):
-            vector = unpack_vector(r["vector"])
-            if vector is None or len(vector) != dim:
+    def _ann_spawn_build(self, *, dim: int, db_max_id: int) -> None:
+        """Kick the global index build as a background task (at most one
+        in flight). The graph construction — the CPU-heavy part — runs in
+        a worker thread via ``asyncio.to_thread``; queries keep answering
+        via the brute scan until the built scope is installed."""
+        task = self._ann_build_task
+        if task is not None and not task.done():
+            return
+
+        async def _build() -> None:
+            try:
+                sql = "SELECT id, vector FROM chunks WHERE vector IS NOT NULL"
+                async with self._conn.execute(sql) as cur:
+                    rows = await cur.fetchall()
+                pairs = [(int(r["id"]), bytes(r["vector"])) for r in rows]
+
+                def _construct() -> HnswIndex:
+                    index = HnswIndex(dim)
+                    for chunk_id, blob in pairs:
+                        vector = unpack_vector(blob)
+                        if vector is None or len(vector) != dim:
+                            continue
+                        index.add(chunk_id, vector)
+                    return index
+
+                index = await asyncio.to_thread(_construct)
+                self._ann_scopes[None] = _AnnScope(
+                    index=index, dim=dim, known_max_id=db_max_id
+                )
+                logger.info(
+                    "memory.ann.index_built: dim=%d size=%d", dim, len(index)
+                )
+            except Exception as exc:  # noqa: BLE001 — brute keeps serving
+                logger.warning("memory.ann.build_failed: %s", exc)
+
+        self._ann_build_task = asyncio.get_running_loop().create_task(_build())
+
+    @staticmethod
+    def _ann_drain_batch(
+        scope: _AnnScope, batch: list[tuple[int, bytes]]
+    ) -> None:
+        """Off-loop drain of parked incremental inserts (worker thread)."""
+        for chunk_id, blob in batch:
+            vector = unpack_vector(blob)
+            if vector is None:
                 continue
-            index.add(int(r["id"]), vector)
-            if i % 256 == 255:
-                await asyncio.sleep(0)
-        logger.info(
-            "memory.ann.index_built: namespace=%s dim=%d size=%d",
-            namespace,
-            dim,
-            len(index),
-        )
-        return _AnnScope(index=index, dim=dim, known_max_id=db_max_id)
+            scope.index.add(chunk_id, vector)
+            if chunk_id > scope.known_max_id:
+                scope.known_max_id = chunk_id
 
     def _ann_note_insert(
         self, chunk_id: int, vector: bytes | None, namespace: str
@@ -647,18 +691,19 @@ class _SqliteStore:
         no index). ``HnswIndex.add`` returns ``False`` on a dimension
         mismatch or degenerate vector — rows the brute scan skips too, so
         silently leaving them out of the graph is consistent."""
-        if not self._ann_scopes or vector is None:
+        if vector is None:
             return
-        decoded = unpack_vector(vector)
-        if decoded is None:
+        scope = self._ann_scopes.get(None)
+        if scope is None:
             return
-        for key in {None, namespace}:
-            scope = self._ann_scopes.get(key)
-            if scope is None:
-                continue
-            scope.index.add(chunk_id, decoded)
-            if chunk_id > scope.known_max_id:
-                scope.known_max_id = chunk_id
+        # Cheap append only (review fix): a synchronous ``index.add`` on
+        # the write path cost tens of ms per chunk under the store lock.
+        # The parked pair is drained into the graph off-loop by the next
+        # ANN query. known_max_id advances NOW so the external-write
+        # staleness check doesn't misfire on our own insert.
+        scope.pending.append((chunk_id, bytes(vector)))
+        if chunk_id > scope.known_max_id:
+            scope.known_max_id = chunk_id
 
     def _ann_note_vector_update(
         self, chunk_id: int, vector: bytes | None, namespace: str
@@ -668,19 +713,15 @@ class _SqliteStore:
         → count a stale write; the live re-score hides the staleness until
         the rebuild threshold trips. A chunk NOT in the graph (backfill
         stamping a NULL row) becomes an incremental insert."""
-        if not self._ann_scopes:
+        scope = self._ann_scopes.get(None)
+        if scope is None:
             return
-        decoded = unpack_vector(vector) if vector is not None else None
-        for key in {None, namespace}:
-            scope = self._ann_scopes.get(key)
-            if scope is None:
-                continue
-            if chunk_id in scope.index:
-                scope.stale_writes += 1
-            elif decoded is not None:
-                scope.index.add(chunk_id, decoded)
-                if chunk_id > scope.known_max_id:
-                    scope.known_max_id = chunk_id
+        if chunk_id in scope.index:
+            scope.stale_writes += 1
+        elif vector is not None:
+            scope.pending.append((chunk_id, bytes(vector)))
+            if chunk_id > scope.known_max_id:
+                scope.known_max_id = chunk_id
 
     def _ann_note_delete(self, chunk_id: int) -> None:
         """Bookkeeping after a chunk DELETE: the graph entry dangles (it

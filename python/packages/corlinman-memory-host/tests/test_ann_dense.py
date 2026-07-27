@@ -70,6 +70,17 @@ async def test_below_min_chunks_ann_is_byte_identical_to_brute(
         await store.close()
 
 
+
+
+async def _prime_ann(store: Any, probe: list[float], *, min_chunks: int = 1) -> None:
+    """New build contract: the first ANN-eligible query answers via brute
+    and SPAWNS the off-loop build — await the task so follow-up
+    assertions see the installed scope."""
+    await store.search_dense(probe, 5, ann_enabled=True, ann_min_chunks=min_chunks)
+    task = store._ann_build_task
+    if task is not None:
+        await task
+
 @pytest.mark.asyncio
 async def test_ann_candidates_match_brute_on_modest_corpus(tmp_path: Path) -> None:
     store = await _open_store(tmp_path, "modest")
@@ -78,6 +89,7 @@ async def test_ann_candidates_match_brute_on_modest_corpus(tmp_path: Path) -> No
         ids = await _seed_chunks(store, vectors)
         query = _random_vectors(1, _DIM, seed=4)[0]
         brute = await store.search_dense(query, 10)
+        await _prime_ann(store, query)
         ann = await store.search_dense(
             query, 10, ann_enabled=True, ann_min_chunks=1
         )
@@ -109,7 +121,7 @@ async def test_incremental_insert_searchable_without_rebuild(tmp_path: Path) -> 
         await _seed_chunks(store, _random_vectors(60, _DIM, seed=5))
         probe = [0.0] * _DIM
         probe[0] = 1.0
-        await store.search_dense(probe, 5, ann_enabled=True, ann_min_chunks=1)
+        await _prime_ann(store, probe)
         scope = store._ann_scopes[None]
         built_index = scope.index
         size_before = len(built_index)
@@ -139,14 +151,18 @@ async def test_backfill_stamp_becomes_incremental_insert(tmp_path: Path) -> None
         null_id = await store.insert_chunk(file_id, 0, "vectorless", None, "general")
         probe = [0.0] * _DIM
         probe[-1] = 1.0
-        await store.search_dense(probe, 5, ann_enabled=True, ann_min_chunks=1)
+        await _prime_ann(store, probe)
         scope = store._ann_scopes[None]
         assert null_id not in scope.index
         await store.update_chunk_vector(null_id, pack_vector(probe))
-        assert null_id in scope.index
+        # Review-fix contract: the write path only PARKS the insert (a
+        # sync graph add cost tens of ms under the store lock); the next
+        # ANN query drains it off-loop.
+        assert any(cid == null_id for cid, _ in scope.pending)
         assert scope.stale_writes == 0
         hits = await store.search_dense(probe, 1, ann_enabled=True, ann_min_chunks=1)
         assert hits and hits[0][0] == null_id
+        assert null_id in scope.index  # drained by the query above
     finally:
         await store.close()
 
@@ -165,7 +181,7 @@ async def test_deleted_chunk_never_surfaces_from_stale_index(tmp_path: Path) -> 
         vectors = _random_vectors(50, _DIM, seed=7)
         vectors[10] = probe
         ids = await _seed_chunks(store, vectors)
-        await store.search_dense(probe, 5, ann_enabled=True, ann_min_chunks=1)
+        await _prime_ann(store, probe)
         await store.delete_chunk_by_id(ids[10])
         assert store._ann_scopes[None].stale_writes == 1
         hits = await store.search_dense(probe, 5, ann_enabled=True, ann_min_chunks=1)
@@ -183,7 +199,7 @@ async def test_reembedded_chunk_scores_by_live_vector(tmp_path: Path) -> None:
         vectors = _random_vectors(50, _DIM, seed=8)
         vectors[5] = probe
         ids = await _seed_chunks(store, vectors)
-        await store.search_dense(probe, 5, ann_enabled=True, ann_min_chunks=1)
+        await _prime_ann(store, probe)
         # Re-embed chunk 5 to a new direction; the graph keeps the old one.
         new_vector = [0.0] * _DIM
         new_vector[1] = 1.0
@@ -209,7 +225,7 @@ async def test_query_dimension_change_rebuilds_index(tmp_path: Path) -> None:
         ids = await _seed_chunks(store, _random_vectors(40, _DIM, seed=9))
         old_probe = [0.0] * _DIM
         old_probe[0] = 1.0
-        await store.search_dense(old_probe, 5, ann_enabled=True, ann_min_chunks=1)
+        await _prime_ann(store, old_probe)
         assert store._ann_scopes[None].dim == _DIM
         # Model swap: re-stamp every chunk at dim 4, then query at dim 4.
         new_dim = 4
@@ -218,14 +234,19 @@ async def test_query_dimension_change_rebuilds_index(tmp_path: Path) -> None:
             vec[i % new_dim] = 1.0
             await store.update_chunk_vector(cid, pack_vector(vec))
         new_probe = [1.0, 0.0, 0.0, 0.0]
+        # Dim change → the stale scope is dropped, a background rebuild
+        # is spawned, and THIS query answers via the exact brute scan.
         hits = await store.search_dense(
             new_probe, 5, ann_enabled=True, ann_min_chunks=1
         )
-        scope = store._ann_scopes[None]
-        assert scope.dim == new_dim
-        assert hits and hits[0][1] == pytest.approx(1.0)
         brute = await store.search_dense(new_probe, 5)
         assert hits == brute
+        assert hits and hits[0][1] == pytest.approx(1.0)
+        task = store._ann_build_task
+        assert task is not None
+        await task
+        scope = store._ann_scopes[None]
+        assert scope.dim == new_dim
     finally:
         await store.close()
 
@@ -237,13 +258,13 @@ async def test_stale_write_threshold_triggers_rebuild(tmp_path: Path) -> None:
         ids = await _seed_chunks(store, _random_vectors(80, _DIM, seed=10))
         probe = [0.0] * _DIM
         probe[0] = 1.0
-        await store.search_dense(probe, 5, ann_enabled=True, ann_min_chunks=1)
+        await _prime_ann(store, probe)
         first_index = store._ann_scopes[None].index
         # Threshold is max(64, len//10) = 64: 65 deletes decay past it.
         for cid in ids[:65]:
             await store.delete_chunk_by_id(cid)
         assert store._ann_scopes[None].stale_writes == 65
-        await store.search_dense(probe, 5, ann_enabled=True, ann_min_chunks=1)
+        await _prime_ann(store, probe)
         scope = store._ann_scopes[None]
         assert scope.index is not first_index  # rebuilt
         assert len(scope.index) == len(ids) - 65
@@ -253,17 +274,28 @@ async def test_stale_write_threshold_triggers_rebuild(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_namespace_rename_drops_all_scopes(tmp_path: Path) -> None:
+async def test_namespaced_queries_stay_brute_and_rename_drops_scopes(
+    tmp_path: Path,
+) -> None:
+    """Review-fix design: ONE global index only — per-namespace scopes
+    doubled resident vector copies. A namespaced dense query answers via
+    the exact brute scan and never builds a scope; a namespace rename
+    still invalidates the global scope (its rows moved under it)."""
     store = await _open_store(tmp_path, "rename")
     try:
         await store.ensure_memory_host_metadata_schema()
         await _seed_chunks(store, _random_vectors(40, _DIM, seed=11), namespace="ns/a")
         probe = [0.0] * _DIM
         probe[0] = 1.0
-        await store.search_dense(
+        scoped = await store.search_dense(
             probe, 5, "ns/a", ann_enabled=True, ann_min_chunks=1
         )
-        assert "ns/a" in store._ann_scopes
+        assert store._ann_scopes == {}  # no per-namespace index, ever
+        assert scoped == await store.search_dense(probe, 5, "ns/a")
+        # The GLOBAL scope exists after an unscoped query…
+        await _prime_ann(store, probe)
+        assert None in store._ann_scopes
+        # …and a namespace rename drops it (rows changed under it).
         await store.rename_namespace_prefix("ns/a", "ns/b")
         assert store._ann_scopes == {}
     finally:
@@ -364,3 +396,65 @@ async def test_ann_settings_parse_defensively(tmp_path: Path) -> None:
         assert host._ann_settings() == (False, 1000)
     finally:
         await host.close()
+
+
+# ---------------------------------------------------------------------------
+# W3-review fixes: activation regime + build-offload behaviour
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_activation_regime_with_default_knobs(tmp_path: Path) -> None:
+    """Review fix: every other ANN test forces ann_min_chunks=1 — this one
+    runs the regime where the feature actually activates in production:
+    n > the DEFAULT 1000-chunk threshold, default ef/M knobs."""
+    store = await _open_store(tmp_path, "activation")
+    try:
+        n = 1200
+        vectors = _random_vectors(n, _DIM, seed=20)
+        await _seed_chunks(store, vectors)
+        query = _random_vectors(1, _DIM, seed=21)[0]
+        brute = await store.search_dense(query, 10)
+
+        # First eligible query: exact brute answer + background build.
+        first = await store.search_dense(query, 10, ann_enabled=True)
+        assert first == brute
+        task = store._ann_build_task
+        assert task is not None, "default threshold must trigger the build"
+        await task
+        assert None in store._ann_scopes
+        assert len(store._ann_scopes[None].index) == n
+
+        # Post-build query runs the ANN leg; shared ids score identically.
+        ann = await store.search_dense(query, 10, ann_enabled=True)
+        brute_scores = dict(brute)
+        overlap = [cid for cid, _ in ann if cid in brute_scores]
+        assert len(overlap) >= 9  # recall@10 on the default knobs
+        for cid, score in ann:
+            if cid in brute_scores:
+                assert score == pytest.approx(brute_scores[cid])
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_queries_stay_brute_while_build_in_flight(tmp_path: Path) -> None:
+    """Review fix (the 67s-stall finding): the build must never run
+    inline — while it is in flight every query keeps answering via the
+    exact brute scan, and repeated queries spawn no second build."""
+    store = await _open_store(tmp_path, "inflight")
+    try:
+        await _seed_chunks(store, _random_vectors(80, _DIM, seed=22))
+        query = _random_vectors(1, _DIM, seed=23)[0]
+        brute = await store.search_dense(query, 5)
+
+        first = await store.search_dense(query, 5, ann_enabled=True, ann_min_chunks=1)
+        assert first == brute  # answered by brute, not a blocking build
+        task = store._ann_build_task
+        assert task is not None
+        second = await store.search_dense(query, 5, ann_enabled=True, ann_min_chunks=1)
+        assert second == brute
+        assert store._ann_build_task is task  # no duplicate build spawned
+        await task
+    finally:
+        await store.close()
