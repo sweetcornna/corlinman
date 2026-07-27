@@ -179,6 +179,16 @@ corlinman 数据默认放 `~/.corlinman/`：
 
 可用 `--data-dir` 或 `CORLINMAN_DATA_DIR` 覆盖。Docker 默认挂到 `/data`。检索是 SQLite FTS5（BM25）；稠密向量索引在路线图上（[`roadmap.md`](roadmap.md)）。
 
+### Agent journal 后端(HA)
+
+回合日志(journal)默认落本地 SQLite,多网关部署可切共享后端,由环境变量选择:
+
+| 变量 | 取值 | 说明 |
+|---|---|---|
+| `CORLINMAN_JOURNAL_BACKEND` | `sqlite`(默认)/ `postgres` / `redis` | 选错或缺依赖会在启动时大声失败,绝不静默回落本地文件 |
+| `CORLINMAN_JOURNAL_POSTGRES_DSN` | `postgresql://…` | `postgres` 后端必填;依赖 `corlinman-server[postgres]`(asyncpg) |
+| `CORLINMAN_JOURNAL_REDIS_URL` | `redis://…` | `redis` 后端必填;依赖 `corlinman-server[redis]`(redis-py)。journal 数据不设 TTL,Redis 必须跑 `maxmemory-policy=noeviction`(启动时会检测并告警) |
+
 `config.toml` 分段示例：
 
 ```toml

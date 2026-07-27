@@ -102,7 +102,8 @@ async def test_facade_round_trip_through_backend(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Env-driven selection — default is SQLite; postgres/redis stubs raise.
+# Env-driven selection — default is SQLite; postgres/redis dispatch to the
+# real backends and misconfiguration fails loudly.
 # ---------------------------------------------------------------------------
 
 
@@ -165,15 +166,55 @@ async def test_open_from_env_postgres_dispatches_to_postgres_backend(
     )
 
 
-async def test_open_from_env_redis_raises_not_implemented(
+async def test_open_from_env_redis_dispatches_to_redis_backend(
     tmp_path: Path,
 ) -> None:
+    """Same shape as the Postgres dispatch test above: the selector must
+    reach the real Redis backend's ``open`` — not fall back to SQLite,
+    not raise NotImplementedError. With redis-py installed the
+    unreachable URL fails the startup PING (ConnectionError); without it
+    the lazy import raises the config-shaped RuntimeError. Either way
+    NotImplementedError is the one outcome that must be GONE.
+    """
     env = {
         ENV_BACKEND: "redis",
-        ENV_REDIS_URL: "redis://localhost:6379/0",
+        # 127.0.0.1:1 — guaranteed-unreachable port; resolves instantly
+        # without DNS, so the test never waits on a slow lookup.
+        ENV_REDIS_URL: "redis://127.0.0.1:1/0",
     }
-    with pytest.raises(NotImplementedError, match="redis"):
+    with pytest.raises(BaseException) as excinfo:
         await AgentJournal.open_from_env(tmp_path / "j.sqlite", env=env)
+    assert not isinstance(excinfo.value, NotImplementedError), (
+        "Redis backend is now implemented — the dispatcher must not "
+        f"raise NotImplementedError, got {excinfo.value!r}"
+    )
+
+
+async def test_open_from_env_redis_reaches_backend_open_with_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Positive counterpart to the smoke test above: the selector must
+    call ``RedisJournalBackend.open`` with exactly the configured URL —
+    pinned via a sentinel so the assertion cannot pass by accident."""
+    from corlinman_server import agent_journal_redis as redis_mod
+
+    captured: dict[str, str] = {}
+
+    class _Reached(RuntimeError):
+        pass
+
+    async def fake_open(url: str, *, client: object | None = None) -> None:
+        captured["url"] = url
+        raise _Reached
+
+    monkeypatch.setattr(redis_mod.RedisJournalBackend, "open", fake_open)
+    env = {
+        ENV_BACKEND: "redis",
+        ENV_REDIS_URL: "redis://example.invalid:6379/3",
+    }
+    with pytest.raises(_Reached):
+        await AgentJournal.open_from_env(tmp_path / "j.sqlite", env=env)
+    assert captured["url"] == "redis://example.invalid:6379/3"
 
 
 async def test_open_from_env_postgres_without_dsn_is_a_config_error(
@@ -201,10 +242,10 @@ async def test_open_from_env_rejects_unknown_backend(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Direct stub probe — Redis is still a stub (out of scope for now).
-# Postgres has shipped, so its ``.open()`` is exercised in
-# ``test_agent_journal_postgres.py`` against a real DB (or skipped when
-# no Postgres is available).
+# Back-compat re-exports — both HA backends have shipped. Postgres'
+# ``.open()`` is exercised in ``test_agent_journal_postgres.py`` against a
+# real DB (or skipped when no Postgres is available); Redis' in
+# ``test_agent_journal_redis.py`` against fakeredis.
 # ---------------------------------------------------------------------------
 
 
@@ -220,9 +261,16 @@ async def test_postgres_backend_class_is_importable() -> None:
     )
 
 
-async def test_redis_stub_open_raises() -> None:
-    with pytest.raises(NotImplementedError):
-        await RedisJournalBackend.open("redis://ignored")
+async def test_redis_backend_class_is_importable() -> None:
+    """``RedisJournalBackend`` is now real — importing the attribute via
+    the back-compat re-export must succeed and yield a class with an
+    async ``open`` classmethod, not the old stub."""
+    cls = RedisJournalBackend  # exercise the module ``__getattr__``.
+    assert isinstance(cls, type), f"expected a class, got {cls!r}"
+    assert inspect.iscoroutinefunction(cls.open), (
+        "RedisJournalBackend.open must be ``async def`` to satisfy "
+        "the JournalBackend Protocol"
+    )
 
 
 # ---------------------------------------------------------------------------

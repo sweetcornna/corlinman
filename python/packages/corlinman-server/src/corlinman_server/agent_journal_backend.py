@@ -15,9 +15,10 @@ Concrete backends:
   — multi-gateway HA. Lets N gateways behind a load balancer share one
   journal via ``CORLINMAN_JOURNAL_POSTGRES_DSN``. Lives in
   ``agent_journal_postgres.py`` so the asyncpg import stays optional.
-- :class:`RedisJournalBackend` — stub, raises ``NotImplementedError``.
-  Lower-latency alternative for ephemeral resume state via
-  ``CORLINMAN_JOURNAL_REDIS_URL``.
+- :class:`~corlinman_server.agent_journal_redis.RedisJournalBackend`
+  — lower-latency shared journal for ephemeral resume state via
+  ``CORLINMAN_JOURNAL_REDIS_URL``. Lives in ``agent_journal_redis.py``
+  so the redis-py import stays optional (same posture as Postgres).
 
 Selection happens in :meth:`AgentJournal.open_from_env`; the
 ``CORLINMAN_JOURNAL_BACKEND`` env var picks one (``sqlite`` by default).
@@ -38,12 +39,15 @@ import aiosqlite
 import structlog
 
 if TYPE_CHECKING:
-    # Imported only for static type-checkers so the symbol exists in
-    # ``__all__`` without forcing the real (optional, asyncpg-bearing)
-    # module to load on every gateway boot. The runtime path goes
-    # through ``__getattr__`` below.
+    # Imported only for static type-checkers so the symbols exist in
+    # ``__all__`` without forcing the real (optional, asyncpg- resp.
+    # redis-py-bearing) modules to load on every gateway boot. The
+    # runtime path goes through ``__getattr__`` below.
     from corlinman_server.agent_journal_postgres import (
         PostgresJournalBackend as PostgresJournalBackend,
+    )
+    from corlinman_server.agent_journal_redis import (
+        RedisJournalBackend as RedisJournalBackend,
     )
 
 logger = structlog.get_logger(__name__)
@@ -2492,10 +2496,11 @@ class SqliteJournalBackend:
 
 
 # ---------------------------------------------------------------------------
-# Postgres backend lives in ``agent_journal_postgres.py`` so the optional
-# asyncpg dependency stays out of the import path until the env actually
-# selects it. We re-export the class here for back-compat with callers
-# that historically imported ``PostgresJournalBackend`` from this module.
+# The Postgres and Redis backends live in ``agent_journal_postgres.py`` /
+# ``agent_journal_redis.py`` so their optional client dependencies stay
+# out of the import path until the env actually selects them. We
+# re-export the classes here for back-compat with callers that
+# historically imported them from this module.
 # ---------------------------------------------------------------------------
 
 
@@ -2518,42 +2523,39 @@ def _load_postgres_backend_cls() -> type[Any]:
     return _Postgres
 
 
+def _load_redis_backend_cls() -> type[Any]:
+    """Lazy importer for :class:`RedisJournalBackend`.
+
+    The sibling of :func:`_load_postgres_backend_cls` — the module
+    itself imports without redis-py (the client import is deferred into
+    ``open()``), but keep the same defensive wrapper so a packaging
+    accident still surfaces as a config-shaped error.
+    """
+    try:
+        from corlinman_server.agent_journal_redis import (
+            RedisJournalBackend as _Redis,
+        )
+    except ImportError as exc:  # pragma: no cover — defensive
+        raise RuntimeError(
+            "redis backend selected but the redis client is not installed; "
+            "pip install corlinman-server[redis]"
+        ) from exc
+    return _Redis
+
+
 def __getattr__(name: str) -> Any:
     """Module-level lazy attribute hook.
 
     Keeps ``from corlinman_server.agent_journal_backend import
-    PostgresJournalBackend`` working without forcing the asyncpg import
-    at module load time. Anything else still raises AttributeError as
-    usual.
+    PostgresJournalBackend`` (and ``RedisJournalBackend``) working
+    without forcing the optional client imports at module load time.
+    Anything else still raises AttributeError as usual.
     """
     if name == "PostgresJournalBackend":
         return _load_postgres_backend_cls()
+    if name == "RedisJournalBackend":
+        return _load_redis_backend_cls()
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
-# ---------------------------------------------------------------------------
-# Stubs for future HA backends — intentionally non-functional so a
-# misconfigured deployment fails loudly (NotImplementedError) instead of
-# silently falling back to a local file.
-# ---------------------------------------------------------------------------
-
-
-class RedisJournalBackend:
-    """Stub. A future implementation will use Redis hashes + sorted sets
-    for low-latency resume state shared across gateways. Until then this
-    class refuses to open so ops can't accidentally rely on it.
-    """
-
-    def __init__(self, url: str) -> None:
-        self._url = url
-
-    @classmethod
-    async def open(cls, url: str) -> RedisJournalBackend:
-        raise NotImplementedError(
-            "redis journal backend not yet implemented; "
-            "set CORLINMAN_JOURNAL_BACKEND=sqlite (the default) "
-            "or track the HA journal issue"
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -2572,11 +2574,11 @@ async def open_backend_from_env(
     callers pass ``None`` (reads ``os.environ``).
 
     The ``postgres`` backend is implemented in
-    :mod:`corlinman_server.agent_journal_postgres`; the ``redis`` backend
-    is still a stub that raises ``NotImplementedError`` — that's
-    intentional, so a misconfigured deployment fails loudly at startup
-    rather than silently writing to a local file that other gateways
-    can't read.
+    :mod:`corlinman_server.agent_journal_postgres`; the ``redis``
+    backend in :mod:`corlinman_server.agent_journal_redis`. Both fail
+    loudly at startup on a missing client library, a missing DSN/URL,
+    or an unreachable server — a misconfigured deployment must never
+    silently fall back to a local file that other gateways can't read.
     """
     e = env if env is not None else os.environ
     kind = (e.get(ENV_BACKEND) or "sqlite").strip().lower()
@@ -2595,9 +2597,10 @@ async def open_backend_from_env(
         url = e.get(ENV_REDIS_URL, "").strip()
         if not url:
             raise RuntimeError(f"{ENV_BACKEND}=redis requires {ENV_REDIS_URL} to be set")
-        # Stub: ``open`` raises NotImplementedError, so this return is a
-        # dead path; cast to satisfy the protocol return type.
-        return cast("JournalBackend", await RedisJournalBackend.open(url))
+        redis_cls = _load_redis_backend_cls()
+        # Loaded dynamically (``type[Any]``); the redis backend
+        # implements the JournalBackend protocol.
+        return cast("JournalBackend", await redis_cls.open(url))
     raise RuntimeError(f"unknown {ENV_BACKEND}={kind!r}; expected one of: sqlite, postgres, redis")
 
 

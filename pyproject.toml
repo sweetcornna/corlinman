@@ -64,6 +64,12 @@ dev = [
     "pytest-cov>=5.0",
     "pytest-timeout>=2.3",
     "hypothesis>=6.0",
+    # In-memory Redis double for the Redis journal backend tests
+    # (``test_agent_journal_redis.py``) — CI has no live Redis service,
+    # and unlike pytest-postgresql this needs no external binary, so the
+    # tests actually RUN in CI instead of skipping. Pulls redis-py as a
+    # transitive dep, which is also what the real backend drives.
+    "fakeredis>=2.26",
     "respx>=0.21",
     "syrupy>=4.1",
     "ruff>=0.8",
