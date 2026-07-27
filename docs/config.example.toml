@@ -245,6 +245,24 @@ cheap = "claude-haiku-4-5-20251001"
 # provider = "ollama"
 
 # ---------------------------------------------------------------------------
+# [web_search] — which backend the `web_search` tool queries.
+#
+# Editable in the UI at /models → 能力 → 联网搜索. Unset means the keyless
+# DuckDuckGo HTML endpoint, which works with no signup but is rate-limited
+# and can break when DDG changes its markup.
+#
+# This block reaches the agent through the py-config.json sidecar. That
+# matters: the agent process runs under its own systemd unit with no
+# EnvironmentFile, so the older CORLINMAN_WEB_SEARCH_* env vars are not
+# reachable there — config is the only channel that works in a native
+# deployment. Config also outranks those env vars where both exist.
+# ---------------------------------------------------------------------------
+# [web_search]
+# backend = "serpapi"           # "ddg" (default, keyless) | "serpapi"
+# api_key = "..."               # or { env = "SERPAPI_KEY" } to keep it out
+#                               # of this file — resolved gateway-side.
+
+# ---------------------------------------------------------------------------
 # [subagent] — supervisor caps for model-facing subagent_spawn* tools.
 # ---------------------------------------------------------------------------
 [subagent]

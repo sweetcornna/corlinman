@@ -15,6 +15,7 @@ Mutation routes atomic-write the active config TOML — requires
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from corlinman_providers.reasoning_tiers import reasoning_tiers_for_model
@@ -107,6 +108,23 @@ class DefaultOnly(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+#: Backends ``corlinman_agent.web.search`` knows how to drive.
+_SEARCH_BACKENDS: frozenset[str] = frozenset({"ddg", "serpapi"})
+
+
+def _secret_present(raw: Any) -> bool:
+    """True when a config secret slot holds something usable.
+
+    Accepts both a literal string and the ``SecretRef`` mapping shape
+    (``{"env": "..."}`` / ``{"value": "..."}``) that ``py_config``
+    resolves — an ``env`` ref counts as configured even though the literal
+    is not in ``config.toml``.
+    """
+    if isinstance(raw, Mapping):
+        return bool(str(raw.get("env") or raw.get("value") or "").strip())
+    return bool(str(raw or "").strip())
+
+
 def _bad(code: str, message: str) -> JSONResponse:
     return JSONResponse(status_code=400, content={"error": code, "message": message})
 
@@ -155,6 +173,17 @@ def _alias_row(
 async def _persist_alias_swap(state: AdminState, new_models: dict[str, Any]) -> JSONResponse | None:
     """Atomic-write of just the ``[models]`` section. Returns ``None`` on
     success, a ``JSONResponse`` on failure."""
+    return await _persist_section(state, "models", new_models)
+
+
+async def _persist_section(
+    state: AdminState, name: str, value: dict[str, Any]
+) -> JSONResponse | None:
+    """Atomic-write of a single top-level config section.
+
+    An empty ``value`` removes the section entirely, so clearing a binding
+    in the UI leaves no stub table behind. Returns ``None`` on success, a
+    ``JSONResponse`` on failure."""
     if state.config_path is None:
         return JSONResponse(
             status_code=503, content={"error": "config_path_unset"}
@@ -171,7 +200,10 @@ async def _persist_alias_swap(state: AdminState, new_models: dict[str, Any]) -> 
         )
 
     cfg = dict(config_snapshot())
-    cfg["models"] = new_models
+    if value:
+        cfg[name] = value
+    else:
+        cfg.pop(name, None)
     try:
         serialised = tomli_w.dumps(cfg)  # type: ignore[attr-defined]
     except Exception as exc:  # noqa: BLE001
@@ -367,7 +399,7 @@ def router() -> APIRouter:
 
     @r.get("/admin/models/capabilities", response_model=None)
     async def get_capabilities():
-        """Which model serves each capability: chat, image, speech.
+        """Which model serves each capability: chat, image, speech, search.
 
         The model hub needs one place to answer "what actually runs when
         the agent generates a picture or speaks?" — previously only chat
@@ -380,6 +412,9 @@ def router() -> APIRouter:
         models_cfg = cfg.get("models") or {}
         voice_cfg = cfg.get("voice") or {}
         providers_cfg = cfg.get("providers") or {}
+        search_cfg = cfg.get("web_search") or {}
+        if not isinstance(search_cfg, dict):
+            search_cfg = {}
 
         image_candidates: list[str] = []
         if isinstance(providers_cfg, dict):
@@ -417,6 +452,16 @@ def router() -> APIRouter:
                 if isinstance(voice_cfg, dict)
                 else "",
             },
+            "search": {
+                # "" = unset, which resolves to the keyless DDG scrape.
+                "backend": str(search_cfg.get("backend", "") or ""),
+                # Never echo the key itself — the UI only needs to know
+                # whether one is on file so it can render "已配置". A dict
+                # value is a SecretRef (``{env = "..."}``), which counts as
+                # configured even though the literal lives elsewhere.
+                "api_key_set": _secret_present(search_cfg.get("api_key")),
+                "backends": ["ddg", "serpapi"],
+            },
             "aliases": alias_names,
         }
 
@@ -442,5 +487,58 @@ def router() -> APIRouter:
         if err is not None:
             return err
         return {"status": "ok", "provider": provider, "model": model}
+
+    @r.put("/admin/models/capabilities/search", response_model=None)
+    async def put_search_capability(body: dict[str, Any]):
+        """Bind the web-search backend + key.
+
+        Writes ``[web_search]``, which reaches the agent process through the
+        ``py-config.json`` sidecar. Until this existed the backend was
+        readable only from ``CORLINMAN_WEB_SEARCH_*`` — env vars the agent's
+        systemd unit never receives — so every deployment silently used the
+        keyless DuckDuckGo scrape.
+
+        ``backend``: empty clears the binding (back to the keyless default).
+        ``api_key``: omit the field to keep the stored key, send ``""`` to
+        delete it. That asymmetry is deliberate — the GET never echoes the
+        key, so a UI round-trip must not be able to wipe it by accident.
+        """
+        backend = str(body.get("backend") or "").strip().lower()
+        if backend and backend not in _SEARCH_BACKENDS:
+            return _bad(
+                "unknown_backend",
+                f"backend must be one of: {', '.join(sorted(_SEARCH_BACKENDS))}",
+            )
+
+        state = get_admin_state()
+        cfg = dict(config_snapshot())
+        search_cfg = dict(cfg.get("web_search") or {})
+
+        if backend:
+            search_cfg["backend"] = backend
+        else:
+            search_cfg.pop("backend", None)
+
+        if "api_key" in body:
+            api_key = str(body.get("api_key") or "").strip()
+            if api_key:
+                search_cfg["api_key"] = api_key
+            else:
+                search_cfg.pop("api_key", None)
+
+        if backend == "serpapi" and not _secret_present(search_cfg.get("api_key")):
+            return _bad(
+                "api_key_required",
+                "the serpapi backend needs an API key",
+            )
+
+        err = await _persist_section(state, "web_search", search_cfg)
+        if err is not None:
+            return err
+        return {
+            "status": "ok",
+            "backend": backend,
+            "api_key_set": _secret_present(search_cfg.get("api_key")),
+        }
 
     return r

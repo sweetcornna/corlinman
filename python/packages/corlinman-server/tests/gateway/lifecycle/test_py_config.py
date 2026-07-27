@@ -391,6 +391,42 @@ def test_render_includes_subagent_section() -> None:
     }
 
 
+def test_render_includes_web_search_section() -> None:
+    """``[web_search]`` must ride the sidecar — the agent process has no
+    other way to learn it (its unit carries no EnvironmentFile)."""
+    cfg = {
+        "providers": {},
+        "models": {"aliases": {}},
+        "web_search": {"backend": "SerpApi", "api_key": "literal-key"},
+    }
+
+    v = render_py_config(cfg)
+
+    assert v["web_search"] == {"backend": "serpapi", "api_key": "literal-key"}
+
+
+def test_web_search_api_key_resolves_a_secret_ref() -> None:
+    """An ``{env = ...}`` ref resolves gateway-side, where the env layer
+    actually exists, and lands in the sidecar as a literal."""
+    os.environ["PY_CONFIG_SEARCH_KEY"] = "from-env"
+    try:
+        v = render_py_config(
+            {
+                "providers": {},
+                "models": {"aliases": {}},
+                "web_search": {"api_key": {"env": "PY_CONFIG_SEARCH_KEY"}},
+            }
+        )
+        assert v["web_search"] == {"api_key": "from-env"}
+    finally:
+        os.environ.pop("PY_CONFIG_SEARCH_KEY", None)
+
+
+def test_absent_web_search_renders_none() -> None:
+    v = render_py_config({"providers": {}, "models": {"aliases": {}}})
+    assert v["web_search"] is None
+
+
 def test_default_py_config_path_uses_data_dir_env(tmp_path: Path) -> None:
     """``$CORLINMAN_DATA_DIR`` takes precedence over $HOME."""
     old = os.environ.get("CORLINMAN_DATA_DIR")
