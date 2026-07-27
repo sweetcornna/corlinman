@@ -4,6 +4,34 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.46.0] — 2026-07-27 — 统一授权模型第二波（W3-2）：外部工具纳管
+
+### Added
+- **外部工具全面纳管**(P4 W3-2):plugin / MCP / voice / sampling 四类
+  外部工具全部过统一 AuthzGate,canonical `namespace:name` 键
+  (`plugin:<插件>/<工具>`、`mcp:<server>/<工具>`,builtin 无前缀——存量
+  规则零改动)。双执行点:agent EP2 预判(deny 时帧不出 agent),网关
+  invoker 收口按 registry 精确键 enforcement(sync/async/service/mcp
+  全种类)。(#181)
+- **`[approvals]` → `[permissions]` 转译器**:旧段自动转译 + deprecation
+  警告;property test 钉转译前后判决逐样本一致。(#181)
+- **hook 次序修复(SEC-09)**:PreToolUse hook 改写 args 后重过 gate——
+  改写成 `rm -rf` 的调用逃不过 `run_shell(rm:*)` deny。(#181)
+
+### Changed
+- **BREAKING:`"*"` 通配规则现覆盖外部工具**。已写 `{"tool":"*",
+  "action":"deny"}` 且依赖 MCP/插件的部署会拦停外部工具——这本来就是该
+  规则声称的语义。逃生开关 `[permissions].external_tools_enforced =
+  false`(默认 true,计划一个 minor 后移除);boot 与首次实际拦截时均有
+  ERROR 级升级提示。(#181)
+- **BREAKING:plan 模式对外部工具默认 deny**(外部工具 blast radius 不可
+  知,规划模式不执行)。(#181)
+- `[mcp.sampling].mode="ask"` 从「恒 deny(接线遗漏)」变为由
+  `sampling:<server>` 规则决定;无规则命中仍 fail-closed。(#181)
+- 子 agent 的 surface 作用域规则继承:deny@telegram 同样约束 telegram
+  回合孵化的子 agent(`parent_surface` 双匹配);外部调用带
+  initiator/parent_surface 入审计日志。(#181)
+
 ## [1.45.0] — 2026-07-27 — 统一授权模型第一波（W3-1）
 
 ### Added
