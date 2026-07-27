@@ -4,6 +4,44 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.43.0] — 2026-07-27 — agent 自身的运行时开关可配置（[agent_runtime]）
+
+### Added
+- **`[agent_runtime]` 配置段**，一次接完 agent 进程里此前**结构性不可达**的 23 个
+  开关。同一类盲区的第三波（v1.39.0 `[voice]` / v1.41.0 `[web_search]`）：agent 的
+  systemd unit 刻意不挂 `EnvironmentFile`（只有 `HOME` / `EXECUTION_STATE_DIR` /
+  `PY_CONFIG` / `PY_SOCKET`），`ChatStart` 也不携带配置段，所以
+  `corlinman_agent` 从 `os.environ` 读的开关在原生部署里**取不到值**。覆盖：
+  `execute_code` 开关（此前永久关闭，无任何开启途径）、shell 沙箱
+  后端/镜像/user（此前永远 `LocalEnvironment`）、`web_fetch` 私网策略、
+  read-before-edit、strict 权限，以及轮次上限 / 上下文预算与保留量 / 压缩阈值与
+  冷却与断路器 / 工具结果截断与落盘 / 后台 shell 任务四项 / mailbox 上限 /
+  skill 重扫间隔。经 sidecar 下发，保存即生效。(#172)
+
+### Fixed
+- **`reasoning_loop` 的 11 个预算开关是 import 期模块常量**，sidecar 在 import
+  之后才加载——哪怕配置链路四步全做对，值也只会落进一个再也没人读的变量。
+  `mailbox` 的 `DEFAULT_MAILBOX_MAXSIZE` 同样是 import 期冻结。全部改为调用期
+  解析，钳位统一收进 `runtime_defaults.py`：一个开关不能"从配置来是一个含义、
+  从 env 来是另一个含义"。(#172)
+- `context_budget` 的 8000 下限此前被"测试直接 monkeypatch 钳位后的变量"掩盖，
+  现在配置与 env 走同一条钳位路径。(#172)
+
+### Changed
+- 优先级同前两波：**配置 > `CORLINMAN_*` 环境变量 > 内置默认**。未设置的键保持
+  "未配置"而非内置默认——否则设一个 `max_rounds` 会把另外 22 个一并钉死，env 层
+  再也不起作用；渲染侧同样只输出真正设过的键。(#172)
+- 根 conftest 增加 autouse 复位：这个块是进程级全局的，一个测试配了预算就会悄悄
+  重新配置它之后的所有测试——与已有的 env 泄漏防护是同一个 hermeticity 问题。(#172)
+
+### Notes
+- **刻意不做 UI**：这些是调优与安全开关，不是日常设置，写错很难归因，放在
+  `config.toml` 里让改动是有意为之。示例与默认值见
+  `docs/config.example.toml` 的 `[agent_runtime]` 段。
+- W3（agent 侧权限规则 `CORLINMAN_AGENT_PERMISSIONS` / `_MODE` /
+  `_LAST_MATCH_WINS` 的完整配置面，以及 console/渠道两条授权路径的语义统一）
+  仍单独立项；本波只接 `strict_mode`。
+
 ## [1.42.0] — 2026-07-27 — 语音接官方 Realtime API（attestation 阻塞解除）
 
 ### Fixed
