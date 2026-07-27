@@ -255,11 +255,11 @@ def _render_rag(section: Any) -> dict[str, Any] | None:
     if section is None:
         return None
     out: dict[str, Any] = {}
-    for key in ("dense_enabled", "backfill_on_start"):
+    for key in ("dense_enabled", "backfill_on_start", "ann_enabled"):
         value = _attr(section, key, None)
         if isinstance(value, bool):
             out[key] = value
-    for key in ("rrf_k", "dense_top_k"):
+    for key in ("rrf_k", "dense_top_k", "ann_min_chunks"):
         value = _attr(section, key, None)
         if isinstance(value, bool):
             continue

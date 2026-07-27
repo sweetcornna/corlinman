@@ -550,6 +550,13 @@ rrf_k = 60.0
 # dense_min_similarity = 0.3     # 余弦下限,低于即丢弃(防无关旧块混入)
 # backfill_on_start = false      # 启动时后台补齐历史无向量 chunk(花钱,
 #                                # 显式 opt-in;失败批次跳过并记日志)
+# ann_enabled = false            # 纯 Python HNSW 近似检索(默认关 = 暴力余弦,
+#                                # 精确)。索引为内存态惰性构建:首次稠密查询时
+#                                # 从 vector 列全量构建,不落盘,进程重启重建;
+#                                # 构建失败自动降级回暴力,检索永不因索引挂掉
+# ann_min_chunks = 1000          # 库内向量数低于该值时仍走暴力——小库暴力
+#                                # 更快且精确,此时结果与 ann_enabled=false
+#                                # 完全一致
 
 # Sprint 9 T-B3-BE5 — EPA re-ranking boost. When `epa_enabled = true`, the
 # hybrid searcher multiplies each candidate's RRF score by the `dynamic_boost`

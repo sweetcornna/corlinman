@@ -512,6 +512,37 @@ def test_absent_rag_renders_none() -> None:
     assert v["rag"] is None
 
 
+def test_rag_render_includes_ann_keys() -> None:
+    """G2 phase 2: the HNSW knobs ride the sidecar next to the dense ones.
+    ``ann_enabled`` must be a literal bool; ``ann_min_chunks`` accepts an
+    integral float (TOML operators write ``1000.0``) but rejects bools."""
+    v = render_py_config(
+        {
+            "providers": {},
+            "models": {"aliases": {}},
+            "rag": {
+                "dense_enabled": True,
+                "ann_enabled": True,
+                "ann_min_chunks": 500.0,
+            },
+        }
+    )
+    assert v["rag"] == {
+        "dense_enabled": True,
+        "ann_enabled": True,
+        "ann_min_chunks": 500,
+    }
+
+    v = render_py_config(
+        {
+            "providers": {},
+            "models": {"aliases": {}},
+            "rag": {"ann_enabled": 1, "ann_min_chunks": True},
+        }
+    )
+    assert v["rag"] is None
+
+
 def test_deprecated_approvals_translate_into_permissions() -> None:
     """W3-2: [approvals] renders as LEADING [[permissions.rules]] entries
     (so the explicit [permissions] block wins under last-match-wins) and
