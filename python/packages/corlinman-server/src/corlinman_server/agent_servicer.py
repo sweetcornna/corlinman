@@ -282,6 +282,11 @@ from corlinman_server.runner_pool import (
 from corlinman_server.runner_pool import (
     dispatch_with_observability as _dispatch_with_obs,
 )
+from corlinman_server.tools.render_document import (
+    RENDER_DOCUMENT_TOOL,
+    dispatch_render_document,
+    render_document_tool_schema,
+)
 
 # gap observability-metrics-unwired: the approval-decision Prometheus
 # family was declared but never incremented. Imported defensively so a
@@ -358,6 +363,7 @@ BUILTIN_TOOLS: frozenset[str] = (
             WEB_FETCH_TOOL,
             WEB_SEARCH_TOOL,
             CALCULATOR_TOOL,
+            RENDER_DOCUMENT_TOOL,
             SEND_ATTACHMENT_TOOL,
             ASK_USER_TOOL,
             IMAGE_WITH_REFS_TOOL,
@@ -437,18 +443,18 @@ _SUBAGENT_POLICY_KEYS: tuple[str, ...] = (
 )
 
 #: Skills injected into EVERY chat turn regardless of whether the message
-#: invokes an agent card (v1.12.3). Stage-3 skill injection is otherwise
-#: gated on a ``{{角色}}`` token, so the main chat agent never saw any skill
-#: and improvised — e.g. hand-rolling a broken PDF or generating an image
-#: with overlapping labels. Keep this list compact: ``document-generator``
-#: carries the PDF recipe, while ``visual-output-quality`` is the lightweight
-#: default quality gate for PDF/image/slide layout checks. Missing-skill refs
-#: are non-fatal (logged into ``skill_errors``), so this degrades cleanly on
-#: deploys that haven't seeded the skill yet.
-_DEFAULT_ALWAYS_SKILLS: tuple[str, ...] = (
-    "document-generator",
-    "visual-output-quality",
-)
+#: invokes an agent card (v1.12.3 mechanism — stage-3 skill injection is
+#: otherwise gated on a ``{{角色}}`` token, so without this list the main
+#: chat agent would see no skill at all). Empty since the ``render_document``
+#: builtin absorbed the v1.12.3 "hand-rolled broken PDF" fix: the tool's
+#: interface (Markdown in, verified PDF out, workspace-confined) makes the
+#: failure modes the ``document-generator`` / ``visual-output-quality``
+#: always-on prose guarded against structurally impossible, so those skills
+#: now surface via the progressive-disclosure catalog instead of costing
+#: ~1800 tokens per turn. Missing-skill refs are non-fatal (logged into
+#: ``skill_errors``), so a name added here degrades cleanly on deploys that
+#: haven't seeded the skill yet.
+_DEFAULT_ALWAYS_SKILLS: tuple[str, ...] = ()
 
 
 def _send_attachment_tool_schema() -> dict[str, Any]:
@@ -667,6 +673,7 @@ def _builtin_tool_schemas() -> list[dict[str, Any]]:
         calculator_tool_schema(),
         web_search_tool_schema(),
         web_fetch_tool_schema(),
+        render_document_tool_schema(),
         _send_attachment_tool_schema(),
         ask_user_tool_schema(),
         image_with_refs_tool_schema(),
@@ -3542,6 +3549,11 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                             "tool": event.tool,
                         }
                     )
+            if event.tool == RENDER_DOCUMENT_TOOL:
+                # Markdown → verified document (PDF) via the vetted CJK
+                # pipeline. The dispatcher offloads the render to a worker
+                # thread and never raises; output is workspace-confined.
+                return await dispatch_render_document(args_json=event.args_json)
             # Coding tools — workspace-confined file ops + shell.
             if event.tool == READ_FILE_TOOL:
                 return dispatch_read_file(args_json=event.args_json, state=file_state)

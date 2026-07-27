@@ -132,6 +132,9 @@ MUTATING_TOOLS: frozenset[str] = frozenset(
         "apply_patch",
         "run_shell",
         "revert_changes",
+        # ``render_document`` writes a rendered artifact into the workspace
+        # — same blast radius as write_file, so plan/strict deny it too.
+        "render_document",
         # ``qzone_publish`` writes externally — posts a 说说 to QQ空间
         # via the user's logged-in QQ account. Treat as mutating so
         # strict-mode deployments must explicitly opt in.

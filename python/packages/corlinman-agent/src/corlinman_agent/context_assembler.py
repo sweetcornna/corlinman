@@ -196,10 +196,11 @@ class ContextAssembler:
         # v1.12.3 — skills injected on EVERY turn, even when the message
         # invokes no agent card. Stage-3 skill injection is otherwise gated on
         # ``expansion.expanded_agent`` (a ``{{角色}}`` token), so the MAIN chat
-        # agent never received any skill — it improvised, e.g. hand-rolling a
-        # broken PDF instead of following the ``document-generator`` recipe.
-        # These names are injected for the main agent and merged with (deduped
-        # against) an invoked card's own ``skill_refs``.
+        # agent would never receive any of these. These names are injected for
+        # the main agent and merged with (deduped against) an invoked card's
+        # own ``skill_refs``. The shipped default list is empty since the
+        # ``render_document`` builtin absorbed the original PDF guardrail —
+        # deployments can still pin always-on skills through this parameter.
         self._default_skill_refs: list[str] = list(default_skill_refs)
 
     # ------------------------------------------------------------------ API

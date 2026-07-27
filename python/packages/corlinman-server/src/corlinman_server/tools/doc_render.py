@@ -284,17 +284,18 @@ def _render_with_chrome(html: str, out_path: Path) -> bool:
         return out_path.exists() and out_path.stat().st_size > 0
 
 
-def render_markdown_to_pdf(md_path: Path, pdf_path: Path, *, title: str = "") -> Path:
-    """Render ``md_path`` to ``pdf_path``. Returns the output path.
+def render_markdown_text_to_pdf(md_text: str, pdf_path: Path, *, title: str = "") -> Path:
+    """Render Markdown ``md_text`` to ``pdf_path``. Returns the output path.
 
-    Raises :class:`RuntimeError` with an actionable message if no rendering
-    engine is available or the produced file isn't a valid PDF — so the agent
-    sees a clear failure instead of silently shipping garbage.
+    The in-process entrypoint behind both the ``corlinman-md2pdf`` CLI and
+    the ``render_document`` builtin tool. Raises :class:`RuntimeError` with
+    an actionable message if no rendering engine is available or the produced
+    file isn't a valid PDF — so the caller sees a clear failure instead of
+    silently shipping garbage.
     """
-    md_text = md_path.read_text(encoding="utf-8")
     if not title:
         m = re.search(r"^#\s+(.+)$", md_text, flags=re.MULTILINE)
-        title = m.group(1).strip() if m else md_path.stem
+        title = m.group(1).strip() if m else "Document"
     body = _markdown_to_html(md_text)
     full_html = _HTML_TEMPLATE.format(
         title=_html.escape(title, quote=True),
@@ -314,6 +315,19 @@ def render_markdown_to_pdf(md_path: Path, pdf_path: Path, *, title: str = "") ->
     if not head.startswith(b"%PDF"):
         raise RuntimeError(f"output is not a valid PDF (header={head!r})")
     return pdf_path
+
+
+def render_markdown_to_pdf(md_path: Path, pdf_path: Path, *, title: str = "") -> Path:
+    """Render the Markdown file at ``md_path`` to ``pdf_path``.
+
+    Thin file-based wrapper over :func:`render_markdown_text_to_pdf` (the
+    CLI's shape). The default title is the first H1, else the file stem.
+    """
+    md_text = md_path.read_text(encoding="utf-8")
+    if not title:
+        m = re.search(r"^#\s+(.+)$", md_text, flags=re.MULTILINE)
+        title = m.group(1).strip() if m else md_path.stem
+    return render_markdown_text_to_pdf(md_text, pdf_path, title=title)
 
 
 def main(argv: list[str] | None = None) -> int:
