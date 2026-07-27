@@ -5192,8 +5192,12 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         kill-switch, always wins) > the ``[memory.kernel] mode`` TOML key
         (published as ``app_state.memory_kernel_config`` by C2 wiring —
         hot-reloadable/UI-editable like its ``[memory.recall]`` siblings)
-        > default ``shadow``. Unknown values fall back to ``shadow`` so a
-        typo cannot silently stop observation accrual.
+        > default ``on`` (product decision 2026-07-27 — the engineering
+        shipped in v1.29.0 and shadow telemetry ran since; a deployment
+        that wants the old behaviour pins ``mode = "shadow"``). An
+        UNKNOWN value still falls back to ``shadow``, not ``on`` — a
+        typo must neither stop observation accrual nor silently enable
+        injection.
         """
         raw: Any = os.environ.get("CORLINMAN_MEMORY_KERNEL")
         if raw is None or not str(raw).strip():
@@ -5201,6 +5205,8 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             cfg = getattr(app_state, "memory_kernel_config", None)
             if isinstance(cfg, dict):
                 raw = cfg.get("mode")
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            return "on"
         if not isinstance(raw, str):
             return "shadow"
         value = raw.strip().lower()

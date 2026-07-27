@@ -740,12 +740,13 @@ max_chars = 4000                   # char budget per injected memory block
 time_decay_half_life_hours = 0.0   # recency re-rank for the notes lane
 
 # [memory.kernel] — the unified memory kernel (mk_* tables in the same
-# memory.sqlite). mode: "off" = never touched; "shadow" (default) =
-# observations accumulate + recall runs for diff telemetry only, nothing
-# is injected; "on" = kernel memories are injected into prompts. The
-# CORLINMAN_MEMORY_KERNEL env var overrides this key (ops kill-switch).
+# memory.sqlite). mode: "off" = never touched; "shadow" = observations
+# accumulate + recall runs for diff telemetry only, nothing is injected;
+# "on" (default since 2026-07-27) = kernel memories are injected into
+# prompts. The CORLINMAN_MEMORY_KERNEL env var overrides this key (ops
+# kill-switch). Pin mode = "shadow" to keep the pre-flip behaviour.
 [memory.kernel]
-mode = "shadow"
+mode = "on"
 # Per-channel canary for mode = "on": when non-empty, only these
 # channels get kernel injection; everything else stays shadow.
 # on_channels = ["qq", "webchat"]
