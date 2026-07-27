@@ -109,6 +109,38 @@ def _split_frontmatter(text: str) -> tuple[str, str] | None:
     return None
 
 
+def _is_reference_md(root: Path, path: Path) -> bool:
+    """Return ``True`` when ``path`` is a supporting markdown file that
+    belongs to a nested skill directory rather than a skill entrypoint.
+
+    Nested skills use the hermes / claude-code layout
+    ``<root>/<name>/SKILL.md`` with arbitrary siblings — most notably
+    ``references/*.md`` for progressive disclosure. Those reference
+    files carry no frontmatter and must NOT be parsed as skills: the
+    on-demand ``Skill`` tool reads them lazily via its ``file``
+    argument instead.
+
+    A file is a reference iff some ancestor directory strictly between
+    the file and ``root`` (inclusive of the file's own parent) contains
+    a ``SKILL.md`` that is not the file itself. Flat ``<root>/*.md``
+    skills are unaffected.
+    """
+    cur = path.parent
+    while True:
+        anchor = cur / "SKILL.md"
+        if anchor.is_file():
+            return path != anchor
+        if cur == root:
+            # Review fix: the root itself may BE the nested layout
+            # (<root>/SKILL.md + <root>/references/*.md) — checked above
+            # before breaking, so root-level references are skipped too.
+            return False
+        nxt = cur.parent
+        if nxt == cur:  # filesystem root — path was not under root
+            return False
+        cur = nxt
+
+
 def _as_str_list(value: Any, field_name: str, path: Path) -> list[str]:
     """Coerce an optional ``list[str]`` frontmatter field; reject
     non-list / non-str values so silent type drift can't smuggle bad
@@ -340,6 +372,14 @@ class SkillRegistry:
             for path in sorted(root.rglob("*.md")):
                 if not path.is_file():
                     continue
+                # ``references/*.md`` (and any other sibling markdown of a
+                # nested SKILL.md) is progressive-disclosure material, not
+                # a skill of its own.
+                if _is_reference_md(root, path):
+                    _log.debug(
+                        "skills.registry.reference_md_skipped", path=str(path)
+                    )
+                    continue
                 text = path.read_text(encoding="utf-8")
                 skill = _parse_skill(path, text)
                 existing = skills.get(skill.name)
@@ -528,6 +568,10 @@ class SkillRegistry:
 
         for path in sorted(root.rglob("*.md")):
             if not path.is_file():
+                continue
+            # Same skip as load_from_dir: sibling markdown of a nested
+            # SKILL.md is reference material, never a skill entrypoint.
+            if _is_reference_md(root, path):
                 continue
             live_paths.add(path)
             try:

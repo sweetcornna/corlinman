@@ -51,6 +51,30 @@ _LOAD_CACHE: dict[tuple[str, bool], tuple[_DirFingerprint, dict[str, Skill]]] = 
 _LOAD_CACHE_LOCK = threading.Lock()
 
 
+def _is_reference_md(root: Path, path: Path) -> bool:
+    """Return ``True`` when ``path`` is a supporting markdown file inside
+    a nested skill directory rather than a skill entrypoint.
+
+    Nested skills use the hermes layout ``<root>/<name>/SKILL.md`` with
+    arbitrary siblings — most notably ``references/*.md`` used for
+    progressive disclosure. Those files carry no frontmatter and must not
+    be parsed as skills (they are pulled lazily via the agent's ``Skill``
+    tool ``file`` argument). A file is a reference iff some ancestor
+    directory between it and ``root`` contains a ``SKILL.md`` that is not
+    the file itself. Mirrors ``corlinman_agent.skills.registry``.
+    """
+    cur = path.parent
+    while cur != root:
+        anchor = cur / "SKILL.md"
+        if anchor.is_file():
+            return path != anchor
+        nxt = cur.parent
+        if nxt == cur:  # filesystem root — path was not under root
+            return False
+        cur = nxt
+    return False
+
+
 class SkillRegistry:
     """Owns the set of skills loaded from disk and provides lookups plus
     runtime requirement checks.
@@ -150,6 +174,12 @@ class SkillRegistry:
                 if not is_file:
                     continue
                 if entry_path.suffix != ".md":
+                    continue
+                # Reference markdown (sibling of a nested SKILL.md) is
+                # progressive-disclosure material, never a skill. Skip it
+                # from both the parse list and the fingerprint — edits to
+                # references cannot change the parse output.
+                if _is_reference_md(root_path, entry_path):
                     continue
 
                 try:
