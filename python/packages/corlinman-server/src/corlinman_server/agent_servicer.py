@@ -445,16 +445,19 @@ _SUBAGENT_POLICY_KEYS: tuple[str, ...] = (
 #: Skills injected into EVERY chat turn regardless of whether the message
 #: invokes an agent card (v1.12.3 mechanism — stage-3 skill injection is
 #: otherwise gated on a ``{{角色}}`` token, so without this list the main
-#: chat agent would see no skill at all). Empty since the ``render_document``
-#: builtin absorbed the v1.12.3 "hand-rolled broken PDF" fix: the tool's
-#: interface (Markdown in, verified PDF out, workspace-confined) makes the
-#: failure modes the ``document-generator`` / ``visual-output-quality``
-#: always-on prose guarded against structurally impossible, so those skills
-#: now surface via the progressive-disclosure catalog instead of costing
-#: ~1800 tokens per turn. Missing-skill refs are non-fatal (logged into
-#: ``skill_errors``), so a name added here degrades cleanly on deploys that
-#: haven't seeded the skill yet.
-_DEFAULT_ALWAYS_SKILLS: tuple[str, ...] = ()
+#: chat agent would see no skill at all). ``document-generator`` left this
+#: list when the ``render_document`` builtin absorbed its half of the
+#: v1.12.3 "hand-rolled broken PDF" fix: the tool's interface (Markdown
+#: in, verified PDF out, workspace-confined) makes the failure modes that
+#: skill's always-on prose guarded against structurally impossible, so it
+#: now surfaces via the progressive-disclosure catalog instead.
+#: ``visual-output-quality`` STAYS: its image/poster/slide layout rules
+#: (text overlap, no dense text via image models) have no structural
+#: replacement — ``image_with_refs`` remains an unconstrained tool — so
+#: retiring it would reopen the other half of the v1.12.3 regression.
+#: Missing-skill refs are non-fatal (logged into ``skill_errors``), so a
+#: name here degrades cleanly on deploys that haven't seeded the skill yet.
+_DEFAULT_ALWAYS_SKILLS: tuple[str, ...] = ("visual-output-quality",)
 
 
 def _send_attachment_tool_schema() -> dict[str, Any]:

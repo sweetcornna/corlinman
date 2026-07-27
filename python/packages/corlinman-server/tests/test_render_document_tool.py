@@ -108,6 +108,54 @@ async def test_dispatch_rejects_malformed_args(
 
 
 @pytest.mark.asyncio
+async def test_dispatch_treats_explicit_null_like_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Models routinely emit ``"title": null`` — every OPTIONAL param must
+    read explicit JSON null the same as an absent key (``path`` always
+    did; ``title``/``format`` were hard-rejected, costing a round-trip)."""
+    monkeypatch.setattr(rd, "render_markdown_text_to_pdf", _fake_renderer)
+    out = json.loads(
+        await rd.dispatch_render_document(
+            args_json=json.dumps(
+                {"content": _SAMPLE, "title": None, "format": None, "path": None}
+            ),
+            workspace=tmp_path,
+        )
+    )
+    assert "error" not in out
+    assert out["format"] == "pdf"
+
+
+@pytest.mark.asyncio
+async def test_servicer_routes_render_document_to_dispatcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Drive the servicer's ``_dispatch_builtin`` with a render_document
+    tool call — registration/schema tests alone would stay green with a
+    missing dispatch branch (the call would fall through to the
+    unknown-tool envelope)."""
+    from corlinman_agent.reasoning_loop import ChatStart, ToolCallEvent
+    from corlinman_server.agent_servicer import CorlinmanAgentServicer
+
+    monkeypatch.setenv("CORLINMAN_AGENT_WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(rd, "render_markdown_text_to_pdf", _fake_renderer)
+
+    servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: None)
+    start = ChatStart(model="m", messages=[], tools=[], session_key="t::s1")
+    event = ToolCallEvent(
+        call_id="c1",
+        plugin="builtin",
+        tool=rd.RENDER_DOCUMENT_TOOL,
+        args_json=json.dumps({"content": _SAMPLE, "path": "routed.pdf"}).encode(),
+    )
+    out = json.loads(await servicer._dispatch_builtin(event, start, None))
+    assert "error" not in out
+    assert out["path"] == "routed.pdf"
+    assert (tmp_path / "routed.pdf").read_bytes().startswith(b"%PDF")
+
+
+@pytest.mark.asyncio
 async def test_dispatch_rejects_oversized_content(tmp_path: Path) -> None:
     big = "x" * (rd.MAX_CONTENT_BYTES + 1)
     out = json.loads(

@@ -67,11 +67,16 @@ SUPPORTED_FORMATS: tuple[str, ...] = ("pdf",)
 #: rendered directly.
 MAX_CONTENT_BYTES: int = 1_000_000
 
-#: Wall-clock budget for one render. The Chrome engine inside
-#: ``doc_render`` already caps each subprocess at 120s; this outer bound
-#: also covers the WeasyPrint path so a stuck render can never wedge the
-#: dispatch.
-RENDER_TIMEOUT_SECS: float = 180.0
+#: Wall-clock budget for one render. Sized ABOVE the pipeline's own
+#: worst case — the Chrome engine inside ``doc_render`` caps each
+#: subprocess at 120s and may try a legacy-flag fallback (120s + 120s) —
+#: so the pipeline's actionable per-engine errors surface first and this
+#: outer bound only fires on a truly hung worker (e.g. a WeasyPrint
+#: import stall). NB ``asyncio.to_thread`` cannot be cancelled: on
+#: timeout the orphaned thread may still finish and write the file late;
+#: the envelope already reported failure, which is the honest outcome
+#: for a render that blew a 5-minute budget.
+RENDER_TIMEOUT_SECS: float = 300.0
 
 _FILENAME_SAFE_RE = re.compile(r"[^\w一-鿿.-]+")
 
@@ -173,11 +178,19 @@ def _parse_args(args_json: bytes | str) -> tuple[str, str, str, str]:
             f"'content' too large: cap is {MAX_CONTENT_BYTES} bytes"
         )
 
-    title = raw.get("title", "")
-    if not isinstance(title, str):
+    # Explicit JSON ``null`` reads the same as an absent key for every
+    # optional param (``path`` already did; ``title``/``format`` follow)
+    # — models emit ``"title": null`` routinely and a hard reject only
+    # costs a wasted round-trip.
+    title = raw.get("title")
+    if title is None:
+        title = ""
+    elif not isinstance(title, str):
         raise CodingArgsInvalidError("'title' must be a string")
 
-    fmt = raw.get("format", SUPPORTED_FORMATS[0])
+    fmt = raw.get("format")
+    if fmt is None:
+        fmt = SUPPORTED_FORMATS[0]
     if not isinstance(fmt, str) or fmt.strip().lower() not in SUPPORTED_FORMATS:
         raise CodingArgsInvalidError(
             f"'format' must be one of {list(SUPPORTED_FORMATS)}"

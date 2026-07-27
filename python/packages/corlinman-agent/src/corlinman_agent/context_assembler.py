@@ -198,9 +198,10 @@ class ContextAssembler:
         # ``expansion.expanded_agent`` (a ``{{角色}}`` token), so the MAIN chat
         # agent would never receive any of these. These names are injected for
         # the main agent and merged with (deduped against) an invoked card's
-        # own ``skill_refs``. The shipped default list is empty since the
-        # ``render_document`` builtin absorbed the original PDF guardrail —
-        # deployments can still pin always-on skills through this parameter.
+        # own ``skill_refs``. The shipped default keeps only the
+        # visual-quality gate — the ``render_document`` builtin absorbed the
+        # document-generator half of the original PDF guardrail; deployments
+        # can still pin extra always-on skills through this parameter.
         self._default_skill_refs: list[str] = list(default_skill_refs)
 
     # ------------------------------------------------------------------ API

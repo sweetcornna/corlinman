@@ -20,7 +20,7 @@ poster, slide, screenshot, HTML export, or generated graphic.
   canvas/SVG for the text layer. Do not ask an image model to draw dense final
   text; use generated raster art only as background or illustration.
 - For complex visual composition, pull/use `huashu-design`; this skill is only
-  the compact quality gate.
+  the compact always-on quality gate.
 
 ## Layout Contract
 

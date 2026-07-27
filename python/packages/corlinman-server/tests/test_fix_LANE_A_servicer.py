@@ -384,13 +384,16 @@ async def test_cmp04_ask_resolver_can_be_wired() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_cmp02_default_always_skills_now_empty() -> None:
-    """The always-on defaults are retired: the ``render_document`` builtin
-    absorbed the v1.12.3 PDF protection (the tool's shape prevents
-    hand-rolled PDFs), so no skill body needs unconditional per-turn
-    injection. The mechanism itself stays (covered below via monkeypatch)."""
+def test_cmp02_default_always_skills_pdf_half_retired() -> None:
+    """``document-generator`` left the always-on list: the
+    ``render_document`` builtin absorbed its half of the v1.12.3 fix (the
+    tool's shape prevents hand-rolled PDFs). ``visual-output-quality``
+    STAYS — its image/poster/slide layout rules have no structural
+    replacement (``image_with_refs`` is still unconstrained), so retiring
+    it would reopen the other half of the regression."""
 
-    assert _DEFAULT_ALWAYS_SKILLS == ()
+    assert "document-generator" not in _DEFAULT_ALWAYS_SKILLS
+    assert _DEFAULT_ALWAYS_SKILLS == ("visual-output-quality",)
     # The structural replacement must actually be advertised.
     from corlinman_server.agent_servicer import BUILTIN_TOOLS
 
