@@ -235,7 +235,12 @@ def test_status_reports_available_when_discovery_succeeds(
     _install_transport(_make_transport(jwks_doc))
     resp = _client().get("/auth/oidc/status")
     assert resp.status_code == 200
-    assert resp.json() == {"enabled": True, "available": True}
+    assert resp.json() == {
+        "enabled": True,
+        "available": True,
+        "end_session": False,
+        "refresh": False,
+    }
 
 
 def test_status_unavailable_when_discovery_fails(
@@ -244,14 +249,24 @@ def test_status_unavailable_when_discovery_fails(
     _install_transport(_make_transport(jwks_doc, discovery_status=503))
     resp = _client().get("/auth/oidc/status")
     assert resp.status_code == 200
-    assert resp.json() == {"enabled": True, "available": False}
+    assert resp.json() == {
+        "enabled": True,
+        "available": False,
+        "end_session": False,
+        "refresh": False,
+    }
 
 
 def test_status_disabled_when_not_configured(state: AdminState) -> None:
     state.oidc_settings = None
     resp = _client().get("/auth/oidc/status")
     assert resp.status_code == 200
-    assert resp.json() == {"enabled": False, "available": False}
+    assert resp.json() == {
+        "enabled": False,
+        "available": False,
+        "end_session": False,
+        "refresh": False,
+    }
 
 
 def test_login_redirects_to_login_page_when_discovery_fails(

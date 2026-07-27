@@ -25,6 +25,29 @@ Security posture
   (RS*/ES*/PS*) — HS* would let anyone who knows the (widely shared)
   client_secret forge tokens.
 
+Phase 2 (RP-initiated logout + token refresh)
+---------------------------------------------
+* On a successful OIDC login the id_token (and, when the IdP returned
+  one, the refresh_token) is parked in an in-process side-map keyed by
+  the opaque admin session token (:class:`OidcSsoTokenStore`) — the
+  session store itself stays untouched. Entries share the session TTL
+  and are dropped on logout / expiry. Neither token is ever logged.
+* ``GET /auth/oidc/logout`` revokes the local admin session first and
+  then — only when discovery advertises ``end_session_endpoint`` and an
+  id_token was captured at login — bounces the browser to the IdP with
+  ``id_token_hint`` + ``post_logout_redirect_uri``. Every degradation
+  path falls back to a plain local logout.
+* ``POST /auth/oidc/refresh`` (authenticated) redeems the stored
+  refresh_token and re-validates the NEW id_token end to end
+  (signature/iss/aud/email_verified/whitelist) — a refresh re-proves
+  identity, it is not a rubber-stamp renewal. Failure returns 401 and
+  clears the side-map entry; the session itself is not revoked so
+  password-session semantics are unaffected. Per-entry locking makes
+  concurrent refreshes single-flight (no refresh_token replay).
+* refresh_tokens only exist when ``offline_access`` is requested —
+  gated behind ``[auth.oidc].request_offline_access`` (default false;
+  the default scope set is never widened silently).
+
 Configuration is gateway-side only (no agent sidecar involvement): the
 resolved :class:`OidcSettings` ride on
 :class:`~corlinman_server.gateway.routes_admin_a.state.AdminState`
@@ -33,6 +56,7 @@ resolved :class:`OidcSettings` ride on
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -168,6 +192,10 @@ class OidcSettings:
     #: the whitelist into a full admin session. Default STRICT; the
     #: opt-out exists for IdPs that verify out-of-band but omit the claim.
     require_verified_email: bool = True
+    #: Phase 2: request ``offline_access`` on top of the configured
+    #: scopes so the IdP returns a refresh_token. OFF by default — the
+    #: default scope set is never widened silently.
+    request_offline_access: bool = False
 
 
 def _extract_section(obj: Any, key: str) -> Any:
@@ -216,6 +244,8 @@ def resolve_oidc_settings(config: Any) -> OidcSettings | None:
     require_verified_email = (
         raw_require_verified if isinstance(raw_require_verified, bool) else True
     )
+    raw_offline = oidc.get("request_offline_access")
+    request_offline_access = raw_offline if isinstance(raw_offline, bool) else False
 
     if enabled and (not issuer or not client_id):
         logger.warning(
@@ -244,6 +274,7 @@ def resolve_oidc_settings(config: Any) -> OidcSettings | None:
         allowed_domains=allowed_domains,
         redirect_url=redirect_url,
         require_verified_email=require_verified_email,
+        request_offline_access=request_offline_access,
     )
 
 
@@ -444,11 +475,119 @@ class OidcTxnStore:
 _TXNS = OidcTxnStore()
 
 
+# ---------------------------------------------------------------------------
+# SSO token side-store (session token → id_token / refresh_token).
+# ---------------------------------------------------------------------------
+
+#: Hard cap on SSO token rows — one row per live OIDC admin session, so
+#: this is generous; oldest-expiry eviction past the cap.
+_SSO_TOKENS_MAX = 256
+
+
+@dataclass
+class _SsoTokenRow:
+    """IdP tokens captured at login for one admin session.
+
+    ``lock`` single-flights refreshes for this session: a refresh_token
+    must never be redeemed twice concurrently (many IdPs rotate it and
+    revoke the grant on replay). It is a ``threading.Lock`` acquired via
+    ``asyncio.to_thread`` so it works across event loops and never
+    blocks the loop itself.
+    """
+
+    id_token: str
+    refresh_token: str | None
+    expires_at: float
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+class OidcSsoTokenStore:
+    """In-process ``session_token → _SsoTokenRow`` map.
+
+    The admin session store stays untouched (password-session semantics
+    are sacred); this sidecar only remembers what the IdP handed us at
+    login so logout can send ``id_token_hint`` and refresh can redeem
+    the refresh_token. Entries share the session TTL, are refreshed on
+    successful token refresh, and are dropped on logout. Token values
+    never appear in logs.
+    """
+
+    def __init__(self, *, max_rows: int = _SSO_TOKENS_MAX) -> None:
+        self._max = max_rows
+        self._lock = threading.Lock()
+        self._rows: dict[str, _SsoTokenRow] = {}
+
+    def put(
+        self,
+        session_token: str,
+        *,
+        id_token: str,
+        refresh_token: str | None,
+        ttl: float,
+    ) -> None:
+        now = time.monotonic()
+        with self._lock:
+            expired = [k for k, v in self._rows.items() if v.expires_at <= now]
+            for k in expired:
+                del self._rows[k]
+            while len(self._rows) >= self._max:
+                oldest = min(self._rows, key=lambda k: self._rows[k].expires_at)
+                del self._rows[oldest]
+            self._rows[session_token] = _SsoTokenRow(
+                id_token=id_token,
+                refresh_token=refresh_token,
+                expires_at=now + ttl,
+            )
+
+    def get(self, session_token: str) -> _SsoTokenRow | None:
+        """Live row for ``session_token`` — expired rows are evicted."""
+        now = time.monotonic()
+        with self._lock:
+            row = self._rows.get(session_token)
+            if row is None:
+                return None
+            if row.expires_at <= now:
+                del self._rows[session_token]
+                return None
+            return row
+
+    def update(
+        self,
+        session_token: str,
+        *,
+        id_token: str,
+        refresh_token: str | None,
+        ttl: float,
+    ) -> None:
+        """Swap tokens on the existing row (post-refresh) and slide its
+        expiry. No-op when the row is gone (logout raced the refresh)."""
+        now = time.monotonic()
+        with self._lock:
+            row = self._rows.get(session_token)
+            if row is None:
+                return
+            row.id_token = id_token
+            row.refresh_token = refresh_token
+            row.expires_at = now + ttl
+
+    def pop(self, session_token: str) -> _SsoTokenRow | None:
+        with self._lock:
+            return self._rows.pop(session_token, None)
+
+    def reset(self) -> None:
+        with self._lock:
+            self._rows.clear()
+
+
+_SSO_TOKENS = OidcSsoTokenStore()
+
+
 def _reset_caches_for_tests() -> None:
     """Test helper: wipe module-level caches between test cases."""
     _DISCOVERY_CACHE.reset()
     _JWKS_CACHE.reset()
     _TXNS.reset()
+    _SSO_TOKENS.reset()
     with _LOGIN_RATE_LOCK:
         _LOGIN_RATE.clear()
 
@@ -491,6 +630,35 @@ def _redirect_uri(
     return base + "/auth/oidc/callback"
 
 
+def _public_base_url(
+    request: Request, settings: OidcSettings, admin_state: AdminState
+) -> str:
+    """Public origin used for absolute URLs sent to the IdP (e.g.
+    ``post_logout_redirect_uri``). Prefers the origin of the configured
+    ``redirect_url`` override, else the request base with the same
+    trusted X-Forwarded-Proto upgrade as :func:`_redirect_uri`."""
+    if settings.redirect_url:
+        parsed = urllib.parse.urlsplit(settings.redirect_url)
+        if parsed.scheme and parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}"
+    base = str(request.base_url).rstrip("/")
+    if base.startswith("http://") and _auth_mod._request_is_https(request, admin_state):
+        base = "https://" + base[len("http://"):]
+    return base
+
+
+def _merge_query(url: str, params: Mapping[str, str]) -> str:
+    """Append ``params`` to ``url``, merging with any query string the
+    endpoint already carries — a second bare ``?`` would produce a
+    malformed URL (review fix, shared by authorize + end_session)."""
+    split = urllib.parse.urlsplit(url)
+    query = urllib.parse.parse_qsl(split.query, keep_blank_values=True)
+    query.extend(params.items())
+    return urllib.parse.urlunsplit(
+        (split.scheme, split.netloc, split.path, urllib.parse.urlencode(query), "")
+    )
+
+
 def _login_error_redirect(code: str) -> RedirectResponse:
     """Bounce to the login page with a UI-visible error code (never a 500)."""
     return RedirectResponse(
@@ -520,6 +688,35 @@ async def _exchange_code(
         "client_id": settings.client_id,
         "code_verifier": code_verifier,
     }
+    return await _post_token_endpoint(token_endpoint, body, settings=settings)
+
+
+async def _exchange_refresh(
+    *,
+    token_endpoint: str,
+    refresh_token: str,
+    settings: OidcSettings,
+) -> dict[str, Any]:
+    """Redeem a refresh_token for fresh tokens (RFC 6749 §6).
+
+    The refresh_token itself never reaches a log line or an error
+    message — failures are reported status-code-only, same as the
+    authorization-code exchange.
+    """
+    body = {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": settings.client_id,
+    }
+    return await _post_token_endpoint(token_endpoint, body, settings=settings)
+
+
+async def _post_token_endpoint(
+    token_endpoint: str, body: dict[str, str], *, settings: OidcSettings
+) -> dict[str, Any]:
+    """Shared token-endpoint POST for both grant types. Secrets ride
+    the form body only; error reporting is status-code-only because the
+    IdP's error body may echo request parameters we keep out of logs."""
     if settings.client_secret:
         body["client_secret"] = settings.client_secret
     headers = {
@@ -567,9 +764,14 @@ def _verify_id_token(
     jwks: dict[str, Any],
     settings: OidcSettings,
     expected_issuer: str,
-    nonce: str,
+    nonce: str | None,
 ) -> dict[str, Any]:
     """Full id_token validation: signature (JWKS), iss, aud, exp, nonce.
+
+    ``nonce=None`` skips the nonce binding — used ONLY for id_tokens
+    minted by a refresh-grant response, which per OIDC Core 12.2 need
+    not (and should not) carry the original login nonce. Everything
+    else (signature/iss/aud/exp/azp) is still enforced.
 
     Raises :class:`OidcError` (code ``invalid_id_token``) on every
     failure mode; the specific reason goes to the server log only.
@@ -601,9 +803,10 @@ def _verify_id_token(
         # token payload — safe to log.
         raise OidcError("invalid_id_token", f"id_token rejected: {exc}") from exc
 
-    token_nonce = claims.get("nonce")
-    if not isinstance(token_nonce, str) or not hmac.compare_digest(token_nonce, nonce):
-        raise OidcError("invalid_id_token", "nonce mismatch")
+    if nonce is not None:
+        token_nonce = claims.get("nonce")
+        if not isinstance(token_nonce, str) or not hmac.compare_digest(token_nonce, nonce):
+            raise OidcError("invalid_id_token", "nonce mismatch")
     # OIDC Core 3.1.3.7 #4/#5: with multiple audiences the token must
     # name US as the authorized party — otherwise an id_token minted for
     # a sibling client that merely lists our client_id in aud is accepted.
@@ -633,6 +836,66 @@ def _email_allowed(email: str, settings: OidcSettings) -> bool:
     return bool(domain) and domain in settings.allowed_domains
 
 
+async def _verify_id_token_against_jwks(
+    id_token: str,
+    *,
+    doc: dict[str, Any],
+    settings: OidcSettings,
+    nonce: str | None,
+) -> dict[str, Any]:
+    """JWKS fetch + full id_token validation, with exactly ONE forced
+    JWKS refetch when the token names a ``kid`` the cached document
+    lacks (key rotation) — shared by the login callback and the
+    refresh path so a refresh is validated to the same bar as a login.
+
+    Raises :class:`OidcError` — code ``jwks_failed`` when the JWKS
+    document is unavailable, ``invalid_id_token`` otherwise.
+    """
+    jwks_uri = str(doc["jwks_uri"])
+    jwks = await _get_jwks(jwks_uri)
+    if jwks is None:
+        raise OidcError("jwks_failed", "JWKS unavailable")
+    expected_issuer = str(doc.get("issuer") or settings.issuer)
+    try:
+        return _verify_id_token(
+            id_token,
+            jwks=jwks,
+            settings=settings,
+            expected_issuer=expected_issuer,
+            nonce=nonce,
+        )
+    except OidcError as exc:
+        if "no JWKS key matches" not in str(exc):
+            raise
+        fresh = await _get_jwks(jwks_uri, force=True)
+        if fresh is None:
+            raise
+        return _verify_id_token(
+            id_token,
+            jwks=fresh,
+            settings=settings,
+            expected_issuer=expected_issuer,
+            nonce=nonce,
+        )
+
+
+def _authorize_claims(claims: dict[str, Any], settings: OidcSettings) -> str:
+    """Identity gate shared by login + refresh: extract the email and
+    enforce ``email_verified`` + the whitelist. Returns the normalized
+    email; raises :class:`OidcError` with the UI-visible code
+    (``missing_email`` / ``email_unverified`` / ``email_not_allowed``).
+    """
+    email = claims.get("email")
+    if not isinstance(email, str) or not email.strip():
+        raise OidcError("missing_email", "id_token has no usable email claim")
+    email = email.strip().lower()
+    if settings.require_verified_email and claims.get("email_verified") is not True:
+        raise OidcError("email_unverified", f"email {email} not asserted verified")
+    if not _email_allowed(email, settings):
+        raise OidcError("email_not_allowed", f"email {email} outside the whitelist")
+    return email
+
+
 # ---------------------------------------------------------------------------
 # Router
 # ---------------------------------------------------------------------------
@@ -649,9 +912,28 @@ def router() -> APIRouter:
     ) -> JSONResponse:
         settings = _settings_of(admin_state)
         if settings is None or not settings.enabled:
-            return JSONResponse({"enabled": False, "available": False})
+            return JSONResponse(
+                {
+                    "enabled": False,
+                    "available": False,
+                    "end_session": False,
+                    "refresh": False,
+                }
+            )
         doc = await _get_discovery(settings)
-        return JSONResponse({"enabled": True, "available": doc is not None})
+        # Capability report (explicit degradation): the front-end shows
+        # "SSO logout" / refresh affordances only when the IdP actually
+        # supports them — end_session comes from discovery, refresh from
+        # the operator's offline_access opt-in.
+        end_session = bool(str((doc or {}).get("end_session_endpoint") or "").strip())
+        return JSONResponse(
+            {
+                "enabled": True,
+                "available": doc is not None,
+                "end_session": end_session,
+                "refresh": bool(settings.request_offline_access),
+            }
+        )
 
     @r.get("/auth/oidc/login", summary="Start the OIDC Authorization Code + PKCE flow")
     async def oidc_login(
@@ -684,32 +966,24 @@ def router() -> APIRouter:
         redirect = _sanitize_redirect(request.query_params.get("redirect"))
         _TXNS.put(state_value, _Txn(code_verifier=verifier, nonce=nonce, redirect=redirect))
 
+        # Phase 2: ``offline_access`` (→ refresh_token) is requested only
+        # behind the explicit opt-in — default scopes are never widened.
+        scopes = list(settings.scopes)
+        if settings.request_offline_access and "offline_access" not in scopes:
+            scopes.append("offline_access")
+
         params = {
             "response_type": "code",
             "client_id": settings.client_id,
             "redirect_uri": _redirect_uri(request, settings, admin_state),
-            "scope": " ".join(settings.scopes),
+            "scope": " ".join(scopes),
             "state": state_value,
             "nonce": nonce,
             "code_challenge": challenge,
             "code_challenge_method": "S256",
         }
         del challenge  # verifier/challenge never reach logs
-        # Merge properly: some IdPs advertise an authorization_endpoint
-        # that already carries a query string — a second bare "?" would
-        # produce a malformed URL (review fix).
-        _split = urllib.parse.urlsplit(str(doc["authorization_endpoint"]))
-        _query = urllib.parse.parse_qsl(_split.query, keep_blank_values=True)
-        _query.extend(params.items())
-        authorize_url = urllib.parse.urlunsplit(
-            (
-                _split.scheme,
-                _split.netloc,
-                _split.path,
-                urllib.parse.urlencode(_query),
-                "",
-            )
-        )
+        authorize_url = _merge_query(str(doc["authorization_endpoint"]), params)
         resp = RedirectResponse(url=authorize_url, status_code=status.HTTP_302_FOUND)
         # Review fix (login-CSRF / session fixation): park the state in an
         # HttpOnly cookie too — the callback requires cookie == query
@@ -784,59 +1058,28 @@ def router() -> APIRouter:
             logger.warning("auth.oidc.id_token_missing")
             return _login_error_redirect("invalid_id_token")
 
-        jwks = await _get_jwks(str(doc["jwks_uri"]))
-        if jwks is None:
-            return _login_error_redirect("jwks_failed")
-
-        expected_issuer = str(doc.get("issuer") or settings.issuer)
+        # Key rotation is handled inside the shared helper: a kid the
+        # cached JWKS lacks gets exactly ONE forced refetch — else every
+        # SSO login breaks for the full cache TTL (review fix).
         try:
-            try:
-                claims = _verify_id_token(
-                    id_token,
-                    jwks=jwks,
-                    settings=settings,
-                    expected_issuer=expected_issuer,
-                    nonce=txn.nonce,
-                )
-            except OidcError as exc:
-                # Key rotation (review fix): a kid the cached JWKS lacks
-                # gets exactly ONE forced refetch before failing — else
-                # every SSO login breaks for the full cache TTL.
-                if "no JWKS key matches" not in str(exc):
-                    raise
-                fresh = await _get_jwks(str(doc["jwks_uri"]), force=True)
-                if fresh is None:
-                    raise
-                claims = _verify_id_token(
-                    id_token,
-                    jwks=fresh,
-                    settings=settings,
-                    expected_issuer=expected_issuer,
-                    nonce=txn.nonce,
-                )
+            claims = await _verify_id_token_against_jwks(
+                id_token, doc=doc, settings=settings, nonce=txn.nonce
+            )
         except OidcError as exc:
+            if exc.code == "jwks_failed":
+                return _login_error_redirect("jwks_failed")
             logger.warning("auth.oidc.id_token_rejected", error=str(exc))
             return _login_error_redirect("invalid_id_token")
 
-        email = claims.get("email")
-        if not isinstance(email, str) or not email.strip():
-            logger.warning("auth.oidc.email_missing")
-            return _login_error_redirect("missing_email")
-        email = email.strip().lower()
-
-        # Review fix (MAJOR): the whitelist is only as strong as the
-        # email's provenance. Require the IdP to assert
-        # ``email_verified: true`` — a missing claim counts as
-        # unverified (strict default; opt out via
-        # [auth.oidc].require_verified_email = false for IdPs that
-        # verify out-of-band but omit the claim).
-        if settings.require_verified_email and claims.get("email_verified") is not True:
-            logger.warning("auth.oidc.email_unverified", email=email)
-            return _login_error_redirect("email_unverified")
-
-        if not _email_allowed(email, settings):
-            logger.warning("auth.oidc.email_not_allowed", email=email)
-            return _login_error_redirect("email_not_allowed")
+        # Identity gate (review fix, MAJOR): the whitelist is only as
+        # strong as the email's provenance — ``email_verified: true`` is
+        # required by default (opt out via require_verified_email=false
+        # for IdPs that verify out-of-band but omit the claim).
+        try:
+            email = _authorize_claims(claims, settings)
+        except OidcError as exc:
+            logger.warning("auth.oidc.identity_rejected", code=exc.code, error=str(exc))
+            return _login_error_redirect(exc.code)
 
         # -- Session issuance — SAME path as POST /admin/login ----------
         store = _auth_mod._ensure_session_store(admin_state)
@@ -849,7 +1092,207 @@ def router() -> APIRouter:
         )
         logger.info("admin.login.oidc_succeeded", email=email)
 
+        # Phase 2: park the IdP tokens next to the session so logout can
+        # send id_token_hint and refresh can redeem the refresh_token.
+        # Token VALUES never reach logs; presence flags are safe.
+        refresh_token = tokens.get("refresh_token")
+        _SSO_TOKENS.put(
+            token,
+            id_token=id_token,
+            refresh_token=(
+                refresh_token
+                if isinstance(refresh_token, str) and refresh_token
+                else None
+            ),
+            ttl=float(max_age),
+        )
+
         resp = RedirectResponse(url=txn.redirect or "/", status_code=status.HTTP_302_FOUND)
+        resp.headers["set-cookie"] = _auth_mod._set_cookie_header(
+            token,
+            max_age,
+            secure=_auth_mod._session_cookie_secure(request, admin_state),
+        )
+        return resp
+
+    @r.get(
+        "/auth/oidc/logout",
+        summary="RP-initiated logout — local session first, IdP end_session when available",
+    )
+    async def oidc_logout(
+        request: Request,
+        admin_state: Annotated[AdminState, Depends(get_admin_state)],
+    ) -> RedirectResponse:
+        """Local logout ALWAYS happens (same semantics as
+        ``POST /admin/logout``: invalidate + clear cookie); the IdP
+        bounce is strictly additive and every degradation path — OIDC
+        disabled, discovery down, no ``end_session_endpoint``, session
+        not born from OIDC — falls back to a plain ``/login`` redirect.
+        """
+        token = _auth_mod._read_session_cookie(request)
+        row = _SSO_TOKENS.pop(token) if token else None
+        if token and admin_state.session_store is not None:
+            try:
+                admin_state.session_store.invalidate(token)
+            except Exception:  # noqa: BLE001 — best-effort, cookie clear below still happens
+                pass
+
+        target = "/login"
+        settings = _settings_of(admin_state)
+        if settings is not None and settings.enabled and row is not None and row.id_token:
+            doc = await _get_discovery(settings)
+            end_session = str((doc or {}).get("end_session_endpoint") or "").strip()
+            if end_session:
+                try:
+                    _require_https(end_session, fld="end_session_endpoint")
+                except OidcError:
+                    # Discovery only vets authorize/token/jwks URLs; an
+                    # http end_session would leak the id_token_hint in
+                    # cleartext — degrade to local-only logout instead.
+                    logger.warning("auth.oidc.end_session_endpoint_invalid")
+                    end_session = ""
+            if end_session:
+                target = _merge_query(
+                    end_session,
+                    {
+                        # id_token value rides the redirect only — never a log.
+                        "id_token_hint": row.id_token,
+                        "post_logout_redirect_uri": (
+                            _public_base_url(request, settings, admin_state) + "/login"
+                        ),
+                        "client_id": settings.client_id,
+                    },
+                )
+                logger.info("admin.logout.oidc_end_session")
+
+        resp = RedirectResponse(url=target, status_code=status.HTTP_302_FOUND)
+        resp.headers["set-cookie"] = _auth_mod._clear_cookie_header(
+            secure=_auth_mod._session_cookie_secure(request, admin_state)
+        )
+        return resp
+
+    @r.post(
+        "/auth/oidc/refresh",
+        summary="Redeem the stored refresh_token and re-prove the identity",
+    )
+    async def oidc_refresh(
+        request: Request,
+        admin_state: Annotated[AdminState, Depends(get_admin_state)],
+    ) -> JSONResponse:
+        """A refresh is a fresh identity proof, not a rubber-stamp
+        renewal: the NEW id_token goes through the exact same
+        signature/iss/aud/email_verified/whitelist gate as a login.
+        Failure → 401 + the side-map entry is cleared; the admin session
+        itself is NOT revoked (password-session semantics untouched).
+        """
+        settings = _settings_of(admin_state)
+        if settings is None or not settings.enabled:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"error": "oidc_disabled", "message": "[auth.oidc] is not enabled"},
+            )
+        token = _auth_mod._read_session_cookie(request)
+        store = admin_state.session_store
+        session = store.validate(token) if (token and store is not None) else None
+        if session is None or token is None or store is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={"error": "unauthenticated"},
+            )
+        row = _SSO_TOKENS.get(token)
+        if row is None or not row.refresh_token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={
+                    "error": "no_refresh_token",
+                    "message": (
+                        "no refresh_token for this session — enable "
+                        "[auth.oidc].request_offline_access and log in via SSO"
+                    ),
+                },
+            )
+        doc = await _get_discovery(settings)
+        if doc is None:
+            # IdP unreachable is an infra failure, not an identity
+            # rejection — keep the entry, report explicitly.
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={"error": "sso_unavailable", "message": "IdP discovery failed"},
+            )
+
+        # Single-flight (review requirement): a refresh_token must never
+        # be redeemed twice concurrently — IdPs that rotate tokens revoke
+        # the whole grant on replay. threading.Lock via a worker thread
+        # keeps the event loop free and works across loops.
+        await asyncio.to_thread(row.lock.acquire)
+        try:
+            # Re-read after acquiring: a concurrent refresh may have
+            # rotated the token, a concurrent failure may have cleared it.
+            live = _SSO_TOKENS.get(token)
+            if live is None or not live.refresh_token:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail={"error": "no_refresh_token"},
+                )
+            current_refresh = live.refresh_token
+
+            def _reject(exc: OidcError, event: str) -> HTTPException:
+                # Every identity failure clears the entry (the refresh
+                # grant is burned) but leaves the session untouched.
+                _SSO_TOKENS.pop(token)
+                logger.warning(event, error=str(exc))
+                return HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail={"error": "refresh_failed", "code": exc.code},
+                )
+
+            try:
+                tokens = await _exchange_refresh(
+                    token_endpoint=str(doc["token_endpoint"]),
+                    refresh_token=current_refresh,
+                    settings=settings,
+                )
+            except OidcError as exc:
+                raise _reject(exc, "auth.oidc.refresh_exchange_failed") from exc
+
+            new_id_token = tokens.get("id_token")
+            if not isinstance(new_id_token, str) or not new_id_token:
+                raise _reject(
+                    OidcError("invalid_id_token", "refresh response lacks id_token"),
+                    "auth.oidc.refresh_id_token_missing",
+                )
+            try:
+                claims = await _verify_id_token_against_jwks(
+                    new_id_token, doc=doc, settings=settings, nonce=None
+                )
+                email = _authorize_claims(claims, settings)
+            except OidcError as exc:
+                raise _reject(exc, "auth.oidc.refresh_identity_rejected") from exc
+
+            max_age = (
+                store.ttl_seconds()
+                if hasattr(store, "ttl_seconds")
+                else admin_state.session_ttl_seconds
+            )
+            rotated = tokens.get("refresh_token")
+            _SSO_TOKENS.update(
+                token,
+                id_token=new_id_token,
+                refresh_token=(
+                    rotated
+                    if isinstance(rotated, str) and rotated
+                    else current_refresh
+                ),
+                ttl=float(max_age),
+            )
+        finally:
+            row.lock.release()
+
+        # Sliding renewal: ``store.validate`` above already refreshed the
+        # row's ``last_used``; re-emitting the cookie refreshes the
+        # browser-side Max-Age so both halves agree.
+        logger.info("admin.session.oidc_refreshed", email=email)
+        resp = JSONResponse({"status": "ok", "expires_in": max_age})
         resp.headers["set-cookie"] = _auth_mod._set_cookie_header(
             token,
             max_age,
@@ -869,6 +1312,7 @@ def _settings_of(admin_state: AdminState) -> OidcSettings | None:
 __all__ = [
     "OidcError",
     "OidcSettings",
+    "OidcSsoTokenStore",
     "OidcTxnStore",
     "resolve_oidc_settings",
     "router",
