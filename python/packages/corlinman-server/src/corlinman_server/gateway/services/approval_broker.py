@@ -64,19 +64,146 @@ def _key(session_key: str, call_id: str) -> tuple[str, str]:
 
 
 class ApprovalBroker:
-    """(session_key, call_id) → backend-stream registry + decide()."""
+    """(session_key, call_id) → backend-stream registry + decide().
 
-    def __init__(self) -> None:
+    W3-4: when an :class:`~corlinman_providers.plugins.ApprovalStore` is
+    attached (:meth:`attach_store`), the broker mirrors its registry into
+    the durable ``pending_approvals`` table — a row on register, a
+    decision update on decide, and a ``timeout`` update when a stream
+    ends with the approval still parked. All persistence is best-effort:
+    a broken store never blocks or fails the live decision path.
+    """
+
+    def __init__(self, store: Any | None = None) -> None:
         self._lock = threading.RLock()
         self._pending: dict[tuple[str, str], PendingApproval] = {}
+        self._store: Any | None = store
+        # Fire-and-forget persistence tasks; retained so they aren't GC'd
+        # mid-flight and can be awaited by tests via ``drain_persistence``.
+        self._persist_tasks: set[asyncio.Task[Any]] = set()
+        # Per-key pending-row INSERT task. Decision / timeout UPDATEs only
+        # touch rows that exist, so they must be sequenced AFTER the
+        # insert — every update path awaits this task first.
+        self._insert_tasks: dict[tuple[str, str], asyncio.Task[Any]] = {}
+
+    def attach_store(self, store: Any | None) -> None:
+        """Attach (or detach with ``None``) the durable approvals store."""
+        self._store = store
+
+    async def drain_persistence(self) -> None:
+        """Await every in-flight persistence task (tests / shutdown)."""
+        tasks = list(self._persist_tasks)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    def _schedule(self, coro: Any) -> asyncio.Task[Any] | None:
+        """Run a persistence coroutine on the current loop, detached."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            coro.close()
+            return None
+        task = loop.create_task(coro)
+        self._persist_tasks.add(task)
+        task.add_done_callback(self._persist_tasks.discard)
+        return task
+
+    async def _await_insert(self, key: tuple[str, str]) -> None:
+        """Wait for the pending-row INSERT of ``key`` (ordering barrier)."""
+        with self._lock:
+            task = self._insert_tasks.get(key)
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def _persist_pending(self, entry: PendingApproval) -> None:
+        store = self._store
+        if store is None:
+            return
+        try:
+            from corlinman_providers.plugins import ApprovalRequest  # noqa: PLC0415
+
+            await store.insert(
+                ApprovalRequest(
+                    call_id=entry.call_id,
+                    plugin=entry.plugin,
+                    tool=entry.tool,
+                    args_preview=entry.args_preview_json,
+                    session_key=entry.session_key,
+                    reason=entry.reason,
+                    created_at=entry.registered_at,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — persistence is best-effort
+            log.warning(
+                "approval_broker.persist_pending_failed call_id=%s err=%s",
+                entry.call_id,
+                exc,
+            )
+
+    async def _persist_decision(
+        self, key: tuple[str, str], *, approved: bool, reason: str = ""
+    ) -> None:
+        store = self._store
+        if store is None:
+            return
+        await self._await_insert(key)
+        try:
+            from corlinman_providers.plugins import ApprovalDecision  # noqa: PLC0415
+
+            decision = ApprovalDecision.ALLOW if approved else ApprovalDecision.DENY
+            await store.decide(key[1], decision, reason=reason or None)
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "approval_broker.persist_decision_failed call_id=%s err=%s",
+                key[1],
+                exc,
+            )
+
+    async def _persist_timeout(self, key: tuple[str, str], reason: str) -> None:
+        store = self._store
+        if store is None:
+            return
+        await self._await_insert(key)
+        try:
+            from corlinman_providers.plugins import ApprovalDecision  # noqa: PLC0415
+
+            # ``decide`` only touches rows whose decision is still NULL, so
+            # a row already decided by a human is never downgraded.
+            await store.decide(key[1], ApprovalDecision.TIMEOUT, reason=reason)
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "approval_broker.persist_timeout_failed call_id=%s err=%s",
+                key[1],
+                exc,
+            )
 
     def register(self, entry: PendingApproval) -> None:
+        key = _key(entry.session_key, entry.call_id)
         with self._lock:
-            self._pending[_key(entry.session_key, entry.call_id)] = entry
+            self._pending[key] = entry
+        task = self._schedule(self._persist_pending(entry))
+        if task is not None:
+            with self._lock:
+                self._insert_tasks[key] = task
+
+            def _drop_insert_task(_t: asyncio.Task[Any], k: tuple[str, str] = key) -> None:
+                self._insert_tasks.pop(k, None)
+
+            task.add_done_callback(_drop_insert_task)
 
     def unregister(self, call_id: str, session_key: str = "") -> None:
+        key = _key(session_key, call_id)
         with self._lock:
-            self._pending.pop(_key(session_key, call_id), None)
+            entry = self._pending.pop(key, None)
+        if entry is not None:
+            # The stream died with the approval still parked — nobody can
+            # answer it any more. Mark the durable row ``timeout`` so the
+            # audit trail distinguishes it from a human deny.
+            self._schedule(
+                self._persist_timeout(
+                    key, "stream ended before a decision arrived"
+                )
+            )
 
     def pending_ids(self) -> list[str]:
         with self._lock:
@@ -124,7 +251,16 @@ class ApprovalBroker:
                 call_id,
                 exc,
             )
+            # The human answered but the turn never saw it — record it as
+            # a timeout, not as an (unenforced) approval/denial.
+            await self._persist_timeout(
+                _key(session_key, call_id),
+                "stream died before the decision could be delivered",
+            )
             return False
+        await self._persist_decision(
+            _key(session_key, call_id), approved=approved, reason=deny_message or ""
+        )
         log.info(
             "approval_broker.decided call_id=%s approved=%s scope=%s",
             call_id,

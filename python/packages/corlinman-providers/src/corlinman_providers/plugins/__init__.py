@@ -38,6 +38,7 @@ from corlinman_providers.plugins.approval import (
     ApprovalRecord,
     ApprovalRequest,
     ApprovalStore,
+    default_approvals_db_path,
 )
 from corlinman_providers.plugins.async_task import (
     AsyncTaskCompletionError,
@@ -174,6 +175,7 @@ __all__ = [
     "ServiceRuntimeProtocol",
     "Tool",
     "ToolsAllowlist",
+    "default_approvals_db_path",
     "default_runner",
     "discover",
     "host_config_from",

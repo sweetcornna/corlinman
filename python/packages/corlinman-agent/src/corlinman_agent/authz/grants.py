@@ -140,6 +140,24 @@ class GrantStore:
     Every SQLite touch is best-effort: an unwritable data_dir degrades the
     ``always`` tier to process-memory (with one WARN) rather than turning
     an approval into a deny or crashing dispatch.
+
+    Cross-process invalidation (W3-4): the gateway's admin surface and the
+    agent process share the SQLite file but hold *separate* in-memory
+    mirrors, so a revocation written by the gateway must become visible to
+    the agent without a restart. Strategy: every :meth:`is_granted` /
+    :meth:`list_always` call re-stats the DB file and reloads the mirror
+    when ``st_mtime_ns`` changed. Trade-offs, deliberately accepted:
+
+    * cost — one ``os.stat`` per permission check (~µs); tool dispatch is
+      already a millisecond-plus operation, so no throttle is needed and
+      revocations take effect at the *next permission check* (≤ next turn).
+    * mtime granularity — ``st_mtime_ns`` is nanosecond-precise on APFS
+      and ext4; a same-instant writer pair could in theory be missed, but
+      grants change at human speed, not write-storm speed.
+    * memory-only rows — grants that failed to persist (unwritable DB)
+      are tracked separately and survive a reload; they remain invisible
+      to (and irrevocable from) other processes, which is exactly the
+      degraded-durability contract the WARN log announces.
     """
 
     def __init__(self, data_dir: Path | str | None = None) -> None:
@@ -150,8 +168,14 @@ class GrantStore:
         #: (tenant, surface, user, tool, digest) — mirror of the DB plus
         #: any rows that failed to persist.
         self._always: set[tuple[str, str, str, str, str]] = set()
+        #: Rows we could not write to SQLite; re-merged after every
+        #: reload so a broken DB never silently drops a live grant.
+        self._always_unpersisted: set[tuple[str, str, str, str, str]] = set()
         self._db_loaded = False
         self._db_failed = False
+        #: ``st_mtime_ns`` of the DB file at the last successful load —
+        #: the cross-process invalidation watermark.
+        self._db_mtime_ns: int | None = None
 
     # -- paths ----------------------------------------------------------
 
@@ -176,33 +200,63 @@ class GrantStore:
                 )
             return None
 
+    def _stat_mtime_ns(self) -> int | None:
+        try:
+            return os.stat(self.db_path()).st_mtime_ns
+        except OSError:
+            return None
+
     def _load_db(self) -> None:
         """Populate the always-grant cache from SQLite once per store."""
         if self._db_loaded or self._db_failed:
             return
+        self._reload_db()
+        self._db_loaded = True
+
+    def _reload_db(self) -> None:
+        """(Re)build the always mirror from disk; keeps unpersisted rows."""
         conn = self._connect()
         if conn is None:
-            self._db_loaded = True
             return
+        mtime = self._stat_mtime_ns()
+        fresh: set[tuple[str, str, str, str, str]] = set()
         try:
             rows = conn.execute(
                 "SELECT tenant, surface, user_id, tool, arg_digest FROM grants "
                 "WHERE kind = 'always'"
             ).fetchall()
             for tenant, surface, user_id, tool, digest in rows:
-                self._always.add(
+                fresh.add(
                     (str(tenant), str(surface), str(user_id), str(tool), str(digest))
                 )
         except Exception as exc:  # noqa: BLE001
             logger.warning("agent.authz.grant_store_read_failed", error=str(exc))
-        finally:
             conn.close()
-        self._db_loaded = True
+            return
+        conn.close()
+        self._always = fresh | self._always_unpersisted
+        self._db_mtime_ns = mtime
 
-    def _persist_always(self, key: tuple[str, str, str, str, str]) -> None:
+    def _reload_if_changed(self) -> None:
+        """Cross-process invalidation: reload when the DB file changed.
+
+        Called (under the store lock) from every read path so a grant
+        revoked by the gateway's admin surface disappears from the agent
+        process at its next permission check. See the class docstring for
+        the cost/granularity trade-offs.
+        """
+        if self._db_failed:
+            return
+        if not self._db_loaded:
+            self._load_db()
+            return
+        if self._stat_mtime_ns() != self._db_mtime_ns:
+            self._reload_db()
+
+    def _persist_always(self, key: tuple[str, str, str, str, str]) -> bool:
         conn = self._connect()
         if conn is None:
-            return
+            return False
         try:
             conn.execute(
                 "INSERT OR REPLACE INTO grants "
@@ -213,8 +267,11 @@ class GrantStore:
             conn.commit()
         except Exception as exc:  # noqa: BLE001
             logger.warning("agent.authz.grant_store_write_failed", error=str(exc))
+            return False
         finally:
             conn.close()
+        self._db_mtime_ns = self._stat_mtime_ns()
+        return True
 
     def _delete_always(self, key: tuple[str, str, str, str, str]) -> None:
         conn = self._connect()
@@ -231,6 +288,7 @@ class GrantStore:
             logger.warning("agent.authz.grant_store_delete_failed", error=str(exc))
         finally:
             conn.close()
+        self._db_mtime_ns = self._stat_mtime_ns()
 
     # -- public API ------------------------------------------------------
 
@@ -265,7 +323,8 @@ class GrantStore:
             key = (tenant, surface, user, tool, digest)
             self._load_db()
             self._always.add(key)
-            self._persist_always(key)
+            if not self._persist_always(key):
+                self._always_unpersisted.add(key)
 
     def is_granted(self, subject: Any, tool: str, args: dict[str, Any] | None) -> bool:
         """True when a session or always grant covers this exact call."""
@@ -275,7 +334,7 @@ class GrantStore:
         with self._lock:
             if (tenant, session_key, tool, digest) in self._session:
                 return True
-            self._load_db()
+            self._reload_if_changed()
             surface = _surface_of(subject)
             user = str(getattr(subject, "user_id", None) or "")
             # Unscoped grant, then the progressively-narrower scoped shapes.
@@ -324,15 +383,100 @@ class GrantStore:
         key = (tenant, "", "", tool, digest)
         with self._lock:
             self._always.discard(key)
+            self._always_unpersisted.discard(key)
             self._delete_always(key)
+
+    def list_always(self) -> list[dict[str, Any]]:
+        """Every durable grant as a plain dict (W3-4 admin listing).
+
+        Reads the DB fresh (after a mtime check) so the gateway's admin
+        surface always sees rows written by the agent process. Rows that
+        exist only in this process's memory (persist failed) are appended
+        with ``created_at=None`` so the operator still sees them.
+        """
+        rows: list[dict[str, Any]] = []
+        with self._lock:
+            self._reload_if_changed()
+            conn = self._connect()
+            seen: set[tuple[str, str, str, str, str]] = set()
+            if conn is not None:
+                try:
+                    for tenant, surface, user_id, tool, digest, created in conn.execute(
+                        "SELECT tenant, surface, user_id, tool, arg_digest, "
+                        "created_at FROM grants WHERE kind = 'always' "
+                        "ORDER BY created_at DESC"
+                    ).fetchall():
+                        key = (
+                            str(tenant),
+                            str(surface),
+                            str(user_id),
+                            str(tool),
+                            str(digest),
+                        )
+                        seen.add(key)
+                        rows.append(
+                            {
+                                "tenant": key[0],
+                                "surface": key[1],
+                                "user_id": key[2],
+                                "tool": key[3],
+                                "arg_digest": key[4],
+                                "created_at": float(created),
+                            }
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "agent.authz.grant_store_read_failed", error=str(exc)
+                    )
+                finally:
+                    conn.close()
+            for key in sorted(self._always - seen):
+                rows.append(
+                    {
+                        "tenant": key[0],
+                        "surface": key[1],
+                        "user_id": key[2],
+                        "tool": key[3],
+                        "arg_digest": key[4],
+                        "created_at": None,
+                    }
+                )
+        return rows
+
+    def revoke_always_entry(
+        self,
+        *,
+        tenant: str,
+        surface: str = "",
+        user_id: str = "",
+        tool: str,
+        arg_digest: str,
+    ) -> bool:
+        """Revoke one durable grant by its exact key (W3-4 admin surface).
+
+        Returns ``True`` when the grant existed (in the DB or this
+        process's mirror). The deletion bumps the DB file's mtime, which
+        is what makes the agent process drop the grant at its next
+        permission check (see the class docstring).
+        """
+        key = (str(tenant), str(surface), str(user_id), str(tool), str(arg_digest))
+        with self._lock:
+            self._reload_if_changed()
+            existed = key in self._always
+            self._always.discard(key)
+            self._always_unpersisted.discard(key)
+            self._delete_always(key)
+        return existed
 
     def reset(self) -> None:
         """Forget everything in memory and re-arm lazy DB loading (tests)."""
         with self._lock:
             self._session.clear()
             self._always.clear()
+            self._always_unpersisted.clear()
             self._db_loaded = False
             self._db_failed = False
+            self._db_mtime_ns = None
 
 
 # ---------------------------------------------------------------------------

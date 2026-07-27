@@ -62,6 +62,9 @@ from corlinman_server.gateway.routes_admin_b import (
     voice as _voice,
 )
 from corlinman_server.gateway.routes_admin_b.config_admin import (
+    authz_policy as _authz_policy,
+)
+from corlinman_server.gateway.routes_admin_b.config_admin import (
     config as _config,
 )
 from corlinman_server.gateway.routes_admin_b.config_admin import (
@@ -143,6 +146,7 @@ def build_router() -> APIRouter:
     root = APIRouter()
     for mod in (
         _agents,
+        _authz_policy,
         _config,
         _credentials,
         _curator,

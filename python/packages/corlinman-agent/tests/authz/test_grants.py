@@ -110,3 +110,67 @@ def test_scoped_always_grant_only_matches_its_scope(tmp_path: Path) -> None:
         session_key="acme::s9", tenant_id="acme", surface="web", user_id="u1"
     )
     assert not store.is_granted(other_surface, "run_shell", {"command": "ls"})
+
+
+# ---------------------------------------------------------------------------
+# W3-4 — admin surface APIs (list / keyed revoke) + cross-process
+# invalidation via the mtime watermark.
+# ---------------------------------------------------------------------------
+
+
+def test_list_always_returns_rows_with_metadata(tmp_path: Path) -> None:
+    store = GrantStore(tmp_path)
+    store.record(_S1, "run_shell", {"command": "ls"}, "always")
+    store.record(
+        _OTHER_TENANT, "web_search", {"query": "x"}, "always"
+    )
+    rows = store.list_always()
+    assert len(rows) == 2
+    by_tool = {r["tool"]: r for r in rows}
+    assert by_tool["run_shell"]["tenant"] == "acme"
+    assert by_tool["run_shell"]["arg_digest"] == arg_digest(
+        "run_shell", {"command": "ls"}
+    )
+    assert isinstance(by_tool["run_shell"]["created_at"], float)
+    # Session grants never appear in the durable listing.
+    store.record(_S1, "read_file", {"path": "/x"}, "session")
+    assert len(store.list_always()) == 2
+
+
+def test_revoke_always_entry_by_exact_key(tmp_path: Path) -> None:
+    store = GrantStore(tmp_path)
+    store.record(_S1, "run_shell", {"command": "ls"}, "always")
+    digest = arg_digest("run_shell", {"command": "ls"})
+    assert store.revoke_always_entry(
+        tenant="acme", tool="run_shell", arg_digest=digest
+    )
+    assert not store.is_granted(_S1, "run_shell", {"command": "ls"})
+    # Second revoke of the same key: nothing there any more.
+    assert not store.revoke_always_entry(
+        tenant="acme", tool="run_shell", arg_digest=digest
+    )
+
+
+def test_cross_process_revocation_reaches_a_warm_store(tmp_path: Path) -> None:
+    """The agent-process contract (W3-4 AC5): a warm store (mirror
+    loaded) drops a grant revoked by ANOTHER store instance on the same
+    DB — the mtime check runs on every is_granted."""
+    agent = GrantStore(tmp_path)
+    agent.record(_S1, "run_shell", {"command": "ls"}, "always")
+    assert agent.is_granted(_S1, "run_shell", {"command": "ls"})  # warm
+
+    gateway = GrantStore(tmp_path)
+    digest = arg_digest("run_shell", {"command": "ls"})
+    assert gateway.revoke_always_entry(
+        tenant="acme", tool="run_shell", arg_digest=digest
+    )
+
+    assert not agent.is_granted(_S1, "run_shell", {"command": "ls"})
+
+
+def test_cross_process_new_grant_reaches_a_warm_store(tmp_path: Path) -> None:
+    agent = GrantStore(tmp_path)
+    assert not agent.is_granted(_S1, "run_shell", {"command": "ls"})  # warm+empty
+
+    GrantStore(tmp_path).record(_S1, "run_shell", {"command": "ls"}, "always")
+    assert agent.is_granted(_S1, "run_shell", {"command": "ls"})

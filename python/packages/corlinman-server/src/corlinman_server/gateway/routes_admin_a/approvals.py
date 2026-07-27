@@ -34,6 +34,7 @@ from corlinman_server.gateway.routes_admin_a._approvals_lib import (
     _record_to_out,
     _require_store,
     _sse_iter,
+    _wire_decision,
 )
 from corlinman_server.gateway.routes_admin_a._auth_shim import (
     require_admin_dependency,
@@ -112,11 +113,19 @@ def router() -> APIRouter:
             ApprovalDecision.ALLOW if body.approve else ApprovalDecision.DENY
         )
 
+        # Look the row up first — the broker bridge below needs its
+        # session_key (the decision-authorization scope W3-3 introduced).
+        try:
+            record = await store.get(call_id)
+        except Exception:  # noqa: BLE001 — fall through to decide()'s 404
+            record = None
+
         # Prefer the queue (wakes in-process waiters) when wired; fall
-        # back to the store directly otherwise.
+        # back to the store directly otherwise. ``reason`` lands in the
+        # row's ``decision_reason`` column (W3-4).
         target = state.approval_queue or store
         try:
-            updated = await target.decide(call_id, decision)
+            updated = await target.decide(call_id, decision, reason=body.reason)
         except Exception as exc:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -131,7 +140,28 @@ def router() -> APIRouter:
                     "id": call_id,
                 },
             )
-        return {"id": call_id, "decision": decision.value}
+
+        # W3-4 bridge: feed the decision into the parked chat stream via
+        # the process-global ApprovalBroker so an in-flight turn resumes
+        # end-to-end. Best-effort — after a gateway restart the row still
+        # exists but no live stream does; the decision is recorded above
+        # and the broker simply reports "no such stream".
+        if record is not None:
+            try:
+                from corlinman_server.gateway.services.approval_broker import (  # noqa: PLC0415
+                    get_approval_broker,
+                )
+
+                await get_approval_broker().decide(
+                    call_id,
+                    approved=body.approve,
+                    scope="once",
+                    deny_message=body.reason or "",
+                    session_key=record.session_key,
+                )
+            except Exception:  # noqa: BLE001 — bridge is best-effort
+                pass
+        return {"id": call_id, "decision": _wire_decision(decision.value) or ""}
 
     @r.get(
         "/admin/approvals/stream",

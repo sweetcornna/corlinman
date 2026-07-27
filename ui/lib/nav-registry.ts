@@ -50,6 +50,7 @@ import {
   Route as RouteIcon,
   Send,
   Settings,
+  ShieldCheck,
   Sparkles,
   Store,
   Terminal,
@@ -292,6 +293,14 @@ export const NAV_PAGES: NavPageDef[] = [
     icon: Fingerprint,
     section: "config",
     keywords: "identity account name 身份",
+  },
+  {
+    id: "authz",
+    href: "/authz",
+    labelKey: "nav.authz",
+    icon: ShieldCheck,
+    section: "config",
+    keywords: "permissions policy rules grants approvals 权限 授权 策略",
   },
 
   // ── 系统 / System ─────────────────────────────────────────────────
