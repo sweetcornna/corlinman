@@ -4,6 +4,33 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.49.0] — 2026-07-27 — P6 三大件：稠密向量 RAG / OIDC SSO / 巨型 skill 拆分
+
+### Added
+- **稠密向量 RAG 一期**(G2,a→d):`OpenAIProvider.embed()` 真实现
+  (CJK 安全截断、逐批 401 自愈)、EmbeddingRouter(`[embedding]` 段,
+  未配置明确报错不回落聊天模型)、memory.sqlite 暴力余弦(零新依赖)+
+  BM25 RRF 融合。`[rag].dense_enabled` 默认 **off**(embedding 花钱,
+  显式 opt-in),关闭时与现状 byte-identical;融合分值重标定回 BM25
+  区间(`[memory.recall].min_score` 语义不破),`dense_min_similarity`
+  余弦地板防垃圾混入;`backfill_on_start` 后台补历史向量(失败批跳过、
+  换模型旧维度重打)。HNSW 留二期。(#186)
+- **OIDC 入站 SSO**(G3):`[auth.oidc]` 配置 discovery + Authorization
+  Code/PKCE + id_token 全校验(签名/iss/aud/exp/nonce/多 aud azp)+
+  **email_verified 强制**(自填邮箱 IdP 不可绕白名单)+ state 浏览器
+  绑定(login-CSRF 免疫)+ 10/min/IP 限速;复用既有 admin session,
+  fail-closed(空白名单全拒);登录页 SSO 按钮。新依赖仅
+  pyjwt[crypto]。(#185)
+- **4 个巨型 skill 拆分**:huashu-design/configure-persona/nuwa/darwin
+  拆为 SKILL.md(≤105 行)+ references/ 渐进披露,内容零丢失;Skill
+  工具新增 `file` 参数(路径穿越防护、512KiB 上限、file_not_found 返回
+  可用文件列表);seed 连 references/ 一起播种。已播种存量部署按
+  operator-edits-win 不自动升级(产品决策待定)。(#184)
+
+### Notes
+- 至此 2026-07-27 路线图全部清账:P1-P5 + P4 四波 + P6 三大件,
+  v1.43.0 → v1.49.0,14 个功能 PR。
+
 ## [1.48.0] — 2026-07-27 — 统一授权模型收官（W3-4）：队列持久化 + 策略/授权 UI
 
 ### Added
