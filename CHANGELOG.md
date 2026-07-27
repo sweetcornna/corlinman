@@ -4,6 +4,73 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.39.0] — 2026-07-26 — 数据驱动 TTS 后端注册表 + GPT-Live + 七渠道语音投递
+
+### Added
+- **数据驱动的 TTS 后端注册表**（`corlinman_agent/voice/`）：一个后端 = 一行
+  `BackendDef`（模型/音色/容器/凭据/HTTP 形状）。新增厂商 = 加一行数据；用户自接
+  服务 = 写一段 `[voice.backends.<id>]` 配置。两者在 UI 里完全平级，都有试听、都能
+  被渠道使用，代码里没有 `if backend_id == ...` 分支。内置 6 个：`gpt_live`、
+  `openai`、`fish`、`elevenlabs`、`gemini`、`minimax`。(#167)
+- **模板化 HTTP 驱动**（`voice/http_backend.py`）吸收厂商形状差异：整串恰好是占位符
+  时按原始类型替换（`"{speed}"` → 数字）；包含占位符时文本插值（`path` 也支持，
+  ElevenLabs 把音色放 URL 里）；解析为空的键整键丢弃（没填的 `instructions` 不会以
+  空串发给会拒绝空值的厂商）；音频可以是响应体，也可以是 JSON 里的 base64
+  （`audio_path` 支持数字下标）。(#167)
+- **GPT-Live 接入**（`voice/gpt_live.py`）：`POST /v1/live` 收
+  `{"sdp": <offer>, "session": {...}}` 返回 answer SDP，Codex 别名
+  `/backend-api/codex/realtime/calls` 同契约（前者 404 才回退）。会话为纯音频、
+  `recvonly`、`turn_detection = null`；录音器无条件启动并在 track 回调补启一次
+  （`track` 可能在 `setRemoteDescription` 返回之后才触发，以"是否已收到轨道"
+  把门会导致录音器永不启动、每次合成产出空音频）。`aiortc` 是可选 extra
+  （`uv sync --extra voice`），缺失时返回 `gpt_live_dependency_missing`。9 个音色：
+  Arbor/Breeze/Cove/Ember/Juniper/Maple/Sol/Spruce/Vale。(#167)
+- **语音管理页 `/voice`** + `/admin/voice/{backends,settings,preview}`：后端目录、
+  默认值、逐音色试听。试听走同一个 `synthesize()`，UI 里听到的就是渠道会发的。
+  密钥以 `***REDACTED***` 读出，回传哨兵或留空均保持已存值。(#167)
+- **七渠道语音投递**（`corlinman_channels/voice_out.py`）：统一"是不是音频"与
+  "该渠道原生语音条要什么容器"两个此前分散的判断。Telegram mp3 自动转码
+  OGG/Opus 48k 单声道；微信公众号启用 `send_voice_customer`；QQ/OneBot 原生语音条；
+  Discord/Slack/飞书音频文件 + 如实标注；Web 聊天渲染真实 `<audio controls>`。
+  所有路径均有降级：无 ffmpeg / 编码失败 / 超体积上限一律退回普通文件发送。(#167)
+- QQ 官方 Bot 语音支持：`FILE_TYPE_VOICE = 3` + `upload_{group,c2c}_voice` /
+  `send_{group,c2c}_voice`。腾讯仅收 SILK，非 SILK 明确告知并跳过，不发注定被 CDN
+  拒的上传。(#167)
+- `docs/voice.md`；`docs/config.example.toml` 新增 `[voice]` 段（含自定义后端完整
+  示例）。(#167)
+
+### Fixed
+- **新音色被静默吞掉**：旧 `tts.py` 硬编码 6 个音色且未知值一律强制成 `alloy`，
+  2024 年后 OpenAI 发布的 `marin`/`cedar` 与任何自定义音色都会失效。现按所选后端
+  校验；克隆型后端（fish/elevenlabs/minimax）任何非空值原样透传。(#167)
+- **Telegram 语音发成文档**：`sendVoice` 只接受 OGG/Opus，而 `text_to_speech` 默认
+  产出 mp3，此前一律退化为静默文档。现自动转码。(#167)
+- **微信公众号语音无法送达**：`send_voice_customer` / `upload_temp_media` 早已实现
+  但无任何调用点，`send_attachment` 帧被静默丢弃。现已接通；投递不了时把原因追加
+  到回复正文，避免模型说"已发送语音"而用户什么也没收到。(#167)
+- **Web 聊天音频附件只有静态图标**：`attachment-gallery` 现渲染真实播放器。(#167)
+- **凭据边界**：只有 persona 显式绑定给 `voice` 的 provider（或 OpenAI 系后端，
+  此时 provider 本就是目标中转）才允许借用其 key/base_url。此前若凭据配在
+  `[providers.*]` 而非环境变量里，防泄漏守卫恒不触发 —— 配了 OpenAI 形状聊天
+  provider 又启用 Fish/ElevenLabs/MiniMax 的部署，会把聊天 provider 的 key 当作
+  Bearer 发给第三方厂商主机。(#167)
+- **凭据优先级**：params → 绑定的 provider → 环境变量 → 默认。环境变量排在
+  provider 之后，否则导出一个全局 `FISH_AUDIO_API_KEY` 会覆盖掉每个 persona 的
+  绑定，并把该 key 与 adapter 的 base_url 错配成一对。(#167)
+- `[voice.backends.*]` 在 boot 与 config 热切换时都注册 —— `text_to_speech` 在 agent
+  进程解析后端、不经 admin 路由，只在路由里同步会导致自定义后端对模型不可见。(#167)
+
+### Changed
+- `text_to_speech` 上游 HTTP 失败从 `tts_unavailable` 细化为 `tts_http_status`
+  （带 status code），让试听能显示真实原因。工具 wire 契约（工具名/参数/信封）
+  不变。(#167)
+
+### Known issues
+- **GPT-Live 受网关 attestation 阻塞**：Sub2API 当前实现要求其自身跑在 macOS 上，
+  否则所有 Live 请求返回 `503 Live attestation is unavailable`。该门禁在校验 SDP 与
+  model id 之前触发，属网关宿主机限制。管理端试听会先做轻量探测，直接报"网关无法
+  attest"，而不是让人误以为是本地依赖问题。其余后端不受影响。
+
 ## [1.38.0] — 2026-07-26 — QQ 多账号实例 + 群发言硬上限 + 拟人化主动发言
 
 ### Added
