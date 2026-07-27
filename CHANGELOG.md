@@ -4,6 +4,42 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.44.0] — 2026-07-27 — 路线图清账：子 agent 行为底线 / render_document 工具化 / Redis journal / 记忆内核默认 on
+
+### Added
+- **子 agent 行为底线**：所有子 agent（registry spawn / spawn_many / spawn_inline /
+  后台派发）此前继承父 agent 全部工具却没有任何行为规则，`spawn_inline` 更是让
+  父模型自写子 agent 的完整系统提示。现在 `SUBAGENT_BASELINE_PROMPT` 在
+  `_build_child_messages`（所有 spawn 路径的唯一收口点）无条件前置：如实汇报 /
+  verify-before-done / read-before-edit / 范围纪律 / 不可逆动作硬停。模型自写
+  提示只能**附加**、不能覆盖；刻意不设配置开关。(#173)
+- **`render_document` 内置工具**：Markdown 进、验证过的 PDF 出（CJK 管线），
+  输出限定工作区、强制扩展名、拒收原始 PDF 字节——用接口形状取代
+  `document-generator` 的全部正文禁令，该 skill 解除 always-on 改走渐进披露。
+  **`visual-output-quality` 保留 always-on**：其图像/海报布局禁令没有结构性
+  替代物，只摘有替代物的那一半，不重开 v1.12.3 回归。(#177)
+- **Redis journal 后端**（gap-close G1 收官）：`RedisJournalBackend` 从 stub 变
+  真实现，镜像 Postgres 后端结构；INCR 序号、hash+zset 建模、SET NX PX 竞速
+  claim(值校验释放 + 失败回滚)。HA journal 三个环境变量首次写进
+  docs/architecture.md。(#174)
+- **前端收纳原语**：Tooltip / InfoTip / Collapsible（Eclipse Minimal v2,自绘
+  sprite,读屏器可达),落地 oauth 弹窗与租户创建。(#175)
+
+### Changed
+- **记忆内核默认从 `shadow` 翻到 `on`**（产品决策):缺省即注入;显式 pin 与
+  `on_channels` 灰度不变;非法值仍回落 shadow——拼写错误不能悄悄打开注入。
+  `CORLINMAN_MEMORY_KERNEL` 仍是最高优先级 kill-switch。(#178)
+- **前端文案净清单**:oauth 长文案压缩进折叠、13 处用户可见文案去 `/admin/*`
+  路径、slug 正则改人话、密码重置提示不再教 SSH+argon2。(#175)
+- **docs/ 归档**:22 份已完成的 `PLAN_*/PROMPT_*` 移入 `docs/archive/`(含逐份
+  归档依据索引),8 份保留并记录理由;全仓 64 个文件引用路径同步。(#176)
+
+### Notes
+- 路线图 P1/P2/P3/P5 与杂活全部清账;P4(统一授权模型)设计已定稿,分四波
+  (W3-1…W3-4)后续独立 PR。
+- 遗留(不销账):visual-output-quality 图像禁令的工具化;oauth 仍剩 3 条
+  >60 字文案;field-hint 使用面未扩。
+
 ## [1.43.0] — 2026-07-27 — agent 自身的运行时开关可配置（[agent_runtime]）
 
 ### Added
