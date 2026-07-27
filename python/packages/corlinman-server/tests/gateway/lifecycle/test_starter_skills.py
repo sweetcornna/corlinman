@@ -229,6 +229,73 @@ def test_seed_starter_skills_preserves_operator_edits(
     )
 
 
+def test_seed_starter_skills_ships_references_for_split_skills(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The four giant skills were split into ``SKILL.md +
+    references/*.md``; the seeder's subtree copy must land the
+    references in the data dir byte-for-byte, or the slim SKILL.md
+    routes the model to files that don't exist."""
+    monkeypatch.delenv("CORLINMAN_BUNDLED_SKILLS_DIR", raising=False)
+    source = starter_skills.bundled_skills_root()
+    assert source is not None
+    target = tmp_path / "profiles" / "default" / "skills"
+
+    starter_skills.seed_starter_skills(target)
+
+    for skill in ("huashu-design", "configure-persona", "nuwa-skill", "darwin-skill"):
+        src_refs = sorted((source / skill / "references").glob("*.md"))
+        assert src_refs, f"{skill}: bundle has no references/*.md"
+        for src in src_refs:
+            dst = target / skill / "references" / src.name
+            assert dst.is_file(), f"{skill}: {src.name} not seeded"
+            assert dst.read_text(encoding="utf-8") == src.read_text(
+                encoding="utf-8"
+            ), f"{skill}: {src.name} content drifted during seed"
+
+
+def test_split_bundled_skills_stay_slim_with_valid_frontmatter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression net for the giant-skill split: the four main SKILL.md
+    files must stay under 150 lines (progressive disclosure — detail
+    lives in references/), keep description/when_to_use ≤ 200 chars,
+    and keep routing to at least one existing reference file."""
+    monkeypatch.delenv("CORLINMAN_BUNDLED_SKILLS_DIR", raising=False)
+    from corlinman_skills_registry import SkillRegistry  # noqa: PLC0415
+
+    root = starter_skills.bundled_skills_root()
+    assert root is not None
+    reg = SkillRegistry.load_from_dir(root)
+    dirs_to_names = {
+        "huashu-design": "huashu-design",
+        "configure-persona": "configure-persona",
+        "nuwa-skill": "huashu-nuwa",
+        "darwin-skill": "darwin-skill",
+    }
+    for dirname, name in dirs_to_names.items():
+        main = root / dirname / "SKILL.md"
+        lines = main.read_text(encoding="utf-8").splitlines()
+        assert len(lines) < 150, f"{dirname}/SKILL.md is {len(lines)} lines (>=150)"
+
+        skill = reg.get(name)
+        assert skill is not None, f"{name} not registered"
+        assert len(skill.description.strip()) <= 200, f"{name}: description > 200 chars"
+        assert skill.when_to_use, f"{name}: when_to_use missing"
+        assert len(skill.when_to_use.strip()) <= 200, f"{name}: when_to_use > 200 chars"
+
+        body = main.read_text(encoding="utf-8")
+        routed = [
+            rel
+            for rel in {
+                seg.split("`")[0]
+                for seg in body.split("references/")[1:]
+            }
+            if (root / dirname / "references" / rel).is_file()
+        ]
+        assert routed, f"{dirname}: SKILL.md routes to no existing reference"
+
+
 def test_seed_starter_skills_copies_nested_skill_subtree(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

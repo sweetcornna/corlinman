@@ -843,7 +843,10 @@ def _skill_tool_schema() -> dict[str, Any]:
                 "this with the skill's `name` to read its complete body "
                 "before performing the task it describes. Returns the skill "
                 "markdown (or an error if the skill is unavailable / its "
-                "requirements are unmet)."
+                "requirements are unmet). Skills may split detail into "
+                "supporting files (e.g. `references/*.md`); pass the "
+                "optional `file` argument with the relative path the skill "
+                "body mentions to read that file instead of the body."
             ),
             "parameters": {
                 "type": "object",
@@ -851,6 +854,15 @@ def _skill_tool_schema() -> dict[str, Any]:
                     "name": {
                         "type": "string",
                         "description": "The skill name to load (from the catalog).",
+                    },
+                    "file": {
+                        "type": "string",
+                        "description": (
+                            "Optional path of a supporting file inside the "
+                            "skill's own directory, relative to the skill "
+                            "root (e.g. 'references/workflow.md'). Omit to "
+                            "load the SKILL.md body itself."
+                        ),
                     },
                 },
                 "required": ["name"],
@@ -5044,11 +5056,100 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # SEC-01: scoped to THIS session_key, never process-global.
         allowed = list(getattr(skill, "allowed_tools", None) or [])
         self._record_active_skill(session_key, name, allowed)
+
+        # Progressive disclosure, file half: skills split into
+        # ``SKILL.md + references/*.md`` ship the detail files next to the
+        # SKILL.md. The product agent's file tools are workspace-confined
+        # while skills live under the data dir, so this tool — not
+        # read_file — is the sanctioned reader for those files. The read
+        # is confined to the skill's own directory (resolve + prefix
+        # check), so the workspace boundary of the file tools stays
+        # untouched.
+        file_arg = obj.get("file")
+        if file_arg is not None:
+            if not isinstance(file_arg, str) or not file_arg.strip():
+                return json.dumps({"ok": False, "error": "file_invalid", "name": name})
+            return self._read_skill_file(skill, name, file_arg.strip(), allowed)
+
         return json.dumps(
             {
                 "ok": True,
                 "name": skill.name,
                 "body": skill.body_markdown,
+                "allowed_tools": allowed,
+            },
+            ensure_ascii=False,
+        )
+
+    #: Upper bound for a single ``Skill(file=...)`` read. Reference files
+    #: are prose meant for the model's context; anything larger than this
+    #: is almost certainly a mis-pointed binary / dataset and would blow
+    #: the prompt budget anyway.
+    _SKILL_FILE_MAX_BYTES = 512 * 1024
+
+    def _read_skill_file(
+        self,
+        skill: Any,
+        name: str,
+        rel_path: str,
+        allowed: list[str],
+    ) -> str:
+        """Read a supporting file from inside ``skill``'s own directory.
+
+        Only nested-layout skills (``<dir>/SKILL.md``) have a private
+        directory; flat ``<root>/<name>.md`` skills share the skills root
+        with every other skill, so file pulls are refused for them.
+
+        Traversal protection: the requested path must be relative, and its
+        fully resolved location (symlinks included) must remain inside the
+        resolved skill directory. Never raises.
+        """
+        source_path = getattr(skill, "source_path", None)
+        if source_path is None or Path(source_path).name != "SKILL.md":
+            return json.dumps(
+                {"ok": False, "error": "skill_has_no_files", "name": name}
+            )
+        skill_dir = Path(source_path).parent
+        try:
+            requested = Path(rel_path)
+            if requested.is_absolute():
+                return json.dumps(
+                    {"ok": False, "error": "file_path_escapes_skill_dir", "name": name}
+                )
+            skill_root = skill_dir.resolve()
+            candidate = (skill_dir / requested).resolve()
+        except (OSError, ValueError):
+            return json.dumps({"ok": False, "error": "file_invalid", "name": name})
+        if candidate == skill_root or not candidate.is_relative_to(skill_root):
+            return json.dumps(
+                {"ok": False, "error": "file_path_escapes_skill_dir", "name": name}
+            )
+        if not candidate.is_file():
+            return json.dumps(
+                {"ok": False, "error": "file_not_found", "name": name, "file": rel_path}
+            )
+        try:
+            if candidate.stat().st_size > self._SKILL_FILE_MAX_BYTES:
+                return json.dumps(
+                    {"ok": False, "error": "file_too_large", "name": name, "file": rel_path}
+                )
+            text = candidate.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            logger.warning(
+                "agent.skill_tool.file_read_failed",
+                skill=name,
+                file=rel_path,
+                error=str(exc),
+            )
+            return json.dumps(
+                {"ok": False, "error": "file_read_failed", "name": name, "file": rel_path}
+            )
+        return json.dumps(
+            {
+                "ok": True,
+                "name": name,
+                "file": rel_path,
+                "body": text,
                 "allowed_tools": allowed,
             },
             ensure_ascii=False,

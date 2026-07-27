@@ -102,6 +102,125 @@ async def test_skill_tool_requires_name() -> None:
     assert payload["error"] == "name_required"
 
 
+def _servicer_with_skills(skills_dir) -> CorlinmanAgentServicer:
+    """Servicer whose context assembler exposes a REAL SkillRegistry
+    loaded from ``skills_dir`` — the same attribute path
+    (``_context_assembler._skills``) production wiring uses."""
+    from types import SimpleNamespace
+
+    from corlinman_agent.skills import SkillRegistry
+
+    servicer = _servicer()
+    servicer._context_assembler = SimpleNamespace(
+        _skills=SkillRegistry.load_from_dir(skills_dir)
+    )
+    return servicer
+
+
+@pytest.fixture
+def seeded_skills_dir(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    """Seed the real bundled starter skills into a tmp data dir — the
+    exact tree a first-boot gateway hands the agent process."""
+    from corlinman_server.gateway.lifecycle.starter_skills import (
+        seed_starter_skills,
+    )
+
+    monkeypatch.delenv("CORLINMAN_BUNDLED_SKILLS_DIR", raising=False)
+    target = tmp_path / "profiles" / "default" / "skills"
+    report = seed_starter_skills(target)
+    assert report.copied, "bundled seed produced nothing"
+    return target
+
+
+@pytest.mark.asyncio
+async def test_skill_tool_pulls_reference_file_from_seeded_bundle(
+    seeded_skills_dir,
+) -> None:
+    """End-to-end progressive disclosure for split skills: bundle →
+    seed → registry → real ``Skill`` dispatch with ``file`` returns the
+    reference body the SKILL.md routes to."""
+    servicer = _servicer_with_skills(seeded_skills_dir)
+    out = await servicer._dispatch_builtin(
+        _event(
+            "Skill",
+            {"name": "huashu-design", "file": "references/asset-protocol.md"},
+        ),
+        _start(),
+        _FakeProvider(),
+    )
+    payload = json.loads(out)
+    assert payload["ok"] is True, payload
+    assert payload["file"] == "references/asset-protocol.md"
+    # Verbatim content moved out of the giant SKILL.md must come back.
+    assert "核心资产协议" in payload["body"]
+    assert "brand-spec.md" in payload["body"]
+
+
+@pytest.mark.asyncio
+async def test_skill_tool_body_pull_still_works_for_split_skill(
+    seeded_skills_dir,
+) -> None:
+    servicer = _servicer_with_skills(seeded_skills_dir)
+    out = await servicer._dispatch_builtin(
+        _event("Skill", {"name": "huashu-design"}), _start(), _FakeProvider()
+    )
+    payload = json.loads(out)
+    assert payload["ok"] is True, payload
+    # The slim body routes to the split-out references.
+    assert "references/asset-protocol.md" in payload["body"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "../plan.md",  # parent-dir escape into the shared skills root
+        "../../secrets.txt",  # deeper escape
+        "/etc/passwd",  # absolute path
+        "references/../../plan.md",  # escape smuggled mid-path
+    ],
+)
+async def test_skill_tool_file_rejects_traversal(seeded_skills_dir, bad) -> None:
+    servicer = _servicer_with_skills(seeded_skills_dir)
+    out = await servicer._dispatch_builtin(
+        _event("Skill", {"name": "huashu-design", "file": bad}),
+        _start(),
+        _FakeProvider(),
+    )
+    payload = json.loads(out)
+    assert payload["ok"] is False
+    assert payload["error"] == "file_path_escapes_skill_dir"
+
+
+@pytest.mark.asyncio
+async def test_skill_tool_file_not_found_envelope(seeded_skills_dir) -> None:
+    servicer = _servicer_with_skills(seeded_skills_dir)
+    out = await servicer._dispatch_builtin(
+        _event("Skill", {"name": "huashu-design", "file": "references/nope.md"}),
+        _start(),
+        _FakeProvider(),
+    )
+    payload = json.loads(out)
+    assert payload["ok"] is False
+    assert payload["error"] == "file_not_found"
+
+
+@pytest.mark.asyncio
+async def test_skill_tool_file_refused_for_flat_skill(seeded_skills_dir) -> None:
+    """Flat ``<root>/<name>.md`` skills share the skills root with every
+    other skill — a file pull there would open the whole root, so it is
+    refused outright."""
+    servicer = _servicer_with_skills(seeded_skills_dir)
+    out = await servicer._dispatch_builtin(
+        _event("Skill", {"name": "plan", "file": "memory.md"}),
+        _start(),
+        _FakeProvider(),
+    )
+    payload = json.loads(out)
+    assert payload["ok"] is False
+    assert payload["error"] == "skill_has_no_files"
+
+
 @pytest.mark.asyncio
 async def test_memory_write_not_configured_without_host(
     monkeypatch: pytest.MonkeyPatch, tmp_path
