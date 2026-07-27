@@ -5458,10 +5458,17 @@ async def _qq_official_send_attachment(
 ) -> str:
     """Handle a ``send_attachment`` tool call for QQ Official.
 
-    Returns the status text to fold into the summary block. The QQ
-    Official platform only supports IMAGE attachments on the C2C /
-    group endpoints — for non-image files we surface a friendly
-    fallback so the user understands why the file didn't ship.
+    Returns the status text to fold into the summary block. The platform
+    accepts two rich-media kinds on the C2C / group endpoints:
+
+    * **images** — pre-uploaded, then sent as ``msg_type=7``;
+    * **voice** — same envelope but ``file_type=3``, and Tencent's CDN
+      takes **SILK only**. No general-purpose encoder produces SILK, so a
+      clip in any other container is reported as skipped rather than
+      uploaded into a guaranteed rejection.
+
+    Everything else (documents, video) has no delivery path here, so we
+    surface a friendly fallback explaining why the file didn't ship.
     """
     path_str, caption, filename = _parse_send_attachment_args(ev)
     if not path_str:
@@ -6155,10 +6162,14 @@ async def handle_one_wechat_official(
                                 "wechat_official early status link send failed: %s",
                                 exc,
                             )
-            # tool_call / tool_result frames are informational only —
-            # WeChat has no live status surface (no edit, no typing
-            # indicator) so we silently drop them. ``todo_write`` is
-            # NOT exempt: pending ``☐`` rows are forward-looking noise
+            # Remaining tool_call / tool_result frames are informational
+            # only — WeChat has no live status surface (no edit, no typing
+            # indicator) so we silently drop them. Two frames are carved
+            # out above because they carry real side effects rather than
+            # progress chatter: ``send_attachment`` (delivers media) and a
+            # sub-agent spawn (pushes the shareable status link).
+            # ``todo_write`` is NOT exempt: pending ``☐`` rows are
+            # forward-looking noise
             # on this transport, and the reply body alone is what the
             # user can act on. Editable channels (Telegram, Discord,
             # Slack, Feishu) get the live checkbox view via the

@@ -57,6 +57,7 @@ _log = logging.getLogger(__name__)
 
 __all__ = [
     "FILE_TYPE_IMAGE",
+    "FILE_TYPE_VOICE",
     "MSG_TYPE_ARK",
     "MSG_TYPE_IMAGE",
     "MSG_TYPE_MARKDOWN",
@@ -414,7 +415,7 @@ class QqOfficialSender:
         file_data: bytes | None = None,
         srv_send_msg: bool = False,
     ) -> str:
-        """Upload a SILK voice clip to the 群 CDN, returning ``file_info``.
+        """Upload a SILK voice clip to the group CDN, returning ``file_info``.
 
         Same envelope as :meth:`upload_group_image` with
         :data:`FILE_TYPE_VOICE`. Pair with :meth:`send_group_voice`.

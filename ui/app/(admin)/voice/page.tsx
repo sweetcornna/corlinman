@@ -27,7 +27,7 @@ import {
 } from "@/lib/api/voice";
 
 /**
- * `/voice` — text-to-speech backend, voice and 试听.
+ * `/voice` — text-to-speech backend, voice selection and audition.
  *
  * The page is driven entirely by `GET /admin/voice/backends`: models,
  * voices, formats and capability flags all come from the server-side

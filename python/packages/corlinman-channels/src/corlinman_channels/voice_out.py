@@ -129,9 +129,12 @@ VOICE_NOTE_SPECS: dict[str, VoiceNoteSpec] = {
     ),
     # QQ official rich-media voice requires SILK, which no general
     # encoder produces — native voice only when the clip already is one.
+    # ``.amr`` is deliberately NOT listed: Tencent's CDN rejects it on the
+    # voice slot, so waving it through would turn a clean "skipped, wrong
+    # format" notice into a failed upload.
     "qq_official": VoiceNoteSpec(
         channel="qq_official",
-        native_suffixes=frozenset({".silk", ".amr"}),
+        native_suffixes=frozenset({".silk"}),
         target_ext=".silk",
         ffmpeg_args=(),
         transcode_supported=False,

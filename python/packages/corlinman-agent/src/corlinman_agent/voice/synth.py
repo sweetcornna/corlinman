@@ -3,7 +3,7 @@
 Three callers share this module, and they must behave identically:
 
 * the ``text_to_speech`` builtin tool;
-* the admin preview route behind the UI's 试听 button;
+* the admin preview route behind the UI's audition button;
 * any channel-side flow that needs a clip without going through the model.
 
 :func:`synthesize` resolves the backend, voice, format, model and
@@ -72,6 +72,10 @@ class SynthesisRequest:
     #: Persona/provider params — carries ``tts_backend``, ``reference_id``,
     #: ``base_url`` overrides and any vendor-specific body extras.
     params: Mapping[str, Any] = field(default_factory=dict)
+    #: ``True`` when :attr:`provider` is the adapter a persona bound to
+    #: its ``voice`` capability rather than the generic chat fallback.
+    #: Gates credential borrowing — see :func:`resolve_credentials`.
+    provider_is_bound: bool = False
     #: Where to write. Defaults to the workspace ``generated`` dir.
     out_dir: Path | None = None
     timeout: float | None = None
@@ -140,37 +144,57 @@ def resolve_credentials(
     backend: BackendDef,
     provider: Any,
     params: Mapping[str, Any] | None,
+    *,
+    provider_is_bound: bool = False,
 ) -> tuple[str | None, str]:
     """Resolve ``(api_key, base_url)`` for ``backend``.
 
-    Precedence, highest first:
+    Precedence runs **most specific first**, so a narrowly-scoped
+    credential is never overridden by a broader one:
 
     1. explicit ``params`` (``api_key`` / ``base_url``) — how a persona or
        a custom UI-defined backend pins its own credentials;
-    2. the backend's declared env var (``api_key_env``);
-    3. the active provider adapter's key/base. A persona binds its
-       ``voice`` capability to a provider, so that adapter legitimately
-       carries e.g. the Fish Audio key. The one thing we refuse is
-       *leaking* the OpenAI credential to a third-party host: if the
-       adapter's key is byte-identical to ``OPENAI_API_KEY`` and the
-       backend is not an OpenAI one, it is not borrowed.
+    2. the provider adapter's key/base, but only when that adapter really
+       belongs to this backend (see ``provider_is_bound`` below);
+    3. the backend's declared env var (``api_key_env``) — a process-wide
+       default;
     4. the backend's declared default ``base_url``.
+
+    Ordering note: the env var deliberately sits *below* the adapter.
+    Putting it above (as an earlier revision did) means an operator who
+    exports ``FISH_AUDIO_API_KEY`` silently overrides every per-persona
+    Fish binding, so a multi-account setup sends every request with one
+    account's credential — and, because ``base_url`` is resolved
+    separately, it pairs the env key with the adapter's URL.
+
+    Parameters
+    ----------
+    provider_is_bound
+        ``True`` when ``provider`` is the adapter a persona explicitly
+        bound to its ``voice`` capability, rather than the generic chat
+        provider the dispatcher falls back to. This distinction is a
+        **credential boundary**: a Fish/ElevenLabs/MiniMax backend may
+        legitimately read a key off its own bound adapter, but must never
+        borrow one off the unrelated chat provider — that would ship the
+        operator's OpenAI key to a third-party vendor's host. OpenAI-shaped
+        backends are exempt because there the chat provider *is* the
+        intended relay.
     """
     api_key = _param_str(params, "api_key", "tts_api_key")
     base_url = _param_str(params, "base_url", "tts_base_url")
 
-    if not api_key and backend.api_key_env:
-        env_value = os.environ.get(backend.api_key_env)
-        if env_value and env_value.strip():
-            api_key = env_value.strip()
+    is_openai_backend = backend.id in ("openai", "gpt_live")
+    may_borrow = is_openai_backend or provider_is_bound
 
-    if provider is not None:
+    if provider is not None and may_borrow:
         candidate = getattr(provider, "_api_key", None) or getattr(
             provider, "api_key", None
         )
         if not api_key and candidate:
+            # Belt-and-braces even inside a bound adapter: an operator can
+            # bind voice to a provider that happens to carry the OpenAI
+            # key, and that still must not reach a third-party host.
             openai_env = os.environ.get("OPENAI_API_KEY") or ""
-            is_openai_backend = backend.id in ("openai", "gpt_live")
             leaks_openai_key = bool(openai_env) and str(candidate) == openai_env
             if is_openai_backend or not leaks_openai_key:
                 api_key = str(candidate)
@@ -180,6 +204,11 @@ def resolve_credentials(
             )
             if candidate_base:
                 base_url = str(candidate_base)
+
+    if not api_key and backend.api_key_env:
+        env_value = os.environ.get(backend.api_key_env)
+        if env_value and env_value.strip():
+            api_key = env_value.strip()
 
     if not base_url:
         base_url = backend.base_url
@@ -289,7 +318,12 @@ async def synthesize(request: SynthesisRequest) -> SynthesisResult:
     if speed is not None and not backend.supports_speed:
         speed = None
 
-    api_key, base_url = resolve_credentials(backend, request.provider, request.params)
+    api_key, base_url = resolve_credentials(
+        backend,
+        request.provider,
+        request.params,
+        provider_is_bound=request.provider_is_bound,
+    )
     out_dir = _resolve_out_dir(request.out_dir)
     out_path = out_dir / f"{_ulid_like()}{fmt.ext}"
     timeout = _timeout(request)

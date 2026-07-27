@@ -1,4 +1,4 @@
-"""Tests for ``/admin/voice/*`` — backend catalog, defaults, 试听 preview.
+"""Tests for ``/admin/voice/*`` — backend catalog, defaults, audition preview.
 
 Pins the contract the voice settings page depends on:
 

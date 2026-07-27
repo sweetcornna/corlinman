@@ -180,6 +180,17 @@ async def test_qq_official_accepts_a_real_silk_clip(tmp_path: Path) -> None:
     assert await prepare_voice_note(clip, "qq_official") == clip
 
 
+async def test_qq_official_rejects_amr(tmp_path: Path) -> None:
+    """Tencent's voice slot is SILK-only — .amr must not be waved through.
+
+    Listing it as "native" would turn a clean "skipped, wrong format"
+    notice into an upload the CDN rejects.
+    """
+    clip = tmp_path / "v.amr"
+    clip.write_bytes(b"#!AMR\n" + b"\x00" * 64)
+    assert await prepare_voice_note(clip, "qq_official") is None
+
+
 async def test_oversized_clip_is_rejected_for_wechat(tmp_path: Path) -> None:
     big = tmp_path / "big.mp3"
     big.write_bytes(b"\x00" * (3 * 1024 * 1024))  # cap is 2 MB

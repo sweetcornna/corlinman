@@ -18,9 +18,9 @@ Two wire shapes cover essentially every vendor:
 
 ``kind="http"``
     One request, audio in the response — either raw bytes or a
-    base64 field in a JSON body. Covers OpenAI ``/audio/speech``,
-    Fish Audio, ElevenLabs, Azure, MiniMax, Gemini, Volcengine and any
-    OpenAI-compatible relay.
+    base64 field in a JSON body. Ships covering OpenAI ``/audio/speech``,
+    Fish Audio, ElevenLabs, Gemini and MiniMax; the same shape expresses
+    any OpenAI-compatible relay or operator-defined provider.
 ``kind="webrtc_live"``
     The GPT-Live realtime path: an SDP offer/answer handshake against
     ``POST /v1/live``, then audio arrives on a media track. See

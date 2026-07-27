@@ -280,16 +280,65 @@ def test_provider_key_is_borrowed_for_bound_voice_provider(monkeypatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("FISH_AUDIO_API_KEY", raising=False)
     provider = SimpleNamespace(_api_key="fish-key", _base_url="https://fish.example")
-    key, base = resolve_credentials(get_backend("fish"), provider, {})
+    key, base = resolve_credentials(
+        get_backend("fish"), provider, {}, provider_is_bound=True
+    )
     assert key == "fish-key"
     assert base == "https://fish.example"
+
+
+def test_bound_provider_key_beats_the_global_env_var(monkeypatch) -> None:
+    """A per-persona binding must not be overridden by a process-wide key.
+
+    Regression for the precedence bug: with the env var checked first, an
+    operator who exports FISH_AUDIO_API_KEY silently makes every persona
+    send with that one account — and pairs it with the *adapter's*
+    base_url, since the URL is resolved separately.
+    """
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("FISH_AUDIO_API_KEY", "fk-global")
+    provider = SimpleNamespace(_api_key="fk-persona", _base_url="https://fish.example")
+    key, base = resolve_credentials(
+        get_backend("fish"), provider, {}, provider_is_bound=True
+    )
+    assert key == "fk-persona"
+    assert base == "https://fish.example"
+
+
+def test_env_var_is_used_when_no_provider_key_is_reachable(monkeypatch) -> None:
+    monkeypatch.setenv("FISH_AUDIO_API_KEY", "fk-global")
+    key, _ = resolve_credentials(get_backend("fish"), None, {})
+    assert key == "fk-global"
+
+
+def test_unbound_chat_provider_is_never_borrowed_by_a_third_party_backend(
+    monkeypatch,
+) -> None:
+    """The credential boundary: a chat provider is not a Fish credential.
+
+    When no persona bound `voice`, the dispatcher passes the generic chat
+    provider. Borrowing its key would ship the operator's relay/OpenAI
+    credential to a third-party vendor's host.
+    """
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("FISH_AUDIO_API_KEY", raising=False)
+    chat_provider = SimpleNamespace(
+        _api_key="sk-chat-relay", _base_url="https://relay.example/v1"
+    )
+    key, base = resolve_credentials(get_backend("fish"), chat_provider, {})
+    assert key is None
+    # ...and its base_url must not be borrowed either.
+    assert base == "https://api.fish.audio"
 
 
 def test_openai_key_is_not_leaked_to_third_party_backend(monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
     monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
     provider = SimpleNamespace(_api_key="sk-openai")
-    key, _ = resolve_credentials(get_backend("elevenlabs"), provider, {})
+    # Even an explicitly bound adapter must not forward the OpenAI key.
+    key, _ = resolve_credentials(
+        get_backend("elevenlabs"), provider, {}, provider_is_bound=True
+    )
     assert key is None
 
 

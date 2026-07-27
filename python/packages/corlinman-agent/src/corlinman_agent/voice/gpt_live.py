@@ -268,15 +268,23 @@ async def synthesize_gpt_live(
     recorder = recorder_cls(str(out_path))
     finished: asyncio.Event = asyncio.Event()
     failure: dict[str, str] = {}
-    recording_started = False
+    # Strong refs for fire-and-forget starts kicked off from the track
+    # callback — the event loop only holds weak references, so a task
+    # without one can be garbage-collected mid-flight.
+    pending: set[asyncio.Task[Any]] = set()
 
     @pc.on("track")
     def _on_track(track: Any) -> None:  # pragma: no cover - callback
-        nonlocal recording_started
         if track.kind != "audio":
             return
         recorder.addTrack(track)
-        recording_started = True
+        # ``MediaRecorder.start()`` only spawns pumps for tracks added
+        # *before* the call, and skips tracks it already started — so
+        # re-starting here is both necessary (if this track arrived after
+        # the start below) and safe (if it arrived before).
+        task = asyncio.ensure_future(recorder.start())
+        pending.add(task)
+        task.add_done_callback(pending.discard)
 
     channel = pc.createDataChannel(_EVENT_CHANNEL)
 
@@ -337,8 +345,11 @@ async def synthesize_gpt_live(
             rtc_desc_cls(sdp=answer_sdp, type="answer")
         )
 
-        if recording_started:
-            await recorder.start()
+        # Unconditional, matching aiortc's own examples. Gating this on
+        # "did a track already arrive?" would almost always skip it: the
+        # ``track`` event can fire after ``setRemoteDescription`` returns,
+        # leaving the recorder never started and every synthesis empty.
+        await recorder.start()
 
         try:
             await asyncio.wait_for(finished.wait(), timeout=timeout)

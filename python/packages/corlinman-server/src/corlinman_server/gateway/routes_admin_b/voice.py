@@ -1,4 +1,4 @@
-"""``/admin/voice`` — TTS backend catalog, defaults, and 试听 preview.
+"""``/admin/voice`` — TTS backend catalog, defaults, and audition preview.
 
 Four routes back the voice settings page:
 

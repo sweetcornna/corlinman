@@ -193,6 +193,14 @@ async def dispatch_text_to_speech(
     if not isinstance(text, str) or not text.strip():
         return _err("invalid_args", "missing or empty 'text' field")
 
+    # ``_resolve_persona_tool_provider(start, "voice", provider)`` returns
+    # the persona's bound adapter together with its model/params, and
+    # ``(fallback_provider, None, {})`` when no binding exists. So a
+    # model_override or non-empty params is exactly the signal that this
+    # adapter was chosen *for voice* rather than being the generic chat
+    # provider — which is the credential boundary resolve_credentials needs.
+    provider_is_bound = bool((model_override or "").strip()) or bool(provider_params)
+
     request = SynthesisRequest(
         text=text,
         voice=_str_arg(args, "voice"),
@@ -201,6 +209,7 @@ async def dispatch_text_to_speech(
         instructions=_str_arg(args, "instructions") or None,
         provider=provider,
         params=dict(provider_params or {}),
+        provider_is_bound=provider_is_bound,
         transport=transport,
     )
 
