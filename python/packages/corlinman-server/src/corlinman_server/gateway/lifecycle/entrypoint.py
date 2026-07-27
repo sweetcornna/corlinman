@@ -1242,9 +1242,18 @@ def build_app(
 
                 _sampling_completer = build_sampling_completer(state)
                 state.extras["mcp_sampling_completer"] = _sampling_completer
+            # W3-2: normalize the sampling approval hook onto the unified
+            # authorization gate (canonical key ``sampling:<server>``).
+            # Previously NO hook was passed here, so [mcp.sampling].mode =
+            # "ask" denied every request unconditionally.
+            from corlinman_server.gateway.mcp.sampling_authz import (
+                build_sampling_approval_hook,
+            )
+
             _sampling = SamplingResponder(
                 SamplingConfig.from_mcp_config(_mcp_cfg),
                 _sampling_completer,
+                approval_hook=build_sampling_approval_hook(),
             )
             # Dim 5 — merge the layered ``.mcp.json`` scopes over the
             # inline ``[mcp]`` config (local > project > user > inline;

@@ -23,9 +23,18 @@ _CONFIG: dict[str, Any] = {
 }
 
 
+from collections.abc import Iterator
+
+
 @pytest.fixture(autouse=True)
-def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def _clean_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.delenv("CORLINMAN_PY_CONFIG", raising=False)
+    yield
+    # ``_ensure_py_config_env`` sets the var via ``os.environ`` (production
+    # code, not monkeypatch), so it LEAKS past the test otherwise — and the
+    # call-time AuthzGate reads CORLINMAN_PY_CONFIG on every resolve, so a
+    # leaked tmp sidecar silently wipes later tests' [permissions] config.
+    os.environ.pop("CORLINMAN_PY_CONFIG", None)
 
 
 def test_generates_drop_from_toml_config(tmp_path: Path) -> None:

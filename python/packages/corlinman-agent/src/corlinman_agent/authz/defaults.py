@@ -42,6 +42,7 @@ __all__ = [
     "permissions_defaults_from_config",
     "reset_permissions_defaults",
     "resolve_default_action",
+    "resolve_external_tools_enforced",
     "resolve_last_match_wins",
     "resolve_mode",
     "resolve_strict",
@@ -58,7 +59,14 @@ class PermissionsDefaults:
     on the generation counter instead.
     """
 
-    __slots__ = ("default_action", "last_match_wins", "mode", "rules", "strict")
+    __slots__ = (
+        "default_action",
+        "external_tools_enforced",
+        "last_match_wins",
+        "mode",
+        "rules",
+        "strict",
+    )
 
     def __init__(
         self,
@@ -68,12 +76,17 @@ class PermissionsDefaults:
         default_action: str | None = None,
         last_match_wins: bool | None = None,
         rules: tuple[dict[str, Any], ...] | None = None,
+        external_tools_enforced: bool | None = None,
     ) -> None:
         self.mode = mode
         self.strict = strict
         self.default_action = default_action
         self.last_match_wins = last_match_wins
         self.rules = rules
+        #: W3-2 / C4 escape hatch (risk R4): ``False`` restores the pre-W3-2
+        #: behaviour where external (plugin/MCP) tools bypass the gate.
+        #: Default (``None`` → resolved ``True``) enforces the gate.
+        self.external_tools_enforced = external_tools_enforced
 
     def as_dict(self) -> dict[str, Any]:
         """Only the values actually configured — feeds structured logs.
@@ -92,6 +105,8 @@ class PermissionsDefaults:
             out["last_match_wins"] = self.last_match_wins
         if self.rules is not None:
             out["rules"] = len(self.rules)
+        if self.external_tools_enforced is not None:
+            out["external_tools_enforced"] = self.external_tools_enforced
         return out
 
 
@@ -177,6 +192,7 @@ def permissions_defaults_from_config(
         default_action=default_action,
         last_match_wins=_cfg_bool(section, "last_match_wins"),
         rules=_cfg_rules(section),
+        external_tools_enforced=_cfg_bool(section, "external_tools_enforced"),
     )
 
 
@@ -276,3 +292,22 @@ def resolve_default_action() -> str:
     if configured is not None:
         return configured
     return "allow"
+
+
+def resolve_external_tools_enforced() -> bool:
+    """Whether the gate covers external (plugin/MCP) tools (W3-2, C4).
+
+    ``[permissions].external_tools_enforced`` >
+    ``$CORLINMAN_AGENT_EXTERNAL_TOOLS_ENFORCED`` > ``True``. The ``False``
+    escape hatch (risk R4) restores the pre-W3-2 "external tools bypass the
+    gate" behaviour for one minor release, for deployments whose
+    ``{"tool": "*", "action": "deny"}`` suddenly started covering their MCP
+    tools — which is what the wildcard always claimed to do.
+    """
+    configured = get_permissions_defaults().external_tools_enforced
+    if configured is not None:
+        return configured
+    env_value = _env_bool("CORLINMAN_AGENT_EXTERNAL_TOOLS_ENFORCED")
+    if env_value is not None:
+        return env_value
+    return True

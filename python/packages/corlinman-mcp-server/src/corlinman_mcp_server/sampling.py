@@ -117,6 +117,10 @@ class SamplingResult:
 
 Completer = Callable[[SamplingRequest], Awaitable[SamplingResult]]
 #: Approval hook for ``mode = "ask"``: ``(server_name, request) -> bool``.
+#: W3-2: the production hook is backed by the unified authorization gate
+#: (``corlinman_server.gateway.mcp.sampling_authz``), which evaluates the
+#: canonical ``sampling:<server>`` key against the ``[permissions]`` rules
+#: — this package stays gate-agnostic, only the callable shape is pinned.
 ApprovalHook = Callable[[str, SamplingRequest], Awaitable[bool]]
 
 

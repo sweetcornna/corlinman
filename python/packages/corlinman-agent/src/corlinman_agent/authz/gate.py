@@ -48,6 +48,7 @@ from corlinman_agent.authz.defaults import (
 from corlinman_agent.authz.defaults import (
     get_permissions_defaults,
     resolve_default_action,
+    resolve_external_tools_enforced,
     resolve_last_match_wins,
     resolve_mode,
     resolve_strict,
@@ -172,6 +173,36 @@ class AuthzGate:
             return ALLOW, rule_index
         return action, rule_index
 
+    def resolve_external(
+        self,
+        keys: tuple[str, ...] | list[str],
+        ctx: Subject,
+        args: dict[str, Any] | None = None,
+    ) -> tuple[str, int | None]:
+        """EP2: decide an EXTERNAL (plugin/MCP/voice/sampling) tool call.
+
+        ``keys`` are the canonical candidate keys (C7) — see
+        :func:`~corlinman_agent.authz.matcher.external_candidate_keys`; the
+        first entry is the stable grant/audit key. Honours the
+        ``[permissions].external_tools_enforced = false`` escape hatch
+        (risk R4): when the operator opts out, every external call resolves
+        ``allow`` with no rule index — exactly the pre-W3-2 behaviour.
+        """
+        self._maybe_refresh_from_sidecar()
+        if not resolve_external_tools_enforced():
+            return ALLOW, None
+        snapshot = self._compiled()
+        action, rule_index = snapshot.resolve_external_with_args(
+            tuple(keys), ctx, args
+        )
+        if (
+            action == ASK
+            and keys
+            and self._grants.is_granted(ctx, keys[0], args)
+        ):
+            return ALLOW, rule_index
+        return action, rule_index
+
     def audit_log_entry(
         self,
         tool: str,
@@ -188,10 +219,15 @@ class AuthzGate:
         )
         tenant = getattr(ctx, "tenant_id", None)
         surface = getattr(ctx, "surface", None)
+        parent_surface = getattr(ctx, "parent_surface", None)
         if tenant:
             entry["tenant_id"] = tenant
         if surface:
             entry["surface"] = surface
+        if parent_surface:
+            # Subagent calls: the child resolves under surface="subagent"
+            # while the originating (parent) surface rides along for audit.
+            entry["parent_surface"] = parent_surface
         return entry
 
     # -- snapshot compilation ---------------------------------------------

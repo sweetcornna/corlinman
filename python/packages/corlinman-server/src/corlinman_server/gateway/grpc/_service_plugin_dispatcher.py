@@ -63,6 +63,48 @@ class ServicePluginDispatcher:
         self._sockets: dict[str, Any] = {}
         self._channels: dict[str, Any] = {}
         self._lock = asyncio.Lock()
+        self._authz_gate: Any = None
+
+    def _authz_action(self, plugin: str, tool: str, args: Any) -> str:
+        """W3-2 trust-but-verify: re-evaluate the unified gate gateway-side.
+
+        The agent-side EP2 gate already consented before yielding the tool
+        call (``ExecuteRequest.approval_preconsented`` carries that fact
+        downstream), but the gateway is the process that actually runs the
+        plugin — a caller that bypassed the servicer must not run a denied
+        tool. Only a hard ``deny`` blocks here: ``ask`` is trusted as
+        already resolved by the agent EP (this hop has no prompt channel).
+        Evaluated under the EXACT canonical key (the registry entry is
+        known here). Fail-open on internal error — the agent EP remains
+        authoritative and a broken verifier must not kill every plugin.
+        """
+        try:
+            from corlinman_agent.authz import (  # noqa: PLC0415
+                AuthzGate,
+                Subject,
+                external_candidate_keys,
+            )
+
+            if self._authz_gate is None:
+                self._authz_gate = AuthzGate()
+            keys = (
+                f"plugin:{plugin}/{tool}",
+                *external_candidate_keys(plugin, tool),
+            )
+            action, _idx = self._authz_gate.resolve_external(
+                tuple(dict.fromkeys(keys)),
+                Subject(),
+                args if isinstance(args, dict) else None,
+            )
+            return str(action)
+        except Exception as exc:  # noqa: BLE001 — verifier must not break dispatch
+            log.warning(
+                "plugin_invoker.authz_verify_failed",
+                plugin=plugin,
+                tool=tool,
+                error=str(exc),
+            )
+            return "allow"
 
     async def _resolve_socket(self, manifest: Any) -> Any:
         """Get-or-spawn the UDS socket for ``manifest``'s service.
@@ -151,6 +193,18 @@ class ServicePluginDispatcher:
                 f"PluginBridge gRPC stubs are unavailable: {exc}",
             )
 
+        # W3-2: second enforcement point — verify BEFORE spawning/dialing
+        # so a denied tool cannot even start the service process.
+        tool_name = tool or name
+        if self._authz_action(name, tool_name, args) == "deny":
+            return _error_invocation(
+                "permission_denied",
+                (
+                    f"tool 'plugin:{name}/{tool_name}' is denied by the "
+                    "agent's permission rules (gateway-side verification)"
+                ),
+            )
+
         async with self._lock:
             try:
                 socket_path = await self._resolve_socket(manifest)
@@ -181,6 +235,10 @@ class ServicePluginDispatcher:
             tool=tool,
             args_json=args_json,
             session_key="agent",
+            # W3-2: the unified gate (agent EP2 + the verification above)
+            # has consented — tell the plugin bridge so it does not
+            # re-prompt through its own approval plumbing.
+            approval_preconsented=True,
         )
         stub = plugin_pb2_grpc.PluginBridgeStub(channel)
         deadline_s = max(timeout_ms, 1) / 1000.0

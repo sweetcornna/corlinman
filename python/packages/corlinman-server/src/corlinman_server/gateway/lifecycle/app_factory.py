@@ -463,8 +463,10 @@ def _make_config_swap_fn(app: Any, state: Any) -> Any:
 
 #: Config sections :func:`_apply_agent_side_config` reads. A change to any
 #: of them must re-run the hook — see the comment in ``_config_swap_fn``.
+#: ``approvals`` is deprecated but stays a trigger for its double-read
+#: window (W3-2): the translator must re-run when it changes.
 _AGENT_CONFIG_SECTIONS: frozenset[str] = frozenset(
-    {"voice", "models", "web_search", "agent_runtime", "permissions"}
+    {"voice", "models", "web_search", "agent_runtime", "permissions", "approvals"}
 )
 
 
@@ -543,15 +545,70 @@ def _apply_agent_side_config(cfg: Any) -> None:
 
     # W3-1: same [permissions] apply as main._apply_agent_config_from_sidecar
     # — both call apply_permissions_config so the two boot modes can't drift.
+    # W3-2: the deprecated [approvals] section is translated and merged in
+    # FIRST (so [permissions] wins under last-match-wins) — the exact same
+    # merge the sidecar renderer performs, via the same helper.
     try:
+        from corlinman_agent.authz.approvals_compat import (
+            merge_approvals_into_permissions,
+        )
         from corlinman_agent.authz.defaults import apply_permissions_config
 
-        perms = apply_permissions_config(_block("permissions"))
+        perms = apply_permissions_config(
+            merge_approvals_into_permissions(_block("approvals"), _block("permissions"))
+        )
         perm_configured = perms.as_dict()
         if perm_configured:
             logger.info("gateway.permissions.defaults", **perm_configured)
+        _warn_wildcard_deny_now_covers_external(cfg)
     except Exception as exc:  # pragma: no cover — never fatal
         logger.warning("gateway.permissions.config_failed", error=str(exc))
+
+
+def _warn_wildcard_deny_now_covers_external(cfg: Any) -> None:
+    """C4 upgrade note (risk R4): ``"*"`` now really matches everything.
+
+    A deployment that wrote ``{"tool": "*", "action": "deny"}`` while also
+    configuring MCP servers or plugins used to keep those external tools
+    running (the wildcard silently skipped them). Since W3-2 the wildcard
+    covers them, so that combination now stops every external tool — which
+    is what the rule always claimed, but the flip deserves an ERROR-level
+    upgrade note pointing at the escape hatch. Never raises.
+    """
+    try:
+        if not isinstance(cfg, dict):
+            return
+        perms = cfg.get("permissions")
+        perms = perms if isinstance(perms, dict) else {}
+        if perms.get("external_tools_enforced") is False:
+            return  # operator already opted out — nothing surprising left
+        rules = perms.get("rules")
+        wildcard_deny = any(
+            isinstance(r, dict)
+            and str(r.get("tool", "")).strip() == "*"
+            and str(r.get("action", "")).strip() == "deny"
+            for r in (rules if isinstance(rules, list) else [])
+        )
+        if not wildcard_deny:
+            return
+        mcp_cfg = cfg.get("mcp")
+        has_mcp = isinstance(mcp_cfg, dict) and bool(mcp_cfg.get("servers"))
+        has_plugins = bool(cfg.get("plugins"))
+        if not (has_mcp or has_plugins):
+            return
+        logger.error(
+            "gateway.permissions.wildcard_now_covers_external",
+            detail=(
+                "BREAKING (W3-2/C4): the {\"tool\": \"*\", \"action\": "
+                "\"deny\"} rule now also blocks MCP/plugin tools, and this "
+                "config declares external tools. If that is not intended, "
+                "narrow the rule or set [permissions].external_tools_enforced "
+                "= false (temporary escape hatch, removed after one minor "
+                "release)."
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 — advisory only
+        logger.warning("gateway.permissions.upgrade_note_failed", error=str(exc))
 
 
 def _make_chat_refresh_fn(state: Any) -> Any:

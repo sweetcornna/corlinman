@@ -52,6 +52,7 @@ from corlinman_agent.authz.matcher import (
     extract_primary_arg,
     match_hook_rule,
     parse_rule_list,
+    tool_pattern_matches,
 )
 from corlinman_agent.authz.model import (
     _VALID_ACTIONS,
@@ -207,7 +208,7 @@ class PermissionGate:
             reversed(self._rules) if self._last_match_wins else iter(self._rules)
         )
         for rule in rules:
-            if rule.tool not in ("run_shell", "*"):
+            if not tool_pattern_matches(rule.tool, "run_shell"):
                 continue
             if (
                 rule.match is not None
@@ -310,6 +311,43 @@ class PermissionGate:
             and self._can_start_shell_tasks(ctx)
         ):
             return ALLOW, None
+        return self._default, None
+
+    def resolve_external_with_args(
+        self,
+        keys: tuple[str, ...] | list[str],
+        ctx: PermissionContext,
+        args: dict[str, Any] | None,
+    ) -> tuple[str, int | None]:
+        """EP2 decision for an EXTERNAL (plugin/MCP/voice/sampling) tool.
+
+        ``keys`` are the canonical candidate keys of the call (see
+        :func:`corlinman_agent.authz.matcher.external_candidate_keys`); a
+        rule fires when its ``tool`` pattern matches ANY of them — including
+        the ``"*"`` wildcard, which since W3-2 (decision C4) really does
+        cover everything. Differences from the builtin path, on purpose:
+
+        * no tool aliasing / task-control rescue (builtin-only machinery);
+        * ``plan`` mode denies every external tool when no rule matched —
+          an external tool's blast radius is unknowable, so planning mode
+          must not run it (C4: modes now apply to external tools);
+        * ``acceptEdits`` / ``strict`` don't special-case external tools
+          (both are defined over the builtin edit/mutating sets).
+        """
+        if self._mode is PermissionMode.BYPASS:
+            return ALLOW, None
+        primary = keys[0] if keys else ""
+        arg_value = extract_arg_candidates(primary, args)
+        matched: tuple[str, int] | None = None
+        for idx, rule in enumerate(self._rules):
+            if any(rule.applies_to_args(key, ctx, arg_value) for key in keys):
+                matched = (rule.action, idx)
+                if not self._last_match_wins:
+                    break
+        if matched is not None:
+            return matched
+        if self._mode is PermissionMode.PLAN:
+            return DENY, None
         return self._default, None
 
     def audit_log_entry(

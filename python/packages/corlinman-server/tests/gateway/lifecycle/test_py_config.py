@@ -480,6 +480,56 @@ def test_absent_agent_runtime_renders_none() -> None:
     assert v["agent_runtime"] is None
 
 
+def test_deprecated_approvals_translate_into_permissions() -> None:
+    """W3-2: [approvals] renders as LEADING [[permissions.rules]] entries
+    (so the explicit [permissions] block wins under last-match-wins) and
+    the escape-hatch bool rides the whitelist."""
+    v = render_py_config(
+        {
+            "providers": {},
+            "models": {"aliases": {}},
+            "permissions": {
+                "external_tools_enforced": False,
+                "rules": [{"tool": "plugin:file-ops/*", "action": "allow"}],
+            },
+            "approvals": {
+                "rules": [
+                    {"plugin": "file-ops", "mode": "deny"},
+                    {
+                        "plugin": "net",
+                        "tool": "fetch",
+                        "mode": "prompt",
+                        "allow_session_keys": ["trusted-1"],
+                    },
+                ]
+            },
+        }
+    )
+
+    perms = v["permissions"]
+    assert perms["external_tools_enforced"] is False
+    tools = [(r["tool"], r["action"]) for r in perms["rules"]]
+    # Translated rules first (general → specific → whitelist), operator last.
+    assert tools[0] == ("plugin:file-ops/*", "deny")
+    assert ("plugin:net/fetch", "ask") in tools
+    assert tools[-1] == ("plugin:file-ops/*", "allow")
+    whitelist = [r for r in perms["rules"] if r.get("scope")]
+    assert whitelist and whitelist[0]["scope"]["session"] == "trusted-1"
+
+
+def test_approvals_alone_still_render_permissions() -> None:
+    """No [permissions] block at all — the translated rules must still
+    reach the agent, or the deprecated section silently dies."""
+    v = render_py_config(
+        {
+            "providers": {},
+            "models": {"aliases": {}},
+            "approvals": {"rules": [{"plugin": "p", "mode": "deny"}]},
+        }
+    )
+    assert v["permissions"]["rules"][0]["tool"] == "plugin:p/*"
+
+
 def test_default_py_config_path_uses_data_dir_env(tmp_path: Path) -> None:
     """``$CORLINMAN_DATA_DIR`` takes precedence over $HOME."""
     old = os.environ.get("CORLINMAN_DATA_DIR")
