@@ -4,6 +4,36 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.45.0] — 2026-07-27 — 统一授权模型第一波（W3-1）
+
+### Added
+- **`corlinman_agent/authz/` 统一授权模型**(P4 第一波):一套规则语言
+  (`tool(pattern)` 糖 × allow/deny/ask/log × scope(tenant/surface/user/
+  session/model) × memory(once/session/always)),`[permissions]` 配置段
+  走通四步(UI 保存 → watcher → sidecar → agent 调用期消费)。规则与
+  `strict` **保存即生效**——AuthzGate 调用期求值,修掉旧 PermissionGate
+  的构造期冻结;100ms 节流的 mid-turn sidecar 刷新让刚保存的 deny 拦得
+  住进行中回合的剩余工具调用。(#179)
+- **GrantStore**:交互式批准现在按「工具+参数摘要」记忆——批准
+  `run_shell ls` 不再放行同 session 的 `run_shell rm -rf /`;`always`
+  级批准落 `<data_dir>/authz/grants.sqlite3`,不再向 settings.json 追加
+  全局无条件规则;grant 结构上越不过 deny。(#179)
+
+### Changed
+- **BREAKING(边缘):规则求值统一为 last-match-wins**(两条代码路径此前
+  默认相反)。写法变为「兜底在前、专项在后」;仅设
+  `CORLINMAN_AGENT_PERMISSIONS` 且规则重叠的部署会在 boot 收到 WARN 与
+  逐工具判决 diff,设 `CORLINMAN_AGENT_PERMISSION_LAST_MATCH_WINS=0` 可
+  恢复旧序。(#179)
+- console 批准词表统一为 once/session/always(旧 `a`=always 重标为
+  session、`p`=persist 重标为 always);`PermissionMode` 未知值从静默降
+  级改为 ERROR 告警(仍回落 default,不阻断 boot)。(#179)
+
+### Notes
+- 后续波次:W3-2 外部工具纳管(`"*"` 将覆盖 MCP/plugin 工具,BREAKING
+  预告)、W3-3 跨 surface 审批通道(QQ 群里批准)、W3-4 队列持久化 +
+  admin UI。设计计划见 audit 工作产物。
+
 ## [1.44.0] — 2026-07-27 — 路线图清账：子 agent 行为底线 / render_document 工具化 / Redis journal / 记忆内核默认 on
 
 ### Added
