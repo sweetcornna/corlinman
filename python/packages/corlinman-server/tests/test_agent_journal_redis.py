@@ -437,6 +437,55 @@ async def test_errored_turn_releases_begin_claim(backend) -> None:  # type: igno
     assert isinstance(second, int) and second != first
 
 
+async def test_stale_owner_does_not_release_newer_turns_claim(backend) -> None:  # type: ignore[no-untyped-def]
+    """A turn that outlives its claim TTL must not release the claim a
+    NEWER turn has since taken on the same tuple. The release is
+    value-checked (``_release_claim``): the stale owner's member no
+    longer matches, so terminalising the old turn leaves the new turn's
+    claim standing and a third identical ``begin_turn`` still conflicts.
+    """
+    first = await backend.begin_turn("sess-ttl", "same text", user_id="alice")
+    assert first is not None
+    # Simulate the claim TTL expiring mid-turn: drop the key by hand.
+    open_key = await backend._r.hget(backend._turn_key(first), "open_key")
+    assert open_key
+    await backend._r.delete(open_key)
+    # A newer turn re-claims the exact same tuple.
+    second = await backend.begin_turn("sess-ttl", "same text", user_id="alice")
+    assert isinstance(second, int) and second != first
+    # The stale owner terminalises long after losing its claim…
+    await backend.complete_turn(first)
+    # …and the newer turn's claim must survive it.
+    third = await backend.begin_turn("sess-ttl", "same text", user_id="alice")
+    assert third is None, "stale owner released a claim it no longer held"
+
+
+async def test_begin_turn_rolls_back_claim_when_write_fails(backend) -> None:  # type: ignore[no-untyped-def]
+    """A transient write failure after the SET-NX claim must roll the
+    claim back — otherwise the tuple is wedged for the full resume
+    window with no resumable row behind it."""
+    real_pipeline = backend._r.pipeline
+    calls = {"n": 0}
+
+    def flaky_pipeline(*args, **kwargs):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # First pipeline after the claim = the row/index write burst.
+            raise ConnectionError("write burst failed")
+        return real_pipeline(*args, **kwargs)
+
+    backend._r.pipeline = flaky_pipeline
+    try:
+        with pytest.raises(ConnectionError):
+            await backend.begin_turn("sess-rb", "text", user_id="alice")
+    finally:
+        backend._r.pipeline = real_pipeline
+    # The rollback (second pipeline call) released the claim, so the
+    # retry claims the tuple instead of hitting the 5-minute wedge.
+    retry = await backend.begin_turn("sess-rb", "text", user_id="alice")
+    assert isinstance(retry, int)
+
+
 async def test_find_resumable_scopes_by_user_id(
     backend,  # type: ignore[no-untyped-def]
 ) -> None:

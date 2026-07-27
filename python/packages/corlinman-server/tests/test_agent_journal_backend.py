@@ -190,6 +190,33 @@ async def test_open_from_env_redis_dispatches_to_redis_backend(
     )
 
 
+async def test_open_from_env_redis_reaches_backend_open_with_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Positive counterpart to the smoke test above: the selector must
+    call ``RedisJournalBackend.open`` with exactly the configured URL —
+    pinned via a sentinel so the assertion cannot pass by accident."""
+    from corlinman_server import agent_journal_redis as redis_mod
+
+    captured: dict[str, str] = {}
+
+    class _Reached(RuntimeError):
+        pass
+
+    async def fake_open(url: str, *, client: object | None = None) -> None:
+        captured["url"] = url
+        raise _Reached
+
+    monkeypatch.setattr(redis_mod.RedisJournalBackend, "open", fake_open)
+    env = {
+        ENV_BACKEND: "redis",
+        ENV_REDIS_URL: "redis://example.invalid:6379/3",
+    }
+    with pytest.raises(_Reached):
+        await AgentJournal.open_from_env(tmp_path / "j.sqlite", env=env)
+    assert captured["url"] == "redis://example.invalid:6379/3"
+
+
 async def test_open_from_env_postgres_without_dsn_is_a_config_error(
     tmp_path: Path,
 ) -> None:

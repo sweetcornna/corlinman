@@ -84,6 +84,7 @@ raise a clear ``RuntimeError`` rather than an uncontextualised
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import importlib.util
 import json
@@ -219,6 +220,21 @@ class RedisJournalBackend:
         # the whole point of the env selector's "no silent fallback"
         # contract. (Postgres gets the same guarantee from pool creation.)
         await self._client.ping()
+        # Journal keys carry no TTL by design (a journal is append-only
+        # history) — an evicting Redis would silently drop turn hashes
+        # and leave orphaned index members. Warn loudly; CONFIG GET may
+        # be disabled on managed Redis, in which case skip the check.
+        try:
+            policy = await self._client.config_get("maxmemory-policy")
+            value = policy.get("maxmemory-policy", "")
+            if value and value != "noeviction":
+                logger.warning(
+                    "agent.journal.redis_eviction_policy",
+                    maxmemory_policy=value,
+                    hint="journal data is not TTL'd; run this Redis with maxmemory-policy=noeviction",
+                )
+        except Exception:  # pragma: no cover - managed-redis CONFIG restriction
+            pass
 
     async def close(self) -> None:
         """Close the underlying client. Idempotent."""
@@ -366,14 +382,52 @@ class RedisJournalBackend:
             mapping["user_id"] = user_id
         if pending_question_json is not None:
             mapping["pending_question_json"] = pending_question_json
-        async with r.pipeline(transaction=True) as pipe:
-            pipe.hset(self._turn_key(turn_id), mapping=mapping)
-            pipe.zadd(self._k("turns"), {member: ts})
-            pipe.zadd(self._k("in_progress"), {member: ts})
-            pipe.zadd(self._session_turns_key(session_key or ""), {member: ts})
-            pipe.zadd(self._k("sessions"), {(session_key or ""): ts})
-            await pipe.execute()
+        try:
+            async with r.pipeline(transaction=True) as pipe:
+                pipe.hset(self._turn_key(turn_id), mapping=mapping)
+                pipe.zadd(self._k("turns"), {member: ts})
+                pipe.zadd(self._k("in_progress"), {member: ts})
+                pipe.zadd(self._session_turns_key(session_key or ""), {member: ts})
+                pipe.zadd(self._k("sessions"), {(session_key or ""): ts})
+                await pipe.execute()
+        except Exception:
+            # Roll the claim back so a transient write failure doesn't
+            # wedge the tuple for the full resume window — without this
+            # the SET NX above blocks every retry for up to
+            # RESUME_MAX_AGE_MS with no resumable row to show for it.
+            await self._release_claim(open_key, member)
+            raise
         return turn_id
+
+    async def _release_claim(self, open_key: str, member: str) -> None:
+        """Value-checked release of a C5 open-turn claim.
+
+        Deletes ``open_key`` only while it still holds ``member``. A
+        plain DEL would be wrong for any turn that outlives the claim
+        TTL: the key has expired, a NEW turn on the same tuple has
+        re-claimed it, and the stale owner's terminalisation would
+        release the new turn's claim. WATCH/MULTI (not Lua) so the
+        fakeredis-backed tests exercise the same path as production.
+        Best-effort: on persistent contention or connection failure the
+        claim is left to its TTL, which is the crash posture anyway.
+        """
+        try:
+            async with self._r.pipeline(transaction=True) as pipe:
+                for _ in range(_CAS_MAX_RETRIES):
+                    try:
+                        await pipe.watch(open_key)
+                        val = await pipe.get(open_key)
+                        if val != member:
+                            await pipe.unwatch()
+                            return
+                        pipe.multi()
+                        pipe.delete(open_key)
+                        await pipe.execute()
+                        return
+                    except self._watch_error_cls:
+                        continue
+        except Exception as exc:
+            logger.warning("agent.journal.claim_release_failed", error=str(exc))
 
     async def complete_turn(self, turn_id: int) -> None:
         """CAS-flip ``turn_id`` to completed and fold the aggregates.
@@ -413,9 +467,13 @@ class RedisJournalBackend:
                         pipe.multi()
                         pipe.hset(turn_key, mapping=mapping)
                         pipe.zrem(self._k("in_progress"), str(int(turn_id)))
-                        if open_key:
-                            pipe.delete(open_key)
                         await pipe.execute()
+                        # Outside the MULTI on purpose: the release is
+                        # value-checked (the claim may have expired and
+                        # been re-taken by a newer turn), and a failed
+                        # release degrades to the TTL — same as a crash.
+                        if open_key:
+                            await self._release_claim(open_key, str(int(turn_id)))
                         return
                     except self._watch_error_cls:
                         continue
@@ -466,9 +524,10 @@ class RedisJournalBackend:
                         self._session_errored_key(session_key),
                         {str(int(turn_id)): started_at_ms},
                     )
-                    if open_key:
-                        pipe.delete(open_key)
                     await pipe.execute()
+                    # Value-checked, outside the MULTI — see complete_turn.
+                    if open_key:
+                        await self._release_claim(open_key, str(int(turn_id)))
                     return True
                 except self._watch_error_cls:
                     continue
@@ -862,18 +921,25 @@ class RedisJournalBackend:
 
         The full session set is enumerated (pinned sessions may sit
         anywhere in recency order, exactly why the SQL backends also
-        aggregate the whole table before LIMIT); per-session folds are
-        pipelined. Admin surface — correctness over micro-latency.
+        aggregate the whole table before LIMIT); per-session folds run
+        concurrently in bounded batches rather than one round trip at a
+        time. Admin surface — correctness over micro-latency.
         """
         if limit <= 0:
             return []
         try:
             session_keys = await self._r.zrange(self._k("sessions"), 0, -1)
             summaries: list[SessionSummary] = []
-            for session_key in session_keys:
-                summary = await self._summarize_session(session_key, tenant_id)
-                if summary is not None:
-                    summaries.append(summary)
+            batch = 50  # bound concurrent folds so a huge deployment
+            # doesn't fan a request per session onto the pool at once
+            for i in range(0, len(session_keys), batch):
+                folded = await asyncio.gather(
+                    *(
+                        self._summarize_session(session_key, tenant_id)
+                        for session_key in session_keys[i : i + batch]
+                    )
+                )
+                summaries.extend(s for s in folded if s is not None)
             summaries.sort(key=lambda s: (not s.pinned, -s.last_seen_at_ms, s.session_key))
             return summaries[: int(limit)]
         except Exception as exc:
@@ -906,6 +972,7 @@ class RedisJournalBackend:
                 return 0
             rows = await self._hgetall_many([self._turn_key(m) for m in members])
             deleted = 0
+            claims_to_release: list[tuple[str, str]] = []
             async with r.pipeline(transaction=True) as pipe:
                 for member, row in zip(members, rows, strict=False):
                     if not row:
@@ -929,9 +996,14 @@ class RedisJournalBackend:
                     pipe.zrem(self._session_errored_key(session_key), member)
                     open_key = row.get("open_key")
                     if open_key:
-                        pipe.delete(open_key)
+                        # Value-checked after the wipe: the claim may by
+                        # now belong to a NEWER turn on the same tuple
+                        # (this snapshot predates it) — see _release_claim.
+                        claims_to_release.append((open_key, member))
                     deleted += 1
                 await pipe.execute()
+            for open_key, member in claims_to_release:
+                await self._release_claim(open_key, member)
             if await r.zcard(session_turns_key) == 0:
                 await r.zrem(self._k("sessions"), session_key)
             return deleted
