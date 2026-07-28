@@ -3621,7 +3621,7 @@ export const zhCN = {
       proactive_timezone:
         "活跃时段使用的 IANA 时区（如 Asia/Shanghai）。留空使用服务器本地时区——容器常为 UTC，会导致半夜发言。",
       proactive_context_messages:
-        "主动发言前注入的最近群聊消息条数（0 关闭）。有上下文时机器人能接住话题，也可能选择不插话。",
+        "主动发言前注入的最近群聊消息条数（0 关闭，默认 30，含机器人自己的发言）。有上下文时机器人能接住话题，也可能选择不插话；上一条是自己发的则不再主动发言。",
       monitor_retention_hours:
         "群监控消息的本地保留时长（小时，默认 72）。不会低于任何监控规则的汇总窗口。",
       access_token: "OneBot WebSocket（ws_url）的鉴权令牌。内置 NapCat 无需填写，仅外接 NapCat 时使用。",

@@ -144,6 +144,49 @@ def _humanlike_resolver(
     return _live_humanlike
 
 
+def _rag_search_provider() -> Any:
+    """Async ``(query, k) -> list[str]`` over the admin RAG corpus.
+
+    Resolves ``AdminState.rag_store`` lazily at query time — the store
+    is opened later in the entrypoint than the channels bootstrap runs,
+    and an admin rebuild may swap it. Free text is escaped into an
+    OR-of-quoted-tokens FTS5 MATCH expression: the caller sends a blob
+    of recent chatter, and implicit-AND across dozens of tokens would
+    match nothing, while raw text with ``-``/``:``/quotes would parse
+    as FTS5 syntax. Missing store or zero hits → ``[]``.
+    """
+
+    async def _search(query: str, k: int) -> list[str]:
+        try:
+            from corlinman_server.gateway.routes_admin_b.state import (
+                get_admin_state,
+            )
+
+            store = getattr(get_admin_state(), "rag_store", None)
+        except Exception:  # noqa: BLE001 — admin_b not wired (tests)
+            store = None
+        if store is None or not query.strip() or k <= 0:
+            return []
+        seen: set[str] = set()
+        tokens: list[str] = []
+        for tok in query.split():
+            tok = tok.strip('"')
+            if tok and tok not in seen:
+                seen.add(tok)
+                tokens.append(tok.replace('"', '""'))
+        if not tokens:
+            return []
+        match = " OR ".join(f'"{t}"' for t in tokens[:16])
+        hits = await store.search_bm25(match, k)
+        if not hits:
+            return []
+        chunks = await store.query_chunks_by_ids([int(cid) for cid, _score in hits])
+        by_id = {int(c.id): str(c.content) for c in chunks}
+        return [by_id[int(cid)] for cid, _score in hits if int(cid) in by_id]
+
+    return _search
+
+
 def _build_qq_params(
     qq_cfg: Mapping[str, Any],
     model: str,
@@ -156,6 +199,7 @@ def _build_qq_params(
     identity_ready: Any = None,
     persona_store: Any = None,
     asset_store: Any = None,
+    rag_search: Any = None,
 ) -> Any:
     """Build :class:`corlinman_channels.QqChannelParams` from the
     ``[channels.qq]`` config table.
@@ -209,6 +253,7 @@ def _build_qq_params(
         humanlike_resolver=_humanlike_resolver(qq_cfg),
         asset_store=asset_store,
         tencent_policy_resolver=_tencent_policy_resolver(qq_cfg),
+        rag_search=rag_search if rag_search is not None else _rag_search_provider(),
     )
 
 
