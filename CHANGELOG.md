@@ -4,6 +4,16 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.51.1] — 2026-07-28 — 修复：监控任务保存必失败
+
+### Fixed
+- **监控任务每次保存都 500 `qq_config_write_failed`**：wire 模型里
+  `daily_time` / `interval_minutes` 互斥恒有一个为 None，落盘原样携带
+  None 时 tomli_w 抛 TypeError（TOML 无 null），整个配置写入回滚。
+  改为 `exclude_none` 落盘；同类隐患（humanlike 关闭且无 persona 写
+  `persona_id: None`）一并修复。防回归：落盘后的整棵 channels 树必须
+  过真 tomli_w 序列化。（#192）
+
 ## [1.51.0] — 2026-07-28 — QQ 群消息监控与定时汇总：多源任务 / 重点关注 / 合并汇报
 
 ### Added
