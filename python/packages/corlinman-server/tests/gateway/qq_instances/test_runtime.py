@@ -219,8 +219,10 @@ async def test_failed_changed_instance_restores_entire_previous_fleet(tmp_path) 
 
     manager.request = fail_b  # type: ignore[method-assign]
     changed = _fleet("a", "b")
-    changed["qq"]["instances"]["a"]["group_reply_policy"] = "all"  # type: ignore[index]
-    changed["qq"]["instances"]["b"]["group_reply_policy"] = "all"  # type: ignore[index]
+    # Transport-level edits — behavior-only keys would hot-apply without
+    # touching the manager and never trip the injected failure.
+    changed["qq"]["instances"]["a"]["access_token"] = "rotated-a"  # type: ignore[index]
+    changed["qq"]["instances"]["b"]["access_token"] = "rotated-b"  # type: ignore[index]
 
     with pytest.raises(RuntimeError, match="could not be started"):
         await registry.reconcile(changed)
@@ -288,32 +290,55 @@ async def test_default_change_rebinds_compatibility_health() -> None:
 
 
 @pytest.mark.asyncio
-async def test_reconcile_restarts_only_changed_instance() -> None:
+async def test_behavior_change_hot_applies_without_restart() -> None:
+    """A behavior-only edit (reply policy) mutates the RUNNING channel's
+    config dict in place — no restart, no WS drop. This is what makes an
+    admin save of keywords / policy apply without disconnecting the bot."""
     manager = FakeManager()
+    captured: list[object] = []
+
+    async def fake_run(params: object, cancel: asyncio.Event) -> None:
+        captured.append(params)
+        await cancel.wait()
+
     registry = QqRuntimeRegistry(
         model="gpt-test",
         chat_service=object(),
         manager=manager,  # type: ignore[arg-type]
-        run_qq=_fake_run,
+        run_qq=fake_run,
     )
     config = _fleet("a", "b")
     await registry.reconcile(config)
+    for _ in range(10):
+        if len(captured) >= 2:
+            break
+        await asyncio.sleep(0)
+    before_a = registry.handles()["a"].task
     before_b = registry.handles()["b"].task
+    before_fp = registry.handles()["a"].fingerprint
+    live = registry.handles()["a"].live_config
+    assert live is not None
+    # The channel task reads the SAME dict object the handle tracks.
+    assert any(getattr(p, "config", None) is live for p in captured)
 
     instances = config["qq"]["instances"]  # type: ignore[index]
     instances["a"]["group_reply_policy"] = "all"  # type: ignore[index]
     await registry.reconcile(config)
 
+    handle_a = registry.handles()["a"]
+    assert handle_a.task is before_a  # NOT restarted
     assert registry.handles()["b"].task is before_b
-    assert registry.handles()["a"].task is not before_b
+    assert handle_a.fingerprint != before_fp  # bookkeeping advanced
+    assert live["group_reply_policy"] == "all"  # applied in place
+    # Managed-descriptor transports injected at start survive the swap.
+    assert live["ws_url"] == "ws://a:3001"
     await registry.stop_all()
 
 
 @pytest.mark.asyncio
-async def test_reconcile_restarts_instance_when_monitors_change() -> None:
-    """The group-monitor rule list rides the config fingerprint — editing
-    it must hot-restart the instance (this is what makes the /channels/qq
-    monitors PUT take effect without a gateway restart)."""
+async def test_monitors_change_hot_applies_without_restart() -> None:
+    """The monitor rule list is a behavior key — editing it hot-applies
+    into the running instance (the resident digest loop re-reads it)."""
     manager = FakeManager()
     registry = QqRuntimeRegistry(
         model="gpt-test",
@@ -337,7 +362,35 @@ async def test_reconcile_restarts_instance_when_monitors_change() -> None:
         }
     ]
     await registry.reconcile(config)
-    assert registry.handles()["a"].task is not before
+    handle = registry.handles()["a"]
+    assert handle.task is before  # hot-applied, not restarted
+    live = handle.live_config
+    assert live is not None and live["monitors"][0]["id"] == "m1"
+    await registry.stop_all()
+
+
+@pytest.mark.asyncio
+async def test_transport_change_still_restarts() -> None:
+    """Transport-level keys (access_token / ws_url) keep restart
+    semantics — and so does any UNKNOWN key (fail-safe default)."""
+    registry = QqRuntimeRegistry(
+        model="gpt-test",
+        chat_service=object(),
+        run_qq=_fake_run,
+    )
+    config = _fleet("a", managed=False)
+    await registry.reconcile(config)
+    before = registry.handles()["a"].task
+
+    instances = config["qq"]["instances"]  # type: ignore[index]
+    instances["a"]["access_token"] = "rotated"  # type: ignore[index]
+    await registry.reconcile(config)
+    after_transport = registry.handles()["a"].task
+    assert after_transport is not before
+
+    instances["a"]["some_future_snapshot_key"] = 1  # type: ignore[index]
+    await registry.reconcile(config)
+    assert registry.handles()["a"].task is not after_transport
     await registry.stop_all()
 
 
@@ -546,7 +599,9 @@ async def test_stale_identity_task_cannot_publish_into_replacement_runtime(
         await asyncio.sleep(0)
 
     replacement = _fleet("a")
-    replacement["qq"]["instances"]["a"]["group_reply_policy"] = "all"  # type: ignore[index]
+    # Transport-level edit — a behavior-only key would hot-apply into the
+    # SAME runtime and this test is about a REPLACED one.
+    replacement["qq"]["instances"]["a"]["access_token"] = "rotated"  # type: ignore[index]
     reconcile_task = asyncio.create_task(registry.reconcile(replacement))
     await asyncio.sleep(0)
     bind_gate.set()

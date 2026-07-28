@@ -530,6 +530,27 @@ class QqChannelParams:
     section, exactly the pre-existing behaviour."""
 
 
+def _qq_group_whitelist(cfg: Any) -> frozenset[str] | None:
+    """Live read of ``group_whitelist`` — ``None`` = whitelist off."""
+    wl_raw = _attr(cfg, "group_whitelist", None)
+    return frozenset(str(g) for g in wl_raw) if wl_raw is not None else None
+
+
+def _qq_router_gates(cfg: Any) -> tuple[Any, ...]:
+    """The five live-tunable router gate values as a comparable tuple.
+
+    The dispatch loop re-reads these per event and rebuilds the router
+    when they change — that is what makes an admin save of keywords /
+    whitelist / policy hot-apply without restarting the transport."""
+    return (
+        _coerce_keywords(_attr(cfg, "group_keywords", {})),
+        bool(_attr(cfg, "group_replies_enabled", True)),
+        _qq_group_whitelist(cfg),
+        str(_attr(cfg, "group_reply_policy", "mention_or_keyword")),
+        float(_attr(cfg, "group_reply_cooldown_secs", 20) or 0),
+    )
+
+
 async def run_qq_channel(
     params: QqChannelParams,
     cancel: asyncio.Event,
@@ -570,15 +591,15 @@ async def run_qq_channel(
     if sender_limiter is not None:
         gc_tasks.append(sender_limiter.start_gc(cancel))
 
-    wl_raw = _attr(cfg, "group_whitelist", None)
-    group_whitelist = frozenset(str(g) for g in wl_raw) if wl_raw is not None else None
+    group_whitelist = _qq_group_whitelist(cfg)
+    gates = _qq_router_gates(cfg)
     router = ChannelRouter(
-        group_keywords=_coerce_keywords(_attr(cfg, "group_keywords", {})),
+        group_keywords=gates[0],
         self_ids=self_ids,
-        group_replies_enabled=bool(_attr(cfg, "group_replies_enabled", True)),
-        group_whitelist=group_whitelist,
-        group_reply_policy=str(_attr(cfg, "group_reply_policy", "mention_or_keyword")),
-        group_reply_cooldown_secs=float(_attr(cfg, "group_reply_cooldown_secs", 20) or 0),
+        group_replies_enabled=gates[1],
+        group_whitelist=gates[2],
+        group_reply_policy=gates[3],
+        group_reply_cooldown_secs=gates[4],
     ).with_rate_limits(group_limiter, sender_limiter)
     if params.rate_limit_hook is not None:
         router = router.with_rate_limit_hook(params.rate_limit_hook)
@@ -635,21 +656,26 @@ async def run_qq_channel(
                 _qq_health_watcher(adapter, cancel, health=health),
                 name=f"qq-health-watcher-{params.instance_id}",
             )
-            # Human-paced proactive speech (off unless configured on).
+            # Human-paced proactive speech. The loop is ALWAYS resident
+            # (it re-reads the live config each beat and idles while the
+            # feature is off) so an admin save that enables proactive_*
+            # hot-applies without a channel restart.
             proactive_cfg = _qq_proactive_config(cfg, group_whitelist)
             proactive_task: asyncio.Task[None] | None = None
-            if proactive_cfg is not None and params.chat_service is not None:
+            if params.chat_service is not None:
                 proactive_task = asyncio.create_task(
                     _qq_proactive_loop(adapter, params, proactive_cfg, cancel, health=health),
                     name=f"qq-proactive-loop-{params.instance_id}",
                 )
-            # Scheduled group-digest monitors (off unless configured on).
+            # Scheduled group-digest monitors. Resident like the
+            # proactive loop — each tick re-reads the live config, so
+            # adding / editing monitor rules hot-applies restart-free.
             monitors_cfg = _qq_monitors_config(cfg)
             monitor_task: asyncio.Task[None] | None = None
-            if monitors_cfg is not None and params.chat_service is not None:
+            if params.chat_service is not None:
                 monitor_task = asyncio.create_task(
                     _qq_monitor_digest_loop(
-                        adapter, params, monitors_cfg, cancel, health=health
+                        adapter, params, monitors_cfg or (), cancel, health=health
                     ),
                     name=f"qq-monitor-digest-{params.instance_id}",
                 )
@@ -1104,10 +1130,23 @@ async def _qq_proactive_send(
             await asyncio.sleep(0.3)
 
 
+#: How often the resident proactive loop re-checks the live config
+#: while the feature is DISABLED — an admin save enabling proactive_*
+#: hot-applies within this window, no channel restart.
+_QQ_PROACTIVE_IDLE_RECHECK_SECS = 60.0
+
+
+def _qq_proactive_live_config(params: QqChannelParams) -> _QqProactiveConfig | None:
+    """Re-resolve the proactive config off the LIVE ``params.config``."""
+    return _qq_proactive_config(
+        params.config, _qq_group_whitelist(params.config)
+    )
+
+
 async def _qq_proactive_loop(
     adapter: OneBotAdapter,
     params: QqChannelParams,
-    cfg: _QqProactiveConfig,
+    cfg: _QqProactiveConfig | None,
     cancel: asyncio.Event,
     *,
     health: dict[str, Any] | None = None,
@@ -1121,24 +1160,53 @@ async def _qq_proactive_loop(
     budget, hasn't heard from us within ``min_gap``, and is under the
     shared speech cap; run one persona turn over the group's recent
     chatter and post it. The model may answer SKIP to stay silent.
-    Failures log and skip; the loop never crashes the channel."""
-    _log.info(
-        "qq proactive loop started groups=%s gap=%.0f-%.0fmin daily_max=%d "
-        "hours=%02d-%02d tz=%s p=%.2f ctx=%d",
-        list(cfg.groups),
-        cfg.min_gap_minutes,
-        cfg.max_gap_minutes,
-        cfg.daily_max,
-        cfg.active_start_hour,
-        cfg.active_end_hour,
-        cfg.timezone or "local",
-        cfg.probability,
-        cfg.context_messages,
-    )
+    Failures log and skip; the loop never crashes the channel.
+
+    The loop is resident even while the feature is off: ``cfg`` is only
+    the INITIAL resolve — every beat re-reads ``params.config`` (which a
+    behavior-only reconcile mutates in place), so enabling / disabling /
+    retuning proactive_* hot-applies without a channel restart."""
+    if cfg is not None:
+        _log.info(
+            "qq proactive loop started groups=%s gap=%.0f-%.0fmin daily_max=%d "
+            "hours=%02d-%02d tz=%s p=%.2f ctx=%d",
+            list(cfg.groups),
+            cfg.min_gap_minutes,
+            cfg.max_gap_minutes,
+            cfg.daily_max,
+            cfg.active_start_hour,
+            cfg.active_end_hour,
+            cfg.timezone or "local",
+            cfg.probability,
+            cfg.context_messages,
+        )
+    else:
+        _log.info(
+            "qq proactive loop idle (disabled) instance=%s", params.instance_id
+        )
     target_health = health if health is not None else QQ_HEALTH
+    was_enabled = cfg is not None
     while not cancel.is_set():
-        if await _qq_proactive_sleep(cancel, _qq_proactive_next_delay_secs(cfg)):
+        cfg_pre = _qq_proactive_live_config(params)
+        delay = (
+            _qq_proactive_next_delay_secs(cfg_pre)
+            if cfg_pre is not None
+            else _QQ_PROACTIVE_IDLE_RECHECK_SECS
+        )
+        if await _qq_proactive_sleep(cancel, delay):
             break
+        # Re-resolve AFTER the (long) sleep — the config may have been
+        # hot-applied while we slept.
+        cfg = _qq_proactive_live_config(params)
+        if (cfg is not None) != was_enabled:
+            was_enabled = cfg is not None
+            _log.info(
+                "qq proactive %s (hot-applied) instance=%s",
+                "enabled" if was_enabled else "disabled",
+                params.instance_id,
+            )
+        if cfg is None:
+            continue
         day, now_hour = _qq_proactive_now_parts(cfg.timezone)
         if not _qq_proactive_in_active_hours(now_hour, cfg.active_start_hour, cfg.active_end_hour):
             continue
@@ -2122,6 +2190,10 @@ async def _qq_monitor_digest_loop(
         sorted(_qq_monitor_groups(specs)),
     )
     last_prune_mono = 0.0
+    # Hot-apply: each tick re-resolves the monitor specs off the LIVE
+    # ``params.config``. Baseline-diffed so direct callers that pass
+    # ``specs`` explicitly (tests) keep their value untouched.
+    specs_baseline = _qq_monitors_config(params.config)
     try:
         while not cancel.is_set():
             cancel_wait = asyncio.ensure_future(cancel.wait())
@@ -2137,6 +2209,23 @@ async def _qq_monitor_digest_loop(
                     await task
             if cancel.is_set():
                 break
+            specs_live = _qq_monitors_config(params.config)
+            if specs_live != specs_baseline:
+                specs_baseline = specs_live
+                specs = specs_live or ()
+                valid = {f"{instance_id}:{s.monitor_id}" for s in specs}
+                for stale_key in [
+                    k
+                    for k in _QQ_MONITOR_STATUS
+                    if k.startswith(f"{instance_id}:") and k not in valid
+                ]:
+                    _QQ_MONITOR_STATUS.pop(stale_key, None)
+                _log.info(
+                    "qq monitor specs hot-applied instance=%s rules=%d groups=%s",
+                    instance_id,
+                    len(specs),
+                    sorted(_qq_monitor_groups(specs)),
+                )
             triggered: set[str] = set()
             if wake.is_set():
                 wake.clear()
@@ -2495,6 +2584,14 @@ async def _qq_dispatch_loop(
     # (no env config) keeps the historical allow-by-default behaviour.
     slash_policy = slash_access_policy_from_env()
     pending: set[asyncio.Task[None]] = set()
+    # Hot-apply baselines. A behavior-only reconcile mutates
+    # ``params.config`` in place; per event we re-derive the router gates
+    # (rebuilding the router when they change — cooldown state and rate
+    # limiters survive via dataclasses.replace) and the monitored-group
+    # set (keyed on the ``monitors`` object identity so direct callers
+    # that pass ``monitored_groups`` explicitly keep their value).
+    gates_baseline = _qq_router_gates(params.config)
+    monitors_source = _attr(params.config, "monitors", None)
     try:
         if inbox is not None and not cancel.is_set():
             await _replay_qq_inbox_rows(
@@ -2515,6 +2612,35 @@ async def _qq_dispatch_loop(
             payload = ev.payload
             if not isinstance(payload, MessageEvent):
                 continue
+            gates_now = _qq_router_gates(params.config)
+            if gates_now != gates_baseline:
+                from dataclasses import replace as _dc_replace
+
+                router = _dc_replace(
+                    router,
+                    group_keywords=gates_now[0],
+                    group_replies_enabled=gates_now[1],
+                    group_whitelist=gates_now[2],
+                    group_reply_policy=gates_now[3],
+                    group_reply_cooldown_secs=gates_now[4],
+                )
+                gates_baseline = gates_now
+                _log.info(
+                    "qq router gates hot-applied instance=%s", params.instance_id
+                )
+            monitors_now = _attr(params.config, "monitors", None)
+            if monitors_now is not monitors_source:
+                monitors_source = monitors_now
+                monitored_groups = _qq_monitor_groups(
+                    _qq_monitors_config(params.config)
+                )
+                if group_history is None and monitored_groups:
+                    group_history = await _try_open_group_history()
+                _log.info(
+                    "qq monitored groups hot-applied instance=%s groups=%s",
+                    params.instance_id,
+                    sorted(monitored_groups),
+                )
             if callable(params.identity_ready) and not params.identity_ready():
                 _log.warning(
                     "qq inbound blocked: instance identity is not verified instance=%s",
