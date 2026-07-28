@@ -6,10 +6,11 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import type { QqMonitorSpec } from "@/lib/api/qq-monitors";
+import type { QqMonitorSource, QqMonitorSpec } from "@/lib/api/qq-monitors";
 
 // Return the raw key so assertions don't depend on the translated copy.
 vi.mock("react-i18next", () => ({
@@ -56,12 +57,20 @@ vi.mock("@/lib/api/qq-monitors", async (importOriginal) => {
 import { toast } from "sonner";
 import { QqMonitorPanel } from "@/components/channels/qq/qq-monitor-panel";
 
+function source(over: Partial<QqMonitorSource> = {}): QqMonitorSource {
+  return {
+    group: "123456",
+    watch_user_ids: [],
+    focus_user_ids: [],
+    ...over,
+  };
+}
+
 function spec(over: Partial<QqMonitorSpec> = {}): QqMonitorSpec {
   return {
     id: "daily-digest",
     enabled: true,
-    source_group: "123456",
-    watch_user_ids: [],
+    sources: [source()],
     schedule_type: "daily",
     daily_time: "21:00",
     interval_minutes: null,
@@ -117,7 +126,7 @@ afterEach(() => {
 });
 
 describe("QqMonitorPanel", () => {
-  it("loads and renders the rule list with status merged in", async () => {
+  it("loads and renders the task list with status merged in", async () => {
     statusMock.mockResolvedValue({
       statuses: {
         "daily-digest": {
@@ -142,7 +151,34 @@ describe("QqMonitorPanel", () => {
     expect(await screen.findByText("delivery boom")).toBeInTheDocument();
   });
 
-  it("adds a rule via the form and saves the whole list via PUT", async () => {
+  it("summarizes a multi-source task (group count + list) and the focus badge", async () => {
+    getMonitorsMock.mockResolvedValue({
+      monitors: [
+        spec({
+          id: "multi",
+          sources: [
+            source({ group: "111222", focus_user_ids: ["42", "43"] }),
+            source({ group: "333444", watch_user_ids: ["7"] }),
+            source({ group: "555666", focus_user_ids: ["42"] }),
+          ],
+        }),
+      ],
+      warnings: [],
+      revision: "rev-1",
+    });
+    renderPanel();
+
+    const row = await screen.findByTestId("qq-monitor-row-multi");
+    // Multi-source → "N groups" + the (truncatable) group list.
+    expect(row).toHaveTextContent("qqMonitor.row.multiGroups");
+    expect(row).toHaveTextContent("111222, 333444, 555666");
+    // Focused members present → star badge (42/43 dedupe to 2 unique).
+    expect(
+      within(row).getByTestId("qq-monitor-focus-multi"),
+    ).toHaveTextContent("qqMonitor.row.focus");
+  });
+
+  it("adds a task with add/removed source blocks and saves sources+focus via PUT", async () => {
     renderPanel();
     await screen.findByTestId("qq-monitor-row-daily-digest");
 
@@ -150,15 +186,42 @@ describe("QqMonitorPanel", () => {
     fireEvent.change(screen.getByTestId("qq-monitor-form-id"), {
       target: { value: "night-watch" },
     });
-    fireEvent.change(screen.getByTestId("qq-monitor-form-group"), {
+
+    // Source 1: group + a focused member.
+    fireEvent.change(screen.getByTestId("qq-monitor-form-group-0"), {
       target: { value: "222333" },
     });
-    fireEvent.change(screen.getByTestId("qq-monitor-form-target-id"), {
+    const focus0 = screen.getByTestId("qq-monitor-form-focus-input-0");
+    fireEvent.change(focus0, { target: { value: "999" } });
+    fireEvent.keyDown(focus0, { key: "Enter" });
+
+    // Source 2: narrowed watch scope.
+    fireEvent.click(screen.getByTestId("qq-monitor-form-source-add"));
+    fireEvent.change(screen.getByTestId("qq-monitor-form-group-1"), {
       target: { value: "444555" },
+    });
+    const block1 = screen.getByTestId("qq-monitor-form-source-1");
+    fireEvent.click(within(block1).getByText("qqMonitor.form.watchSome"));
+    const watch1 = screen.getByTestId("qq-monitor-form-watch-input-1");
+    fireEvent.change(watch1, { target: { value: "777" } });
+    fireEvent.keyDown(watch1, { key: "Enter" });
+
+    // A third block can be added and removed again — draft-local only.
+    fireEvent.click(screen.getByTestId("qq-monitor-form-source-add"));
+    expect(
+      screen.getByTestId("qq-monitor-form-source-2"),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("qq-monitor-form-source-remove-2"));
+    expect(
+      screen.queryByTestId("qq-monitor-form-source-2"),
+    ).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId("qq-monitor-form-target-id"), {
+      target: { value: "888999" },
     });
     fireEvent.click(screen.getByTestId("qq-monitor-form-apply"));
 
-    // The new rule lands in the local draft list (not yet saved).
+    // The new task lands in the local draft list (not yet saved).
     expect(
       await screen.findByTestId("qq-monitor-row-night-watch"),
     ).toBeInTheDocument();
@@ -174,14 +237,16 @@ describe("QqMonitorPanel", () => {
         expect.objectContaining({
           id: "night-watch",
           enabled: true,
-          source_group: "222333",
-          watch_user_ids: [],
+          sources: [
+            { group: "222333", watch_user_ids: [], focus_user_ids: ["999"] },
+            { group: "444555", watch_user_ids: ["777"], focus_user_ids: [] },
+          ],
           schedule_type: "daily",
           daily_time: "09:00",
           interval_minutes: null,
           window_minutes: 0,
           target_type: "group",
-          target_id: "444555",
+          target_id: "888999",
           send_when_empty: false,
         }),
       ],
@@ -189,6 +254,70 @@ describe("QqMonitorPanel", () => {
     );
     await waitFor(() =>
       expect(toast.success).toHaveBeenCalledWith("qqMonitor.saved"),
+    );
+  });
+
+  it("merges the selected tasks into the first one, unioning sources per group", async () => {
+    getMonitorsMock.mockResolvedValue({
+      monitors: [
+        spec({
+          id: "alpha",
+          sources: [
+            source({
+              group: "111",
+              watch_user_ids: ["1"],
+              focus_user_ids: ["9"],
+            }),
+          ],
+        }),
+        spec({
+          id: "beta",
+          sources: [
+            // Same group as alpha's — watch "all" on this side must win.
+            source({ group: "111", focus_user_ids: ["8"] }),
+            source({ group: "222", watch_user_ids: ["2"] }),
+          ],
+        }),
+      ],
+      warnings: [],
+      revision: "rev-1",
+    });
+    renderPanel();
+    await screen.findByTestId("qq-monitor-row-alpha");
+
+    // No merge button until >= 2 rows are selected.
+    expect(screen.queryByTestId("qq-monitor-merge")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("qq-monitor-select-alpha"));
+    expect(screen.queryByTestId("qq-monitor-merge")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("qq-monitor-select-beta"));
+
+    fireEvent.click(screen.getByTestId("qq-monitor-merge"));
+
+    // Draft-only: beta is absorbed into alpha, nothing PUT yet.
+    expect(toast.success).toHaveBeenCalledWith("qqMonitor.merged");
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("qq-monitor-row-beta"),
+      ).not.toBeInTheDocument(),
+    );
+    expect(putMonitorsMock).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId("qq-monitor-save"));
+
+    await waitFor(() => expect(putMonitorsMock).toHaveBeenCalledTimes(1));
+    expect(putMonitorsMock).toHaveBeenCalledWith(
+      "default",
+      [
+        expect.objectContaining({
+          id: "alpha",
+          sources: [
+            // watch: ["1"] ∪ all → all; focus: ["9"] ∪ ["8"].
+            { group: "111", watch_user_ids: [], focus_user_ids: ["9", "8"] },
+            { group: "222", watch_user_ids: ["2"], focus_user_ids: [] },
+          ],
+        }),
+      ],
+      "rev-1",
     );
   });
 
