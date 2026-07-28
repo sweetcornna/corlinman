@@ -32,6 +32,10 @@ class QqRuntimeHandle:
     default_instance: bool
     generation: int | None = None
     identity_task: asyncio.Task[None] | None = None
+    live_config: dict[str, Any] | None = None
+    """THE config dict the running channel reads (``params.config``).
+    Behavior-only reconciles mutate it in place instead of restarting
+    the transport — see :data:`_QQ_HOT_APPLY_KEYS`."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +146,49 @@ class QqRuntimeRegistry:
                         and current.fingerprint == fingerprint
                         and current.default_instance == is_default
                     ):
+                        continue
+                    if (
+                        current is not None
+                        and current.default_instance == is_default
+                        and current.live_config is not None
+                        and _transport_fingerprint(current.runtime_config)
+                        == _transport_fingerprint(config.values)
+                    ):
+                        # Behavior-only diff (keywords / whitelist /
+                        # proactive / monitors / …) — hot-apply into the
+                        # RUNNING channel instead of dropping the WS.
+                        # Every admin save used to restart the instance;
+                        # a restart is only for transport-level changes.
+                        live = current.live_config
+                        old_values = current.runtime_config
+                        changed_keys = sorted(
+                            str(k)
+                            for k in (set(old_values) | set(config.values))
+                            if old_values.get(k) != config.values.get(k)
+                        )
+                        # Keys injected at start time (managed-descriptor
+                        # transports, env-backfilled ws_url) are absent
+                        # from config.values — carry them over.
+                        preserved = {
+                            k: live[k]
+                            for k in (
+                                "ws_url",
+                                "napcat_url",
+                                "access_token",
+                                "napcat_access_token",
+                            )
+                            if k in live and k not in config.values
+                        }
+                        live.clear()
+                        live.update(dict(config.values))
+                        live.update(preserved)
+                        current.runtime_config = dict(config.values)
+                        current.fingerprint = fingerprint
+                        logger.info(
+                            "gateway.qq_instance.hot_applied",
+                            instance_id=instance_id,
+                            changed_keys=changed_keys,
+                        )
                         continue
                     if current is not None:
                         await self._stop_locked(instance_id, publish_sidecar=False)
@@ -382,6 +429,7 @@ class QqRuntimeRegistry:
             managed=managed,
             default_instance=default_instance,
             generation=generation,
+            live_config=config,
         )
 
     async def _run_instance(
@@ -413,6 +461,15 @@ class QqRuntimeRegistry:
             persona_store=self.persona_store,
             asset_store=self.asset_store,
         )
+        # Hot-apply contract: behavior-only reconciles mutate `config`
+        # (the handle's ``live_config``) in place — the channel must read
+        # the SAME object. ``_build_qq_params`` returns a copy (legacy
+        # callers depend on that); fold its backfills (env ws_url) into
+        # the shared dict and alias it back.
+        if isinstance(params.config, dict):
+            for key, value in params.config.items():
+                config.setdefault(key, value)
+            params.config = config
         await _run_channel(
             f"qq:{instance_id}",
             lambda event, p=params: run_qq_channel(p, event),
@@ -598,3 +655,39 @@ class QqRuntimeRegistry:
 def _config_fingerprint(values: Mapping[str, Any]) -> str:
     payload = json.dumps(values, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+#: Instance-config keys the running channel reads LIVE off ``params.config``
+#: (dispatch-loop router gates, proactive loop, monitor loop, humanlike /
+#: tencent resolvers). A reconcile where ONLY these differ hot-applies by
+#: mutating the running channel's config dict in place — no transport
+#: restart, no WS drop. Anything NOT listed (unknown/new keys included)
+#: keeps restart semantics: a snapshot-read key added later fails SAFE
+#: (restart applies it) instead of silently not applying.
+_QQ_HOT_APPLY_KEYS = frozenset(
+    {
+        "display_name",
+        "group_keywords",
+        "group_whitelist",
+        "group_replies_enabled",
+        "group_reply_policy",
+        "group_reply_cooldown_secs",
+        "group_rate_limit_window_minutes",
+        "group_rate_limit_max_messages",
+        "freeze_risk_topic_blocking",
+        "humanlike",
+        "monitors",
+        "monitor_retention_hours",
+    }
+)
+
+
+def _is_hot_apply_key(key: str) -> bool:
+    return key in _QQ_HOT_APPLY_KEYS or key.startswith("proactive_")
+
+
+def _transport_fingerprint(values: Mapping[str, Any]) -> str:
+    """Fingerprint of the restart-requiring subset of an instance config."""
+    return _config_fingerprint(
+        {k: v for k, v in values.items() if not _is_hot_apply_key(str(k))}
+    )
