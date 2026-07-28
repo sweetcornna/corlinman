@@ -451,7 +451,7 @@ class QqRuntimeRegistry:
             finally:
                 binding = False
 
-        def _verify(observed_uin: int) -> bool:
+        def _verify(observed_uin: int) -> bool | None:
             nonlocal binding, verified
             valid = self._identity.verify(instance_id, observed_uin, expected_uin)
             if not valid:
@@ -466,7 +466,9 @@ class QqRuntimeRegistry:
                 )
                 verified = False
                 return False
-            if not verified and not binding:
+            if verified:
+                return True
+            if not binding:
                 binding = True
                 task = asyncio.create_task(_bind(observed_uin))
                 handle = self._handles.get(instance_id)
@@ -474,7 +476,13 @@ class QqRuntimeRegistry:
                     handle.identity_task = task
                 self._background_tasks.add(task)
                 task.add_done_callback(self._background_tasks.discard)
-            return verified
+            # Binding in flight (first observation, or a retry after a
+            # failed publish): pending is NOT rejected. Returning False
+            # here made the channel brand a perfectly healthy login
+            # "identity_rejected / kicked offline" for the window between
+            # the first observed event and the async bind completing —
+            # inbound stays gated via identity_ready either way.
+            return None
 
         return _verify, lambda: verified
 

@@ -373,7 +373,7 @@ async def test_reconcile_writes_managed_transport_after_identity_is_bound(
             break
         await asyncio.sleep(0)
     params = seen[0]
-    assert params.identity_guard(10001) is False  # type: ignore[attr-defined]
+    assert params.identity_guard(10001) is None  # type: ignore[attr-defined]
     assert params.identity_ready() is False  # type: ignore[attr-defined]
     for _ in range(20):
         rendered = json.loads(sidecar.read_text())
@@ -418,7 +418,7 @@ async def test_runtime_params_use_private_descriptor_without_logging_secret(
 
     handle = registry.handles()["a"]
     assert handle.transport["expected_uin"] is None
-    assert params.identity_guard(10001) is False  # type: ignore[attr-defined]
+    assert params.identity_guard(10001) is None  # type: ignore[attr-defined]
     for _ in range(10):
         if registry.handles()["a"].transport["expected_uin"] == "10001":
             break
@@ -455,7 +455,7 @@ async def test_external_identity_is_published_before_becoming_ready(tmp_path) ->
         await asyncio.sleep(0)
 
     params = seen[0]
-    assert params.identity_guard(10001) is False  # type: ignore[attr-defined]
+    assert params.identity_guard(10001) is None  # type: ignore[attr-defined]
     for _ in range(20):
         if params.identity_ready():  # type: ignore[attr-defined]
             break
@@ -500,7 +500,7 @@ async def test_configured_expected_uin_is_not_published_before_live_verification
             break
         await asyncio.sleep(0)
     params = seen[0]
-    assert params.identity_guard(10001) is False  # type: ignore[attr-defined]
+    assert params.identity_guard(10001) is None  # type: ignore[attr-defined]
     for _ in range(20):
         if params.identity_ready():  # type: ignore[attr-defined]
             break
@@ -539,7 +539,7 @@ async def test_stale_identity_task_cannot_publish_into_replacement_runtime(
             break
         await asyncio.sleep(0)
     old_params = seen[0]
-    assert old_params.identity_guard(10001) is False  # type: ignore[attr-defined]
+    assert old_params.identity_guard(10001) is None  # type: ignore[attr-defined]
     for _ in range(10):
         if any(op == "bind_uin" for op, _identity, _kwargs in manager.requests):
             break
@@ -593,7 +593,7 @@ async def test_managed_identity_remains_blocked_when_manager_bind_fails(
         await asyncio.sleep(0)
 
     params = seen[0]
-    assert params.identity_guard(10001) is False  # type: ignore[attr-defined]
+    assert params.identity_guard(10001) is None  # type: ignore[attr-defined]
     for _ in range(20):
         handle = registry.handles()["a"]
         if handle.health["account_last_error"] == "identity_bind_failed":
