@@ -204,6 +204,11 @@ function GroupRow({
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
+            // IME guard: with a CJK input method, the Enter that commits
+            // the composition ALSO fires keydown with key === "Enter" —
+            // without this check every Chinese keyword gets eaten
+            // mid-composition and the tag never lands.
+            if (e.nativeEvent.isComposing || e.keyCode === 229) return;
             if (e.key === "Enter") {
               e.preventDefault();
               add(draft);
@@ -216,6 +221,9 @@ function GroupRow({
               remove(keywords[keywords.length - 1]!);
             }
           }}
+          // Commit-on-blur: clicking 保存 with text still in the input
+          // must not silently drop that keyword from the payload.
+          onBlur={() => add(draft)}
           placeholder={t("channels.addKeywordPlaceholder")}
           aria-label={t("channels.addKeywordPlaceholder")}
           className="h-7 min-w-[140px] flex-1 bg-transparent px-1 font-mono text-[11px] text-sg-ink placeholder:text-sg-ink-4 focus:outline-none"

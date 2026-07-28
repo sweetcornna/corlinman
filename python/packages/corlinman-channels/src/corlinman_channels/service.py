@@ -1250,8 +1250,16 @@ _QQ_MONITOR_TICK_SECS = 30.0
 #: A scheduled fire missed by more than this (account offline over the
 #: send time, gateway down) is dropped, not back-filled hours later.
 _QQ_MONITOR_GRACE_SECS = 2 * 3600.0
-#: Newest rows fed to the digest prompt when a window is busier than this.
-_QQ_MONITOR_MAX_MESSAGES = 400
+#: Messages per map-phase chunk. Windows that don't fit in one chunk are
+#: split 1000-a-piece and summarised by PARALLEL chat turns, then a
+#: reduce turn merges the partial summaries — nothing is dropped (the
+#: old behaviour kept only the newest 400 rows of a busy window).
+_QQ_MONITOR_CHUNK_MESSAGES = 1000
+#: Per-source fetch ceiling (newest rows win) — a pure safety valve
+#: bounding memory and map fan-out, far above any realistic window.
+_QQ_MONITOR_FETCH_CAP = 10_000
+#: Concurrent map turns per digest run.
+_QQ_MONITOR_MAP_CONCURRENCY = 4
 #: Per-line text cap inside the digest prompt.
 _QQ_MONITOR_LINE_CAP = 300
 _QQ_MONITOR_MIN_INTERVAL_MINUTES = 5
@@ -1274,6 +1282,13 @@ _QQ_MONITOR_FOCUS_PROMPT = (
     "请在最后为每位重点关注对象单独写一小段，具体说明该成员这段时间"
     "说了什么、在关心什么；如果某位重点关注对象没有发言，也要明确写一句"
     "「该成员未发言」。"
+)
+
+_QQ_MONITOR_REDUCE_FOCUS_PROMPT = (
+    "各段摘要末尾已为重点关注对象单独记录了发言情况。请在最终汇总的"
+    "最后把它们合并：每位重点关注对象一小段，说明该成员这段时间说了"
+    "什么、在关心什么；如果各段都显示某位重点关注对象没有发言，"
+    "也要明确写一句「该成员未发言」。"
 )
 
 
@@ -1595,6 +1610,32 @@ def _qq_monitor_retention_hours(
     return max(retention, longest_window_h + 1.0)
 
 
+def _qq_monitor_format_lines(
+    source: _QqMonitorSource, messages: list[Any], tz: Any
+) -> list[str]:
+    """Render store rows as ``[MM-DD HH:MM] name(id): text`` prompt lines.
+
+    ★-prefixes the focus members' lines — shared by the single-turn
+    prompt and the map-phase chunk prompts so both paths mark focus
+    speech identically."""
+    focus = set(source.focus_user_ids)
+    lines: list[str] = []
+    for msg in messages:
+        stamp = datetime.fromtimestamp(
+            msg.received_at_ms / 1000.0, tz
+        ).strftime("%m-%d %H:%M")
+        name = str(getattr(msg, "sender_name", "") or "")
+        sender_id = str(getattr(msg, "sender_user_id", "") or "")
+        who = (
+            f"{name}({sender_id})" if name and sender_id else (name or sender_id)
+        )
+        marker = "★" if sender_id in focus else ""
+        lines.append(
+            f"{marker}[{stamp}] {who}: {str(msg.text)[:_QQ_MONITOR_LINE_CAP]}"
+        )
+    return lines
+
+
 def _qq_monitor_compose_prompt(
     spec: _QqMonitorSpec,
     per_source: list[tuple[_QqMonitorSource, list[Any]]],
@@ -1610,23 +1651,9 @@ def _qq_monitor_compose_prompt(
     total = 0
     for source, messages in per_source:
         total += len(messages)
-        focus = set(source.focus_user_ids)
-        lines: list[str] = []
-        for msg in messages:
-            stamp = datetime.fromtimestamp(
-                msg.received_at_ms / 1000.0, tz
-            ).strftime("%m-%d %H:%M")
-            name = str(getattr(msg, "sender_name", "") or "")
-            sender_id = str(getattr(msg, "sender_user_id", "") or "")
-            who = (
-                f"{name}({sender_id})" if name and sender_id else (name or sender_id)
-            )
-            marker = "★" if sender_id in focus else ""
-            lines.append(
-                f"{marker}[{stamp}] {who}: {str(msg.text)[:_QQ_MONITOR_LINE_CAP]}"
-            )
+        lines = _qq_monitor_format_lines(source, messages, tz)
         head = f"### 群 {source.group}（{len(messages)} 条）"
-        if focus:
+        if source.focus_user_ids:
             any_focus = True
             head += "，重点关注：" + "、".join(source.focus_user_ids)
         body = "\n".join(lines) if lines else "（该群本时段无消息）"
@@ -1642,6 +1669,91 @@ def _qq_monitor_compose_prompt(
     if spec.style_extra:
         parts.append("额外要求：" + spec.style_extra)
     parts.append("聊天记录（按群分节，每节内越靠下越新）：\n" + "\n\n".join(sections))
+    return "\n\n".join(parts)
+
+
+_QQ_MONITOR_MAP_PROMPT = (
+    "你是群聊记录的转述助手。下面是 QQ 群 {group} 在{window}内聊天记录"
+    "按时间先后切分后的第 {idx}/{total} 段（本段 {count} 条）。"
+    "请为这一段写一份中间摘要，供后续把各段合并成完整汇总。要求：\n"
+    "- 按话题归并，讲清楚谁说了什么、事情有没有结论；保留具体昵称(ID)"
+    "和关键时间点；话题可能在段边界被切断，如实记录本段看到的进展即可。\n"
+    "- 只依据给出的消息，不推测、不评价、不给建议、不虚构任何内容；"
+    "寒暄和刷屏可以忽略。\n"
+    "- 用平实的大白话，直接输出纯文本，不要 markdown 标记，"
+    "不要开场白或收尾客套。"
+)
+
+
+def _qq_monitor_compose_map_prompt(
+    source: _QqMonitorSource,
+    lines: list[str],
+    *,
+    idx: int,
+    total_chunks: int,
+    count: int,
+    window_desc: str,
+) -> str:
+    """One map-phase chunk → one self-contained summarisation turn."""
+    parts = [
+        _QQ_MONITOR_MAP_PROMPT.format(
+            group=source.group,
+            window=window_desc,
+            idx=idx,
+            total=total_chunks,
+            count=count,
+        )
+    ]
+    if source.focus_user_ids:
+        parts.append(_QQ_MONITOR_FOCUS_PROMPT)
+    parts.append("聊天记录（越靠下越新）：\n" + "\n".join(lines))
+    return "\n\n".join(parts)
+
+
+def _qq_monitor_compose_reduce_prompt(
+    spec: _QqMonitorSpec,
+    per_source_summaries: list[tuple[_QqMonitorSource, int, list[str]]],
+    *,
+    window_desc: str,
+    total: int,
+    truncated: bool,
+) -> str:
+    """Merge the map-phase partial summaries into the final digest.
+
+    ``per_source_summaries``: (source, message_count, chunk summaries in
+    time order). The reduce turn gets summaries, not raw chat — so the
+    style prompt's "只依据给出的消息" reads on the summaries, and we
+    explicitly forbid过程词 so the seams don't show in the output."""
+    sections: list[str] = []
+    any_focus = False
+    for source, count, summaries in per_source_summaries:
+        head = f"### 群 {source.group}（{count} 条）"
+        if source.focus_user_ids:
+            any_focus = True
+            head += "，重点关注：" + "、".join(source.focus_user_ids)
+        body = "\n\n".join(
+            f"【第{i}段】\n{s}" for i, s in enumerate(summaries, 1)
+        )
+        sections.append(head + "\n" + body)
+    groups_label = "、".join(
+        source.group for source, _count, _summaries in per_source_summaries
+    )
+    tail = "，只取最近部分" if truncated else ""
+    header = f"群 {groups_label} {window_desc}的消息汇总（共 {total} 条{tail}）。"
+    parts = [_QQ_MONITOR_STYLE_PROMPT.replace("{header}", header)]
+    parts.append(
+        "注意：下面给出的不是原始聊天记录，而是这段时间的聊天记录按时间"
+        "顺序切分后由助手写好的分段摘要。请把它们合并成一份连贯的最终汇总："
+        "按话题归并、跨段去重，同一话题在多段出现时合并叙述；"
+        "不要提到「分段」「摘要」「第几段」这类过程词。"
+    )
+    if len(per_source_summaries) > 1:
+        parts.append("这次涉及多个群，请按群分开小节汇总，不要把不同群的内容混在一起。")
+    if any_focus:
+        parts.append(_QQ_MONITOR_REDUCE_FOCUS_PROMPT)
+    if spec.style_extra:
+        parts.append("额外要求：" + spec.style_extra)
+    parts.append("分段摘要（按群分节，每节内按时间先后排列）：\n" + "\n\n".join(sections))
     return "\n\n".join(parts)
 
 
@@ -1697,6 +1809,127 @@ async def _qq_monitor_generate(
     return "".join(parts).strip()
 
 
+async def _qq_monitor_summarize(
+    params: QqChannelParams,
+    spec: _QqMonitorSpec,
+    per_source: list[tuple[_QqMonitorSource, list[Any]]],
+    cancel: asyncio.Event,
+    *,
+    window_desc: str,
+    truncated: bool,
+    health: dict[str, Any] | None = None,
+) -> str:
+    """Produce the digest text for one run — single turn or map-reduce.
+
+    Windows that fit in one chunk take the pre-existing single-turn
+    path verbatim. Bigger windows split each source's rows into
+    1000-message chunks, summarise them with PARALLEL chat turns
+    (bounded by ``_QQ_MONITOR_MAP_CONCURRENCY``; each turn already
+    mints its own session key so concurrent turns can't supplement
+    -absorb each other), then one reduce turn merges the partial
+    summaries. A failed chunk is retried once and then skipped — the
+    delivered digest carries an explicit incompleteness note rather
+    than silently pretending full coverage."""
+    total = sum(len(rows) for _source, rows in per_source)
+    if total <= _QQ_MONITOR_CHUNK_MESSAGES:
+        prompt = _qq_monitor_compose_prompt(
+            spec, per_source, window_desc=window_desc, truncated=truncated
+        )
+        return await _qq_monitor_generate(params, spec, prompt, cancel, health=health)
+
+    tz = _qq_monitor_tzinfo(spec.timezone)
+    # (source_pos, chunk_idx, total_chunks, prompt) — flat job list keeps
+    # gather() order aligned with (source, chunk) order.
+    jobs: list[tuple[int, int, int, str]] = []
+    for source_pos, (source, rows) in enumerate(per_source):
+        if not rows:
+            continue
+        chunks = [
+            rows[i : i + _QQ_MONITOR_CHUNK_MESSAGES]
+            for i in range(0, len(rows), _QQ_MONITOR_CHUNK_MESSAGES)
+        ]
+        for idx, chunk_rows in enumerate(chunks, 1):
+            prompt = _qq_monitor_compose_map_prompt(
+                source,
+                _qq_monitor_format_lines(source, chunk_rows, tz),
+                idx=idx,
+                total_chunks=len(chunks),
+                count=len(chunk_rows),
+                window_desc=window_desc,
+            )
+            jobs.append((source_pos, idx, len(chunks), prompt))
+    _log.info(
+        "qq monitor map-reduce start monitor=%s messages=%d chunks=%d",
+        spec.monitor_id,
+        total,
+        len(jobs),
+    )
+
+    sem = asyncio.Semaphore(_QQ_MONITOR_MAP_CONCURRENCY)
+
+    async def _run_map(job: tuple[int, int, int, str]) -> str | None:
+        _source_pos, idx, total_chunks, prompt = job
+        async with sem:
+            for attempt in (1, 2):
+                if cancel.is_set():
+                    return None
+                try:
+                    out = await _qq_monitor_generate(
+                        params, spec, prompt, cancel, health=health
+                    )
+                except Exception as exc:  # noqa: BLE001 — retried, then skipped
+                    _log.warning(
+                        "qq monitor map chunk failed monitor=%s chunk=%d/%d "
+                        "attempt=%d: %s",
+                        spec.monitor_id,
+                        idx,
+                        total_chunks,
+                        attempt,
+                        exc,
+                    )
+                    continue
+                if out:
+                    return out
+            return None
+
+    results = await asyncio.gather(*(_run_map(job) for job in jobs))
+    failed = sum(1 for r in results if r is None)
+    if failed == len(jobs):
+        raise RuntimeError(f"all {len(jobs)} map chunks failed")
+
+    by_source: dict[int, list[str]] = {}
+    for (source_pos, _idx, _total_chunks, _prompt), out in zip(
+        jobs, results, strict=True
+    ):
+        if out is not None:
+            by_source.setdefault(source_pos, []).append(out)
+    per_source_summaries: list[tuple[_QqMonitorSource, int, list[str]]] = []
+    for source_pos, (source, rows) in enumerate(per_source):
+        summaries = by_source.get(source_pos, [])
+        if not rows:
+            # Keep the "quiet group" visible in a multi-group digest,
+            # matching the single-turn prompt's empty-section rendering.
+            summaries = ["（该群本时段无消息）"]
+        elif not summaries:
+            continue  # every chunk failed — surfaced via the failure note
+        per_source_summaries.append((source, len(rows), summaries))
+    reduce_prompt = _qq_monitor_compose_reduce_prompt(
+        spec,
+        per_source_summaries,
+        window_desc=window_desc,
+        total=total,
+        truncated=truncated,
+    )
+    text = await _qq_monitor_generate(
+        params, spec, reduce_prompt, cancel, health=health
+    )
+    if text and failed:
+        # Deterministic honesty note — never trust the model to disclose
+        # the gap on its own.
+        text += f"\n（注：有 {failed} 段记录处理失败，以上汇总可能不完整）"
+    return text
+
+
 async def _qq_monitor_send(
     adapter: OneBotAdapter, spec: _QqMonitorSpec, text: str
 ) -> None:
@@ -1748,10 +1981,8 @@ async def _qq_monitor_run_once(
             # The emergency mute silences ALL group speech — scheduled
             # digests to a group included (private-chat digests still go).
             raise RuntimeError("group replies disabled")
-        # Token budget is shared across the task's sources.
-        source_limit = max(
-            50, _QQ_MONITOR_MAX_MESSAGES // max(1, len(spec.sources))
-        )
+        # Full-window fetch: busy windows are map-reduced in 1000-message
+        # chunks, not truncated. The cap is a pure safety valve.
         per_source: list[tuple[_QqMonitorSource, list[Any]]] = []
         for source in spec.sources:
             rows = await history.list_window(
@@ -1760,7 +1991,7 @@ async def _qq_monitor_run_once(
                 since_ms=until_ms - spec.window_minutes * 60_000,
                 until_ms=until_ms,
                 sender_ids=source.collection_ids() or None,
-                limit=source_limit,
+                limit=_QQ_MONITOR_FETCH_CAP,
             )
             per_source.append((source, rows))
         count = sum(len(rows) for _source, rows in per_source)
@@ -1781,16 +2012,17 @@ async def _qq_monitor_run_once(
             groups_label = "、".join(source.group for source in spec.sources)
             text = f"群 {groups_label} {window_desc}没有新消息。"
         else:
-            prompt = _qq_monitor_compose_prompt(
+            text = await _qq_monitor_summarize(
+                params,
                 spec,
                 per_source,
+                cancel,
                 window_desc=window_desc,
                 truncated=any(
-                    len(rows) >= source_limit for _source, rows in per_source
+                    len(rows) >= _QQ_MONITOR_FETCH_CAP
+                    for _source, rows in per_source
                 ),
-            )
-            text = await _qq_monitor_generate(
-                params, spec, prompt, cancel, health=health
+                health=health,
             )
         if not text:
             raise RuntimeError("empty digest text")
@@ -2001,6 +2233,14 @@ async def _qq_health_watcher(
     target_health = health if health is not None else QQ_HEALTH
     was_lost = False
     lost_since_ms: int | None = None
+    #: Until the adapter has seen its first event (or connect stamp),
+    #: poll on a short warm-up cadence so a restarted channel flips
+    #: back to online within ~2s — every config save restarts the
+    #: instance, and a 30s "disconnected" window after each save reads
+    #: as an outage and invites reconnect-button mashing (each press
+    #: restarting the instance again).
+    warmup_s = min(2.0, float(probe_s))
+    warmup_started = time.monotonic()
 
     # Account-state probe — HTTP fetch interval is independent of the
     # heartbeat poll. Default 60s (covers KickedOffLine within a minute);
@@ -2012,8 +2252,18 @@ async def _qq_health_watcher(
     last_account_probe_ms = 0
 
     while not cancel.is_set():
+        # Warm-up ends on the first event OR after 60s (NapCat genuinely
+        # down — no point polling a dead socket at 2s forever).
+        wait_s = (
+            warmup_s
+            if (
+                adapter.last_event_at_ms is None
+                and time.monotonic() - warmup_started < 60.0
+            )
+            else probe_s
+        )
         try:
-            await asyncio.wait_for(cancel.wait(), timeout=probe_s)
+            await asyncio.wait_for(cancel.wait(), timeout=wait_s)
             return  # cancel fired during the wait
         except TimeoutError:
             pass
