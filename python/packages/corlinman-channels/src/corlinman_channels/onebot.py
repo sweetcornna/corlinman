@@ -1021,6 +1021,14 @@ class OneBotAdapter:
             ping_interval=self._cfg.ping_interval,
         ) as ws:
             self._ws = ws
+            # A successful handshake proves NapCat is alive RIGHT NOW —
+            # stamp it so the health watcher flips online immediately
+            # after a (re)start instead of waiting up to ~30s for the
+            # first heartbeat. Every config save restarts the channel,
+            # so without this each save reads as a spurious outage.
+            import time as _t
+
+            self._last_event_at_ms = int(_t.time() * 1000)
             try:
                 await self._pump(ws)
             finally:
