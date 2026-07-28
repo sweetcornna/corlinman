@@ -4,6 +4,16 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.51.3] — 2026-07-28 — 修复：登录正常却误报「QQ 账号已下线（identity_rejected）」
+
+### Fixed
+- **身份绑定进行中被误报为被踢下线**：外部实例首次观察到登录 UIN 时
+  异步绑定尚未完成，guard 在 pending 阶段返回 False，渠道层立即把健康
+  态打成 identity_rejected；且泛化标记会覆盖 guard 写入的具体原因。
+  guard 改为三态（True/False/None=绑定进行中），pending 只记录账号不
+  动 online 标志；确定拒绝时保留 identity_mismatch / duplicate_uin /
+  identity_publish_failed 等真实原因。inbound 门禁语义不变。（#194）
+
 ## [1.51.2] — 2026-07-28 — 修复：legacy 配置上监控保存后 qq_runtime_unavailable
 
 ### Fixed
