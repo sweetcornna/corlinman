@@ -4,6 +4,29 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.52.0] — 2026-07-28 — 修复：QQ 主动发言重复回答；上下文升级（30 条+记忆+RAG）
+
+### Fixed
+- **主动发言反复回答同一条早已回复过的消息**：上下文缓冲区此前只记
+  入站消息，机器人自己的回复从不入 buffer，persona 看到的记录永远以
+  最后一条人类消息结尾，于是每个主动周期都重新"回答"它。现在被动
+  回复与主动发言发送成功后都记入 buffer（标记 is_self，渲染为
+  「你自己」），并加硬门禁：群里最新一条是自己发的 → 本轮不主动
+  发言，等人类接话才恢复。（#195）
+
+### Changed
+- 主动发言上下文默认 12 → 30 条（=缓冲区全量，含机器人自己的发言）；
+  compose prompt 明确禁止重复/复述/再答已答问题，并提示可先用
+  `memory_search` 等工具回忆自身相关记忆。（#195）
+
+### Added
+- **主动发言接入 RAG 知识库**：`QqChannelParams.rag_search` 默认兜底
+  到 gateway 侧 lazy provider（查询时解析 `AdminState.rag_store`，
+  free text 转 OR-of-quoted-tokens FTS5 MATCH），主动发言前用最近
+  人类聊天检索 top-3 chunk（每段 ≤300 字符）注入 prompt。此前
+  kb.sqlite 在任何聊天 turn 都不可达（仅 /admin/rag/*）。无库/查询
+  失败静默跳过。（#195）
+
 ## [1.51.3] — 2026-07-28 — 修复：登录正常却误报「QQ 账号已下线（identity_rejected）」
 
 ### Fixed
