@@ -485,8 +485,10 @@ self_ids = []
 # randomly stays silent, which reads more human.
 # proactive_probability = 1.0
 # Recent group messages shown to the persona before it speaks (0 = off).
-# With context it joins the live topic, or answers SKIP to stay silent.
-# proactive_context_messages = 12
+# Includes the bot's own posts so it never re-answers a message it
+# already replied to. With context it joins the live topic, or answers
+# SKIP to stay silent.
+# proactive_context_messages = 30
 # Override the built-in proactive prompt (rarely needed).
 # proactive_prompt = ""
 

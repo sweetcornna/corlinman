@@ -570,3 +570,59 @@ async def test_cancel_sets_shared_event_and_drains(
 
     # The fake channel loop observed the cancel Event being set.
     assert saw_cancel.is_set()
+
+
+# ---------------------------------------------------------------------------
+# _rag_search_provider — lazy admin RAG lookup for proactive speech
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rag_search_provider_queries_admin_store() -> None:
+    from types import SimpleNamespace
+
+    from corlinman_server.gateway.routes_admin_b.state import (
+        AdminState,
+        set_admin_state,
+    )
+
+    class _FakeRag:
+        def __init__(self) -> None:
+            self.queries: list[tuple[str, int]] = []
+
+        async def search_bm25(self, q: str, k: int) -> list[tuple[int, float]]:
+            self.queries.append((q, k))
+            return [(2, 1.5), (1, 0.5)]
+
+        async def query_chunks_by_ids(self, ids: list[int]) -> list[Any]:
+            assert sorted(ids) == [1, 2]
+            return [
+                SimpleNamespace(id=1, content="one"),
+                SimpleNamespace(id=2, content="two"),
+            ]
+
+    store = _FakeRag()
+    state = AdminState()
+    state.rag_store = store
+    set_admin_state(state)
+    try:
+        search = channels_runtime._rag_search_provider()
+        hits = await search('今晚 吃什么 今晚 "quoted"', 3)
+        # Hit order (by score) preserved; contents hydrated by id.
+        assert hits == ["two", "one"]
+        q, k = store.queries[0]
+        assert k == 3
+        # Free text becomes OR-of-quoted-tokens, deduped.
+        assert q == '"今晚" OR "吃什么" OR "quoted"'
+    finally:
+        set_admin_state(None)
+
+
+@pytest.mark.asyncio
+async def test_rag_search_provider_without_store_returns_empty() -> None:
+    from corlinman_server.gateway.routes_admin_b.state import set_admin_state
+
+    set_admin_state(None)
+    search = channels_runtime._rag_search_provider()
+    assert await search("hello world", 3) == []
+    assert await search("   ", 3) == []

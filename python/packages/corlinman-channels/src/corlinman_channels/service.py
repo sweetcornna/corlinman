@@ -520,6 +520,15 @@ class QqChannelParams:
     ``TurnComplete`` envelopes for its post-turn footer; ``None`` falls
     back to the legacy in-process stream."""
 
+    rag_search: Any = None
+    """Optional async callable ``(query: str, k: int) -> list[str]``
+    over the gateway's RAG corpus (``kb.sqlite``). The proactive loop
+    queries it with the group's recent chatter and folds the top chunks
+    into the compose prompt, so proactive posts can draw on the
+    knowledge base — which is otherwise unreachable from chat turns
+    (it only backs the ``/admin/rag/*`` routes). ``None`` = no RAG
+    section, exactly the pre-existing behaviour."""
+
 
 async def run_qq_channel(
     params: QqChannelParams,
@@ -737,9 +746,13 @@ _QQ_PROACTIVE_SKIP_RE = re.compile(r"^\[?\s*skip\s*\]?[。.!！]?$", re.IGNORECA
 #: Key: ``"<instance_id>:<group_id>"``.
 _QQ_GROUP_SPEECH = SlidingWindowCounter()
 
-#: Recent inbound group chatter for proactive context injection.
-#: Key: ``"<instance_id>:<group_id>"`` → deque of (epoch_secs, sender, text).
-_QQ_GROUP_RECENT: dict[str, deque[tuple[float, str, str]]] = {}
+#: Recent group chatter for proactive context injection. Holds BOTH
+#: inbound member messages and the bot's own outbound posts (reactive
+#: replies + proactive posts) so the persona can see what it already
+#: said and the proactive loop can tell whether it spoke last.
+#: Key: ``"<instance_id>:<group_id>"`` → deque of
+#: (epoch_secs, sender, text, is_self).
+_QQ_GROUP_RECENT: dict[str, deque[tuple[float, str, str, bool]]] = {}
 _QQ_GROUP_RECENT_MAX = 30
 
 #: Per-group proactive daily budget: key → (day_str, count).
@@ -767,9 +780,14 @@ def _qq_speech_window_cfg(cfg: Any) -> tuple[float, int]:
 
 
 def _qq_record_group_message(
-    instance_id: str, group: str, sender: str, text: str
+    instance_id: str, group: str, sender: str, text: str, *, is_self: bool = False
 ) -> None:
-    """Append one inbound group message to the proactive context buffer."""
+    """Append one group message to the proactive context buffer.
+
+    ``is_self=True`` marks the bot's own outbound posts — without them
+    the buffer always ends on the last HUMAN message, and every
+    proactive beat re-answers that same message (the "repeat send" bug:
+    the persona can't see that it already replied)."""
     text = (text or "").strip()
     if not text:
         return
@@ -778,7 +796,20 @@ def _qq_record_group_message(
     if buf is None:
         buf = deque(maxlen=_QQ_GROUP_RECENT_MAX)
         _QQ_GROUP_RECENT[key] = buf
-    buf.append((time.time(), sender, text[:200]))
+    buf.append((time.time(), sender, text[:200], is_self))
+
+
+def _qq_last_group_message_is_self(instance_id: str, group: str) -> bool:
+    """True when the newest buffered message in the group is the bot's own."""
+    buf = _QQ_GROUP_RECENT.get(_qq_speech_key(instance_id, group))
+    if not buf:
+        return False
+    return bool(buf[-1][3])
+
+
+def _qq_flatten_bubbles(body: str) -> str:
+    """One-line form of an outbound body for the context buffer."""
+    return " ".join(p.strip() for p in _split_on_msg_break(body) if p.strip())
 
 
 def _qq_proactive_sent_today(key: str, day: str) -> int:
@@ -803,7 +834,7 @@ class _QqProactiveConfig:
     prompt: str
     probability: float = 1.0
     timezone: str = ""
-    context_messages: int = 12
+    context_messages: int = 30
 
 
 def _qq_proactive_config(
@@ -847,9 +878,11 @@ def _qq_proactive_config(
     probability = min(1.0, max(0.0, probability))
     raw_context = _attr(cfg, "proactive_context_messages", None)
     try:
-        context_messages = 12 if raw_context is None else int(raw_context)
+        # Default = the full recent buffer (30) so the persona sees the
+        # whole room, its own posts included.
+        context_messages = _QQ_GROUP_RECENT_MAX if raw_context is None else int(raw_context)
     except (TypeError, ValueError):
-        context_messages = 12
+        context_messages = _QQ_GROUP_RECENT_MAX
     return _QqProactiveConfig(
         groups=groups,
         min_gap_minutes=min_gap,
@@ -977,16 +1010,40 @@ def _qq_proactive_context_lines(
 
             tz = ZoneInfo(cfg.timezone)
     lines: list[str] = []
-    for ts, sender, text in list(buf)[-cfg.context_messages :]:
+    for ts, sender, text, is_self in list(buf)[-cfg.context_messages :]:
         stamp = datetime.fromtimestamp(ts, tz).strftime("%H:%M")
-        lines.append(f"[{stamp}] {sender}: {text}")
+        # Self posts render under a fixed label the compose prompt
+        # explains — the persona must be able to tell its own lines
+        # apart or it re-answers the last human message forever.
+        lines.append(f"[{stamp}] {'你自己' if is_self else sender}: {text}")
     return lines
 
 
+#: Chunks folded into the proactive prompt / per-chunk char cap.
+_QQ_PROACTIVE_RAG_TOP_K = 3
+_QQ_PROACTIVE_RAG_SNIPPET_CHARS = 300
+
+
+def _qq_proactive_rag_query(instance_id: str, group: str) -> str:
+    """Free-text RAG query from the group's recent HUMAN chatter.
+
+    Own posts are excluded — querying the knowledge base with the bot's
+    own words would just echo whatever it last said. Capped so a busy
+    buffer doesn't turn into a kilobyte MATCH expression server-side."""
+    buf = _QQ_GROUP_RECENT.get(_qq_speech_key(instance_id, group))
+    if not buf:
+        return ""
+    texts = [text for (_ts, _sender, text, is_self) in buf if not is_self]
+    return " ".join(texts[-8:])[:300]
+
+
 def _qq_proactive_compose_prompt(
-    cfg: _QqProactiveConfig, context_lines: list[str]
+    cfg: _QqProactiveConfig,
+    context_lines: list[str],
+    rag_snippets: list[str] | None = None,
 ) -> str:
-    """Base prompt + optional recent-chat context + the SKIP escape hatch.
+    """Base prompt + optional recent-chat context + optional RAG
+    excerpts + the SKIP escape hatch.
 
     Context is what makes the post feel human: the persona can pick up
     the live topic instead of broadcasting into the void — and can bow
@@ -997,10 +1054,26 @@ def _qq_proactive_compose_prompt(
             "以下是这个群最近的聊天记录（越靠下越新），供你参考语境：\n"
             + "\n".join(context_lines)
         )
+    snippets = [
+        s.strip()[:_QQ_PROACTIVE_RAG_SNIPPET_CHARS]
+        for s in (rag_snippets or [])
+        if s and s.strip()
+    ][:_QQ_PROACTIVE_RAG_TOP_K]
+    if snippets:
+        parts.append(
+            "你的资料库里有几段可能和最近话题相关的内容（背景参考，"
+            "别整段照搬，也别提到资料库本身）：\n"
+            + "\n".join(f"- {s}" for s in snippets)
+        )
+    if context_lines:
         parts.append(
             cfg.prompt
-            + "\n如果上面的聊天还在进行中且话题合适，可以自然地接话；"
+            + "\n记录里「你自己」开头的行是你之前发过的消息——不要重复、复述"
+            "或换个说法再发一遍，也不要再次回答你已经回答过的问题。"
+            "\n如果上面的聊天还在进行中且话题合适，可以自然地接话；"
             "如果话题已经过去了，就另起一个轻松的话头。不要复述别人刚说过的内容。"
+            "\n需要的话可以先用 memory_search 等工具回忆你自己的相关记忆，"
+            "再决定说什么。"
         )
     else:
         parts.append(cfg.prompt)
@@ -1093,12 +1166,31 @@ async def _qq_proactive_loop(
                 continue
             if not _QQ_GROUP_SPEECH.allow(key, win_secs, max_msgs, record=False):
                 continue
+            # Nobody has spoken since our last post — piling a second
+            # message on top reads as spam. Wait for a human to talk.
+            if _qq_last_group_message_is_self(params.instance_id, g):
+                continue
             eligible.append(g)
         if not eligible:
             continue
         group = random.choice(eligible)
+        rag_snippets: list[str] = []
+        if params.rag_search is not None:
+            rag_query = _qq_proactive_rag_query(params.instance_id, group)
+            if rag_query:
+                try:
+                    rag_snippets = list(
+                        await params.rag_search(rag_query, _QQ_PROACTIVE_RAG_TOP_K)
+                        or []
+                    )
+                except Exception as exc:  # noqa: BLE001 — RAG is best-effort
+                    _log.warning(
+                        "qq proactive rag search failed group=%s: %s", group, exc
+                    )
         prompt = _qq_proactive_compose_prompt(
-            cfg, _qq_proactive_context_lines(params.instance_id, group, cfg)
+            cfg,
+            _qq_proactive_context_lines(params.instance_id, group, cfg),
+            rag_snippets=rag_snippets,
         )
         try:
             text = await _qq_proactive_generate(
@@ -1125,6 +1217,13 @@ async def _qq_proactive_loop(
         _qq_proactive_mark_sent(key, day)
         _QQ_PROACTIVE_LAST_MONO[key] = time.monotonic()
         _QQ_GROUP_SPEECH.record(key)
+        _qq_record_group_message(
+            params.instance_id,
+            group,
+            "",
+            _qq_flatten_bubbles(_normalize_for_channel(text, "qq")),
+            is_self=True,
+        )
         _log.info(
             "qq proactive sent group=%s chars=%d today=%d/%d",
             group,
@@ -3308,8 +3407,14 @@ async def handle_one_qq(
     # flow IS the "what just happened" signal.
     summary = _qq_format_activity_summary(activity) if _qq_tool_summary_enabled() else ""
 
+    # What the group actually saw from the persona, minus the tool
+    # summary — recorded into the proactive context buffer after a
+    # successful send so the bot can see its own replies. Empty = skip
+    # recording (errors / summary-only turns are not persona speech).
+    context_reply = ""
     if policy_blocked_output:
         body = QQ_SAFE_REFUSAL_TEXT
+        context_reply = body
         summary = ""
     elif error_message is not None:
         body = f"[corlinman error] {error_message}"
@@ -3318,6 +3423,7 @@ async def handle_one_qq(
         _log.error("qq handle_one error user=%s error=%r", event.user_id, error_message)
     else:
         body = _normalize_for_channel("".join(text_parts), "qq")
+        context_reply = body.strip()
         if not body.strip():
             # Empty assistant reply. If we ran tools this turn, the user
             # still deserves to see what happened — send just the
@@ -3354,6 +3460,7 @@ async def handle_one_qq(
     if not policy.allowed:
         _log_tencent_block(policy, channel="qq", direction="outbound")
         body = QQ_SAFE_REFUSAL_TEXT
+        context_reply = body
 
     # NapCat / OneBot don't expose an exact per-message char limit
     # in the protocol, but in practice 4000-5000 chars per QQ message
@@ -3393,6 +3500,18 @@ async def handle_one_qq(
             await adapter.send_action(action)
         if bubble_idx < len(bubbles) - 1:
             await asyncio.sleep(0.3)
+    if (
+        event.message_type == MessageType.GROUP
+        and event.group_id is not None
+        and context_reply
+    ):
+        _qq_record_group_message(
+            _qq_instance_id,
+            str(event.group_id),
+            "",
+            _qq_flatten_bubbles(context_reply),
+            is_self=True,
+        )
     if inbox is not None and inbox_id is not None:
         try:
             await inbox.mark_done(inbox_id)

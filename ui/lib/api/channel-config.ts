@@ -116,7 +116,7 @@ export const CHANNEL_CONFIG_SPEC: Record<ConfigEditableChannel, ChannelConfigSpe
       { key: "proactive_active_start_hour", advanced: true, placeholder: "9" },
       { key: "proactive_active_end_hour", advanced: true, placeholder: "23" },
       { key: "proactive_probability", advanced: true, placeholder: "1" },
-      { key: "proactive_context_messages", advanced: true, placeholder: "12" },
+      { key: "proactive_context_messages", advanced: true, placeholder: "30" },
       { key: "monitor_retention_hours", advanced: true, placeholder: "72" },
     ],
   },

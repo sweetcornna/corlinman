@@ -3716,7 +3716,7 @@ export const en = {
       proactive_timezone:
         "IANA timezone for the active-hours window (e.g. Asia/Shanghai). Empty uses the server's local time — containers often run UTC, which makes the bot post at night.",
       proactive_context_messages:
-        "How many recent group messages to show the persona before a proactive post (0 = off). With context it can join the live topic — or decide not to butt in.",
+        "How many recent group messages to show the persona before a proactive post (0 = off, default 30, includes the bot's own posts). With context it can join the live topic — or decide not to butt in; if the bot spoke last, it stays silent.",
       monitor_retention_hours:
         "Local retention for captured monitor messages (hours, default 72). Never prunes inside any rule's digest window.",
       access_token: "Auth for the OneBot WebSocket (ws_url). The bundled NapCat needs none — only set this for an external NapCat.",

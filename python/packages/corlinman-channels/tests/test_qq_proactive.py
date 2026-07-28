@@ -229,7 +229,11 @@ class TestProactiveConfigHumanization:
             _Cfg(**base, proactive_context_messages=0), None
         )
         assert cfg.context_messages == 0  # explicit off is honoured
-        assert svc._qq_proactive_config(_Cfg(**base), None).context_messages == 12
+        # Default = the full recent buffer so the persona sees the whole room.
+        assert (
+            svc._qq_proactive_config(_Cfg(**base), None).context_messages
+            == svc._QQ_GROUP_RECENT_MAX
+        )
 
 
 class TestProactiveNowParts:
@@ -310,6 +314,51 @@ class TestContextAndPrompt:
         bare = svc._qq_proactive_compose_prompt(cfg, [])
         assert "聊天记录" not in bare
         assert "SKIP" in bare
+
+    def test_self_posts_render_with_marker(self) -> None:
+        svc._qq_record_group_message("default", "42", "张三", "机器人能修 bug 吗")
+        svc._qq_record_group_message("default", "42", "", "能，发过来看看", is_self=True)
+        cfg = svc._qq_proactive_config(
+            _Cfg(proactive_enabled=True, proactive_groups=[42]), None
+        )
+        lines = svc._qq_proactive_context_lines("default", "42", cfg)
+        assert len(lines) == 2
+        assert "张三: 机器人能修 bug 吗" in lines[0]
+        assert "你自己: 能，发过来看看" in lines[1]
+
+    def test_last_message_is_self_detection(self) -> None:
+        assert not svc._qq_last_group_message_is_self("default", "42")  # empty buffer
+        svc._qq_record_group_message("default", "42", "张三", "在吗")
+        assert not svc._qq_last_group_message_is_self("default", "42")
+        svc._qq_record_group_message("default", "42", "", "在的", is_self=True)
+        assert svc._qq_last_group_message_is_self("default", "42")
+        svc._qq_record_group_message("default", "42", "李四", "聊聊")
+        assert not svc._qq_last_group_message_is_self("default", "42")
+
+    def test_compose_prompt_renders_rag_snippets(self) -> None:
+        cfg = svc._qq_proactive_config(
+            _Cfg(proactive_enabled=True, proactive_groups=[1]), None
+        )
+        prompt = svc._qq_proactive_compose_prompt(
+            cfg,
+            ["[10:00] a: 今晚吃什么"],
+            rag_snippets=["食堂周三有烤鸭", "", "  ", "x" * 1000, "四", "五(超出上限)"],
+        )
+        assert "食堂周三有烤鸭" in prompt
+        assert "资料库" in prompt
+        # Blank snippets dropped, per-snippet char cap applied, top-k capped.
+        assert "x" * (svc._QQ_PROACTIVE_RAG_SNIPPET_CHARS + 1) not in prompt
+        assert "五(超出上限)" not in prompt
+        # No snippets → no RAG section at all.
+        assert "资料库" not in svc._qq_proactive_compose_prompt(cfg, [])
+
+    def test_rag_query_uses_human_chatter_only(self) -> None:
+        assert svc._qq_proactive_rag_query("default", "42") == ""
+        svc._qq_record_group_message("default", "42", "张三", "GPU 报错了")
+        svc._qq_record_group_message("default", "42", "", "我看看日志", is_self=True)
+        q = svc._qq_proactive_rag_query("default", "42")
+        assert "GPU 报错了" in q
+        assert "我看看日志" not in q
 
 
 class TestSpeechWindowCfg:
@@ -524,3 +573,109 @@ class TestProactiveLoopGates:
             health=dict(_ONLINE),
         )
         assert adapter.sent == []
+
+    @pytest.mark.asyncio
+    async def test_last_message_is_self_blocks_group(self, monkeypatch) -> None:
+        """The repeat-send fix: if the bot spoke last, stay silent."""
+        _one_beat_sleep(monkeypatch)
+        monkeypatch.setattr(
+            svc, "_qq_proactive_now_parts", lambda tz: ("2026-07-26", 12)
+        )
+        adapter = _FakeAdapter()
+        chat = _EchoChat("不该出现")
+        cfg_ns = _Cfg(proactive_enabled=True, proactive_groups=[42])
+        svc._qq_record_group_message("default", "42", "张三", "帮我修个 bug")
+        svc._qq_record_group_message("default", "42", "", "能，发过来", is_self=True)
+        cfg = svc._qq_proactive_config(cfg_ns, None)
+        await svc._qq_proactive_loop(
+            adapter, _loop_params(chat, cfg_ns), cfg, asyncio.Event(),
+            health=dict(_ONLINE),
+        )
+        assert adapter.sent == []
+        assert chat.calls == 0
+
+    @pytest.mark.asyncio
+    async def test_posted_message_recorded_as_self(self, monkeypatch) -> None:
+        _one_beat_sleep(monkeypatch)
+        monkeypatch.setattr(
+            svc, "_qq_proactive_now_parts", lambda tz: ("2026-07-26", 12)
+        )
+        adapter = _FakeAdapter()
+        chat = _EchoChat("大家下午好呀")
+        cfg_ns = _Cfg(proactive_enabled=True, proactive_groups=[42])
+        cfg = svc._qq_proactive_config(cfg_ns, None)
+        await svc._qq_proactive_loop(
+            adapter, _loop_params(chat, cfg_ns), cfg, asyncio.Event(),
+            health=dict(_ONLINE),
+        )
+        assert len(adapter.sent) == 1
+        buf = svc._QQ_GROUP_RECENT.get("default:42")
+        assert buf is not None and len(buf) == 1
+        assert buf[-1][2] == "大家下午好呀"
+        assert buf[-1][3] is True
+        assert svc._qq_last_group_message_is_self("default", "42")
+
+    @pytest.mark.asyncio
+    async def test_rag_snippets_reach_the_prompt(self, monkeypatch) -> None:
+        _one_beat_sleep(monkeypatch)
+        monkeypatch.setattr(
+            svc, "_qq_proactive_now_parts", lambda tz: ("2026-07-26", 12)
+        )
+        adapter = _FakeAdapter()
+        seen_prompts: list[str] = []
+
+        class _CapturingChat(_EchoChat):
+            def run(self, request, cancel):  # noqa: ANN001
+                seen_prompts.append(request.messages[0].content)
+                return super().run(request, cancel)
+
+        chat = _CapturingChat("好嘞")
+        queries: list[tuple[str, int]] = []
+
+        async def _rag(query: str, k: int) -> list[str]:
+            queries.append((query, k))
+            return ["食堂周三有烤鸭"]
+
+        svc._qq_record_group_message("default", "42", "张三", "今晚食堂吃什么")
+        cfg_ns = _Cfg(proactive_enabled=True, proactive_groups=[42])
+        cfg = svc._qq_proactive_config(cfg_ns, None)
+        params = svc.QqChannelParams(
+            config=cfg_ns,
+            model="m1",
+            chat_service=chat,
+            instance_id="default",
+            rag_search=_rag,
+        )
+        await svc._qq_proactive_loop(
+            adapter, params, cfg, asyncio.Event(), health=dict(_ONLINE)
+        )
+        assert len(adapter.sent) == 1
+        assert queries and "今晚食堂吃什么" in queries[0][0]
+        assert "食堂周三有烤鸭" in seen_prompts[0]
+
+    @pytest.mark.asyncio
+    async def test_rag_failure_never_blocks_the_post(self, monkeypatch) -> None:
+        _one_beat_sleep(monkeypatch)
+        monkeypatch.setattr(
+            svc, "_qq_proactive_now_parts", lambda tz: ("2026-07-26", 12)
+        )
+        adapter = _FakeAdapter()
+        chat = _EchoChat("照常营业")
+
+        async def _rag(query: str, k: int) -> list[str]:
+            raise RuntimeError("kb offline")
+
+        svc._qq_record_group_message("default", "42", "张三", "在吗")
+        cfg_ns = _Cfg(proactive_enabled=True, proactive_groups=[42])
+        cfg = svc._qq_proactive_config(cfg_ns, None)
+        params = svc.QqChannelParams(
+            config=cfg_ns,
+            model="m1",
+            chat_service=chat,
+            instance_id="default",
+            rag_search=_rag,
+        )
+        await svc._qq_proactive_loop(
+            adapter, params, cfg, asyncio.Event(), health=dict(_ONLINE)
+        )
+        assert len(adapter.sent) == 1

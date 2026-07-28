@@ -147,7 +147,12 @@ class TestGroupSpeechCap:
         config = SimpleNamespace(ws_url="ws://x", self_ids=[100])
         await _run_dispatch(events, config, chat, [])
         buf = svc._QQ_GROUP_RECENT.get("default:42")
-        assert buf is not None and len(buf) == 2
-        # Sender display name and text are captured for proactive context.
+        # 2 inbound + the bot's own 2 replies (marked is_self) — the
+        # proactive loop needs to see both sides of the conversation.
+        assert buf is not None and len(buf) == 4
         assert buf[0][1] == "user0"
         assert "在吗 0" in buf[0][2]
+        assert buf[0][3] is False
+        self_entries = [e for e in buf if e[3]]
+        assert len(self_entries) == 2
+        assert all(e[2] == "ok" for e in self_entries)
