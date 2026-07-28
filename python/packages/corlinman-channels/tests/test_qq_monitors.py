@@ -630,3 +630,159 @@ class TestDispatchCapture:
             monitored_groups=frozenset({"123"}),
         )
         assert recorded == []
+
+
+# ---------------------------------------------------------------------------
+# Map-reduce digests — big windows split into 1000-message chunks that
+# are summarised by parallel turns, then merged by one reduce turn.
+# ---------------------------------------------------------------------------
+
+
+class _MapChat:
+    """Chat stub with per-marker replies/failures + a concurrency probe."""
+
+    def __init__(
+        self,
+        reply_for: dict[str, str] | None = None,
+        default: str = "段摘要。",
+        fail_markers: dict[str, int] | None = None,
+    ) -> None:
+        self.requests: list[object] = []
+        self.default = default
+        self.reply_for = dict(reply_for or {})
+        self.fail_remaining = dict(fail_markers or {})
+        self.in_flight = 0
+        self.max_in_flight = 0
+
+    def run(self, request: object, cancel: object) -> object:
+        self.requests.append(request)
+        prompt = request.messages[0].content  # type: ignore[attr-defined]
+        fail = False
+        for marker, left in list(self.fail_remaining.items()):
+            if marker in prompt and left > 0:
+                self.fail_remaining[marker] = left - 1
+                fail = True
+                break
+        reply = self.default
+        for marker, text in self.reply_for.items():
+            if marker in prompt:
+                reply = text
+                break
+
+        async def _stream():
+            self.in_flight += 1
+            self.max_in_flight = max(self.max_in_flight, self.in_flight)
+            await asyncio.sleep(0.005)  # let sibling map turns overlap
+            self.in_flight -= 1
+            if fail:
+                yield SimpleNamespace(kind="error", error="boom")
+                return
+            yield SimpleNamespace(kind="token_delta", text=reply)
+            yield SimpleNamespace(kind="done")
+
+        return _stream()
+
+
+def _many_msgs(n: int) -> list[SimpleNamespace]:
+    return [_msg(str(i % 7), f"u{i % 7}", f"msg-{i}", 1_000 + i) for i in range(n)]
+
+
+class TestMonitorMapReduce:
+    @pytest.mark.asyncio
+    async def test_chunk_boundary_stays_single_turn(self) -> None:
+        history = _FakeHistory(_many_msgs(svc._QQ_MONITOR_CHUNK_MESSAGES))
+        chat = _MapChat(default="单轮汇总。")
+        adapter = _FakeAdapter()
+        await svc._qq_monitor_run_once(
+            adapter,
+            _params(chat, history),
+            _spec(),
+            history,
+            asyncio.Event(),
+            until_ms=10_000,
+            reason="schedule",
+        )
+        assert len(chat.requests) == 1  # exactly at the boundary → no fan-out
+        assert "msg-0" in chat.requests[0].messages[0].content
+
+    @pytest.mark.asyncio
+    async def test_big_window_fans_out_and_reduces(self) -> None:
+        history = _FakeHistory(_many_msgs(2_500))
+        chat = _MapChat(
+            reply_for={"分段摘要": "最终汇总文本。"},
+            default="段摘要。",
+        )
+        adapter = _FakeAdapter()
+        await svc._qq_monitor_run_once(
+            adapter,
+            _params(chat, history),
+            _spec(),
+            history,
+            asyncio.Event(),
+            until_ms=10_000,
+            reason="schedule",
+        )
+        # 2500 → chunks of 1000/1000/500 → 3 map turns + 1 reduce.
+        assert len(chat.requests) == 4
+        map_prompts = [r.messages[0].content for r in chat.requests[:3]]
+        assert "第 1/3 段" in map_prompts[0] and "本段 1000 条" in map_prompts[0]
+        assert "第 2/3 段" in map_prompts[1]
+        assert "第 3/3 段" in map_prompts[2] and "本段 500 条" in map_prompts[2]
+        assert all("中间摘要" in p for p in map_prompts)
+        reduce_prompt = chat.requests[3].messages[0].content
+        assert "共 2500 条" in reduce_prompt
+        assert "段摘要。" in reduce_prompt  # map outputs fed to reduce
+        assert "msg-0" not in reduce_prompt  # raw chat never reaches reduce
+        # Fresh session per turn → parallel maps can't supplement-absorb.
+        assert len({r.session_key for r in chat.requests}) == 4
+        assert chat.max_in_flight >= 2  # maps actually ran concurrently
+        assert len(adapter.actions) == 1
+        assert "最终汇总文本。" in adapter.actions[0].message[0].text
+        status = svc.qq_monitor_status_snapshot("inst")["m1"]
+        assert status["last_ok"] is True
+        assert status["last_count"] == 2_500
+
+    @pytest.mark.asyncio
+    async def test_failed_chunk_retries_then_notes_incompleteness(self) -> None:
+        history = _FakeHistory(_many_msgs(1_500))
+        # Chunk 1 fails once then succeeds on retry; chunk 2 always fails.
+        chat = _MapChat(
+            reply_for={"分段摘要": "最终汇总文本。"},
+            fail_markers={"第 1/2 段": 1, "第 2/2 段": 99},
+        )
+        adapter = _FakeAdapter()
+        await svc._qq_monitor_run_once(
+            adapter,
+            _params(chat, history),
+            _spec(),
+            history,
+            asyncio.Event(),
+            until_ms=10_000,
+            reason="schedule",
+        )
+        sent = adapter.actions[0].message[0].text
+        assert "最终汇总文本。" in sent
+        assert "1 段记录处理失败" in sent  # deterministic honesty note
+        status = svc.qq_monitor_status_snapshot("inst")["m1"]
+        assert status["last_ok"] is True and status["last_delivered"] is True
+
+    @pytest.mark.asyncio
+    async def test_all_chunks_failed_fails_the_run(self) -> None:
+        history = _FakeHistory(_many_msgs(1_500))
+        chat = _MapChat(fail_markers={"": 999})  # every turn errors
+        adapter = _FakeAdapter()
+        await svc._qq_monitor_run_once(
+            adapter,
+            _params(chat, history),
+            _spec(),
+            history,
+            asyncio.Event(),
+            until_ms=10_000,
+            reason="schedule",
+        )
+        assert adapter.actions == []  # nothing delivered
+        # 2 chunks × 2 attempts each, reduce never runs.
+        assert len(chat.requests) == 4
+        status = svc.qq_monitor_status_snapshot("inst")["m1"]
+        assert status["last_ok"] is False
+        assert "map chunks failed" in status["last_error"]
