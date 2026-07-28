@@ -310,6 +310,38 @@ async def test_reconcile_restarts_only_changed_instance() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reconcile_restarts_instance_when_monitors_change() -> None:
+    """The group-monitor rule list rides the config fingerprint — editing
+    it must hot-restart the instance (this is what makes the /channels/qq
+    monitors PUT take effect without a gateway restart)."""
+    manager = FakeManager()
+    registry = QqRuntimeRegistry(
+        model="gpt-test",
+        chat_service=object(),
+        manager=manager,  # type: ignore[arg-type]
+        run_qq=_fake_run,
+    )
+    config = _fleet("a")
+    await registry.reconcile(config)
+    before = registry.handles()["a"].task
+
+    instances = config["qq"]["instances"]  # type: ignore[index]
+    instances["a"]["monitors"] = [  # type: ignore[index]
+        {
+            "id": "m1",
+            "source_group": "123",
+            "schedule_type": "interval",
+            "interval_minutes": 60,
+            "target_type": "group",
+            "target_id": "456",
+        }
+    ]
+    await registry.reconcile(config)
+    assert registry.handles()["a"].task is not before
+    await registry.stop_all()
+
+
+@pytest.mark.asyncio
 async def test_reconcile_writes_managed_transport_after_identity_is_bound(
     tmp_path, monkeypatch
 ) -> None:

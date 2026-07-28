@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any, NoReturn
+import re
+import time
+from typing import Any, Literal, NoReturn
 
 from fastapi import HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from corlinman_server.gateway.qq_instances import (
     QqAdminError,
@@ -73,6 +75,143 @@ class HumanlikeOut(BaseModel):
     enabled: bool
     persona_id: str | None = None
     revision: str
+
+
+_MONITOR_HHMM_RE = re.compile(r"^([01]?\d|2[0-3]):[0-5]\d$")
+
+
+class QqMonitorSpec(BaseModel):
+    """One group-monitor digest rule (mirrors the runtime parser in
+    ``corlinman_channels.service._qq_monitor_parse_entry`` — keep the
+    two validation surfaces in sync)."""
+
+    id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,63}$")
+    enabled: bool = True
+    source_group: str
+    watch_user_ids: list[str] = Field(default_factory=list, max_length=200)
+    schedule_type: Literal["daily", "interval"]
+    daily_time: str | None = None
+    interval_minutes: int | None = None
+    timezone: str = ""
+    window_minutes: int = Field(default=0, ge=0, le=7 * 1440)
+    target_type: Literal["group", "user"]
+    target_id: str
+    style_extra: str = Field(default="", max_length=2000)
+    send_when_empty: bool = False
+
+    @model_validator(mode="after")
+    def _validate(self) -> QqMonitorSpec:
+        if not self.source_group.strip().isdigit():
+            raise ValueError("source_group must be a QQ group number")
+        if not self.target_id.strip().isdigit():
+            raise ValueError("target_id must be a QQ number")
+        cleaned = [str(u).strip() for u in self.watch_user_ids if str(u).strip()]
+        if any(not u.isdigit() for u in cleaned):
+            raise ValueError("watch_user_ids must be QQ numbers")
+        object.__setattr__(self, "watch_user_ids", cleaned)
+        if self.schedule_type == "daily":
+            if not self.daily_time or not _MONITOR_HHMM_RE.match(self.daily_time.strip()):
+                raise ValueError("daily schedule requires daily_time as HH:MM")
+        elif not self.interval_minutes or self.interval_minutes < 5:
+            raise ValueError("interval schedule requires interval_minutes >= 5")
+        if self.timezone.strip():
+            try:
+                from zoneinfo import ZoneInfo
+
+                ZoneInfo(self.timezone.strip())
+            except Exception as exc:  # noqa: BLE001 — surface as 422
+                raise ValueError(f"unknown timezone: {self.timezone}") from exc
+        return self
+
+    def effective_window_minutes(self) -> int:
+        if self.window_minutes > 0:
+            return self.window_minutes
+        if self.schedule_type == "daily":
+            return 1440
+        return int(self.interval_minutes or 0)
+
+
+class MonitorsBody(BaseModel):
+    monitors: list[QqMonitorSpec] = Field(default_factory=list, max_length=50)
+
+    @model_validator(mode="after")
+    def _unique_ids(self) -> MonitorsBody:
+        ids = [m.id for m in self.monitors]
+        if len(ids) != len(set(ids)):
+            raise ValueError("monitor ids must be unique")
+        return self
+
+
+class MonitorsOut(BaseModel):
+    monitors: list[QqMonitorSpec] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    revision: str
+
+
+class MonitorTriggerOut(BaseModel):
+    status: str = "triggered"
+
+
+class MonitorsStatusOut(BaseModel):
+    """Live digest-loop status + captured-message counts per monitor id."""
+
+    statuses: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    counts: dict[str, int] = Field(default_factory=dict)
+
+
+def parse_monitor_entries(raw: Any) -> tuple[list[QqMonitorSpec], list[str]]:
+    """Config rows → validated specs; invalid rows become warnings.
+
+    Hand-edited TOML can contain entries the wire model rejects — GET
+    must still answer (the runtime skips those rows the same way)."""
+    if not isinstance(raw, list):
+        return [], []
+    monitors: list[QqMonitorSpec] = []
+    warnings: list[str] = []
+    for index, entry in enumerate(raw):
+        try:
+            monitors.append(QqMonitorSpec.model_validate(entry))
+        except ValidationError as exc:
+            errors = exc.errors()
+            message = (
+                str(errors[0].get("msg", "validation error"))
+                if errors
+                else "validation error"
+            )
+            warnings.append(f"monitors[{index}] invalid: {message}")
+    return monitors, warnings
+
+
+async def monitor_window_counts(
+    instance_id: str, monitors: list[QqMonitorSpec]
+) -> dict[str, int]:
+    """Captured-message count inside each enabled monitor's window.
+
+    Reuses the channel package's module-cached history handle (one
+    aiosqlite connection per process); an unavailable store degrades to
+    an empty dict — the UI then simply hides the counters."""
+    try:
+        from corlinman_channels.service import _try_open_group_history
+    except Exception:  # noqa: BLE001 — channels package absent in some tests
+        return {}
+    store = await _try_open_group_history()
+    if store is None:
+        return {}
+    now_ms = int(time.time() * 1000)
+    counts: dict[str, int] = {}
+    for monitor in monitors:
+        if not monitor.enabled:
+            continue
+        try:
+            counts[monitor.id] = await store.count_window(
+                instance_id=instance_id,
+                group_id=monitor.source_group,
+                since_ms=now_ms - monitor.effective_window_minutes() * 60_000,
+                sender_ids=monitor.watch_user_ids or None,
+            )
+        except Exception:  # noqa: BLE001 — a broken store must not 500 status
+            continue
+    return counts
 
 
 class ReconnectOut(BaseModel):
@@ -144,13 +283,20 @@ __all__ = [
     "KeywordsBody",
     "KeywordsOut",
     "MigrationBody",
+    "MonitorTriggerOut",
+    "MonitorsBody",
+    "MonitorsOut",
+    "MonitorsStatusOut",
     "PatchQqInstanceBody",
     "PurgeBody",
     "QqInstanceOut",
     "QqInstancesOut",
+    "QqMonitorSpec",
     "ReconnectOut",
     "RestoreBody",
     "apply_config",
+    "monitor_window_counts",
+    "parse_monitor_entries",
     "qq_admin_service",
     "raise_http",
     "validate_keywords",

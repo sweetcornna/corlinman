@@ -243,6 +243,48 @@ async def test_writer_registry_failure_restores_disk_and_live_snapshot(
 
 
 @pytest.mark.asyncio
+async def test_writer_persists_nested_monitor_tables(tmp_path: Path) -> None:
+    """``[[channels.qq.instances.X.monitors]]`` — a nested list of tables
+    must survive the merge + atomic write and read back structurally."""
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text("[channels.qq]\nenabled = true\n", encoding="utf-8")
+    live = {"channels": {"qq": {"enabled": True}}}
+    app = _fake_app(live)
+    admin_a_state = SimpleNamespace(
+        config_path=cfg_path, admin_write_lock=asyncio.Lock()
+    )
+    monitor = {
+        "id": "daily-brief",
+        "enabled": True,
+        "source_group": "100200",
+        "watch_user_ids": ["11111"],
+        "schedule_type": "daily",
+        "daily_time": "09:00",
+        "timezone": "Asia/Shanghai",
+        "window_minutes": 0,
+        "target_type": "user",
+        "target_id": "22222",
+        "style_extra": "",
+        "send_when_empty": False,
+    }
+
+    await _make_channels_writer(app, admin_a_state)(
+        {
+            "qq": {
+                "enabled": True,
+                "instances": {
+                    "default": {"ws_url": "ws://x:3001", "monitors": [monitor]}
+                },
+            }
+        }
+    )
+
+    on_disk = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
+    stored = on_disk["channels"]["qq"]["instances"]["default"]["monitors"]
+    assert stored == [monitor]
+
+
+@pytest.mark.asyncio
 async def test_writer_raises_without_config_path() -> None:
     app = _fake_app({"channels": {}})
     admin_a_state = SimpleNamespace(config_path=None)

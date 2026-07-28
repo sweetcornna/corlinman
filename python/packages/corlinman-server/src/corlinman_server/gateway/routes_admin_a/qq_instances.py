@@ -24,6 +24,10 @@ from corlinman_server.gateway.routes_admin_a._qq_instances_lib import (
     KeywordsBody,
     KeywordsOut,
     MigrationBody,
+    MonitorsBody,
+    MonitorsOut,
+    MonitorsStatusOut,
+    MonitorTriggerOut,
     PatchQqInstanceBody,
     PurgeBody,
     QqInstanceOut,
@@ -31,6 +35,8 @@ from corlinman_server.gateway.routes_admin_a._qq_instances_lib import (
     ReconnectOut,
     RestoreBody,
     apply_config,
+    monitor_window_counts,
+    parse_monitor_entries,
     qq_admin_service,
     raise_http,
     validate_keywords,
@@ -393,6 +399,109 @@ def router() -> APIRouter:
             )
         except QqAdminError as exc:
             raise_http(exc)
+
+    @r.get(
+        "/admin/channels/qq/instances/{instance_id}/monitors",
+        response_model=MonitorsOut,
+    )
+    async def get_instance_monitors(
+        instance_id: str,
+        state: Annotated[AdminState, Depends(get_admin_state)],
+    ) -> MonitorsOut:
+        try:
+            snapshot = qq_admin_service(state).get_instance(instance_id)
+            monitors, warnings = parse_monitor_entries(
+                snapshot.config.get("monitors")
+            )
+            return MonitorsOut(
+                monitors=monitors,
+                warnings=warnings,
+                revision=snapshot.revision,
+            )
+        except QqAdminError as exc:
+            raise_http(exc)
+
+    @r.put(
+        "/admin/channels/qq/instances/{instance_id}/monitors",
+        response_model=MonitorsOut,
+    )
+    async def put_instance_monitors(
+        instance_id: str,
+        body: MonitorsBody,
+        state: Annotated[AdminState, Depends(get_admin_state)],
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> MonitorsOut:
+        try:
+            rows = [monitor.model_dump() for monitor in body.monitors]
+
+            def _apply(values: dict[str, Any]) -> list[dict[str, Any]]:
+                if rows:
+                    values["monitors"] = rows
+                else:
+                    values.pop("monitors", None)
+                return rows
+
+            snapshot, _rows = await qq_admin_service(state).update_instance_config(
+                instance_id,
+                _apply,
+                expected_revision=if_match,
+            )
+            return MonitorsOut(monitors=body.monitors, revision=snapshot.revision)
+        except QqAdminError as exc:
+            raise_http(exc)
+
+    @r.post(
+        "/admin/channels/qq/instances/{instance_id}/monitors/{monitor_id}/trigger",
+        response_model=MonitorTriggerOut,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def trigger_instance_monitor(
+        instance_id: str,
+        monitor_id: str,
+        state: Annotated[AdminState, Depends(get_admin_state)],
+    ) -> MonitorTriggerOut:
+        try:
+            snapshot = qq_admin_service(state).get_instance(instance_id)
+        except QqAdminError as exc:
+            raise_http(exc)
+        monitors, _warnings = parse_monitor_entries(snapshot.config.get("monitors"))
+        known = {monitor.id for monitor in monitors if monitor.enabled}
+        if monitor_id not in known:
+            raise HTTPException(
+                status_code=404,
+                detail={"error": "monitor_not_found", "id": monitor_id},
+            )
+        from corlinman_channels import qq_monitor_trigger
+
+        if not qq_monitor_trigger(instance_id, monitor_id):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "monitor_loop_not_running",
+                    "message": "QQ instance offline or monitor digest inactive",
+                },
+            )
+        return MonitorTriggerOut()
+
+    @r.get(
+        "/admin/channels/qq/instances/{instance_id}/monitors/status",
+        response_model=MonitorsStatusOut,
+    )
+    async def get_instance_monitors_status(
+        instance_id: str,
+        state: Annotated[AdminState, Depends(get_admin_state)],
+    ) -> MonitorsStatusOut:
+        try:
+            snapshot = qq_admin_service(state).get_instance(instance_id)
+        except QqAdminError as exc:
+            raise_http(exc)
+        monitors, _warnings = parse_monitor_entries(snapshot.config.get("monitors"))
+        from corlinman_channels import qq_monitor_status_snapshot
+
+        return MonitorsStatusOut(
+            statuses=qq_monitor_status_snapshot(instance_id),
+            counts=await monitor_window_counts(instance_id, monitors),
+        )
 
     @r.post(
         "/admin/channels/qq/instances/{instance_id}/reconnect",

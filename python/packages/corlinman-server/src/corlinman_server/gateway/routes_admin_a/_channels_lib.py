@@ -263,6 +263,10 @@ _CHANNEL_EDITABLE: dict[str, dict[str, list[str]]] = {
             "proactive_active_end_hour",
             "proactive_probability",
             "proactive_context_messages",
+            # Group-monitor history retention (hours); the ``monitors``
+            # rule list itself is nested and rides its own endpoint
+            # (GET/PUT .../monitors), NOT this flat-key surface.
+            "monitor_retention_hours",
         ],
     },
     "telegram": {
