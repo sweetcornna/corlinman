@@ -443,7 +443,9 @@ class QqChannelParams:
     """Per-instance mutable health snapshot. ``None`` uses the legacy default."""
 
     identity_guard: Any = None
-    """Optional callable receiving an observed bot UIN; false blocks the runtime."""
+    """Optional callable receiving an observed bot UIN. ``False`` blocks
+    the runtime (identity rejected); ``None`` means the identity binding
+    is still in flight — observed but neither verified nor rejected."""
 
     model: str = ""
     chat_service: ChatServiceLike | None = None
@@ -578,13 +580,29 @@ async def run_qq_channel(
 
     def _on_self_id(self_id: int) -> None:
         guard = params.identity_guard
-        if callable(guard) and guard(self_id) is False:
-            health.update(
-                online=False,
-                account_online=False,
-                account_last_error="identity_rejected",
-            )
-            return
+        if callable(guard):
+            allowed = guard(self_id)
+            if allowed is False:
+                # Keep the guard's specific reason (identity_mismatch /
+                # duplicate_uin / identity_publish_failed) when it wrote
+                # one — the generic brand is only the fallback.
+                specific = str(health.get("account_last_error") or "")
+                health.update(
+                    online=False,
+                    account_online=False,
+                    account_last_error=(
+                        specific
+                        if specific.startswith("identity_")
+                        else "identity_rejected"
+                    ),
+                )
+                return
+            if allowed is None:
+                # Identity binding still in flight — record the observed
+                # account (the UI shows it) but leave the online flags
+                # alone: pending is not rejected.
+                _record_qq_self_id(self_id, health=health)
+                return
         _record_qq_self_id(self_id, health=health)
 
     adapter = OneBotAdapter(
