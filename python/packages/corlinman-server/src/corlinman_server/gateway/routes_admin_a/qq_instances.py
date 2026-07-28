@@ -380,10 +380,11 @@ def router() -> APIRouter:
                 )
         try:
             def _apply(values: dict[str, Any]) -> dict[str, Any]:
-                block = {
-                    "enabled": bool(body.enabled),
-                    "persona_id": body.persona_id,
-                }
+                # No None values on disk — TOML can't serialise null, and
+                # a disable-without-persona PUT would kill the config write.
+                block: dict[str, Any] = {"enabled": bool(body.enabled)}
+                if body.persona_id:
+                    block["persona_id"] = body.persona_id
                 values["humanlike"] = block
                 return block
 
@@ -394,7 +395,7 @@ def router() -> APIRouter:
             )
             return HumanlikeOut(
                 enabled=bool(block["enabled"]),
-                persona_id=block["persona_id"],
+                persona_id=block.get("persona_id"),
                 revision=snapshot.revision,
             )
         except QqAdminError as exc:
@@ -432,7 +433,12 @@ def router() -> APIRouter:
         if_match: Annotated[str | None, Header(alias="If-Match")] = None,
     ) -> MonitorsOut:
         try:
-            rows = [monitor.model_dump() for monitor in body.monitors]
+            # exclude_none: TOML has no null — a daily task's
+            # interval_minutes=None (or an interval task's daily_time)
+            # would make tomli_w blow up the whole config write.
+            rows = [
+                monitor.model_dump(exclude_none=True) for monitor in body.monitors
+            ]
 
             def _apply(values: dict[str, Any]) -> list[dict[str, Any]]:
                 if rows:

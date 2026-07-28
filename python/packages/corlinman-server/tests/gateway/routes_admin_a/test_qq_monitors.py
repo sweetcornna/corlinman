@@ -127,6 +127,64 @@ def test_put_and_get_roundtrip_persists_rows(setup) -> None:
     assert [m["id"] for m in got["monitors"]] == ["daily-brief"]
 
 
+def test_put_persists_toml_serialisable_rows(setup) -> None:
+    """Regression: TOML has no null. A daily task carries
+    interval_minutes=None (and an interval task daily_time=None) on the
+    wire — persisting those Nones made tomli_w fail the whole config
+    write, so EVERY monitor save 500'd `qq_config_write_failed`."""
+    import tomli_w
+
+    state, client = setup
+    interval_task = {
+        **_MONITOR,
+        "id": "interval-task",
+        "schedule_type": "interval",
+        "daily_time": None,
+        "interval_minutes": 30,
+    }
+    put = client.put(
+        "/admin/channels/qq/instances/bot-a/monitors",
+        json={"monitors": [_MONITOR, interval_task]},
+    )
+    assert put.status_code == 200, put.text
+    rows = state.channels_config["qq"]["instances"]["bot-a"]["monitors"]
+
+    def _assert_no_none(value: Any) -> None:
+        if isinstance(value, dict):
+            for v in value.values():
+                _assert_no_none(v)
+        elif isinstance(value, list):
+            for v in value:
+                _assert_no_none(v)
+        else:
+            assert value is not None
+
+    _assert_no_none(rows)
+    # The true contract: the whole channels tree must serialise to TOML.
+    tomli_w.dumps({"channels": state.channels_config})
+    # Absent keys still validate on read (defaults are None).
+    got = client.get("/admin/channels/qq/instances/bot-a/monitors").json()
+    assert got["warnings"] == []
+    assert {m["id"] for m in got["monitors"]} == {"daily-brief", "interval-task"}
+
+
+def test_humanlike_disable_persists_toml_serialisable(setup) -> None:
+    """Same TOML-null class of bug on the adjacent surface: disabling
+    humanlike without a persona must not write persona_id=None."""
+    import tomli_w
+
+    state, client = setup
+    response = client.put(
+        "/admin/channels/qq/instances/bot-a/humanlike",
+        json={"enabled": False, "persona_id": None},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["persona_id"] is None
+    block = state.channels_config["qq"]["instances"]["bot-a"]["humanlike"]
+    assert block == {"enabled": False}
+    tomli_w.dumps({"channels": state.channels_config})
+
+
 def test_put_empty_list_removes_key(setup) -> None:
     state, client = setup
     revision = client.get("/admin/channels/qq/instances/bot-a/monitors").json()[
