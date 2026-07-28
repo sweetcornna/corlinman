@@ -4,6 +4,31 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.51.0] — 2026-07-28 — QQ 群消息监控与定时汇总：多源任务 / 重点关注 / 合并汇报
+
+### Added
+- **QQ 群消息监控 + 定时汇总播报**（#190）：监控任务按「每天 HH:MM
+  （带时区）」或「每隔 N 分钟」把窗口内群消息用内置「精简说人话、冷静
+  客观、零术语」风格汇总后发给指定群或私聊。采集在 router 白名单
+  **之前**（监控看得到整个群，哪怕机器人从不回话），持久化到
+  `qq_group_history.sqlite`（QQ 号/群名片/message_id 全字段，保留期
+  `monitor_retention_hours` 默认 72h、绝不低于任何任务窗口）；last_fire
+  落盘重启不双发、错过发送点 2h 宽限补一次、新建任务锚定当下不追溯；
+  投递走渠道内 adapter——内容风控、出站整形、`group_replies_enabled`
+  紧急闭麦、发言滑窗全在路径上；日志与状态零消息原文。
+- **监控任务多源聚合 + 重点关注成员**（#191）：任务 = 1..20 个监控源
+  （各自：群号 + 采集范围 + 重点关注）+ 一个定时 + 一个投递目标，到点
+  生成一份按群分节的合并报告；重点关注与「全部成员」并存，采集收窄时
+  重点成员仍强制入采集（watch∪focus），记录 ★ 标记 + 结尾逐人详述
+  （未发言也注明）。v1.50 单群 flat 形状在运行时解析与 wire 模型两侧
+  自动抬升，旧配置无感迁移。
+- **/channels/qq 监控面板**：任务列表（启停/编辑/删除确认/试发一次/
+  窗口捕获计数与上次发送状态）、多源编辑、行多选「合并所选」（同群
+  合并 watch 空侧胜出、focus 并集、超 20 源守卫）；保存即热生效
+  （fingerprint reconcile，有防回归测试钉死）。admin 面：
+  `GET/PUT /admin/channels/qq/instances/{id}/monitors`（If-Match 乐观锁）
+  + `POST …/{monitor_id}/trigger` + `GET …/monitors/status`。
+
 ## [1.50.0] — 2026-07-27 — 台账收官：HNSW ANN / OIDC 登出与刷新 / skill 种子出厂刷新
 
 ### Added
