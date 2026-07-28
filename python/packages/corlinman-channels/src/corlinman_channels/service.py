@@ -1522,6 +1522,12 @@ async def _qq_monitor_run_once(
     count = 0
     delivered = False
     try:
+        if spec.target_type == "group" and not bool(
+            _attr(params.config, "group_replies_enabled", True)
+        ):
+            # The emergency mute silences ALL group speech — scheduled
+            # digests to a group included (private-chat digests still go).
+            raise RuntimeError("group replies disabled")
         messages = await history.list_window(
             instance_id=params.instance_id,
             group_id=spec.source_group,
@@ -1564,6 +1570,12 @@ async def _qq_monitor_run_once(
             raise RuntimeError("digest blocked by content policy")
         await _qq_monitor_send(adapter, spec, text)
         delivered = True
+        if spec.target_type == "group":
+            # Count the digest toward the shared speech-cap window so the
+            # reactive/proactive throttles see the bot's real send volume.
+            _QQ_GROUP_SPEECH.record(
+                _qq_speech_key(params.instance_id, spec.target_id)
+            )
     except Exception as exc:  # noqa: BLE001 — recorded, never fatal
         _log.warning(
             "qq monitor digest failed monitor=%s group=%s reason=%s: %s",

@@ -343,6 +343,43 @@ class TestMonitorRunOnce:
         assert "没有新消息" in adapter.actions[0].message[0].text
 
     @pytest.mark.asyncio
+    async def test_emergency_mute_blocks_group_digest_not_private(self) -> None:
+        """``group_replies_enabled=false`` silences ALL group speech —
+        digests to a group included; private-chat digests still deliver."""
+        history = _FakeHistory([_msg("11", "小明", "hi", 1_000)])
+        chat = _FakeChat()
+        adapter = _FakeAdapter()
+        muted = svc.QqChannelParams(
+            config={"group_replies_enabled": False},
+            instance_id="inst",
+            chat_service=chat,
+            group_history=history,
+        )
+        await svc._qq_monitor_run_once(
+            adapter,
+            muted,
+            _spec(),
+            history,
+            asyncio.Event(),
+            until_ms=10_000,
+            reason="schedule",
+        )
+        assert adapter.actions == []
+        assert chat.requests == []  # mute short-circuits before the LLM turn
+        assert svc.qq_monitor_status_snapshot("inst")["m1"]["last_ok"] is False
+        await svc._qq_monitor_run_once(
+            adapter,
+            muted,
+            _spec(target_type="user", target_id="789"),
+            history,
+            asyncio.Event(),
+            until_ms=10_000,
+            reason="schedule",
+        )
+        assert len(adapter.actions) == 1
+        assert isinstance(adapter.actions[0], SendPrivateMsg)
+
+    @pytest.mark.asyncio
     async def test_chat_failure_lands_in_status_not_exception(self) -> None:
         history = _FakeHistory([_msg("11", "小明", "hi", 1_000)])
         adapter = _FakeAdapter()
