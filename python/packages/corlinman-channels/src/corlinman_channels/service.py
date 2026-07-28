@@ -48,11 +48,12 @@ import os
 import random
 import re
 import time
+import uuid
 from collections import deque
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -120,6 +121,43 @@ async def _try_open_inbox(runtime_instance_id: str = "default") -> Any:
     except Exception as exc:  # noqa: BLE001
         _log.warning("qq inbox boot sweep failed: %s", exc)
     return inbox
+
+
+_GROUP_HISTORY_LOCK = asyncio.Lock()
+_GROUP_HISTORY: Any = None
+
+
+async def _try_open_group_history() -> Any:
+    """Best-effort lazy open of the persistent QQ group-message history.
+
+    Module-cached: the capture path (dispatch loop) and the digest loops
+    of every instance share one store handle, and a fingerprint-reconcile
+    channel restart reuses it instead of stacking connections. Tolerates
+    corlinman-server not being importable (standalone channel tests) —
+    returns None and group monitoring quietly stays off.
+    """
+    global _GROUP_HISTORY
+    if _GROUP_HISTORY is not None:
+        return _GROUP_HISTORY
+    try:
+        from corlinman_server.qq_group_history import (  # type: ignore[import-not-found]
+            QqGroupHistory,
+        )
+    except Exception:  # noqa: BLE001 — module isn't required
+        return None
+    from corlinman_runtime import resolve_execution_state_dir
+
+    async with _GROUP_HISTORY_LOCK:
+        if _GROUP_HISTORY is not None:
+            return _GROUP_HISTORY
+        try:
+            _GROUP_HISTORY = await QqGroupHistory.open(
+                resolve_execution_state_dir() / "qq_group_history.sqlite"
+            )
+        except Exception as exc:  # noqa: BLE001 — degrade silently
+            _log.warning("qq group history open failed: %s", exc)
+            return None
+    return _GROUP_HISTORY
 
 
 from corlinman_channels._status import (
@@ -417,6 +455,12 @@ class QqChannelParams:
     done/dead) so a gateway crash mid-turn leaves a breadcrumb. When
     ``None``, the channel runs exactly as before — purely additive."""
 
+    group_history: Any = None
+    """Optional ``corlinman_server.qq_group_history.QqGroupHistory``.
+    Injectable override for tests; ``None`` makes the dispatch/digest
+    loops lazily open the shared module-level store (and monitoring
+    quietly stays off when corlinman-server isn't importable)."""
+
     # ---- human-like persona toggle (T-persona) -------------------------
     #
     # Optional system_prompt-injection layer driven by an admin-curated
@@ -572,10 +616,26 @@ async def run_qq_channel(
                     _qq_proactive_loop(adapter, params, proactive_cfg, cancel, health=health),
                     name=f"qq-proactive-loop-{params.instance_id}",
                 )
+            # Scheduled group-digest monitors (off unless configured on).
+            monitors_cfg = _qq_monitors_config(cfg)
+            monitor_task: asyncio.Task[None] | None = None
+            if monitors_cfg is not None and params.chat_service is not None:
+                monitor_task = asyncio.create_task(
+                    _qq_monitor_digest_loop(
+                        adapter, params, monitors_cfg, cancel, health=health
+                    ),
+                    name=f"qq-monitor-digest-{params.instance_id}",
+                )
             try:
-                await _qq_dispatch_loop(adapter, router, params, cancel)
+                await _qq_dispatch_loop(
+                    adapter,
+                    router,
+                    params,
+                    cancel,
+                    monitored_groups=_qq_monitor_groups(monitors_cfg),
+                )
             finally:
-                for _t in (health_task, proactive_task):
+                for _t in (health_task, proactive_task, monitor_task):
                     if _t is None:
                         continue
                     _t.cancel()
@@ -1056,6 +1116,628 @@ async def _qq_proactive_loop(
         )
 
 
+# ---------------------------------------------------------------------------
+# Group monitor digest — scheduled plain-language summaries of monitored
+# group chatter, delivered to a group or a private chat. Opt-in via the
+# per-instance ``monitors`` list (``[[channels.qq.instances.X.monitors]]``).
+#
+# Capture happens in the dispatch loop BEFORE the router whitelist (the
+# monitor needs to see the room, not just the messages the bot answered);
+# persistence lives in corlinman-server's QqGroupHistory; delivery rides
+# the live adapter so the Tencent content policy stays in the path.
+# ---------------------------------------------------------------------------
+
+_QQ_MONITOR_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_QQ_MONITOR_HHMM_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
+_QQ_MONITOR_TICK_SECS = 30.0
+#: A scheduled fire missed by more than this (account offline over the
+#: send time, gateway down) is dropped, not back-filled hours later.
+_QQ_MONITOR_GRACE_SECS = 2 * 3600.0
+#: Newest rows fed to the digest prompt when a window is busier than this.
+_QQ_MONITOR_MAX_MESSAGES = 400
+#: Per-line text cap inside the digest prompt.
+_QQ_MONITOR_LINE_CAP = 300
+_QQ_MONITOR_MIN_INTERVAL_MINUTES = 5
+_QQ_MONITOR_DEFAULT_RETENTION_HOURS = 72.0
+
+_QQ_MONITOR_STYLE_PROMPT = (
+    "你是群聊记录的转述助手。下面是一个 QQ 群在指定时间段内的聊天记录，"
+    "请写一份给没爬楼的人看的汇总。要求：\n"
+    "- 说人话：用平实的大白话，语气冷静克制、就事论事，"
+    "不用专业术语、网络黑话或修辞渲染。\n"
+    "- 只依据给出的消息，不推测、不评价、不给建议、不虚构任何内容。\n"
+    "- 按话题归并，讲清楚谁说了什么、事情有没有结论；寒暄和刷屏可以忽略。\n"
+    "- 尽量精简，能一句话说清就不写第二句。\n"
+    "- 直接输出纯文本，不要 markdown 标记，不要开场白或收尾客套。\n"
+    "第一行按这个格式写：{header}"
+)
+
+
+@dataclass(frozen=True)
+class _QqMonitorSpec:
+    """One resolved entry of the per-instance ``monitors`` list."""
+
+    monitor_id: str
+    source_group: str
+    watch_user_ids: tuple[str, ...]
+    """QQ numbers to watch; empty = everyone in the group."""
+    schedule_type: str
+    """``"daily"`` (fire at HH:MM) or ``"interval"`` (fire every N min)."""
+    daily_hour: int
+    daily_minute: int
+    interval_minutes: int
+    timezone: str
+    window_minutes: int
+    target_type: str
+    """Delivery target kind: ``"group"`` or ``"user"`` (private chat)."""
+    target_id: str
+    style_extra: str
+    send_when_empty: bool
+
+
+def _qq_monitor_parse_hhmm(raw: str) -> tuple[int, int] | None:
+    match = _QQ_MONITOR_HHMM_RE.match(raw.strip())
+    if not match:
+        return None
+    hour, minute = int(match.group(1)), int(match.group(2))
+    if hour > 23 or minute > 59:
+        return None
+    return hour, minute
+
+
+def _qq_monitor_parse_entry(item: Any, default_tz: str) -> _QqMonitorSpec | None:
+    """One monitors[] entry → spec; None (with a warning) for junk or
+    a disabled entry. Total — never raises on malformed config."""
+    if not isinstance(item, Mapping):
+        _log.warning("qq monitor entry is not a table — skipped")
+        return None
+    if not bool(item.get("enabled", True)):
+        return None
+    monitor_id = str(item.get("id") or "").strip()
+    if not _QQ_MONITOR_ID_RE.match(monitor_id):
+        _log.warning("qq monitor invalid id — skipped: %r", monitor_id)
+        return None
+    source_group = str(item.get("source_group") or "").strip()
+    target_type = str(item.get("target_type") or "").strip()
+    target_id = str(item.get("target_id") or "").strip()
+    if (
+        not source_group.isdigit()
+        or not target_id.isdigit()
+        or target_type not in ("group", "user")
+    ):
+        _log.warning("qq monitor %s: bad source/target — skipped", monitor_id)
+        return None
+    schedule_type = str(item.get("schedule_type") or "").strip()
+    daily_hour = daily_minute = 0
+    interval_minutes = 0
+    if schedule_type == "daily":
+        parsed = _qq_monitor_parse_hhmm(str(item.get("daily_time") or ""))
+        if parsed is None:
+            _log.warning("qq monitor %s: bad daily_time — skipped", monitor_id)
+            return None
+        daily_hour, daily_minute = parsed
+    elif schedule_type == "interval":
+        try:
+            interval_minutes = int(item.get("interval_minutes") or 0)
+        except (TypeError, ValueError):
+            interval_minutes = 0
+        if interval_minutes < _QQ_MONITOR_MIN_INTERVAL_MINUTES:
+            _log.warning(
+                "qq monitor %s: interval_minutes < %d — skipped",
+                monitor_id,
+                _QQ_MONITOR_MIN_INTERVAL_MINUTES,
+            )
+            return None
+    else:
+        _log.warning(
+            "qq monitor %s: unknown schedule_type %r — skipped",
+            monitor_id,
+            schedule_type,
+        )
+        return None
+    try:
+        window_minutes = int(item.get("window_minutes") or 0)
+    except (TypeError, ValueError):
+        window_minutes = 0
+    if window_minutes <= 0:
+        # Natural default: a daily digest covers the day, an interval
+        # digest covers exactly the stretch since the previous one.
+        window_minutes = 1440 if schedule_type == "daily" else interval_minutes
+    watch = tuple(
+        str(u).strip() for u in (item.get("watch_user_ids") or []) if str(u).strip()
+    )
+    return _QqMonitorSpec(
+        monitor_id=monitor_id,
+        source_group=source_group,
+        watch_user_ids=watch,
+        schedule_type=schedule_type,
+        daily_hour=daily_hour,
+        daily_minute=daily_minute,
+        interval_minutes=interval_minutes,
+        timezone=str(item.get("timezone") or "").strip() or default_tz,
+        window_minutes=window_minutes,
+        target_type=target_type,
+        target_id=target_id,
+        style_extra=str(item.get("style_extra") or "").strip(),
+        send_when_empty=bool(item.get("send_when_empty", False)),
+    )
+
+
+def _qq_monitors_config(cfg: Any) -> tuple[_QqMonitorSpec, ...] | None:
+    """Parse the per-instance ``monitors`` list; ``None`` when off.
+
+    Mirrors the ``_qq_proactive_config`` contract: parsed at every
+    ``run_qq_channel`` call (never module-cached), invalid entries warn
+    and are skipped, an unusable section returns ``None`` so the digest
+    task simply isn't spawned."""
+    raw = _attr(cfg, "monitors", None)
+    if not isinstance(raw, (list, tuple)) or not raw:
+        return None
+    default_tz = str(_attr(cfg, "proactive_timezone", "") or "").strip()
+    specs: list[_QqMonitorSpec] = []
+    seen: set[str] = set()
+    for item in raw:
+        spec = _qq_monitor_parse_entry(item, default_tz)
+        if spec is None:
+            continue
+        if spec.monitor_id in seen:
+            _log.warning("qq monitor duplicate id ignored: %s", spec.monitor_id)
+            continue
+        seen.add(spec.monitor_id)
+        specs.append(spec)
+    return tuple(specs) or None
+
+
+def _qq_monitor_groups(specs: tuple[_QqMonitorSpec, ...] | None) -> frozenset[str]:
+    """Group ids the dispatch loop should capture messages for."""
+    if not specs:
+        return frozenset()
+    return frozenset(spec.source_group for spec in specs)
+
+
+# Module-level (NOT per channel task) for the same reason as the
+# proactive state above: a config save restarts the instance and the
+# live status / pending manual triggers must survive that restart.
+
+#: Live per-monitor status: ``"<instance>:<monitor_id>"`` → mutable dict.
+_QQ_MONITOR_STATUS: dict[str, dict[str, Any]] = {}
+#: Manual-trigger requests: instance_id → monitor ids to run now.
+_QQ_MONITOR_PENDING_TRIGGERS: dict[str, set[str]] = {}
+#: Wake events for the per-instance digest loops (trigger pickup).
+_QQ_MONITOR_WAKE: dict[str, asyncio.Event] = {}
+
+
+def qq_monitor_trigger(instance_id: str, monitor_id: str) -> bool:
+    """Request an immediate digest run for one monitor (admin 试发).
+
+    Returns ``False`` when no digest loop is live for the instance
+    (channel offline, feature unconfigured, or history store missing)."""
+    wake = _QQ_MONITOR_WAKE.get(instance_id)
+    if wake is None:
+        return False
+    _QQ_MONITOR_PENDING_TRIGGERS.setdefault(instance_id, set()).add(monitor_id)
+    wake.set()
+    return True
+
+
+def qq_monitor_status_snapshot(instance_id: str) -> dict[str, dict[str, Any]]:
+    """Copy of every monitor status for one instance, keyed by monitor id."""
+    prefix = f"{instance_id}:"
+    return {
+        key[len(prefix) :]: dict(value)
+        for key, value in _QQ_MONITOR_STATUS.items()
+        if key.startswith(prefix)
+    }
+
+
+def _qq_monitor_note_status(
+    instance_id: str, monitor_id: str, **fields: Any
+) -> None:
+    _QQ_MONITOR_STATUS.setdefault(f"{instance_id}:{monitor_id}", {}).update(fields)
+
+
+def _qq_monitor_tzinfo(tz_name: str) -> Any:
+    """ZoneInfo for the monitor, or ``None`` = process-local time."""
+    if tz_name:
+        try:
+            from zoneinfo import ZoneInfo
+
+            return ZoneInfo(tz_name)
+        except Exception:  # noqa: BLE001 — bad tz name falls back to local
+            _log.warning("qq monitor timezone invalid: %r — using local", tz_name)
+    return None
+
+
+def _qq_monitor_due_fire_ms(
+    spec: _QqMonitorSpec, last_fire_ms: int, now_ms: int
+) -> int | None:
+    """The overdue scheduled fire time (ms), or ``None`` when nothing is due.
+
+    Daily: the most recent HH:MM (in the monitor's timezone) at or before
+    now; due when newer than the last fire AND still inside the grace
+    window. Interval: due once ``interval_minutes`` elapsed since the
+    last fire."""
+    if spec.schedule_type == "interval":
+        if now_ms - last_fire_ms >= spec.interval_minutes * 60_000:
+            return now_ms
+        return None
+    now_dt = datetime.fromtimestamp(now_ms / 1000.0, _qq_monitor_tzinfo(spec.timezone))
+    scheduled = now_dt.replace(
+        hour=spec.daily_hour, minute=spec.daily_minute, second=0, microsecond=0
+    )
+    if scheduled > now_dt:
+        scheduled -= timedelta(days=1)
+    due_ms = int(scheduled.timestamp() * 1000)
+    if due_ms <= last_fire_ms:
+        return None
+    if now_ms - due_ms > _QQ_MONITOR_GRACE_SECS * 1000:
+        return None
+    return due_ms
+
+
+def _qq_monitor_window_desc(window_minutes: int) -> str:
+    if window_minutes % 1440 == 0:
+        days = window_minutes // 1440
+        return f"最近 {days} 天"
+    if window_minutes % 60 == 0:
+        return f"最近 {window_minutes // 60} 小时"
+    return f"最近 {window_minutes} 分钟"
+
+
+def _qq_monitor_retention_hours(
+    cfg: Any, specs: tuple[_QqMonitorSpec, ...]
+) -> float:
+    """Row retention for the history store — never inside any rule's window."""
+    try:
+        retention = float(_attr(cfg, "monitor_retention_hours", 0) or 0)
+    except (TypeError, ValueError):
+        retention = 0.0
+    if retention <= 0:
+        retention = _QQ_MONITOR_DEFAULT_RETENTION_HOURS
+    longest_window_h = max((s.window_minutes for s in specs), default=0) / 60.0
+    return max(retention, longest_window_h + 1.0)
+
+
+def _qq_monitor_compose_prompt(
+    spec: _QqMonitorSpec,
+    messages: list[Any],
+    *,
+    window_desc: str,
+    truncated: bool,
+) -> str:
+    """Style instructions + the chat log, as one self-contained user turn."""
+    tz = _qq_monitor_tzinfo(spec.timezone)
+    lines: list[str] = []
+    for msg in messages:
+        stamp = datetime.fromtimestamp(msg.received_at_ms / 1000.0, tz).strftime(
+            "%m-%d %H:%M"
+        )
+        name = str(getattr(msg, "sender_name", "") or "")
+        sender_id = str(getattr(msg, "sender_user_id", "") or "")
+        who = f"{name}({sender_id})" if name and sender_id else (name or sender_id)
+        lines.append(f"[{stamp}] {who}: {str(msg.text)[:_QQ_MONITOR_LINE_CAP]}")
+    tail = "，只取最近部分" if truncated else ""
+    header = (
+        f"群 {spec.source_group} {window_desc}的消息汇总（共 {len(messages)} 条{tail}）。"
+    )
+    parts = [_QQ_MONITOR_STYLE_PROMPT.replace("{header}", header)]
+    if spec.style_extra:
+        parts.append("额外要求：" + spec.style_extra)
+    parts.append("聊天记录（越靠下越新）：\n" + "\n".join(lines))
+    return "\n\n".join(parts)
+
+
+async def _qq_monitor_generate(
+    params: QqChannelParams,
+    spec: _QqMonitorSpec,
+    prompt: str,
+    cancel: asyncio.Event,
+    *,
+    health: dict[str, Any] | None = None,
+) -> str:
+    """One neutral (persona-free) chat turn producing the digest text.
+
+    A fresh session key per run keeps digests stateless — no per-session
+    memory bleeding into what must stay a factual summary."""
+    from corlinman_channels import binding_prefs as _binding_prefs
+    from corlinman_channels.chat_request import (
+        ChannelChatMessage,
+        ChannelChatRequest,
+    )
+
+    target_health = health if health is not None else QQ_HEALTH
+    self_id = target_health.get("account_qq") or 0
+    binding = ChannelBinding.qq_group(self_id, spec.source_group, "monitor")
+    request = ChannelChatRequest(
+        model=_binding_prefs.effective_model(binding, params.model),
+        messages=[ChannelChatMessage(role="user", content=prompt)],
+        session_key=(
+            f"qq:monitor:{params.instance_id}:{spec.monitor_id}:{uuid.uuid4().hex[:8]}"
+        ),
+        stream=True,
+        max_tokens=None,
+        temperature=None,
+        attachments=[],
+        binding=binding,
+        persona_id=None,
+        runtime_instance_id=params.instance_id,
+    )
+    parts: list[str] = []
+    assert params.chat_service is not None  # gated by caller
+    stream = params.chat_service.run(request, cancel)
+    async for chat_ev in stream:
+        kind = _event_kind(chat_ev)
+        if kind == "token_delta":
+            parts.append(getattr(chat_ev, "text", "") or "")
+        elif kind == "done":
+            break
+        elif kind == "error":
+            msg = getattr(chat_ev, "error", "") or getattr(chat_ev, "message", "")
+            raise RuntimeError(msg or "chat error")
+    return "".join(parts).strip()
+
+
+async def _qq_monitor_send(
+    adapter: OneBotAdapter, spec: _QqMonitorSpec, text: str
+) -> None:
+    """Deliver one digest through the same outbound shaping as replies."""
+    body = _normalize_for_channel(text, "qq")
+    bubbles = _split_on_msg_break(body)
+    for bubble_idx, bubble in enumerate(bubbles):
+        for chunk in chunk_reply(bubble, _QQ_TEXT_LIMIT):
+            if spec.target_type == "user":
+                await adapter.send_action(
+                    SendPrivateMsg(
+                        user_id=int(spec.target_id),
+                        message=[TextSegment(text=chunk)],
+                    )
+                )
+            else:
+                await adapter.send_action(
+                    SendGroupMsg(
+                        group_id=int(spec.target_id),
+                        message=[TextSegment(text=chunk)],
+                    )
+                )
+        if bubble_idx < len(bubbles) - 1:
+            await asyncio.sleep(0.3)
+
+
+async def _qq_monitor_run_once(
+    adapter: OneBotAdapter,
+    params: QqChannelParams,
+    spec: _QqMonitorSpec,
+    history: Any,
+    cancel: asyncio.Event,
+    *,
+    until_ms: int,
+    reason: str,
+    health: dict[str, Any] | None = None,
+) -> None:
+    """Collect → summarise → deliver for one monitor rule.
+
+    Total: every failure lands in the status snapshot (and a warning
+    without message content), never in an exception."""
+    now_ms = int(time.time() * 1000)
+    count = 0
+    delivered = False
+    try:
+        if spec.target_type == "group" and not bool(
+            _attr(params.config, "group_replies_enabled", True)
+        ):
+            # The emergency mute silences ALL group speech — scheduled
+            # digests to a group included (private-chat digests still go).
+            raise RuntimeError("group replies disabled")
+        messages = await history.list_window(
+            instance_id=params.instance_id,
+            group_id=spec.source_group,
+            since_ms=until_ms - spec.window_minutes * 60_000,
+            until_ms=until_ms,
+            sender_ids=spec.watch_user_ids or None,
+            limit=_QQ_MONITOR_MAX_MESSAGES,
+        )
+        count = len(messages)
+        window_desc = _qq_monitor_window_desc(spec.window_minutes)
+        if not messages:
+            if not spec.send_when_empty:
+                _qq_monitor_note_status(
+                    params.instance_id,
+                    spec.monitor_id,
+                    last_run_ms=now_ms,
+                    last_ok=True,
+                    last_error=None,
+                    last_count=0,
+                    last_reason=reason,
+                    last_delivered=False,
+                )
+                return
+            text = f"群 {spec.source_group} {window_desc}没有新消息。"
+        else:
+            prompt = _qq_monitor_compose_prompt(
+                spec,
+                messages,
+                window_desc=window_desc,
+                truncated=count >= _QQ_MONITOR_MAX_MESSAGES,
+            )
+            text = await _qq_monitor_generate(
+                params, spec, prompt, cancel, health=health
+            )
+        if not text:
+            raise RuntimeError("empty digest text")
+        policy = _tencent_text_decision(text, params.tencent_policy_resolver)
+        if not policy.allowed:
+            _log_tencent_block(policy, channel="qq", direction="monitor")
+            raise RuntimeError("digest blocked by content policy")
+        await _qq_monitor_send(adapter, spec, text)
+        delivered = True
+        if spec.target_type == "group":
+            # Count the digest toward the shared speech-cap window so the
+            # reactive/proactive throttles see the bot's real send volume.
+            _QQ_GROUP_SPEECH.record(
+                _qq_speech_key(params.instance_id, spec.target_id)
+            )
+    except Exception as exc:  # noqa: BLE001 — recorded, never fatal
+        _log.warning(
+            "qq monitor digest failed monitor=%s group=%s reason=%s: %s",
+            spec.monitor_id,
+            spec.source_group,
+            reason,
+            exc,
+        )
+        _qq_monitor_note_status(
+            params.instance_id,
+            spec.monitor_id,
+            last_run_ms=now_ms,
+            last_ok=False,
+            last_error=str(exc)[:300],
+            last_count=count,
+            last_reason=reason,
+            last_delivered=False,
+        )
+        return
+    _qq_monitor_note_status(
+        params.instance_id,
+        spec.monitor_id,
+        last_run_ms=now_ms,
+        last_ok=True,
+        last_error=None,
+        last_count=count,
+        last_reason=reason,
+        last_delivered=delivered,
+    )
+    _log.info(
+        "qq monitor digest sent monitor=%s group=%s target=%s:%s messages=%d reason=%s",
+        spec.monitor_id,
+        spec.source_group,
+        spec.target_type,
+        spec.target_id,
+        count,
+        reason,
+    )
+
+
+async def _qq_monitor_digest_loop(
+    adapter: OneBotAdapter,
+    params: QqChannelParams,
+    specs: tuple[_QqMonitorSpec, ...],
+    cancel: asyncio.Event,
+    *,
+    health: dict[str, Any] | None = None,
+) -> None:
+    """Fire each monitor rule on its schedule, forever.
+
+    Every ~30s tick: run any manually triggered rule (without advancing
+    its schedule), then fire the rules whose daily/interval slot came
+    due — skipping while the account is offline so the grace window can
+    retry, and anchoring first-seen rules at "now" so creating a rule
+    never fires retroactively. Failures log and record status; the loop
+    never crashes the channel."""
+    target_health = health if health is not None else QQ_HEALTH
+    history = params.group_history
+    if history is None:
+        history = await _try_open_group_history()
+    if history is None:
+        _log.warning(
+            "qq monitor digest disabled: history store unavailable instance=%s",
+            params.instance_id,
+        )
+        return
+    instance_id = params.instance_id
+    wake = asyncio.Event()
+    _QQ_MONITOR_WAKE[instance_id] = wake
+    # Drop status rows for monitors deleted from the config.
+    valid = {f"{instance_id}:{s.monitor_id}" for s in specs}
+    for stale_key in [
+        k
+        for k in _QQ_MONITOR_STATUS
+        if k.startswith(f"{instance_id}:") and k not in valid
+    ]:
+        _QQ_MONITOR_STATUS.pop(stale_key, None)
+    _log.info(
+        "qq monitor digest loop started instance=%s rules=%d groups=%s",
+        instance_id,
+        len(specs),
+        sorted(_qq_monitor_groups(specs)),
+    )
+    last_prune_mono = 0.0
+    try:
+        while not cancel.is_set():
+            cancel_wait = asyncio.ensure_future(cancel.wait())
+            wake_wait = asyncio.ensure_future(wake.wait())
+            _done, pending = await asyncio.wait(
+                {cancel_wait, wake_wait},
+                timeout=_QQ_MONITOR_TICK_SECS,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+            if cancel.is_set():
+                break
+            triggered: set[str] = set()
+            if wake.is_set():
+                wake.clear()
+                triggered = _QQ_MONITOR_PENDING_TRIGGERS.pop(instance_id, set())
+            now_ms = int(time.time() * 1000)
+            for spec in specs:
+                key = f"{instance_id}:{spec.monitor_id}"
+                if spec.monitor_id in triggered:
+                    # Manual 试发 — runs now, never consumes the schedule.
+                    await _qq_monitor_run_once(
+                        adapter,
+                        params,
+                        spec,
+                        history,
+                        cancel,
+                        until_ms=now_ms,
+                        reason="manual",
+                        health=target_health,
+                    )
+                    continue
+                last_fire = await history.get_last_fire(key)
+                if last_fire is None:
+                    # First sight: anchor the schedule at "now" — a rule
+                    # created at 10:00 with daily_time 09:00 waits for
+                    # tomorrow instead of firing retroactively.
+                    await history.set_last_fire(key, now_ms)
+                    continue
+                due_ms = _qq_monitor_due_fire_ms(spec, last_fire, now_ms)
+                if due_ms is None:
+                    continue
+                if target_health.get("online") is not True or (
+                    target_health.get("account_online") is False
+                ):
+                    # Delivery needs a live account; leave the fire
+                    # pending so the grace window retries it.
+                    continue
+                if callable(params.identity_ready) and not params.identity_ready():
+                    continue
+                await _qq_monitor_run_once(
+                    adapter,
+                    params,
+                    spec,
+                    history,
+                    cancel,
+                    until_ms=due_ms,
+                    reason="schedule",
+                    health=target_health,
+                )
+                await history.set_last_fire(key, due_ms)
+            now_mono = time.monotonic()
+            if now_mono - last_prune_mono >= 3600.0:
+                last_prune_mono = now_mono
+                cutoff_h = _qq_monitor_retention_hours(params.config, specs)
+                removed = await history.prune(
+                    older_than_ms=now_ms - int(cutoff_h * 3600_000)
+                )
+                if removed:
+                    _log.info("qq monitor history pruned rows=%d", removed)
+    finally:
+        if _QQ_MONITOR_WAKE.get(instance_id) is wake:
+            _QQ_MONITOR_WAKE.pop(instance_id, None)
+
+
 async def _qq_health_watcher(
     adapter: OneBotAdapter,
     cancel: asyncio.Event,
@@ -1300,6 +1982,8 @@ async def _qq_dispatch_loop(
     router: ChannelRouter,
     params: QqChannelParams,
     cancel: asyncio.Event,
+    *,
+    monitored_groups: frozenset[str] = frozenset(),
 ) -> None:
     """Inner loop — reads inbound events and spawns per-message reply
     tasks. Equivalent of the Rust ``tokio::select! { cancelled() / recv() }``
@@ -1321,6 +2005,11 @@ async def _qq_dispatch_loop(
     owns_inbox = inbox is None
     if inbox is None:
         inbox = await _try_open_inbox(params.instance_id)
+    # Monitored-group capture store — only opened when a monitor rule
+    # actually targets a group (the feature is otherwise zero-cost).
+    group_history = params.group_history
+    if group_history is None and monitored_groups:
+        group_history = await _try_open_group_history()
     semaphore = asyncio.Semaphore(_channel_max_concurrency("QQ"))
     # CMP-06 — resolve the slash-access policy once at loop start. ``None``
     # (no env config) keeps the historical allow-by-default behaviour.
@@ -1366,6 +2055,32 @@ async def _qq_dispatch_loop(
                     sender_name,
                     segments_to_text(payload.message) or payload.raw_message,
                 )
+                if (
+                    group_history is not None
+                    and str(payload.group_id) in monitored_groups
+                ):
+                    # Persisted capture for the digest loop — also BEFORE
+                    # the router whitelist. Best-effort: a failed INSERT
+                    # must never kill the dispatch loop.
+                    try:
+                        await group_history.record(
+                            instance_id=params.instance_id,
+                            group_id=str(payload.group_id),
+                            sender_user_id=str(payload.user_id),
+                            sender_name=(
+                                sender_name
+                                if sender_name != str(payload.user_id)
+                                else ""
+                            ),
+                            message_id=str(payload.message_id),
+                            event_time_ms=(
+                                int(payload.time) * 1000 if payload.time else None
+                            ),
+                            text=segments_to_text(payload.message)
+                            or payload.raw_message,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        _log.warning("qq monitor capture failed: %s", exc)
             # W3-3: approval decisions intercept BEFORE router dispatch —
             # a bare "y" reply in a group carries no @mention and would
             # otherwise be filtered; a consumed decision must never spawn
