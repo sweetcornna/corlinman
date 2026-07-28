@@ -48,6 +48,13 @@ async def _drain(tasks: list[asyncio.Task[Any]]) -> None:
             pass
 
 
+@pytest.fixture(autouse=True)
+def _sidecar_tmp(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The QQ runtime registry writes the agent sidecar on reconcile —
+    point it at a scratch file so tests never touch the real data dir."""
+    monkeypatch.setenv("CORLINMAN_PY_CONFIG", str(tmp_path / "py-config.json"))
+
+
 # ---------------------------------------------------------------------------
 # bootstrap — top-level gating
 # ---------------------------------------------------------------------------
@@ -99,6 +106,13 @@ async def test_bootstrap_enabled_qq_spawns_task() -> None:
         assert all(isinstance(t, asyncio.Task) for t in tasks)
         # The shared cancel Event is stashed on the state.
         assert isinstance(state.channels_cancel, asyncio.Event)
+        # Legacy flat [channels.qq] boots through the canonical fleet
+        # path — the runtime registry owns a live "default" instance, so
+        # the first instance-admin write (monitors etc.) can hot-apply
+        # instead of wedging until a manual restart.
+        await asyncio.sleep(0)
+        assert state.qq_runtime_registry is not None
+        assert set(state.qq_runtime_registry.handles()) == {"default"}
     finally:
         await _drain(tasks)
 
@@ -160,20 +174,20 @@ async def test_bootstrap_qq_missing_ws_url_is_skipped_not_crash(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """No ws_url anywhere → ``run_qq_channel`` raises ValueError inside
-    the task; bootstrap itself still returns cleanly (the task is
-    created, runs, and self-terminates with the logged error)."""
+    the instance loop; bootstrap itself still returns cleanly and the
+    registry umbrella task keeps the fleet supervisable."""
     monkeypatch.delenv("QQ_WS_URL", raising=False)
     state = _FakeState(
         config={"channels": {"qq": {"enabled": True, "self_ids": [1]}}},
     )
     tasks = channels_runtime.bootstrap(state)
     try:
-        # A task is still created — the ValueError surfaces *inside* the
-        # channel loop, gets logged by ``_run_channel``, and the task
-        # ends. The gateway boot is never blocked.
+        # The registry task is created — the ValueError surfaces *inside*
+        # the instance loop, gets logged by ``_run_channel``, and that
+        # loop self-terminates. The gateway boot is never blocked.
         assert len(tasks) == 1
-        # Let the task run to its self-termination.
-        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 2.0)
+        await asyncio.sleep(0.05)
+        assert state.qq_runtime_registry is not None
     finally:
         await _drain(tasks)
 

@@ -958,6 +958,20 @@ def bootstrap(state: Any) -> list[asyncio.Task[Any]]:
         return _on_sender_ready
 
     try:
+        legacy_qq = _as_mapping(channels_cfg.get("qq"))
+        if legacy_qq and "instances" not in legacy_qq and _is_enabled(legacy_qq):
+            # Legacy flat [channels.qq] boots through the SAME canonical
+            # fleet shape the instance admin materialises on first write.
+            # Without this, the first monitors/humanlike/keywords save
+            # rewrites the config to the instances shape mid-flight and
+            # the registry-less gateway can neither hot-apply the change
+            # nor serve /admin/channels/qq/reconnect (503
+            # qq_runtime_unavailable) until a manual restart.
+            from corlinman_server.gateway.qq_instances.config import (
+                materialize_qq_fleet,
+            )
+
+            channels_cfg = materialize_qq_fleet(channels_cfg)
         tasks = build_channel_tasks(
             channels_cfg,
             model=model,
