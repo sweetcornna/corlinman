@@ -4,6 +4,17 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.54.0] — 2026-07-29 — 行为类配置热应用：保存不再重启 QQ 实例、零断连
+
+### Changed
+- **保存行为类配置不再重启 QQ 实例**：reconcile 指纹拆 transport/行为
+  两层，关键词/白名单/回复策略/冷却/发言上限/主动发言/监控任务/
+  humanlike 等行为键改动直接热应用进运行中的实例（原地更新 live
+  config，WS 不掉线）；dispatch loop 每事件活读路由门禁、proactive
+  与 monitor loop 常驻并按拍/tick 重解析配置。transport 键
+  （ws_url/access_token/self_ids/connection_mode 等）与未知新键仍走
+  重启（fail-safe，新增快照配置不会静默失效）。（#197）
+
 ## [1.53.0] — 2026-07-29 — 监控汇总 map-reduce；修复关键词 IME 输入与保存后长时间断连
 
 ### Changed
