@@ -4,6 +4,17 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.51.2] — 2026-07-28 — 修复：legacy 配置上监控保存后 qq_runtime_unavailable
+
+### Fixed
+- **legacy 扁平 `[channels.qq]` 网关上，首次实例级写入后运行时被楔住**：
+  保存监控任务会把配置物化成 instances 形态，但按旧形态启动的进程没有
+  QqRuntimeRegistry——配置改动不热生效（监控循环不启动）、reconnect 503
+  `qq_runtime_unavailable`，直到手动重启。现在启动时对启用状态的 legacy
+  配置执行与 admin 首写相同的 `materialize_qq_fleet`（幂等），QQ 一律由
+  registry 接管（`default` 实例）；禁用/空配置行为不变。（#193）
+- 已处于该状态的部署：升级本版并重启网关一次即恢复（磁盘配置无需手改）。
+
 ## [1.51.1] — 2026-07-28 — 修复：监控任务保存必失败
 
 ### Fixed
