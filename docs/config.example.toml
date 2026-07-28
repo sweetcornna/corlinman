@@ -501,8 +501,6 @@ self_ids = []
 # [[channels.qq.monitors]]
 # id = "daily-brief"              # a-z0-9_- (stable — keys the schedule state)
 # enabled = true
-# source_group = "123456789"      # the group being monitored
-# watch_user_ids = ["11111"]      # empty/omitted = everyone in the group
 # schedule_type = "daily"         # "daily" (fire at HH:MM) | "interval"
 # daily_time = "09:00"            # daily only
 # # interval_minutes = 360        # interval only (>= 5)
@@ -513,6 +511,18 @@ self_ids = []
 # target_id = "22222"
 # style_extra = ""                # appended to the built-in calm-plain style
 # send_when_empty = false         # true = say "没有新消息" instead of skipping
+# # One task aggregates 1..N source groups into a single combined report
+# # ("merging tasks" in the UI = one task with several sources).
+# [[channels.qq.monitors.sources]]
+# group = "123456789"             # the group being monitored
+# watch_user_ids = []             # collection scope; empty = everyone
+# focus_user_ids = ["11111"]      # extra-detail members — works WITH
+#                                 # "everyone", and is always collected even
+#                                 # when watch_user_ids narrows the scope
+# [[channels.qq.monitors.sources]]
+# group = "987654321"
+# # (legacy flat shape from v1.50 — source_group = "…" + top-level
+# # watch_user_ids — is still accepted and lifted into one source)
 
 # Token-bucket rate limits (Sprint 4 T2).
 #   - Omitting the whole `[channels.qq.rate_limit]` section applies the

@@ -1152,15 +1152,44 @@ _QQ_MONITOR_STYLE_PROMPT = (
     "第一行按这个格式写：{header}"
 )
 
+_QQ_MONITOR_FOCUS_PROMPT = (
+    "聊天记录里以 ★ 开头的行来自重点关注对象。除整体汇总外，"
+    "请在最后为每位重点关注对象单独写一小段，具体说明该成员这段时间"
+    "说了什么、在关心什么；如果某位重点关注对象没有发言，也要明确写一句"
+    "「该成员未发言」。"
+)
+
+
+@dataclass(frozen=True)
+class _QqMonitorSource:
+    """One monitored group inside a monitor task."""
+
+    group: str
+    watch_user_ids: tuple[str, ...]
+    """Collection filter; empty = everyone in the group."""
+    focus_user_ids: tuple[str, ...]
+    """Members the digest covers in extra detail (★-marked lines + a
+    dedicated closing section). Independent of the collection filter —
+    focus members are always collected even when ``watch_user_ids``
+    narrows the scope."""
+
+    def collection_ids(self) -> tuple[str, ...]:
+        """Sender filter for the store query; empty = no filter."""
+        if not self.watch_user_ids:
+            return ()
+        return tuple(dict.fromkeys((*self.watch_user_ids, *self.focus_user_ids)))
+
 
 @dataclass(frozen=True)
 class _QqMonitorSpec:
-    """One resolved entry of the per-instance ``monitors`` list."""
+    """One resolved monitor task of the per-instance ``monitors`` list.
+
+    A task aggregates one or more sources (groups) into a single combined
+    report on one schedule to one target — "merging tasks" in the UI is
+    just a task with several sources."""
 
     monitor_id: str
-    source_group: str
-    watch_user_ids: tuple[str, ...]
-    """QQ numbers to watch; empty = everyone in the group."""
+    sources: tuple[_QqMonitorSource, ...]
     schedule_type: str
     """``"daily"`` (fire at HH:MM) or ``"interval"`` (fire every N min)."""
     daily_hour: int
@@ -1185,9 +1214,68 @@ def _qq_monitor_parse_hhmm(raw: str) -> tuple[int, int] | None:
     return hour, minute
 
 
+def _qq_monitor_parse_source(item: Any) -> _QqMonitorSource | None:
+    """One sources[] entry → source; None for junk. Total."""
+    if not isinstance(item, Mapping):
+        return None
+    group = str(item.get("group") or "").strip()
+    if not group.isdigit():
+        return None
+
+    def _ids(key: str) -> tuple[str, ...]:
+        return tuple(
+            dict.fromkeys(
+                str(u).strip() for u in (item.get(key) or []) if str(u).strip()
+            )
+        )
+
+    return _QqMonitorSource(
+        group=group,
+        watch_user_ids=_ids("watch_user_ids"),
+        focus_user_ids=_ids("focus_user_ids"),
+    )
+
+
+def _qq_monitor_parse_sources(item: Mapping[str, Any], monitor_id: str) -> tuple[_QqMonitorSource, ...]:
+    """The task's sources — nested ``sources`` list, or the legacy flat
+    ``source_group``/``watch_user_ids`` shape (#190) lifted into one."""
+    raw_sources = item.get("sources")
+    parsed: list[_QqMonitorSource] = []
+    if isinstance(raw_sources, (list, tuple)) and raw_sources:
+        for raw in raw_sources:
+            source = _qq_monitor_parse_source(raw)
+            if source is None:
+                _log.warning("qq monitor %s: bad source entry — skipped", monitor_id)
+                continue
+            parsed.append(source)
+    else:
+        legacy = _qq_monitor_parse_source(
+            {
+                "group": item.get("source_group"),
+                "watch_user_ids": item.get("watch_user_ids") or [],
+                "focus_user_ids": item.get("focus_user_ids") or [],
+            }
+        )
+        if legacy is not None:
+            parsed.append(legacy)
+    deduped: list[_QqMonitorSource] = []
+    seen_groups: set[str] = set()
+    for source in parsed:
+        if source.group in seen_groups:
+            _log.warning(
+                "qq monitor %s: duplicate source group %s ignored",
+                monitor_id,
+                source.group,
+            )
+            continue
+        seen_groups.add(source.group)
+        deduped.append(source)
+    return tuple(deduped)
+
+
 def _qq_monitor_parse_entry(item: Any, default_tz: str) -> _QqMonitorSpec | None:
-    """One monitors[] entry → spec; None (with a warning) for junk or
-    a disabled entry. Total — never raises on malformed config."""
+    """One monitors[] entry → task spec; None (with a warning) for junk
+    or a disabled entry. Total — never raises on malformed config."""
     if not isinstance(item, Mapping):
         _log.warning("qq monitor entry is not a table — skipped")
         return None
@@ -1197,15 +1285,11 @@ def _qq_monitor_parse_entry(item: Any, default_tz: str) -> _QqMonitorSpec | None
     if not _QQ_MONITOR_ID_RE.match(monitor_id):
         _log.warning("qq monitor invalid id — skipped: %r", monitor_id)
         return None
-    source_group = str(item.get("source_group") or "").strip()
+    sources = _qq_monitor_parse_sources(item, monitor_id)
     target_type = str(item.get("target_type") or "").strip()
     target_id = str(item.get("target_id") or "").strip()
-    if (
-        not source_group.isdigit()
-        or not target_id.isdigit()
-        or target_type not in ("group", "user")
-    ):
-        _log.warning("qq monitor %s: bad source/target — skipped", monitor_id)
+    if not sources or not target_id.isdigit() or target_type not in ("group", "user"):
+        _log.warning("qq monitor %s: bad sources/target — skipped", monitor_id)
         return None
     schedule_type = str(item.get("schedule_type") or "").strip()
     daily_hour = daily_minute = 0
@@ -1243,13 +1327,9 @@ def _qq_monitor_parse_entry(item: Any, default_tz: str) -> _QqMonitorSpec | None
         # Natural default: a daily digest covers the day, an interval
         # digest covers exactly the stretch since the previous one.
         window_minutes = 1440 if schedule_type == "daily" else interval_minutes
-    watch = tuple(
-        str(u).strip() for u in (item.get("watch_user_ids") or []) if str(u).strip()
-    )
     return _QqMonitorSpec(
         monitor_id=monitor_id,
-        source_group=source_group,
-        watch_user_ids=watch,
+        sources=sources,
         schedule_type=schedule_type,
         daily_hour=daily_hour,
         daily_minute=daily_minute,
@@ -1292,7 +1372,7 @@ def _qq_monitor_groups(specs: tuple[_QqMonitorSpec, ...] | None) -> frozenset[st
     """Group ids the dispatch loop should capture messages for."""
     if not specs:
         return frozenset()
-    return frozenset(spec.source_group for spec in specs)
+    return frozenset(source.group for spec in specs for source in spec.sources)
 
 
 # Module-level (NOT per channel task) for the same reason as the
@@ -1400,30 +1480,51 @@ def _qq_monitor_retention_hours(
 
 def _qq_monitor_compose_prompt(
     spec: _QqMonitorSpec,
-    messages: list[Any],
+    per_source: list[tuple[_QqMonitorSource, list[Any]]],
     *,
     window_desc: str,
     truncated: bool,
 ) -> str:
-    """Style instructions + the chat log, as one self-contained user turn."""
+    """Style instructions + the chat log (one section per source group),
+    as one self-contained user turn."""
     tz = _qq_monitor_tzinfo(spec.timezone)
-    lines: list[str] = []
-    for msg in messages:
-        stamp = datetime.fromtimestamp(msg.received_at_ms / 1000.0, tz).strftime(
-            "%m-%d %H:%M"
-        )
-        name = str(getattr(msg, "sender_name", "") or "")
-        sender_id = str(getattr(msg, "sender_user_id", "") or "")
-        who = f"{name}({sender_id})" if name and sender_id else (name or sender_id)
-        lines.append(f"[{stamp}] {who}: {str(msg.text)[:_QQ_MONITOR_LINE_CAP]}")
+    sections: list[str] = []
+    any_focus = False
+    total = 0
+    for source, messages in per_source:
+        total += len(messages)
+        focus = set(source.focus_user_ids)
+        lines: list[str] = []
+        for msg in messages:
+            stamp = datetime.fromtimestamp(
+                msg.received_at_ms / 1000.0, tz
+            ).strftime("%m-%d %H:%M")
+            name = str(getattr(msg, "sender_name", "") or "")
+            sender_id = str(getattr(msg, "sender_user_id", "") or "")
+            who = (
+                f"{name}({sender_id})" if name and sender_id else (name or sender_id)
+            )
+            marker = "★" if sender_id in focus else ""
+            lines.append(
+                f"{marker}[{stamp}] {who}: {str(msg.text)[:_QQ_MONITOR_LINE_CAP]}"
+            )
+        head = f"### 群 {source.group}（{len(messages)} 条）"
+        if focus:
+            any_focus = True
+            head += "，重点关注：" + "、".join(source.focus_user_ids)
+        body = "\n".join(lines) if lines else "（该群本时段无消息）"
+        sections.append(head + "\n" + body)
+    groups_label = "、".join(source.group for source, _messages in per_source)
     tail = "，只取最近部分" if truncated else ""
-    header = (
-        f"群 {spec.source_group} {window_desc}的消息汇总（共 {len(messages)} 条{tail}）。"
-    )
+    header = f"群 {groups_label} {window_desc}的消息汇总（共 {total} 条{tail}）。"
     parts = [_QQ_MONITOR_STYLE_PROMPT.replace("{header}", header)]
+    if len(per_source) > 1:
+        parts.append("这次涉及多个群，请按群分开小节汇总，不要把不同群的内容混在一起。")
+    if any_focus:
+        parts.append(_QQ_MONITOR_FOCUS_PROMPT)
     if spec.style_extra:
         parts.append("额外要求：" + spec.style_extra)
-    parts.append("聊天记录（越靠下越新）：\n" + "\n".join(lines))
+    parts.append("聊天记录（按群分节，每节内越靠下越新）：\n" + "\n\n".join(sections))
     return "\n\n".join(parts)
 
 
@@ -1447,7 +1548,9 @@ async def _qq_monitor_generate(
 
     target_health = health if health is not None else QQ_HEALTH
     self_id = target_health.get("account_qq") or 0
-    binding = ChannelBinding.qq_group(self_id, spec.source_group, "monitor")
+    # The binding is bookkeeping for model routing — a multi-source task
+    # anchors on its first source group.
+    binding = ChannelBinding.qq_group(self_id, spec.sources[0].group, "monitor")
     request = ChannelChatRequest(
         model=_binding_prefs.effective_model(binding, params.model),
         messages=[ChannelChatMessage(role="user", content=prompt)],
@@ -1528,17 +1631,24 @@ async def _qq_monitor_run_once(
             # The emergency mute silences ALL group speech — scheduled
             # digests to a group included (private-chat digests still go).
             raise RuntimeError("group replies disabled")
-        messages = await history.list_window(
-            instance_id=params.instance_id,
-            group_id=spec.source_group,
-            since_ms=until_ms - spec.window_minutes * 60_000,
-            until_ms=until_ms,
-            sender_ids=spec.watch_user_ids or None,
-            limit=_QQ_MONITOR_MAX_MESSAGES,
+        # Token budget is shared across the task's sources.
+        source_limit = max(
+            50, _QQ_MONITOR_MAX_MESSAGES // max(1, len(spec.sources))
         )
-        count = len(messages)
+        per_source: list[tuple[_QqMonitorSource, list[Any]]] = []
+        for source in spec.sources:
+            rows = await history.list_window(
+                instance_id=params.instance_id,
+                group_id=source.group,
+                since_ms=until_ms - spec.window_minutes * 60_000,
+                until_ms=until_ms,
+                sender_ids=source.collection_ids() or None,
+                limit=source_limit,
+            )
+            per_source.append((source, rows))
+        count = sum(len(rows) for _source, rows in per_source)
         window_desc = _qq_monitor_window_desc(spec.window_minutes)
-        if not messages:
+        if count == 0:
             if not spec.send_when_empty:
                 _qq_monitor_note_status(
                     params.instance_id,
@@ -1551,13 +1661,16 @@ async def _qq_monitor_run_once(
                     last_delivered=False,
                 )
                 return
-            text = f"群 {spec.source_group} {window_desc}没有新消息。"
+            groups_label = "、".join(source.group for source in spec.sources)
+            text = f"群 {groups_label} {window_desc}没有新消息。"
         else:
             prompt = _qq_monitor_compose_prompt(
                 spec,
-                messages,
+                per_source,
                 window_desc=window_desc,
-                truncated=count >= _QQ_MONITOR_MAX_MESSAGES,
+                truncated=any(
+                    len(rows) >= source_limit for _source, rows in per_source
+                ),
             )
             text = await _qq_monitor_generate(
                 params, spec, prompt, cancel, health=health
@@ -1578,9 +1691,9 @@ async def _qq_monitor_run_once(
             )
     except Exception as exc:  # noqa: BLE001 — recorded, never fatal
         _log.warning(
-            "qq monitor digest failed monitor=%s group=%s reason=%s: %s",
+            "qq monitor digest failed monitor=%s groups=%s reason=%s: %s",
             spec.monitor_id,
-            spec.source_group,
+            [source.group for source in spec.sources],
             reason,
             exc,
         )
@@ -1606,9 +1719,9 @@ async def _qq_monitor_run_once(
         last_delivered=delivered,
     )
     _log.info(
-        "qq monitor digest sent monitor=%s group=%s target=%s:%s messages=%d reason=%s",
+        "qq monitor digest sent monitor=%s groups=%s target=%s:%s messages=%d reason=%s",
         spec.monitor_id,
-        spec.source_group,
+        [source.group for source in spec.sources],
         spec.target_type,
         spec.target_id,
         count,

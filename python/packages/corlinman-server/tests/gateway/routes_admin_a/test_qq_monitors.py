@@ -44,8 +44,13 @@ class _Writer:
 _MONITOR = {
     "id": "daily-brief",
     "enabled": True,
-    "source_group": "100200",
-    "watch_user_ids": ["11111"],
+    "sources": [
+        {
+            "group": "100200",
+            "watch_user_ids": ["11111"],
+            "focus_user_ids": ["33333"],
+        }
+    ],
     "schedule_type": "daily",
     "daily_time": "09:00",
     "interval_minutes": None,
@@ -111,10 +116,11 @@ def test_put_and_get_roundtrip_persists_rows(setup) -> None:
     assert put.status_code == 200, put.text
     echoed = put.json()["monitors"]
     assert echoed[0]["id"] == "daily-brief"
-    assert echoed[0]["watch_user_ids"] == ["11111"]
+    assert echoed[0]["sources"][0]["watch_user_ids"] == ["11111"]
+    assert echoed[0]["sources"][0]["focus_user_ids"] == ["33333"]
     # Persisted into the instance values (the runtime reads exactly this).
     rows = state.channels_config["qq"]["instances"]["bot-a"]["monitors"]
-    assert rows[0]["source_group"] == "100200"
+    assert rows[0]["sources"][0]["group"] == "100200"
     assert rows[0]["schedule_type"] == "daily"
     # GET echoes what PUT stored.
     got = client.get("/admin/channels/qq/instances/bot-a/monitors").json()
@@ -145,11 +151,14 @@ def test_put_empty_list_removes_key(setup) -> None:
     "mutation",
     [
         {"id": "BAD ID"},
-        {"source_group": "not-a-number"},
+        {"sources": [{"group": "not-a-number"}]},
+        {"sources": []},
+        {"sources": [{"group": "1"}, {"group": "1"}]},
         {"schedule_type": "daily", "daily_time": "25:00"},
         {"schedule_type": "interval", "daily_time": None, "interval_minutes": 3},
         {"target_id": "abc"},
-        {"watch_user_ids": ["not-digits"]},
+        {"sources": [{"group": "1", "watch_user_ids": ["not-digits"]}]},
+        {"sources": [{"group": "1", "focus_user_ids": ["not-digits"]}]},
         {"timezone": "Mars/Olympus"},
     ],
 )
@@ -180,6 +189,30 @@ def test_put_stale_revision_conflicts(setup) -> None:
         json={"monitors": [_MONITOR]},
     )
     assert response.status_code == 409, response.text
+
+
+def test_get_lifts_legacy_flat_rows(setup) -> None:
+    """#190 stored flat single-group rows; GET must lift them into the
+    sources shape instead of reporting them as junk."""
+    state, client = setup
+    state.channels_config["qq"]["instances"]["bot-a"]["monitors"] = [
+        {
+            "id": "old-shape",
+            "source_group": "100200",
+            "watch_user_ids": ["11111"],
+            "schedule_type": "interval",
+            "interval_minutes": 30,
+            "target_type": "user",
+            "target_id": "22222",
+        }
+    ]
+    body = client.get("/admin/channels/qq/instances/bot-a/monitors").json()
+    assert body["warnings"] == []
+    monitor = body["monitors"][0]
+    assert monitor["id"] == "old-shape"
+    assert monitor["sources"] == [
+        {"group": "100200", "watch_user_ids": ["11111"], "focus_user_ids": []}
+    ]
 
 
 def test_get_reports_hand_edited_junk_as_warnings(setup) -> None:

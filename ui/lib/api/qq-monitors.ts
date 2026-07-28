@@ -25,16 +25,32 @@ import { apiFetch } from "@/lib/api";
 export type QqMonitorScheduleType = "daily" | "interval";
 export type QqMonitorTargetType = "group" | "user";
 
-/** One monitor rule. Mirrors the backend `QqMonitorSpec` model. */
+/** One watched group inside a monitor task. */
+export interface QqMonitorSource {
+  /** Group number being watched (digits only). */
+  group: string;
+  /** Capture scope: empty array = every member; otherwise only these
+   * QQ ids (focused members are ALWAYS captured regardless). */
+  watch_user_ids: string[];
+  /** Focused members — independent of the capture scope (may coexist
+   * with "all members"). Each gets a dedicated recap at the end of the
+   * digest, and is always captured even when `watch_user_ids` narrows
+   * the scope. */
+  focus_user_ids: string[];
+}
+
+/** One monitor task. Mirrors the backend `QqMonitorSpec` model.
+ * Legacy flat rows (`source_group` + top-level `watch_user_ids`) are
+ * lifted into `sources` by the backend on GET — the client only ever
+ * reads/writes the new shape. */
 export interface QqMonitorSpec {
   /** `^[a-z0-9][a-z0-9_-]{0,63}$` — immutable after creation (it keys
    * the scheduler's per-monitor run state). */
   id: string;
   enabled: boolean;
-  /** Group number being watched (digits only). */
-  source_group: string;
-  /** Empty array = every member; otherwise only these QQ ids. */
-  watch_user_ids: string[];
+  /** 1..20 sources; group numbers must be unique within a task
+   * (the gateway 422s otherwise, and on an empty list). */
+  sources: QqMonitorSource[];
   schedule_type: QqMonitorScheduleType;
   /** "HH:MM" — required when `schedule_type === "daily"`. */
   daily_time: string | null;
@@ -70,7 +86,8 @@ export interface QqMonitorStatusEntry {
   last_delivered?: boolean | null;
 }
 
-/** `counts` = messages captured in the current (in-progress) window. */
+/** `counts` = messages captured in the current (in-progress) window,
+ * summed across ALL of the task's sources. */
 export interface QqMonitorsStatusResponse {
   statuses: Record<string, QqMonitorStatusEntry>;
   counts: Record<string, number>;

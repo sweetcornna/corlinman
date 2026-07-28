@@ -5,19 +5,27 @@
  * mounted as a SECTION of the QQ channel page (/channels/qq), right
  * after the QZone panel.
  *
- * Operator surface for the per-instance monitor rules: watch a group
- * (optionally only certain members), then deliver an LLM digest of the
- * captured window to a group or a private chat, daily or every N
+ * Operator surface for the per-instance monitor tasks: each task watches
+ * 1..20 group sources (optionally only certain members per source, plus
+ * per-source FOCUSED members that are always captured and get a
+ * dedicated recap at the end of the digest), then delivers an LLM digest
+ * of the captured window to a group or a private chat, daily or every N
  * minutes.
  *
  * Write model — the backend has NO per-row PATCH, only a whole-list
  * `PUT …/monitors` guarded by `If-Match: <revision>`. So every row
- * action (toggle / edit / delete) mutates a LOCAL draft and the
+ * action (toggle / edit / delete / merge) mutates a LOCAL draft and the
  * header's Save button ships the whole array. A 409 means someone else
  * saved in between: we toast, drop the draft, and rebuild it from the
  * refetched server list. Consequently the monitors query has NO
  * `refetchInterval` (a background poll would clobber in-flight edits);
  * only the read-only status query polls (15s).
+ *
+ * Merging — rows carry checkboxes; with >= 2 selected a header button
+ * folds every selected task into the FIRST selected one (keeping its
+ * id/schedule/target/style) and unions their sources per group number:
+ * watch scope collapses to "all" when either side is "all", otherwise
+ * unions; focus always unions. Draft-only — Save ships it.
  *
  * Per the repo-wide convention (see ChannelConfigEditor), Save is never
  * truly disabled — clicking with no diff explains itself via
@@ -32,11 +40,13 @@ import { toast } from "sonner";
 import {
   Clock,
   Eye,
+  Merge,
   MessagesSquare,
   Pencil,
   Play,
   Plus,
   Send,
+  Star,
   Timer,
   Trash2,
   Users,
@@ -51,6 +61,7 @@ import {
   getQqMonitorsStatus,
   putQqMonitors,
   triggerQqMonitor,
+  type QqMonitorSource,
   type QqMonitorSpec,
   type QqMonitorStatusEntry,
 } from "@/lib/api/qq-monitors";
@@ -65,6 +76,9 @@ import { FilterChipGroup } from "@/components/ui/filter-chip-group";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { formatRelativeAgo } from "@/components/channels/qq/qq-util";
 
+/** Backend cap on sources per task. */
+const MAX_SOURCES = 20;
+
 /* ------------------------------------------------------------------ */
 /*                        Draft helpers                               */
 /* ------------------------------------------------------------------ */
@@ -75,8 +89,11 @@ function normalizeSpec(m: QqMonitorSpec): unknown[] {
   return [
     m.id,
     m.enabled,
-    m.source_group,
-    [...m.watch_user_ids],
+    m.sources.map((s) => [
+      s.group,
+      [...s.watch_user_ids],
+      [...s.focus_user_ids],
+    ]),
     m.schedule_type,
     m.daily_time,
     m.interval_minutes,
@@ -102,15 +119,63 @@ function sameMonitors(a: QqMonitorSpec[], b: QqMonitorSpec[]): boolean {
   return true;
 }
 
+function dedupe(ids: string[]): string[] {
+  return Array.from(new Set(ids));
+}
+
+/** Union `extra`'s sources into `base`'s (task-merge semantics):
+ * same group number → one source; watch scope collapses to "all
+ * members" (empty) when EITHER side is "all", otherwise unions;
+ * focus always unions. Order: base's sources first, then new groups
+ * in encounter order. */
+export function mergeSourceLists(
+  base: QqMonitorSource[],
+  extra: QqMonitorSource[],
+): QqMonitorSource[] {
+  const out: QqMonitorSource[] = base.map((s) => ({
+    group: s.group,
+    watch_user_ids: [...s.watch_user_ids],
+    focus_user_ids: [...s.focus_user_ids],
+  }));
+  const byGroup = new Map(out.map((s) => [s.group, s]));
+  for (const src of extra) {
+    const existing = byGroup.get(src.group);
+    if (!existing) {
+      const copy: QqMonitorSource = {
+        group: src.group,
+        watch_user_ids: [...src.watch_user_ids],
+        focus_user_ids: [...src.focus_user_ids],
+      };
+      byGroup.set(copy.group, copy);
+      out.push(copy);
+      continue;
+    }
+    existing.watch_user_ids =
+      existing.watch_user_ids.length === 0 || src.watch_user_ids.length === 0
+        ? []
+        : dedupe([...existing.watch_user_ids, ...src.watch_user_ids]);
+    existing.focus_user_ids = dedupe([
+      ...existing.focus_user_ids,
+      ...src.focus_user_ids,
+    ]);
+  }
+  return out;
+}
+
 /* ------------------------------------------------------------------ */
 /*                        Form model                                  */
 /* ------------------------------------------------------------------ */
 
-interface MonitorFormState {
-  id: string;
-  sourceGroup: string;
+interface SourceFormState {
+  group: string;
   watchMode: "all" | "selected";
   watchUserIds: string[];
+  focusUserIds: string[];
+}
+
+interface MonitorFormState {
+  id: string;
+  sources: SourceFormState[];
   scheduleType: "daily" | "interval";
   dailyTime: string;
   intervalMinutes: string;
@@ -122,12 +187,14 @@ interface MonitorFormState {
   sendWhenEmpty: boolean;
 }
 
+function emptySource(): SourceFormState {
+  return { group: "", watchMode: "all", watchUserIds: [], focusUserIds: [] };
+}
+
 function emptyForm(): MonitorFormState {
   return {
     id: "",
-    sourceGroup: "",
-    watchMode: "all",
-    watchUserIds: [],
+    sources: [emptySource()],
     scheduleType: "daily",
     dailyTime: "09:00",
     intervalMinutes: "60",
@@ -143,9 +210,15 @@ function emptyForm(): MonitorFormState {
 function specToForm(spec: QqMonitorSpec): MonitorFormState {
   return {
     id: spec.id,
-    sourceGroup: spec.source_group,
-    watchMode: spec.watch_user_ids.length === 0 ? "all" : "selected",
-    watchUserIds: [...spec.watch_user_ids],
+    sources:
+      spec.sources.length === 0
+        ? [emptySource()]
+        : spec.sources.map((s) => ({
+            group: s.group,
+            watchMode: s.watch_user_ids.length === 0 ? "all" : "selected",
+            watchUserIds: [...s.watch_user_ids],
+            focusUserIds: [...s.focus_user_ids],
+          })),
     scheduleType: spec.schedule_type,
     dailyTime: spec.daily_time ?? "09:00",
     intervalMinutes: String(spec.interval_minutes ?? 60),
@@ -164,8 +237,11 @@ function formToSpec(form: MonitorFormState, enabled: boolean): QqMonitorSpec {
   return {
     id: form.id.trim(),
     enabled,
-    source_group: form.sourceGroup.trim(),
-    watch_user_ids: form.watchMode === "all" ? [] : [...form.watchUserIds],
+    sources: form.sources.map((s) => ({
+      group: s.group.trim(),
+      watch_user_ids: s.watchMode === "all" ? [] : [...s.watchUserIds],
+      focus_user_ids: [...s.focusUserIds],
+    })),
     schedule_type: form.scheduleType,
     daily_time: form.scheduleType === "daily" ? form.dailyTime : null,
     interval_minutes:
@@ -179,7 +255,8 @@ function formToSpec(form: MonitorFormState, enabled: boolean): QqMonitorSpec {
   };
 }
 
-/** Field → i18n error key. Empty record = valid. */
+/** Field → i18n error key. Empty record = valid. Source-block errors
+ * are keyed `sources.<index>.group`. */
 function validateForm(
   f: MonitorFormState,
   takenIds: string[],
@@ -190,9 +267,17 @@ function validateForm(
   } else if (takenIds.includes(f.id.trim())) {
     errors.id = "qqMonitor.form.idTaken";
   }
-  if (!/^\d+$/.test(f.sourceGroup.trim())) {
-    errors.sourceGroup = "qqMonitor.form.groupInvalid";
-  }
+  const seenGroups = new Set<string>();
+  f.sources.forEach((s, i) => {
+    const g = s.group.trim();
+    if (!/^\d+$/.test(g)) {
+      errors[`sources.${i}.group`] = "qqMonitor.form.groupInvalid";
+    } else if (seenGroups.has(g)) {
+      errors[`sources.${i}.group`] = "qqMonitor.form.groupDuplicate";
+    } else {
+      seenGroups.add(g);
+    }
+  });
   if (f.scheduleType === "daily") {
     if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(f.dailyTime)) {
       errors.dailyTime = "qqMonitor.form.dailyTimeInvalid";
@@ -287,6 +372,45 @@ export function QqMonitorPanel() {
   const formAnchorRef = React.useRef<HTMLDivElement | null>(null);
 
   const [pendingDelete, setPendingDelete] = React.useState<string | null>(null);
+
+  // ─── merge selection (draft-only) ──────────────────────────────────
+  // Kept as raw ids; derive against the current draft so rows deleted
+  // (or dropped by a resync) fall out of the selection automatically.
+  const [selectedRaw, setSelectedRaw] = React.useState<string[]>([]);
+  const selectedIds = React.useMemo(
+    () => selectedRaw.filter((id) => (draft ?? []).some((m) => m.id === id)),
+    [selectedRaw, draft],
+  );
+  const toggleSelected = (id: string, next: boolean) =>
+    setSelectedRaw((cur) =>
+      next ? dedupe([...cur, id]) : cur.filter((x) => x !== id),
+    );
+
+  /** Fold every selected task into the FIRST selected one (draft
+   * order): its id/schedule/target/style/enabled survive; sources are
+   * merged per group number. Draft-only — Save ships it. */
+  const mergeSelected = () => {
+    if (draft === null || selectedIds.length < 2) return;
+    const picked = draft.filter((m) => selectedIds.includes(m.id));
+    const base = picked[0]!;
+    let sources = base.sources;
+    for (const other of picked.slice(1)) {
+      sources = mergeSourceLists(sources, other.sources);
+    }
+    if (sources.length > MAX_SOURCES) {
+      toast.error(t("qqMonitor.mergeTooMany", { max: MAX_SOURCES }));
+      return;
+    }
+    const absorbed = new Set(picked.slice(1).map((m) => m.id));
+    if (editingId !== null && absorbed.has(editingId)) closeEditor();
+    setDraft(
+      draft
+        .filter((m) => !absorbed.has(m.id))
+        .map((m) => (m.id === base.id ? { ...m, sources } : m)),
+    );
+    setSelectedRaw([]);
+    toast.success(t("qqMonitor.merged", { id: base.id }));
+  };
 
   const openCreate = () => {
     setEditingId(null);
@@ -416,6 +540,17 @@ export function QqMonitorPanel() {
           <p className="max-w-2xl text-sm text-sg-ink-3">{t("qqMonitor.lede")}</p>
         </div>
         <div className="flex items-center gap-2">
+          {selectedIds.length >= 2 ? (
+            <Button
+              variant="outline"
+              size="sm"
+              data-testid="qq-monitor-merge"
+              onClick={mergeSelected}
+            >
+              <Merge className="mr-1 h-3.5 w-3.5" aria-hidden />
+              {t("qqMonitor.mergeSelected", { n: selectedIds.length })}
+            </Button>
+          ) : null}
           <Button
             variant="outline"
             size="sm"
@@ -481,10 +616,12 @@ export function QqMonitorPanel() {
               status={statuses[spec.id]}
               count={counts[spec.id] ?? 0}
               now={now}
+              selected={selectedIds.includes(spec.id)}
               triggering={
                 triggerMutation.isPending &&
                 triggerMutation.variables === spec.id
               }
+              onSelect={(next) => toggleSelected(spec.id, next)}
               onToggle={(next) => toggleEnabled(spec.id, next)}
               onEdit={() => openEdit(spec)}
               onDelete={() => setPendingDelete(spec.id)}
@@ -534,7 +671,9 @@ function MonitorRow({
   status,
   count,
   now,
+  selected,
   triggering,
+  onSelect,
   onToggle,
   onEdit,
   onDelete,
@@ -544,13 +683,24 @@ function MonitorRow({
   status: QqMonitorStatusEntry | undefined;
   count: number;
   now: number;
+  selected: boolean;
   triggering: boolean;
+  onSelect: (next: boolean) => void;
   onToggle: (next: boolean) => void;
   onEdit: () => void;
   onDelete: () => void;
   onTrigger: () => void;
 }) {
   const { t } = useTranslation();
+
+  const groups = spec.sources.map((s) => s.group);
+  const watchAll = spec.sources.every((s) => s.watch_user_ids.length === 0);
+  const watchedCount = dedupe(
+    spec.sources.flatMap((s) => s.watch_user_ids),
+  ).length;
+  const focusCount = dedupe(
+    spec.sources.flatMap((s) => s.focus_user_ids),
+  ).length;
 
   const scheduleLabel =
     spec.schedule_type === "daily"
@@ -575,23 +725,57 @@ function MonitorRow({
         !spec.enabled && "opacity-70",
       )}
     >
+      {/* Merge selection — plain input; no bundled checkbox primitive. */}
+      <input
+        type="checkbox"
+        checked={selected}
+        onChange={(e) => onSelect(e.target.checked)}
+        aria-label={t("qqMonitor.row.selectAria", { id: spec.id })}
+        data-testid={`qq-monitor-select-${spec.id}`}
+        className={cn(
+          "h-3.5 w-3.5 shrink-0 cursor-pointer appearance-none rounded-[4px]",
+          "border border-sg-border bg-sg-inset transition-colors",
+          "checked:border-sg-accent checked:bg-sg-accent",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
+        )}
+      />
+
       <div className="flex min-w-0 flex-1 flex-col gap-1.5">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
           <code className="rounded-md border border-sg-border bg-sg-inset-strong px-2 py-0.5 font-mono text-[11px] text-sg-ink-2">
             {spec.id}
           </code>
-          <span className="inline-flex items-center gap-1 text-sg-ink-2">
-            <MessagesSquare className="h-3.5 w-3.5 text-sg-ink-4" aria-hidden />
-            {spec.source_group}
+          <span className="inline-flex min-w-0 items-center gap-1 text-sg-ink-2">
+            <MessagesSquare className="h-3.5 w-3.5 shrink-0 text-sg-ink-4" aria-hidden />
+            {groups.length <= 1 ? (
+              groups[0] ?? "—"
+            ) : (
+              <>
+                {t("qqMonitor.row.multiGroups", { n: groups.length })}
+                <span
+                  className="max-w-[220px] truncate font-mono text-xs text-sg-ink-4"
+                  title={groups.join(", ")}
+                >
+                  {groups.join(", ")}
+                </span>
+              </>
+            )}
           </span>
           <span className="inline-flex items-center gap-1 text-sg-ink-3">
             <Users className="h-3.5 w-3.5 text-sg-ink-4" aria-hidden />
-            {spec.watch_user_ids.length === 0
+            {watchAll
               ? t("qqMonitor.row.watchAll")
-              : t("qqMonitor.row.watchSome", {
-                  n: spec.watch_user_ids.length,
-                })}
+              : t("qqMonitor.row.watchSome", { n: watchedCount })}
           </span>
+          {focusCount > 0 ? (
+            <span
+              className="inline-flex items-center gap-1 text-sg-ink-3"
+              data-testid={`qq-monitor-focus-${spec.id}`}
+            >
+              <Star className="h-3.5 w-3.5 text-sg-accent" aria-hidden />
+              {t("qqMonitor.row.focus", { n: focusCount })}
+            </span>
+          ) : null}
           <span className="inline-flex items-center gap-1 text-sg-ink-3">
             {spec.schedule_type === "daily" ? (
               <Clock className="h-3.5 w-3.5 text-sg-ink-4" aria-hidden />
@@ -690,6 +874,85 @@ function RowIconButton({
 }
 
 /* ------------------------------------------------------------------ */
+/*                        Tag input                                   */
+/* ------------------------------------------------------------------ */
+
+/** Chips + inline entry for a list of numeric QQ ids. Enter adds,
+ * clicking a chip (or Backspace on empty input) removes. */
+function TagIdInput({
+  ids,
+  onChange,
+  placeholder,
+  removeAriaLabel,
+  testId,
+  tone = "accent",
+}: {
+  ids: string[];
+  onChange: (next: string[]) => void;
+  placeholder: string;
+  removeAriaLabel: (id: string) => string;
+  testId: string;
+  tone?: "accent" | "focus";
+}) {
+  const [entry, setEntry] = React.useState("");
+
+  const add = (raw: string) => {
+    const id = raw.trim();
+    if (!/^\d+$/.test(id)) return;
+    if (!ids.includes(id)) onChange([...ids, id]);
+    setEntry("");
+  };
+  const remove = (id: string) => onChange(ids.filter((x) => x !== id));
+
+  return (
+    <div className="flex min-h-[34px] flex-wrap items-center gap-1.5 rounded-md border border-sg-border bg-sg-inset px-2 py-1.5">
+      {ids.map((id) => (
+        <button
+          key={id}
+          type="button"
+          onClick={() => remove(id)}
+          aria-label={removeAriaLabel(id)}
+          className={cn(
+            "group/chip inline-flex items-center gap-1 rounded-md border px-2 py-[2px] font-mono text-[10.5px]",
+            "border-sg-accent/30 bg-sg-accent-soft text-sg-accent",
+            "transition-colors",
+            "hover:bg-[color-mix(in_oklch,var(--sg-accent)_22%,transparent)]",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/50",
+          )}
+        >
+          {tone === "focus" ? (
+            <Star className="h-2.5 w-2.5 opacity-80" aria-hidden />
+          ) : null}
+          {id}
+          <X
+            className="h-3 w-3 opacity-70 group-hover/chip:opacity-100"
+            aria-hidden
+          />
+        </button>
+      ))}
+      <input
+        value={entry}
+        data-testid={testId}
+        onChange={(e) => setEntry(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            add(entry);
+          } else if (e.key === "Backspace" && !entry && ids.length > 0) {
+            e.preventDefault();
+            remove(ids[ids.length - 1]!);
+          }
+        }}
+        placeholder={placeholder}
+        aria-label={placeholder}
+        inputMode="numeric"
+        className="h-7 min-w-[140px] flex-1 bg-transparent px-1 font-mono text-[11px] text-sg-ink placeholder:text-sg-ink-4 focus:outline-none"
+      />
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*                        Upsert form                                 */
 /* ------------------------------------------------------------------ */
 
@@ -710,13 +973,33 @@ function MonitorForm({
   const { t } = useTranslation();
   const [form, setForm] = React.useState<MonitorFormState>(initial);
   const [attempted, setAttempted] = React.useState(false);
-  const [watchDraft, setWatchDraft] = React.useState("");
 
   const errors = validateForm(form, mode === "create" ? takenIds : []);
   const set = <K extends keyof MonitorFormState>(
     key: K,
     value: MonitorFormState[K],
   ) => setForm((f) => ({ ...f, [key]: value }));
+
+  const setSource = (index: number, patch: Partial<SourceFormState>) =>
+    setForm((f) => ({
+      ...f,
+      sources: f.sources.map((s, i) =>
+        i === index ? { ...s, ...patch } : s,
+      ),
+    }));
+
+  const addSource = () => {
+    if (form.sources.length >= MAX_SOURCES) return;
+    set("sources", [...form.sources, emptySource()]);
+  };
+
+  const removeSource = (index: number) => {
+    if (form.sources.length <= 1) return;
+    set(
+      "sources",
+      form.sources.filter((_, i) => i !== index),
+    );
+  };
 
   /** Inline errors show after a submit attempt, or as soon as the field
    * holds a non-empty invalid value (live feedback while typing). */
@@ -725,22 +1008,6 @@ function MonitorForm({
     if (!err) return null;
     return attempted || value.trim() !== "" ? err : null;
   };
-
-  const addWatchId = (raw: string) => {
-    const id = raw.trim();
-    if (!/^\d+$/.test(id)) return;
-    if (form.watchUserIds.includes(id)) {
-      setWatchDraft("");
-      return;
-    }
-    set("watchUserIds", [...form.watchUserIds, id]);
-    setWatchDraft("");
-  };
-  const removeWatchId = (id: string) =>
-    set(
-      "watchUserIds",
-      form.watchUserIds.filter((x) => x !== id),
-    );
 
   const apply = () => {
     setAttempted(true);
@@ -768,7 +1035,7 @@ function MonitorForm({
 
       <div className="grid gap-4 md:grid-cols-2">
         {/* id ---------------------------------------------------------- */}
-        <div className="space-y-1.5">
+        <div className="space-y-1.5 md:col-span-2">
           <Label htmlFor="qq-monitor-form-id">{t("qqMonitor.form.idLabel")}</Label>
           <Input
             id="qq-monitor-form-id"
@@ -776,7 +1043,7 @@ function MonitorForm({
             value={form.id}
             onChange={(e) => set("id", e.target.value)}
             readOnly={mode === "edit"}
-            className={cn("font-mono", mode === "edit" && "opacity-60")}
+            className={cn("max-w-[320px] font-mono", mode === "edit" && "opacity-60")}
             placeholder="daily-digest"
             spellCheck={false}
           />
@@ -786,92 +1053,123 @@ function MonitorForm({
             : null}
         </div>
 
-        {/* source group ------------------------------------------------- */}
-        <div className="space-y-1.5">
-          <Label htmlFor="qq-monitor-form-group">
-            {t("qqMonitor.form.groupLabel")}
-          </Label>
-          <Input
-            id="qq-monitor-form-group"
-            data-testid="qq-monitor-form-group"
-            value={form.sourceGroup}
-            onChange={(e) => set("sourceGroup", e.target.value)}
-            inputMode="numeric"
-            className="font-mono"
-            placeholder="123456789"
-          />
-          {errLine(
-            showError("sourceGroup", form.sourceGroup),
-            "qq-monitor-err-group",
-          )}
-        </div>
+        {/* sources ------------------------------------------------------ */}
+        <div className="space-y-2 md:col-span-2">
+          <div className="flex items-center justify-between">
+            <span className="block text-[13px] font-medium leading-none text-sg-ink-2">
+              {t("qqMonitor.form.sourcesLabel")}
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={addSource}
+              disabled={form.sources.length >= MAX_SOURCES}
+              data-testid="qq-monitor-form-source-add"
+            >
+              <Plus className="mr-1 h-3.5 w-3.5" aria-hidden />
+              {t("qqMonitor.form.addSource")}
+            </Button>
+          </div>
+          <div className="flex flex-col gap-3">
+            {form.sources.map((source, i) => (
+              <div
+                key={i}
+                data-testid={`qq-monitor-form-source-${i}`}
+                className="flex flex-col gap-3 rounded-lg border border-sg-border bg-sg-inset-strong/40 px-3 py-3"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-mono text-[11px] text-sg-ink-4">
+                    {t("qqMonitor.form.sourceTitle", { n: i + 1 })}
+                  </span>
+                  {form.sources.length > 1 ? (
+                    <RowIconButton
+                      label={t("qqMonitor.form.removeSourceAria", { n: i + 1 })}
+                      onClick={() => removeSource(i)}
+                      testId={`qq-monitor-form-source-remove-${i}`}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" aria-hidden />
+                    </RowIconButton>
+                  ) : null}
+                </div>
 
-        {/* watch scope -------------------------------------------------- */}
-        <div className="space-y-1.5 md:col-span-2">
-          <span className="block text-[13px] font-medium leading-none text-sg-ink-2">
-            {t("qqMonitor.form.watchLabel")}
-          </span>
-          <FilterChipGroup
-            label={t("qqMonitor.form.watchLabel")}
-            value={form.watchMode}
-            onChange={(next) =>
-              set("watchMode", next === "selected" ? "selected" : "all")
-            }
-            options={[
-              { value: "all", label: t("qqMonitor.form.watchAll") },
-              { value: "selected", label: t("qqMonitor.form.watchSome") },
-            ]}
-          />
-          {form.watchMode === "selected" ? (
-            <div className="flex min-h-[34px] flex-wrap items-center gap-1.5 rounded-md border border-sg-border bg-sg-inset px-2 py-1.5">
-              {form.watchUserIds.map((id) => (
-                <button
-                  key={id}
-                  type="button"
-                  onClick={() => removeWatchId(id)}
-                  aria-label={t("qqMonitor.form.watchRemoveAria", { id })}
-                  className={cn(
-                    "group/chip inline-flex items-center gap-1 rounded-md border px-2 py-[2px] font-mono text-[10.5px]",
-                    "border-sg-accent/30 bg-sg-accent-soft text-sg-accent",
-                    "transition-colors",
-                    "hover:bg-[color-mix(in_oklch,var(--sg-accent)_22%,transparent)]",
-                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/50",
-                  )}
-                >
-                  {id}
-                  <X
-                    className="h-3 w-3 opacity-70 group-hover/chip:opacity-100"
-                    aria-hidden
+                {/* group number */}
+                <div className="space-y-1.5">
+                  <Label htmlFor={`qq-monitor-form-group-${i}`}>
+                    {t("qqMonitor.form.groupLabel")}
+                  </Label>
+                  <Input
+                    id={`qq-monitor-form-group-${i}`}
+                    data-testid={`qq-monitor-form-group-${i}`}
+                    value={source.group}
+                    onChange={(e) => setSource(i, { group: e.target.value })}
+                    inputMode="numeric"
+                    className="max-w-[220px] font-mono"
+                    placeholder="123456789"
                   />
-                </button>
-              ))}
-              <input
-                value={watchDraft}
-                data-testid="qq-monitor-form-watch-input"
-                onChange={(e) => setWatchDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    addWatchId(watchDraft);
-                  } else if (
-                    e.key === "Backspace" &&
-                    !watchDraft &&
-                    form.watchUserIds.length > 0
-                  ) {
-                    e.preventDefault();
-                    removeWatchId(
-                      form.watchUserIds[form.watchUserIds.length - 1]!,
-                    );
-                  }
-                }}
-                placeholder={t("qqMonitor.form.watchInputPlaceholder")}
-                aria-label={t("qqMonitor.form.watchInputPlaceholder")}
-                inputMode="numeric"
-                className="h-7 min-w-[140px] flex-1 bg-transparent px-1 font-mono text-[11px] text-sg-ink placeholder:text-sg-ink-4 focus:outline-none"
-              />
-            </div>
-          ) : null}
-          <FieldHint>{t("qqMonitor.form.watchHint")}</FieldHint>
+                  {errLine(
+                    showError(`sources.${i}.group`, source.group),
+                    `qq-monitor-err-group-${i}`,
+                  )}
+                </div>
+
+                {/* watch scope */}
+                <div className="space-y-1.5">
+                  <span className="block text-[13px] font-medium leading-none text-sg-ink-2">
+                    {t("qqMonitor.form.watchLabel")}
+                  </span>
+                  <FilterChipGroup
+                    label={`${t("qqMonitor.form.watchLabel")} ${i + 1}`}
+                    value={source.watchMode}
+                    onChange={(next) =>
+                      setSource(i, {
+                        watchMode: next === "selected" ? "selected" : "all",
+                      })
+                    }
+                    options={[
+                      { value: "all", label: t("qqMonitor.form.watchAll") },
+                      {
+                        value: "selected",
+                        label: t("qqMonitor.form.watchSome"),
+                      },
+                    ]}
+                  />
+                  {source.watchMode === "selected" ? (
+                    <TagIdInput
+                      ids={source.watchUserIds}
+                      onChange={(next) =>
+                        setSource(i, { watchUserIds: next })
+                      }
+                      placeholder={t("qqMonitor.form.watchInputPlaceholder")}
+                      removeAriaLabel={(id) =>
+                        t("qqMonitor.form.watchRemoveAria", { id })
+                      }
+                      testId={`qq-monitor-form-watch-input-${i}`}
+                    />
+                  ) : null}
+                  <FieldHint>{t("qqMonitor.form.watchHint")}</FieldHint>
+                </div>
+
+                {/* focus members — always shown, independent of scope */}
+                <div className="space-y-1.5">
+                  <span className="flex items-center gap-1 text-[13px] font-medium leading-none text-sg-ink-2">
+                    <Star className="h-3 w-3 text-sg-accent" aria-hidden />
+                    {t("qqMonitor.form.focusLabel")}
+                  </span>
+                  <TagIdInput
+                    ids={source.focusUserIds}
+                    onChange={(next) => setSource(i, { focusUserIds: next })}
+                    placeholder={t("qqMonitor.form.focusInputPlaceholder")}
+                    removeAriaLabel={(id) =>
+                      t("qqMonitor.form.focusRemoveAria", { id })
+                    }
+                    testId={`qq-monitor-form-focus-input-${i}`}
+                    tone="focus"
+                  />
+                  <FieldHint>{t("qqMonitor.form.focusHint")}</FieldHint>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
 
         {/* schedule ----------------------------------------------------- */}
