@@ -329,7 +329,7 @@ async def test_reconcile_restarts_instance_when_monitors_change() -> None:
     instances["a"]["monitors"] = [  # type: ignore[index]
         {
             "id": "m1",
-            "source_group": "123",
+            "sources": [{"group": "123", "focus_user_ids": ["7"]}],
             "schedule_type": "interval",
             "interval_minutes": 60,
             "target_type": "group",

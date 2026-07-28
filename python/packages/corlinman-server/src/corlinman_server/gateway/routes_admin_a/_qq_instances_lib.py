@@ -80,15 +80,45 @@ class HumanlikeOut(BaseModel):
 _MONITOR_HHMM_RE = re.compile(r"^([01]?\d|2[0-3]):[0-5]\d$")
 
 
+def _clean_qq_id_list(values: list[str], label: str) -> list[str]:
+    cleaned = [str(u).strip() for u in values if str(u).strip()]
+    if any(not u.isdigit() for u in cleaned):
+        raise ValueError(f"{label} must be QQ numbers")
+    return list(dict.fromkeys(cleaned))
+
+
+class QqMonitorSource(BaseModel):
+    """One monitored group inside a monitor task."""
+
+    group: str
+    watch_user_ids: list[str] = Field(default_factory=list, max_length=200)
+    """Collection filter; empty = everyone in the group."""
+    focus_user_ids: list[str] = Field(default_factory=list, max_length=200)
+    """Members the digest covers in extra detail; always collected even
+    when ``watch_user_ids`` narrows the scope."""
+
+    @model_validator(mode="after")
+    def _validate(self) -> QqMonitorSource:
+        if not self.group.strip().isdigit():
+            raise ValueError("source group must be a QQ group number")
+        object.__setattr__(
+            self, "watch_user_ids", _clean_qq_id_list(self.watch_user_ids, "watch_user_ids")
+        )
+        object.__setattr__(
+            self, "focus_user_ids", _clean_qq_id_list(self.focus_user_ids, "focus_user_ids")
+        )
+        return self
+
+
 class QqMonitorSpec(BaseModel):
-    """One group-monitor digest rule (mirrors the runtime parser in
+    """One monitor task (mirrors the runtime parser in
     ``corlinman_channels.service._qq_monitor_parse_entry`` — keep the
-    two validation surfaces in sync)."""
+    two validation surfaces in sync). A task aggregates 1..N source
+    groups into a single combined report on one schedule."""
 
     id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,63}$")
     enabled: bool = True
-    source_group: str
-    watch_user_ids: list[str] = Field(default_factory=list, max_length=200)
+    sources: list[QqMonitorSource] = Field(min_length=1, max_length=20)
     schedule_type: Literal["daily", "interval"]
     daily_time: str | None = None
     interval_minutes: int | None = None
@@ -99,16 +129,34 @@ class QqMonitorSpec(BaseModel):
     style_extra: str = Field(default="", max_length=2000)
     send_when_empty: bool = False
 
+    @model_validator(mode="before")
+    @classmethod
+    def _lift_legacy_shape(cls, data: Any) -> Any:
+        """#190 stored a flat single-group shape (``source_group`` +
+        ``watch_user_ids``); lift it into ``sources`` so hand-written
+        rows and pre-upgrade configs keep validating."""
+        if (
+            isinstance(data, dict)
+            and not data.get("sources")
+            and data.get("source_group")
+        ):
+            data = dict(data)
+            data["sources"] = [
+                {
+                    "group": data.pop("source_group"),
+                    "watch_user_ids": data.pop("watch_user_ids", []) or [],
+                    "focus_user_ids": data.pop("focus_user_ids", []) or [],
+                }
+            ]
+        return data
+
     @model_validator(mode="after")
     def _validate(self) -> QqMonitorSpec:
-        if not self.source_group.strip().isdigit():
-            raise ValueError("source_group must be a QQ group number")
         if not self.target_id.strip().isdigit():
             raise ValueError("target_id must be a QQ number")
-        cleaned = [str(u).strip() for u in self.watch_user_ids if str(u).strip()]
-        if any(not u.isdigit() for u in cleaned):
-            raise ValueError("watch_user_ids must be QQ numbers")
-        object.__setattr__(self, "watch_user_ids", cleaned)
+        groups = [source.group for source in self.sources]
+        if len(groups) != len(set(groups)):
+            raise ValueError("source groups must be unique within a task")
         if self.schedule_type == "daily":
             if not self.daily_time or not _MONITOR_HHMM_RE.match(self.daily_time.strip()):
                 raise ValueError("daily schedule requires daily_time as HH:MM")
@@ -203,12 +251,19 @@ async def monitor_window_counts(
         if not monitor.enabled:
             continue
         try:
-            counts[monitor.id] = await store.count_window(
-                instance_id=instance_id,
-                group_id=monitor.source_group,
-                since_ms=now_ms - monitor.effective_window_minutes() * 60_000,
-                sender_ids=monitor.watch_user_ids or None,
-            )
+            since_ms = now_ms - monitor.effective_window_minutes() * 60_000
+            total = 0
+            for source in monitor.sources:
+                collected = list(
+                    dict.fromkeys((*source.watch_user_ids, *source.focus_user_ids))
+                )
+                total += await store.count_window(
+                    instance_id=instance_id,
+                    group_id=source.group,
+                    since_ms=since_ms,
+                    sender_ids=(collected if source.watch_user_ids else None),
+                )
+            counts[monitor.id] = total
         except Exception:  # noqa: BLE001 — a broken store must not 500 status
             continue
     return counts
@@ -291,6 +346,7 @@ __all__ = [
     "PurgeBody",
     "QqInstanceOut",
     "QqInstancesOut",
+    "QqMonitorSource",
     "QqMonitorSpec",
     "ReconnectOut",
     "RestoreBody",

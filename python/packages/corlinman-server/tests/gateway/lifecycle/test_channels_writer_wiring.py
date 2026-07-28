@@ -256,8 +256,14 @@ async def test_writer_persists_nested_monitor_tables(tmp_path: Path) -> None:
     monitor = {
         "id": "daily-brief",
         "enabled": True,
-        "source_group": "100200",
-        "watch_user_ids": ["11111"],
+        "sources": [
+            {
+                "group": "100200",
+                "watch_user_ids": ["11111"],
+                "focus_user_ids": ["33333"],
+            },
+            {"group": "300400", "watch_user_ids": [], "focus_user_ids": []},
+        ],
         "schedule_type": "daily",
         "daily_time": "09:00",
         "timezone": "Asia/Shanghai",

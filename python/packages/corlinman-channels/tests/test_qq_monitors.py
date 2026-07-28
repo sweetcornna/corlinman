@@ -26,7 +26,7 @@ class _Cfg(SimpleNamespace):
 def _entry(**overrides: object) -> dict[str, object]:
     base: dict[str, object] = {
         "id": "m1",
-        "source_group": "123",
+        "sources": [{"group": "123"}],
         "schedule_type": "interval",
         "interval_minutes": 60,
         "target_type": "group",
@@ -58,10 +58,10 @@ class TestMonitorsConfig:
         assert specs is not None and len(specs) == 1
         spec = specs[0]
         assert spec.monitor_id == "m1"
-        assert spec.source_group == "123"
+        assert [s.group for s in spec.sources] == ["123"]
         assert spec.interval_minutes == 60
         assert spec.window_minutes == 60  # defaults to the interval
-        assert spec.watch_user_ids == ()
+        assert spec.sources[0].watch_user_ids == ()
         assert spec.send_when_empty is False
 
     def test_daily_entry_parses_with_day_window_default(self) -> None:
@@ -73,7 +73,12 @@ class TestMonitorsConfig:
                         daily_time="09:30",
                         interval_minutes=None,
                         target_type="user",
-                        watch_user_ids=[11111, " 22222 ", ""],
+                        sources=[
+                            {
+                                "group": "123",
+                                "watch_user_ids": [11111, " 22222 ", ""],
+                            }
+                        ],
                     )
                 ]
             )
@@ -83,12 +88,60 @@ class TestMonitorsConfig:
         assert (spec.daily_hour, spec.daily_minute) == (9, 30)
         assert spec.window_minutes == 1440
         assert spec.target_type == "user"
-        assert spec.watch_user_ids == ("11111", "22222")
+        assert spec.sources[0].watch_user_ids == ("11111", "22222")
+
+    def test_legacy_flat_shape_is_lifted(self) -> None:
+        """#190 configs (source_group + top-level watch_user_ids) keep
+        working — lifted into a single-source task."""
+        entry = {
+            "id": "old",
+            "source_group": "777",
+            "watch_user_ids": ["1", "2"],
+            "schedule_type": "interval",
+            "interval_minutes": 30,
+            "target_type": "user",
+            "target_id": "9",
+        }
+        specs = svc._qq_monitors_config(_Cfg(monitors=[entry]))
+        assert specs is not None
+        source = specs[0].sources[0]
+        assert source.group == "777"
+        assert source.watch_user_ids == ("1", "2")
+        assert source.focus_user_ids == ()
+
+    def test_multi_source_task_with_focus(self) -> None:
+        specs = svc._qq_monitors_config(
+            _Cfg(
+                monitors=[
+                    _entry(
+                        sources=[
+                            {"group": "123", "focus_user_ids": ["7"]},
+                            {
+                                "group": "456",
+                                "watch_user_ids": ["1"],
+                                "focus_user_ids": ["2"],
+                            },
+                            {"group": "123"},  # duplicate group ignored
+                            {"group": "not-a-number"},  # junk ignored
+                        ]
+                    )
+                ]
+            )
+        )
+        assert specs is not None
+        spec = specs[0]
+        assert [s.group for s in spec.sources] == ["123", "456"]
+        # Focus works alongside "everyone" (no collection filter)…
+        assert spec.sources[0].focus_user_ids == ("7",)
+        assert spec.sources[0].collection_ids() == ()
+        # …and focus members always join a narrowed collection filter.
+        assert spec.sources[1].collection_ids() == ("1", "2")
 
     def test_invalid_entries_are_skipped(self) -> None:
         bad = [
             _entry(id="BAD ID"),
-            _entry(source_group="not-a-number"),
+            _entry(sources=[{"group": "not-a-number"}]),
+            _entry(sources=[]),
             _entry(schedule_type="hourly"),
             _entry(interval_minutes=3),
             _entry(schedule_type="daily", daily_time="25:99"),
@@ -128,9 +181,17 @@ class TestMonitorsConfig:
 
     def test_monitor_groups_projection(self) -> None:
         specs = svc._qq_monitors_config(
-            _Cfg(monitors=[_entry(), _entry(id="m2", source_group="777")])
+            _Cfg(
+                monitors=[
+                    _entry(),
+                    _entry(
+                        id="m2",
+                        sources=[{"group": "777"}, {"group": "888"}],
+                    ),
+                ]
+            )
         )
-        assert svc._qq_monitor_groups(specs) == frozenset({"123", "777"})
+        assert svc._qq_monitor_groups(specs) == frozenset({"123", "777", "888"})
         assert svc._qq_monitor_groups(None) == frozenset()
 
 
@@ -296,13 +357,63 @@ class TestMonitorRunOnce:
         await svc._qq_monitor_run_once(
             _FakeAdapter(),
             _params(_FakeChat(), history),
-            _spec(watch_user_ids=["11", "22"]),
+            _spec(
+                sources=[
+                    {
+                        "group": "123",
+                        "watch_user_ids": ["11", "22"],
+                        "focus_user_ids": ["33"],
+                    }
+                ]
+            ),
             history,
             asyncio.Event(),
             until_ms=10_000,
             reason="schedule",
         )
-        assert history.list_calls[0]["sender_ids"] == ("11", "22")
+        # Focus members always join a narrowed collection filter.
+        assert history.list_calls[0]["sender_ids"] == ("11", "22", "33")
+
+    @pytest.mark.asyncio
+    async def test_multi_source_digest_sections_and_focus(self) -> None:
+        """A merged task queries every source and builds one combined
+        prompt: per-group sections, ★ markers on focus members, and the
+        dedicated focus instruction."""
+
+        class _PerGroupHistory(_FakeHistory):
+            async def list_window(self, **kwargs: object) -> list[SimpleNamespace]:
+                self.list_calls.append(kwargs)
+                if kwargs["group_id"] == "123":
+                    return [_msg("7", "小红", "去爬山吗", 1_000)]
+                return [_msg("1", "小明", "代码写完了", 2_000)]
+
+        history = _PerGroupHistory()
+        chat = _FakeChat("两群汇总。")
+        adapter = _FakeAdapter()
+        await svc._qq_monitor_run_once(
+            adapter,
+            _params(chat, history),
+            _spec(
+                sources=[
+                    {"group": "123", "focus_user_ids": ["7"]},
+                    {"group": "456"},
+                ]
+            ),
+            history,
+            asyncio.Event(),
+            until_ms=10_000,
+            reason="schedule",
+        )
+        assert [c["group_id"] for c in history.list_calls] == ["123", "456"]
+        prompt = chat.requests[0].messages[0].content
+        assert "### 群 123（1 条）" in prompt and "### 群 456（1 条）" in prompt
+        assert "重点关注：7" in prompt
+        assert "★[" in prompt  # focus member's line is marked
+        assert svc._QQ_MONITOR_FOCUS_PROMPT in prompt
+        assert "按群分开小节" in prompt
+        assert len(adapter.actions) == 1
+        status = svc.qq_monitor_status_snapshot("inst")["m1"]
+        assert status["last_count"] == 2
 
     @pytest.mark.asyncio
     async def test_empty_window_skips_quietly_by_default(self) -> None:
