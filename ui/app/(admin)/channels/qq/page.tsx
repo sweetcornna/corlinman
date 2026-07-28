@@ -22,6 +22,7 @@ import { QqFiltersPanel } from "@/components/channels/qq/qq-filters-panel";
 import { QqMessagesPanel } from "@/components/channels/qq/qq-messages-panel";
 import { ChannelConfigEditor } from "@/components/channels/ChannelConfigEditor";
 import { QzonePanel } from "@/components/scheduler/qzone-panel";
+import { QqMonitorPanel } from "@/components/channels/qq/qq-monitor-panel";
 import {
   QqHeroSkeleton,
   QqOfflineBlock,
@@ -44,6 +45,8 @@ import { ScanLoginDialog } from "./ScanLoginDialog";
  *     [ ChannelConfigEditor ]
  *     [ QzonePanel — QZone daily publishing + auto-reply (borrows the
  *       NapCat login state, so it lives with the channel) ]
+ *     [ QqMonitorPanel — group-message monitors + scheduled digests
+ *       (per-instance rules; whole-list PUT w/ revision If-Match) ]
  *     [ QqMessagesPanel (LogRow dense feed) ]
  *
  * Data flow preserved from pre-cutover:
@@ -276,6 +279,10 @@ export default function QqChannelPage() {
 
             <section className="rounded-sg-md border border-sg-border bg-sg-inset px-4 py-4">
               <QzonePanel />
+            </section>
+
+            <section className="rounded-sg-md border border-sg-border bg-sg-inset px-4 py-4">
+              <QqMonitorPanel />
             </section>
 
             <QqMessagesPanel

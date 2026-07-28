@@ -107,6 +107,7 @@ describe("CHANNEL_CONFIG_SPEC", () => {
       "proactive_active_end_hour",
       "proactive_probability",
       "proactive_context_messages",
+      "monitor_retention_hours",
     ]);
     // Speech-cap numbers are operator-facing (basic); tuning numbers are
     // expert-only.

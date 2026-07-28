@@ -15,6 +15,27 @@ vi.mock("@/lib/api", async () => {
   };
 });
 
+// The monitor panel is mounted by the page — resolve its API module so
+// its queries settle instead of hitting the gateway. Resolutions live in
+// the factory (not beforeEach) so `vi.clearAllMocks()` doesn't drop them.
+vi.mock("@/lib/api/qq-monitors", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/api/qq-monitors")>(
+    "@/lib/api/qq-monitors",
+  );
+  return {
+    ...actual,
+    getQqDefaultInstanceId: vi.fn(async () => "default"),
+    getQqMonitors: vi.fn(async () => ({
+      monitors: [],
+      warnings: [],
+      revision: "rev-0",
+    })),
+    getQqMonitorsStatus: vi.fn(async () => ({ statuses: {}, counts: {} })),
+    putQqMonitors: vi.fn(),
+    triggerQqMonitor: vi.fn(),
+  };
+});
+
 import { fetchQqStatus, type QqStatus } from "@/lib/api";
 import QqChannelPage from "./page";
 
@@ -70,6 +91,11 @@ describe("QqChannelPage", () => {
     expect(field).toHaveValue("20002");
     expect(field).toHaveAttribute("readonly");
     expect(screen.getByTestId("qq-account-panel")).toHaveTextContent("20002");
+  });
+
+  it("mounts the group-monitor panel section", async () => {
+    renderWithClient(<QqChannelPage />);
+    expect(await screen.findByTestId("qq-monitor-panel")).toBeInTheDocument();
   });
 
   it("does not label a configured fallback as auto-detected", async () => {
