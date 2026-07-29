@@ -786,3 +786,48 @@ class TestMonitorMapReduce:
         status = svc.qq_monitor_status_snapshot("inst")["m1"]
         assert status["last_ok"] is False
         assert "map chunks failed" in status["last_error"]
+
+
+class TestMonitorSendFolding:
+    """Long digests compress into a merged-forward card; short ones
+    stay plain messages."""
+
+    @pytest.mark.asyncio
+    async def test_short_digest_sends_plain_group_message(self) -> None:
+        adapter = _FakeAdapter()
+        await svc._qq_monitor_send(adapter, _spec(), "短摘要。")
+        assert len(adapter.actions) == 1
+        assert isinstance(adapter.actions[0], SendGroupMsg)
+
+    @pytest.mark.asyncio
+    async def test_long_digest_folds_into_group_forward_card(self) -> None:
+        from corlinman_channels.onebot import SendGroupForwardMsg
+
+        adapter = _FakeAdapter()
+        long_text = "长" * (svc._QQ_FORWARD_TEXT_THRESHOLD + 1)
+        await svc._qq_monitor_send(adapter, _spec(), long_text)
+        assert len(adapter.actions) == 1
+        card = adapter.actions[0]
+        assert isinstance(card, SendGroupForwardMsg)
+        assert card.group_id == 456
+        card_text = "".join(
+            seg.text
+            for node in card.messages
+            for seg in node.content
+            if isinstance(seg, TextSegment)
+        )
+        assert card_text == long_text
+
+    @pytest.mark.asyncio
+    async def test_long_digest_folds_for_user_target(self) -> None:
+        from corlinman_channels.onebot import SendPrivateForwardMsg
+
+        adapter = _FakeAdapter()
+        long_text = "长" * (svc._QQ_FORWARD_TEXT_THRESHOLD + 1)
+        await svc._qq_monitor_send(
+            adapter, _spec(target_type="user", target_id="789"), long_text
+        )
+        assert len(adapter.actions) == 1
+        card = adapter.actions[0]
+        assert isinstance(card, SendPrivateForwardMsg)
+        assert card.user_id == 789

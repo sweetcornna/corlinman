@@ -362,6 +362,49 @@ class TestActionToWire:
         # ``file`` omitted when not set.
         assert "file" not in fil["data"]
 
+    def test_group_forward_msg_nodes_carry_both_key_dialects(self) -> None:
+        """Merged-forward nodes ship BOTH the go-cqhttp (name/uin) and
+        NapCat (nickname/user_id) key pairs so one wire shape works on
+        either backend."""
+        from corlinman_channels.onebot import ForwardNode, SendGroupForwardMsg
+
+        a = SendGroupForwardMsg(
+            group_id=77,
+            messages=[
+                ForwardNode(
+                    name="bot", uin="10086", content=[TextSegment(text="part 1")]
+                )
+            ],
+        )
+        s = action_to_wire(a)
+        assert s["action"] == "send_group_forward_msg"
+        assert s["params"]["group_id"] == 77
+        node = s["params"]["messages"][0]
+        assert node["type"] == "node"
+        assert node["data"]["name"] == "bot"
+        assert node["data"]["uin"] == "10086"
+        assert node["data"]["nickname"] == "bot"
+        assert node["data"]["user_id"] == "10086"
+        assert node["data"]["content"][0]["data"]["text"] == "part 1"
+
+    def test_send_private_forward_msg_envelope(self) -> None:
+        from corlinman_channels.onebot import ForwardNode, SendPrivateForwardMsg
+
+        a = SendPrivateForwardMsg(
+            user_id=555,
+            messages=[
+                ForwardNode(
+                    name="bot", uin="10086", content=[TextSegment(text="folded")]
+                )
+            ],
+        )
+        s = action_to_wire(a)
+        assert s["action"] == "send_private_forward_msg"
+        assert s["params"]["user_id"] == 555
+        node = s["params"]["messages"][0]
+        assert node["type"] == "node"
+        assert node["data"]["content"][0]["data"]["text"] == "folded"
+
 
 # ---------------------------------------------------------------------------
 # Adapter-level tests
@@ -608,6 +651,70 @@ class TestOneBotIntegration:
         assert payload["action"] == "send_group_msg"
         assert payload["params"]["group_id"] == 10
         assert payload["params"]["message"][0]["data"]["text"] == "hi"
+
+    async def test_call_action_correlates_response_by_echo(self, ws_server) -> None:
+        """``call_action`` sends the frame with an ``echo`` id and returns
+        the backend's matching response envelope — the caller sees the
+        real retcode instead of fire-and-forget optimism."""
+        from corlinman_channels.onebot import UploadGroupFile
+
+        async def handler(ws: ServerConnection) -> None:
+            try:
+                async for raw in ws:
+                    frame = json.loads(raw)
+                    if frame.get("action") == "upload_group_file":
+                        await ws.send(
+                            json.dumps(
+                                {
+                                    "status": "failed",
+                                    "retcode": 1200,
+                                    "data": None,
+                                    "message": "file not found",
+                                    "echo": frame["echo"],
+                                }
+                            )
+                        )
+            except Exception:
+                pass
+
+        async with ws_server(handler) as url:
+            adapter = OneBotAdapter(
+                OneBotConfig(url=url), tencent_policy_resolver=lambda: False
+            )
+            async with adapter:
+                await asyncio.sleep(0.1)
+                resp = await asyncio.wait_for(
+                    adapter.call_action(
+                        UploadGroupFile(group_id=1, file="base64://x", name="a.py")
+                    ),
+                    timeout=5.0,
+                )
+        assert resp["retcode"] == 1200
+        assert resp["message"] == "file not found"
+
+    async def test_call_action_times_out_without_response(self, ws_server) -> None:
+        """A backend that never echoes must fail the waiter with
+        ``TimeoutError`` instead of hanging the caller forever."""
+        from corlinman_channels.onebot import UploadGroupFile
+
+        async def handler(ws: ServerConnection) -> None:
+            try:
+                async for _ in ws:
+                    pass  # swallow frames, never respond
+            except Exception:
+                pass
+
+        async with ws_server(handler) as url:
+            adapter = OneBotAdapter(
+                OneBotConfig(url=url), tencent_policy_resolver=lambda: False
+            )
+            async with adapter:
+                await asyncio.sleep(0.1)
+                with pytest.raises(TimeoutError):
+                    await adapter.call_action(
+                        UploadGroupFile(group_id=1, file="base64://x", name="a.py"),
+                        timeout=0.3,
+                    )
 
 
 # ---------------------------------------------------------------------------

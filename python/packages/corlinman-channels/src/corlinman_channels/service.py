@@ -231,13 +231,16 @@ from corlinman_channels.feishu import (
 )
 from corlinman_channels.onebot import (
     Action,
+    ForwardNode,
     MessageEvent,
     MessageSegment,
     MessageType,
     OneBotAdapter,
     OneBotConfig,
     RecordSegment,
+    SendGroupForwardMsg,
     SendGroupMsg,
+    SendPrivateForwardMsg,
     SendPrivateMsg,
     SetInputStatus,
     TextSegment,
@@ -1999,13 +2002,40 @@ async def _qq_monitor_summarize(
 
 
 async def _qq_monitor_send(
-    adapter: OneBotAdapter, spec: _QqMonitorSpec, text: str
+    adapter: OneBotAdapter,
+    spec: _QqMonitorSpec,
+    text: str,
+    *,
+    params: QqChannelParams | None = None,
 ) -> None:
-    """Deliver one digest through the same outbound shaping as replies."""
+    """Deliver one digest through the same outbound shaping as replies.
+
+    Long digests fold into a merged-forward card (same threshold as the
+    reply path) — a daily summary shouldn't flood the target chat.
+    """
     body = _normalize_for_channel(text, "qq")
     bubbles = _split_on_msg_break(body)
     for bubble_idx, bubble in enumerate(bubbles):
-        for chunk in chunk_reply(bubble, _QQ_TEXT_LIMIT):
+        chunks = chunk_reply(bubble, _QQ_TEXT_LIMIT)
+        if len(bubble) > _QQ_FORWARD_TEXT_THRESHOLD:
+            name, uin = _qq_forward_identity(adapter, params)
+            delivered = await _qq_deliver_forward(
+                adapter,
+                chunks,
+                name=name,
+                uin=uin,
+                group_id=(
+                    int(spec.target_id) if spec.target_type != "user" else None
+                ),
+                user_id=(
+                    int(spec.target_id) if spec.target_type == "user" else None
+                ),
+            )
+            if delivered:
+                if bubble_idx < len(bubbles) - 1:
+                    await asyncio.sleep(0.3)
+                continue
+        for chunk in chunks:
             if spec.target_type == "user":
                 await adapter.send_action(
                     SendPrivateMsg(
@@ -2098,7 +2128,7 @@ async def _qq_monitor_run_once(
         if not policy.allowed:
             _log_tencent_block(policy, channel="qq", direction="monitor")
             raise RuntimeError("digest blocked by content policy")
-        await _qq_monitor_send(adapter, spec, text)
+        await _qq_monitor_send(adapter, spec, text, params=params)
         delivered = True
         if spec.target_type == "group":
             # Count the digest toward the shared speech-cap window so the
@@ -2986,7 +3016,12 @@ def _qq_format_activity_summary(
     pending_call_label: str = ""
     for kind, label, duration_ms, is_error, error_summary in activity:
         if kind == "attachment":
-            rendered.append(f"📎 已发送文件: {label}")
+            if is_error:
+                # The channel-side upload failed — surface the real
+                # status line instead of fabricating a 📎 success.
+                rendered.append((error_summary or "").strip() or f"⚠️ 发送文件失败: {label}")
+            else:
+                rendered.append(f"📎 已发送文件: {label}")
             pending_call_idx = None
             pending_call_label = ""
             continue
@@ -3107,22 +3142,66 @@ async def _qq_send_attachment(
                 await adapter.send_action(SendPrivateMsg(user_id=event.user_id, message=record_msg))
             _log.info("qq send_attachment inline-record path=%s mime=%s", p, mime)
             return f"🎙️ 已发送语音: {display}"
+        # Generic document → NapCat file-share upload. Embed the bytes as
+        # ``base64://`` (same rationale as the image/audio branches: in
+        # Docker deploys NapCat cannot read corlinman's local paths — a
+        # literal path made every file send silently fail there). Only
+        # oversized files fall back to the path form, which still works
+        # when NapCat shares the gateway's filesystem.
+        if p.stat().st_size <= _QQ_FILE_BASE64_MAX_BYTES:
+            file_payload = "base64://" + base64.b64encode(p.read_bytes()).decode("ascii")
+        else:
+            file_payload = str(p)
+            _log.info(
+                "qq send_attachment oversized for base64 path=%s size=%d — "
+                "sending literal path",
+                p,
+                p.stat().st_size,
+            )
+        upload: Action
         if event.message_type == MessageType.GROUP and event.group_id is not None:
-            await adapter.send_action(
-                UploadGroupFile(
-                    group_id=event.group_id,
-                    file=str(p),
-                    name=display,
-                )
+            upload = UploadGroupFile(
+                group_id=event.group_id,
+                file=file_payload,
+                name=display,
             )
         else:
-            await adapter.send_action(
-                UploadPrivateFile(
-                    user_id=event.user_id,
-                    file=str(p),
-                    name=display,
-                )
+            upload = UploadPrivateFile(
+                user_id=event.user_id,
+                file=file_payload,
+                name=display,
             )
+        # Prefer the response-correlated send so a NapCat-side rejection
+        # (bad path, upload error) surfaces as a real ⚠️ instead of a
+        # false "已发送文件" — the WS enqueue alone proves nothing.
+        call = getattr(adapter, "call_action", None)
+        if call is not None:
+            try:
+                resp = await call(upload, timeout=_QQ_UPLOAD_RESPONSE_TIMEOUT_SECS)
+            except TimeoutError:
+                _log.warning(
+                    "qq send_attachment: no response envelope (timeout); "
+                    "assuming delivered path=%s",
+                    p,
+                )
+            else:
+                retcode = resp.get("retcode") if isinstance(resp, dict) else None
+                # retcode 1 = async-accepted (OneBot v11) — not a failure.
+                if retcode not in (0, 1):
+                    reason = (
+                        (resp.get("message") or resp.get("wording") or f"retcode={retcode}")
+                        if isinstance(resp, dict)
+                        else str(resp)
+                    )
+                    _log.warning(
+                        "qq send_attachment rejected path=%s retcode=%s msg=%s",
+                        p,
+                        retcode,
+                        reason,
+                    )
+                    return f"⚠️ 发送文件失败: {display} ({reason})"
+        else:
+            await adapter.send_action(upload)
     except Exception as exc:  # noqa: BLE001
         _log.warning("qq send_attachment failed: %s", exc)
         return f"⚠️ 发送文件失败: {display} ({exc})"
@@ -3175,6 +3254,138 @@ async def _pulse(
 # chars in our testing); leave a safety margin so we never silently
 # overshoot.
 _QQ_TEXT_LIMIT: int = 3800
+
+# Above this many chars a reply bubble stops being chat and starts being
+# a wall of text — compress it into a merged-forward ("聊天记录") card
+# the recipient taps to expand, instead of flooding the chat with one
+# giant message (or several chunked ones).
+_QQ_FORWARD_TEXT_THRESHOLD: int = 1000
+
+# Lead line posted (with @sender, groups only) right before a forward
+# card so the asker still gets their notification ping — the card itself
+# cannot carry an at-mention.
+_QQ_FORWARD_LEAD_TEXT = "回复较长，已折叠成聊天记录，点开查看 ↓"
+
+# Ship files to NapCat as ``base64://`` up to this raw size (the WS
+# frame inflates ~4/3). Beyond it, fall back to the literal path — that
+# still works when NapCat shares the gateway's filesystem.
+_QQ_FILE_BASE64_MAX_BYTES: int = 30 * 1024 * 1024
+
+# NapCat answers ``upload_*_file`` only after the file reaches Tencent's
+# servers — big files legitimately take a while, so the upload response
+# wait is much longer than the default action timeout.
+_QQ_UPLOAD_RESPONSE_TIMEOUT_SECS: float = 120.0
+
+
+def _qq_forward_identity(
+    adapter: Any,
+    params: QqChannelParams | None,
+    event: MessageEvent | None = None,
+) -> tuple[str, str]:
+    """Resolve the (nickname, uin) stamped on merged-forward card nodes.
+
+    The health watcher caches the bot's real QQ nickname
+    (``account_nickname`` via ``get_login_info``); the uin comes from the
+    adapter's observed ``self_id`` with the triggering event as backstop.
+    """
+    health = (
+        params.health
+        if params is not None and params.health is not None
+        else QQ_HEALTH
+    )
+    name = ""
+    if isinstance(health, dict):
+        name = str(health.get("account_nickname") or "")
+    uin = getattr(adapter, "last_self_id", None)
+    if not uin and event is not None:
+        uin = getattr(event, "self_id", 0)
+    return (name or "AI", str(uin or 0))
+
+
+async def _qq_deliver_forward(
+    adapter: Any,
+    chunks: list[str],
+    *,
+    name: str,
+    uin: str,
+    group_id: int | None = None,
+    user_id: int | None = None,
+) -> bool:
+    """Send ``chunks`` as ONE merged-forward ("聊天记录") card.
+
+    Returns ``True`` when the card was (as far as we can tell)
+    delivered, ``False`` when the backend rejected it — the caller then
+    falls back to plain chunked messages so content is never lost.
+    Policy blocks / transport errors propagate: the plain fallback would
+    hit the exact same wall, so there is nothing useful to fall back to.
+    """
+    nodes = [
+        ForwardNode(name=name, uin=uin, content=[TextSegment(text=chunk)])
+        for chunk in chunks
+        if chunk
+    ]
+    if not nodes:
+        return True
+    action: Action
+    if group_id is not None:
+        action = SendGroupForwardMsg(group_id=group_id, messages=nodes)
+    elif user_id is not None:
+        action = SendPrivateForwardMsg(user_id=user_id, messages=nodes)
+    else:
+        return False
+    call = getattr(adapter, "call_action", None)
+    if call is None:
+        # Duck-typed adapter without response correlation (thin fakes) —
+        # fire-and-forget and assume delivery.
+        await adapter.send_action(action)
+        return True
+    try:
+        resp = await call(action)
+    except TimeoutError:
+        # NapCat normally echoes every action; a silent backend is more
+        # likely slow than broken. Assume the card went out rather than
+        # double-sending the plain fallback.
+        _log.warning("qq forward-card response timeout; assuming delivered")
+        return True
+    retcode = resp.get("retcode") if isinstance(resp, dict) else None
+    # OneBot v11: retcode 0 = ok, 1 = async (accepted, still processing)
+    # — both count as delivered; falling back on 1 would double-send.
+    if retcode in (0, 1):
+        return True
+    _log.warning(
+        "qq forward-card rejected retcode=%s message=%s — falling back to chunks",
+        retcode,
+        (resp.get("message") or resp.get("wording")) if isinstance(resp, dict) else resp,
+    )
+    return False
+
+
+async def _qq_send_forward_reply(
+    adapter: Any,
+    event: MessageEvent,
+    chunks: list[str],
+    params: QqChannelParams | None,
+    *,
+    mention: bool,
+) -> bool:
+    """Reply-path wrapper around :func:`_qq_deliver_forward`.
+
+    In groups the card cannot carry an at-mention, so a short lead line
+    (with @sender) goes out first — the asker still gets their
+    notification ping while the long body stays folded.
+    """
+    name, uin = _qq_forward_identity(adapter, params, event)
+    is_group = event.message_type == MessageType.GROUP and event.group_id is not None
+    if is_group and mention:
+        await adapter.send_action(_build_reply_action(event, _QQ_FORWARD_LEAD_TEXT))
+    return await _qq_deliver_forward(
+        adapter,
+        chunks,
+        name=name,
+        uin=uin,
+        group_id=event.group_id if is_group else None,
+        user_id=None if is_group else event.user_id,
+    )
 
 
 async def _qq_input_status_pulse(
@@ -3862,18 +4073,36 @@ async def handle_one_qq(
         # LAST bubble only (one link per turn).
         if _qq_status_line and chunks and bubble_idx == len(bubbles) - 1:
             chunks[-1] = try_append_footer(chunks[-1], _qq_status_line, _QQ_TEXT_LIMIT)
-        if len(chunks) > 1:
+        mention = bubble_idx == 0
+        sent_as_card = False
+        if len(bubble) > _QQ_FORWARD_TEXT_THRESHOLD:
+            # Wall-of-text compression: fold the long bubble into one
+            # merged-forward card the recipient taps to expand.
             _log.info(
-                "qq reply split user=%s len=%d chunks=%d",
+                "qq reply folded user=%s len=%d nodes=%d",
                 event.user_id,
                 len(bubble),
                 len(chunks),
             )
-        for idx, chunk in enumerate(chunks):
-            action = _build_reply_action(
-                event, chunk, prepend_at_mention=(idx == 0 and bubble_idx == 0)
+            sent_as_card = await _qq_send_forward_reply(
+                adapter, event, chunks, params, mention=mention
             )
-            await adapter.send_action(action)
+            # The card path already pinged the asker via its lead line —
+            # a fallback chunk send must not @ again.
+            mention = False
+        if not sent_as_card:
+            if len(chunks) > 1:
+                _log.info(
+                    "qq reply split user=%s len=%d chunks=%d",
+                    event.user_id,
+                    len(bubble),
+                    len(chunks),
+                )
+            for idx, chunk in enumerate(chunks):
+                action = _build_reply_action(
+                    event, chunk, prepend_at_mention=(idx == 0 and mention)
+                )
+                await adapter.send_action(action)
         if bubble_idx < len(bubbles) - 1:
             await asyncio.sleep(0.3)
     if (

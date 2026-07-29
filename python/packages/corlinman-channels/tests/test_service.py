@@ -527,15 +527,15 @@ class TestHandleOneQq:
         assert adapter.sent == []
 
     @pytest.mark.asyncio
-    async def test_multichunk_group_reply_ats_only_first_chunk(self) -> None:
-        """Regression: when a long body splits into multiple chunks the
-        @sender mention MUST appear only on chunk[0]. Pre-fix every
-        chunk prepended ``AtSegment``, spamming the user with N pings
-        in the group.
+    async def test_long_group_reply_folds_into_forward_card(self) -> None:
+        """A wall-of-text reply must compress into ONE merged-forward
+        ("聊天记录") card instead of flooding the group with chunked
+        messages. A short lead line (with the only @sender of the turn)
+        goes out first so the asker still gets pinged — the card itself
+        cannot carry an at-mention.
         """
-        # Build a body that exceeds the 3800-char QQ cap so chunk_reply
-        # splits it into 2+ segments. Two paragraphs separated by a
-        # blank line so chunking lands on a paragraph boundary.
+        from corlinman_channels.onebot import SendGroupForwardMsg
+
         big = "A" * 2500
         body = big + "\n\n" + big
         svc = _ScriptedChatService(
@@ -552,30 +552,114 @@ class TestHandleOneQq:
         import asyncio
 
         await handle_one_qq(svc, req, ev, "m", adapter, asyncio.Event())  # type: ignore[arg-type]
+        cards = [a for a in adapter.sent if isinstance(a, SendGroupForwardMsg)]
+        assert len(cards) == 1, (
+            f"expected one forward card; got {[type(a).__name__ for a in adapter.sent]}"
+        )
+        # Every node carries text; together they preserve the full body.
+        card_text = "".join(
+            seg.text
+            for node in cards[0].messages
+            for seg in node.content
+            if isinstance(seg, TextSegment)
+        )
+        assert card_text.count("A") == 5000
+
+        # Exactly one @sender across the whole turn — on the lead line.
+        leads = [a for a in adapter.sent if isinstance(a, SendGroupMsg)]
+        at_count = sum(
+            1
+            for a in leads
+            for seg in a.message
+            if isinstance(seg, AtSegment) and seg.qq == str(ev.user_id)
+        )
+        assert at_count == 1, "lead line must @ the asker exactly once"
+
+    @pytest.mark.asyncio
+    async def test_forward_card_rejection_falls_back_to_chunks(self) -> None:
+        """When NapCat rejects the forward card (non-zero retcode) the
+        reply must still arrive as plain chunked messages — and must NOT
+        @-mention again (the card's lead line already pinged; Tencent
+        anti-spam treats repeat pings as abuse).
+        """
+        import asyncio
+
+        from corlinman_channels.onebot import SendGroupForwardMsg
+
+        class _CardRejectingAdapter(_FakeOneBotAdapter):
+            async def call_action(self, action: Any, *, timeout: float = 15.0) -> Any:
+                self.sent.append(action)
+                return {"status": "failed", "retcode": 1400, "message": "no forward"}
+
+        big = "A" * 2500
+        body = big + "\n\n" + big
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="token_delta", text=body),
+                _Ev(kind="done"),
+            ]
+        )
+        ev = _sample_group_event()
+        binding = ChannelBinding.qq_group(ev.self_id, ev.group_id or 0, ev.user_id)
+        req = RoutedRequest(binding=binding, content="long please")
+        adapter = _CardRejectingAdapter()
+
+        await handle_one_qq(svc, req, ev, "m", adapter, asyncio.Event())  # type: ignore[arg-type]
+        # The rejected card attempt was recorded, then plain chunks.
+        assert any(isinstance(a, SendGroupForwardMsg) for a in adapter.sent)
         sends = [a for a in adapter.sent if isinstance(a, SendGroupMsg)]
-        assert len(sends) >= 2, f"expected multi-chunk send; got {len(sends)}"
+        # Lead line + 2+ fallback chunks.
+        assert len(sends) >= 3, f"expected lead + chunk fallback; got {len(sends)}"
+        chunk_text = "".join(
+            seg.text
+            for a in sends
+            for seg in a.message
+            if isinstance(seg, TextSegment)
+        )
+        assert chunk_text.count("A") == 5000
+        at_count = sum(
+            1
+            for a in sends
+            for seg in a.message
+            if isinstance(seg, AtSegment)
+        )
+        assert at_count == 1, "fallback chunks must not @ again after the lead"
 
-        # Chunk[0]: AtSegment + TextSegment, in that order.
-        first = sends[0]
-        assert isinstance(first.message[0], AtSegment)
-        assert first.message[0].qq == str(ev.user_id)
-        assert isinstance(first.message[1], TextSegment)
+    @pytest.mark.asyncio
+    async def test_long_private_reply_folds_without_lead(self) -> None:
+        """Private chats fold long replies too, but skip the lead line —
+        there is no @mention to preserve outside a group."""
+        import asyncio
 
-        # Chunks[1:]: no AtSegment, only a single TextSegment.
-        for follow in sends[1:]:
-            assert not any(isinstance(seg, AtSegment) for seg in follow.message), (
-                "follow-up chunk must NOT @-mention again — Tencent "
-                "anti-spam treats repeat pings as abuse"
-            )
-            # And the text payload is non-empty.
-            text_segs = [seg for seg in follow.message if isinstance(seg, TextSegment)]
-            assert text_segs
-            assert text_segs[0].text.strip()
+        from corlinman_channels.onebot import SendPrivateForwardMsg
+
+        body = "B" * 1500
+        svc = _ScriptedChatService(
+            [
+                _Ev(kind="token_delta", text=body),
+                _Ev(kind="done"),
+            ]
+        )
+        ev = _qq_private_event(user_id=30003)
+        binding = ChannelBinding.qq_private(999, 30003)
+        req = RoutedRequest(binding=binding, content="long please")
+        adapter = _FakeOneBotAdapter()
+
+        await handle_one_qq(svc, req, ev, "m", adapter, asyncio.Event())  # type: ignore[arg-type]
+        cards = [a for a in adapter.sent if isinstance(a, SendPrivateForwardMsg)]
+        assert len(cards) == 1
+        assert cards[0].user_id == 30003
+        assert not any(isinstance(a, SendPrivateMsg) for a in adapter.sent), (
+            "private fold must not ship a lead line"
+        )
 
     @pytest.mark.asyncio
     async def test_send_attachment_private_uploads_via_napcat(self, tmp_path: Any) -> None:
         """send_attachment tool_call must dispatch an UploadPrivateFile
-        action for QQ private chats."""
+        action for QQ private chats, embedding the bytes as ``base64://``
+        — NapCat may run in a separate container that cannot read the
+        gateway's local paths (a literal path silently failed there)."""
+        import base64
         import json
 
         from corlinman_channels.onebot import UploadPrivateFile
@@ -609,7 +693,60 @@ class TestHandleOneQq:
         )
         assert uploads[0].user_id == 10001
         assert uploads[0].name == "doc.pdf"
-        assert uploads[0].file.endswith("doc.pdf")
+        expected = "base64://" + base64.b64encode(b"%PDF-fake").decode("ascii")
+        assert uploads[0].file == expected
+
+    @pytest.mark.asyncio
+    async def test_send_attachment_napcat_rejection_reports_failure(
+        self, tmp_path: Any
+    ) -> None:
+        """When the adapter exposes ``call_action`` and NapCat answers a
+        non-zero retcode, the summary must say ⚠️ 发送文件失败 — not the
+        false 📎 已发送文件 the fire-and-forget path used to fabricate."""
+        import asyncio
+        import json
+
+        class _RejectingAdapter(_FakeOneBotAdapter):
+            async def call_action(self, action: Any, *, timeout: float = 15.0) -> Any:
+                self.sent.append(action)
+                return {
+                    "status": "failed",
+                    "retcode": 1200,
+                    "message": "file not found",
+                }
+
+        f = tmp_path / "doc.pdf"
+        f.write_bytes(b"%PDF-fake")
+        args = json.dumps({"path": str(f), "filename": "doc.pdf"})
+        svc = _ScriptedChatService(
+            [
+                _Ev(
+                    kind="tool_call",
+                    plugin="send_attachment",
+                    tool="send_attachment",
+                    args_json=args.encode("utf-8"),
+                ),
+                _Ev(kind="token_delta", text="ok"),
+                _Ev(kind="done"),
+            ]
+        )
+        ev = _qq_private_event(user_id=10001)
+        binding = ChannelBinding.qq_private(999, 10001)
+        req = RoutedRequest(binding=binding, content="give me the pdf")
+        adapter = _RejectingAdapter()
+
+        await handle_one_qq(svc, req, ev, "m", adapter, asyncio.Event())  # type: ignore[arg-type]
+        texts = [
+            seg.text
+            for a in adapter.sent
+            if isinstance(a, SendPrivateMsg)
+            for seg in a.message
+            if isinstance(seg, TextSegment)
+        ]
+        joined = "\n".join(texts)
+        assert "发送文件失败" in joined
+        assert "file not found" in joined
+        assert "已发送文件" not in joined
 
     @pytest.mark.asyncio
     async def test_send_attachment_image_sends_inline_segment(self, tmp_path: Any) -> None:
