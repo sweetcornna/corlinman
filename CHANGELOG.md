@@ -4,6 +4,24 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.55.0] — 2026-07-29 — QQ 文件发送修复；大段长文合并转发折叠
+
+### Fixed
+- **QQ 渠道发文件静默失败**：`upload_*_file` 传网关本地路径，NapCat
+  （docker 部署）读不到 → 上传必败；且发送发后不理、summary 渲染器
+  无视失败标记，界面恒显示"已发送文件"假成功。现文件 ≤30MB 一律
+  `base64://` 直传（与图片/语音同范式，超限回退字面路径），并经新增
+  的 `call_action`（echo 关联响应信封）校验 NapCat `retcode`（0/1 之外
+  即失败，1=async-accepted 不误判），失败如实显示 ⚠️ 与原因；上传
+  响应等待 120s 适配大文件。（#198）
+
+### Added
+- **大段长文合并转发**：单条回复超 1000 字折叠为"聊天记录"卡片
+  （群/私聊均支持，新增 `send_private_forward_msg`；节点 wire 同时带
+  gocq/NapCat 双方言键），点开展开。群聊先发一条 @提问者 的短引导
+  （卡片不能 @，保通知且全程仅 @ 一次）；卡片被拒自动回退分块发送
+  且不重复 @。群监控长摘要同样折叠。（#198）
+
 ## [1.54.0] — 2026-07-29 — 行为类配置热应用：保存不再重启 QQ 实例、零断连
 
 ### Changed
