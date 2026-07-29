@@ -503,6 +503,18 @@ class SendGroupForwardMsg:
 
 
 @dataclass(slots=True)
+class SendPrivateForwardMsg:
+    """``action = "send_private_forward_msg"`` — NapCat OneBot v11 extension.
+
+    Merged-forward ("聊天记录") card for private chats. Same node shape
+    as :class:`SendGroupForwardMsg`, addressed by ``user_id``.
+    """
+
+    user_id: int
+    messages: list[ForwardNode]
+
+
+@dataclass(slots=True)
 class SetInputStatus:
     """``action = "set_input_status"`` — NapCat OneBot v11 extension.
 
@@ -524,10 +536,10 @@ class SetInputStatus:
 class UploadPrivateFile:
     """``action = "upload_private_file"`` — NapCat OneBot v11 extension.
 
-    Sends a file to a private chat. ``file`` is a path the NapCat
-    process can read (the channel handler resolves it from the
-    gateway-side absolute path; NapCat and the gateway run on the
-    same host so the path is the same).
+    Sends a file to a private chat. ``file`` accepts any NapCat file
+    payload: ``base64://`` (preferred — NapCat often runs in a separate
+    container that cannot read the gateway's local paths), an absolute
+    path, or an ``http(s)://`` URL.
     """
 
     user_id: int
@@ -539,8 +551,9 @@ class UploadPrivateFile:
 class UploadGroupFile:
     """``action = "upload_group_file"`` — NapCat OneBot v11 extension.
 
-    Sends a file to a QQ group. ``folder`` is optional (defaults to
-    the root folder of the group's file area).
+    Sends a file to a QQ group. ``file`` accepts the same payload forms
+    as :class:`UploadPrivateFile` (``base64://`` preferred). ``folder``
+    is optional (defaults to the root folder of the group's file area).
     """
 
     group_id: int
@@ -554,10 +567,24 @@ Action = (
     SendPrivateMsg
     | SendGroupMsg
     | SendGroupForwardMsg
+    | SendPrivateForwardMsg
     | SetInputStatus
     | UploadPrivateFile
     | UploadGroupFile
 )
+
+
+@dataclass(slots=True)
+class _EchoedAction:
+    """Outbound-queue wrapper pairing an action with its ``echo`` id.
+
+    :meth:`OneBotAdapter.call_action` uses it to correlate NapCat's
+    response envelope back to the awaiting caller; plain
+    :meth:`OneBotAdapter.send_action` keeps enqueueing bare actions.
+    """
+
+    action: Action
+    echo: str
 
 
 def _segment_to_wire(seg: MessageSegment) -> dict[str, Any]:
@@ -648,22 +675,39 @@ def action_to_wire(action: Action) -> dict[str, Any]:
         if action.folder is not None:
             gparams["folder"] = action.folder
         return {"action": "upload_group_file", "params": gparams}
+    if isinstance(action, SendPrivateForwardMsg):
+        return {
+            "action": "send_private_forward_msg",
+            "params": {
+                "user_id": action.user_id,
+                "messages": [_forward_node_to_wire(n) for n in action.messages],
+            },
+        }
     # SendGroupForwardMsg
     return {
         "action": "send_group_forward_msg",
         "params": {
             "group_id": action.group_id,
-            "messages": [
-                {
-                    "type": "node",
-                    "data": {
-                        "name": node.name,
-                        "uin": node.uin,
-                        "content": [_segment_to_wire(s) for s in node.content],
-                    },
-                }
-                for node in action.messages
-            ],
+            "messages": [_forward_node_to_wire(n) for n in action.messages],
+        },
+    }
+
+
+def _forward_node_to_wire(node: ForwardNode) -> dict[str, Any]:
+    """Serialize one merged-forward node.
+
+    Emits BOTH the go-cqhttp key pair (``name``/``uin``) and the NapCat
+    key pair (``nickname``/``user_id``) — backends read whichever they
+    know and ignore the rest, so one wire shape covers both dialects.
+    """
+    return {
+        "type": "node",
+        "data": {
+            "name": node.name,
+            "uin": node.uin,
+            "nickname": node.name,
+            "user_id": node.uin,
+            "content": [_segment_to_wire(s) for s in node.content],
         },
     }
 
@@ -732,11 +776,16 @@ class OneBotAdapter:
         # operators can spot a consistently slow chat service.
         self._inbound_q: asyncio.Queue[Event] = asyncio.Queue(maxsize=64)
         self._inbound_dropped: int = 0
-        self._outbound_q: asyncio.Queue[Action] = asyncio.Queue(maxsize=64)
+        self._outbound_q: asyncio.Queue[Action | _EchoedAction] = asyncio.Queue(maxsize=64)
         # ``_writer_loop`` drains this front buffer BEFORE ``_outbound_q``
         # so a transient WS send failure can re-queue the action without
         # losing ordering (asyncio.Queue has no push-left). See C1 fix.
-        self._outbound_front: deque[Action] = deque()
+        self._outbound_front: deque[Action | _EchoedAction] = deque()
+        # ``call_action`` response futures keyed by the ``echo`` id sent
+        # on the wire. ``_pump`` resolves the future when NapCat's
+        # response envelope comes back with the matching echo.
+        self._pending_responses: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self._echo_seq: int = 0
         # Per-action retry counter — guards against poison messages that
         # would otherwise loop forever. Keyed by ``id(action)`` since
         # actions don't have a stable hash; entries are cleared once the
@@ -869,6 +918,12 @@ class OneBotAdapter:
     async def close(self) -> None:
         """Shut down the reader loop and the underlying WS."""
         self._closed = True
+        # Fail in-flight ``call_action`` waiters fast instead of letting
+        # them ride out their full timeout against a dead socket.
+        for fut in self._pending_responses.values():
+            if not fut.done():
+                fut.set_exception(TransportError("OneBotAdapter is closed"))
+        self._pending_responses.clear()
         if self._reader_task is not None:
             self._reader_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -927,7 +982,7 @@ class OneBotAdapter:
                         text_parts.append(segment.text)
                     elif isinstance(segment, (ImageSegment, RecordSegment, VideoSegment, FileSegment)):
                         has_media = True
-            elif isinstance(action, SendGroupForwardMsg):
+            elif isinstance(action, (SendGroupForwardMsg, SendPrivateForwardMsg)):
                 for node in action.messages:
                     for segment in node.content:
                         if isinstance(segment, TextSegment):
@@ -944,7 +999,7 @@ class OneBotAdapter:
 
     async def send_safe_refusal(self, action: Action) -> None:
         """Queue the application-owned refusal without reclassifying it."""
-        if isinstance(action, SendPrivateMsg):
+        if isinstance(action, (SendPrivateMsg, SendPrivateForwardMsg)):
             safe: Action = SendPrivateMsg(
                 user_id=action.user_id,
                 message=[TextSegment(text=QQ_SAFE_REFUSAL_TEXT)],
@@ -973,6 +1028,44 @@ class OneBotAdapter:
             )
             raise TransportError("tencent_content_policy_blocked")
         await self._outbound_q.put(action)
+
+    async def call_action(
+        self, action: Action, *, timeout: float = 15.0
+    ) -> dict[str, Any]:
+        """Send an action and await NapCat's response envelope.
+
+        Same policy gate and outbound queue as :meth:`send_action`, but
+        the wire frame carries an ``echo`` id so the reader loop can
+        route the ``{"status", "retcode", ...}`` response back here.
+        Callers use this when delivery actually matters (file uploads,
+        merged-forward cards) — a non-ok ``retcode`` (0 = ok, 1 = async
+        -accepted) means NapCat rejected the action even though the WS
+        send itself succeeded.
+
+        Raises :class:`TransportError` on policy block / closed adapter
+        and :class:`asyncio.TimeoutError` when no response lands within
+        ``timeout`` (older backends may not echo at all — callers decide
+        whether that counts as failure).
+        """
+        if self._closed:
+            raise TransportError("OneBotAdapter is closed")
+        decision = self.inspect_action(action)
+        if not decision.allowed:
+            _log.warning(
+                "qq.policy.blocked_outbound categories=%s rules=%s",
+                list(decision.category_codes),
+                list(decision.rule_ids),
+            )
+            raise TransportError("tencent_content_policy_blocked")
+        self._echo_seq += 1
+        echo = f"cm-act-{self._echo_seq}"
+        fut: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+        self._pending_responses[echo] = fut
+        try:
+            await self._outbound_q.put(_EchoedAction(action=action, echo=echo))
+            return await asyncio.wait_for(fut, timeout)
+        finally:
+            self._pending_responses.pop(echo, None)
 
     # ------------------------------------------------------------------
     # Reader loop — encapsulates reconnect schedule.
@@ -1106,6 +1199,16 @@ class OneBotAdapter:
                     # account is up — heartbeats might lag.
                     self._last_status_online = True
                     self._last_status_online_at_ms = now_ms
+                # API response envelope for an in-flight ``call_action``
+                # — resolve the waiter and keep it out of the inbound
+                # queue (response frames are not events).
+                echo = raw.get("echo")
+                if isinstance(echo, str):
+                    pending = self._pending_responses.pop(echo, None)
+                    if pending is not None:
+                        if not pending.done():
+                            pending.set_result(raw)
+                        continue
                 # Burst-absorb: a slow chat service must NOT block the
                 # WS reader (websockets' frame buffer fills → NapCat
                 # closes the connection with 1009 → reconnect storm).
@@ -1151,7 +1254,12 @@ class OneBotAdapter:
                     action = await self._outbound_q.get()
                 except asyncio.CancelledError:
                     return
-            payload = json.dumps(action_to_wire(action))
+            if isinstance(action, _EchoedAction):
+                wire = action_to_wire(action.action)
+                wire["echo"] = action.echo
+            else:
+                wire = action_to_wire(action)
+            payload = json.dumps(wire)
             try:
                 await ws.send(payload)
             except asyncio.CancelledError:
@@ -1161,12 +1269,13 @@ class OneBotAdapter:
                 self._outbound_front.appendleft(action)
                 raise
             except Exception as exc:
+                inner = action.action if isinstance(action, _EchoedAction) else action
                 retries = self._outbound_retries.get(id(action), 0) + 1
                 if retries >= 2:
                     self._outbound_retries.pop(id(action), None)
                     _log.error(
                         "qq.outbound.dropped action=%s retries=%d err=%s",
-                        type(action).__name__,
+                        type(inner).__name__,
                         retries,
                         exc,
                     )
@@ -1176,7 +1285,7 @@ class OneBotAdapter:
                 self._outbound_front.appendleft(action)
                 _log.warning(
                     "qq.outbound.send_failed action=%s retry=%d err=%s",
-                    type(action).__name__,
+                    type(inner).__name__,
                     retries,
                     exc,
                 )
@@ -1235,6 +1344,7 @@ __all__ = [
     "RequestEvent",
     "SendGroupForwardMsg",
     "SendGroupMsg",
+    "SendPrivateForwardMsg",
     "SendPrivateMsg",
     "Sender",
     "SetInputStatus",
