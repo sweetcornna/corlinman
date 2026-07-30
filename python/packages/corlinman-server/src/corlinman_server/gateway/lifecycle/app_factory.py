@@ -530,6 +530,16 @@ def _apply_agent_side_config(cfg: Any) -> None:
         search = apply_web_search_config(_block("web_search"))
         if search.backend or search.api_key:
             logger.info("gateway.web_search.defaults", **search.as_dict())
+
+        # Same registration as the standalone agent process — embedded mode
+        # runs the reasoning loop in *this* process, so without it
+        # ``backend = "freesearch"`` would work in one deployment shape and
+        # silently fall back in the other.
+        from corlinman_server.web_search_freesearch import (
+            install_freesearch_backend,
+        )
+
+        install_freesearch_backend()
     except Exception as exc:  # pragma: no cover — never fatal
         logger.warning("gateway.web_search.config_failed", error=str(exc))
 

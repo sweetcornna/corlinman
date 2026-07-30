@@ -412,6 +412,16 @@ def _apply_agent_config_from_sidecar(path: str | None) -> None:
         search = apply_web_search_config(_block("web_search"))
         if search.backend or search.api_key:
             logger.info("web_search.config_applied", **search.as_dict())
+
+        # Register the MCP-backed ``freesearch`` backend. Unconditional and
+        # inert: it only connects if the operator selects it, and doing it
+        # here means flipping the backend in the UI takes effect on the next
+        # sidecar reload instead of needing an agent restart.
+        from corlinman_server.web_search_freesearch import (
+            install_freesearch_backend,
+        )
+
+        install_freesearch_backend()
     except Exception as exc:  # noqa: BLE001 — never fatal
         logger.warning("web_search.config_apply_failed", error=str(exc))
 

@@ -44,6 +44,7 @@ import json
 import os
 import re
 import urllib.parse
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
@@ -79,6 +80,55 @@ _DDG_ENDPOINT: str = "https://html.duckduckgo.com/html/"
 
 #: SerpApi (key-based) endpoint — used only when a key is configured.
 _SERPAPI_ENDPOINT: str = "https://serpapi.com/search.json"
+
+
+# ---------------------------------------------------------------------------
+# Externally-supplied backends
+# ---------------------------------------------------------------------------
+#
+# The two backends above are HTTP calls this module makes itself. A backend
+# can also be *supplied* by a higher layer — the ``freesearch`` backend is an
+# MCP conversation with corlinman's bundled multi-engine search server, and
+# the MCP client lives in ``corlinman-mcp-server``, which this package
+# deliberately does not depend on (it sits outside the
+# server → agent → providers → grpc layering).
+#
+# So the seam is an inversion: this module owns the tool contract and the
+# name, and whoever *can* reach the transport registers an implementation
+# under that name. In the two-process deployment that registration happens
+# in the agent process's sidecar-config path (``corlinman_server.main``).
+
+#: ``(query, max_results) -> [{"title", "url", "snippet"}, ...]``.
+ExternalSearchBackend = Callable[[str, int], Awaitable[list[dict[str, str]]]]
+
+#: Backend names this module knows are supplied from outside. A configured
+#: name in here that nobody registered degrades to the keyless default with
+#: an explicit note; a name *not* in here stays a hard ``unknown_backend``
+#: error, so a typo doesn't quietly turn into DuckDuckGo.
+EXTERNAL_BACKEND_NAMES: frozenset[str] = frozenset({"freesearch"})
+
+_EXTERNAL_BACKENDS: dict[str, ExternalSearchBackend] = {}
+
+
+def register_search_backend(name: str, backend: ExternalSearchBackend) -> None:
+    """Register an externally-supplied backend under ``name``.
+
+    Idempotent — re-registering replaces. Registration is cheap and does not
+    connect anything; a backend is expected to acquire its resources lazily
+    on first use, so registering one the operator never selects costs
+    nothing.
+    """
+    _EXTERNAL_BACKENDS[name] = backend
+
+
+def unregister_search_backend(name: str) -> None:
+    """Drop a registered backend (used by tests and teardown)."""
+    _EXTERNAL_BACKENDS.pop(name, None)
+
+
+def registered_search_backends() -> frozenset[str]:
+    """Names with a live implementation right now."""
+    return frozenset(_EXTERNAL_BACKENDS)
 
 
 def web_search_tool_schema() -> dict[str, Any]:
@@ -305,6 +355,64 @@ def _wrap_results(
     return wrapped, unique_flags
 
 
+async def _dispatch_external(
+    *,
+    backend: str,
+    backend_fn: ExternalSearchBackend,
+    query: str,
+    max_results: int,
+) -> str:
+    """Run an externally-supplied backend and build the same envelope.
+
+    Held to the identical contract as the builtin paths: never raises, and
+    every returned snippet goes through :func:`_wrap_results` so untrusted
+    text from a third-party search server is fenced exactly like text
+    scraped off DuckDuckGo. A backend that hands back malformed rows has
+    them dropped rather than propagated — the model must not receive a
+    result without a URL it can act on.
+    """
+    try:
+        raw = await backend_fn(query, max_results)
+    except Exception as exc:  # noqa: BLE001 — dispatcher must never raise
+        logger.warning("web_search.external_failed", backend=backend, error=str(exc))
+        return json.dumps(
+            {
+                "query": query,
+                "backend": backend,
+                "results": [],
+                "error": f"search_unavailable: {exc}",
+            }
+        )
+
+    results: list[dict[str, str]] = []
+    for hit in raw or []:
+        if not isinstance(hit, dict):
+            continue
+        url = str(hit.get("url") or "")
+        title = str(hit.get("title") or "")
+        if not url or not title:
+            continue
+        # The backend is out-of-process and may surface whatever a search
+        # engine returned, so the SSRF filter applies here too.
+        if not _filter_unsafe_url(url):
+            continue
+        results.append(
+            {"title": title, "url": url, "snippet": str(hit.get("snippet") or "")}
+        )
+        if len(results) >= max_results:
+            break
+
+    wrapped, suspicious = _wrap_results(results, source=backend)
+    envelope: dict[str, Any] = {
+        "query": query,
+        "backend": backend,
+        "results": wrapped,
+    }
+    if suspicious:
+        envelope["suspicious_patterns"] = suspicious
+    return json.dumps(envelope)
+
+
 async def dispatch_web_search(
     *,
     args_json: bytes | str,
@@ -335,6 +443,33 @@ async def dispatch_web_search(
         return json.dumps(
             {"backend": backend, "results": [], "error": f"args_invalid: {exc.message}"}
         )
+
+    # An externally-supplied backend owns its own transport (the MCP child
+    # for ``freesearch``), so it bypasses the httpx/host-pinning path below —
+    # there is no fixed endpoint of ours to pin.
+    external = _EXTERNAL_BACKENDS.get(backend)
+    if external is not None:
+        return await _dispatch_external(
+            backend=backend, backend_fn=external, query=query, max_results=max_results
+        )
+    if backend in EXTERNAL_BACKEND_NAMES:
+        # Configured for a backend nobody wired up — e.g. the operator set
+        # ``freesearch`` in a build/mode where the registration never ran.
+        # Search still works, but the envelope says why it isn't the backend
+        # that was asked for: a silent downgrade here is indistinguishable
+        # from the backend working badly.
+        logger.warning(
+            "web_search.external_backend_missing",
+            backend=backend,
+            registered=sorted(_EXTERNAL_BACKENDS),
+        )
+        note = (
+            f"backend_unavailable: {backend!r} is not wired in this process; "
+            "fell back to the keyless default"
+        )
+        backend = "ddg"
+    else:
+        note = ""
 
     try:
         # The search backend hits a fixed, hard-coded endpoint
@@ -394,6 +529,8 @@ async def dispatch_web_search(
         }
         if suspicious:
             envelope["suspicious_patterns"] = suspicious
+        if note:
+            envelope["note"] = note
         return json.dumps(envelope)
     except WebArgsInvalidError as exc:
         return json.dumps(

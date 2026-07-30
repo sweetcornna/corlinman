@@ -735,6 +735,7 @@ version = "0.1.0"
 source = { editable = "python/packages/corlinman-mcp-server" }
 dependencies = [
     { name = "corlinman-skills-registry" },
+    { name = "httpx" },
     { name = "pydantic" },
     { name = "structlog" },
     { name = "websockets" },
@@ -743,6 +744,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "corlinman-skills-registry", editable = "python/packages/corlinman-skills-registry" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "pydantic", specifier = ">=2.10" },
     { name = "structlog", specifier = ">=25.1" },
     { name = "websockets", specifier = ">=13" },

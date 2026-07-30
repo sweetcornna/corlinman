@@ -19,6 +19,12 @@ Top-level re-exports:
 * :data:`MCP_PROTOCOL_VERSION`, :data:`JSONRPC_VERSION`
 * :mod:`error_codes` numeric constants
 * :class:`McpClient` — outbound stdio JSON-RPC peer
+* :class:`McpWebSocketClient` / :class:`McpStreamableHttpClient` — the two
+  URL transports
+* :data:`CLIENT_PROTOCOL_VERSION`, :func:`negotiate_version` — the client's
+  protocol-revision registry (see :mod:`corlinman_mcp_server.protocol`);
+  note this is deliberately *not* :data:`MCP_PROTOCOL_VERSION`, which is
+  what the hosted server advertises
 """
 
 from corlinman_mcp_server.adapters import (
@@ -65,6 +71,7 @@ from corlinman_mcp_server.client import (
     McpClientSpawnError,
     McpClientWriteError,
 )
+from corlinman_mcp_server.client_http import McpStreamableHttpClient
 from corlinman_mcp_server.client_manager import (
     McpClientManager,
     McpClientPeer,
@@ -93,6 +100,13 @@ from corlinman_mcp_server.errors import (
     McpTransportError,
 )
 from corlinman_mcp_server.prompts import PromptsAdapter
+from corlinman_mcp_server.protocol import (
+    CLIENT_PROTOCOL_VERSION,
+    HANDSHAKE_PROTOCOL_VERSIONS,
+    KNOWN_PROTOCOL_VERSIONS,
+    is_version_at_least,
+    negotiate_version,
+)
 from corlinman_mcp_server.resources import ResourcesAdapter
 from corlinman_mcp_server.sampling import (
     Completer,
@@ -165,12 +179,15 @@ from corlinman_mcp_server.types import (
 )
 
 __all__ = [
+    "CLIENT_PROTOCOL_VERSION",
     "CLOSE_CODE_MESSAGE_TOO_BIG",
     "DEFAULT_MAX_FRAME_BYTES",
     "DEFAULT_TENANT_ID",
+    "HANDSHAKE_PROTOCOL_VERSIONS",
     "INITIALIZED_NOTIFICATION",
     "INITIALIZE_METHOD",
     "JSONRPC_VERSION",
+    "KNOWN_PROTOCOL_VERSIONS",
     "MCP_PROTOCOL_VERSION",
     "AdapterDispatcher",
     "CancellationToken",
@@ -209,6 +226,7 @@ __all__ = [
     "McpServerConfig",
     "McpServerSpec",
     "McpSessionNotInitializedError",
+    "McpStreamableHttpClient",
     "McpToolCallOutcome",
     "McpToolNotAllowedError",
     "McpTransportError",
@@ -278,7 +296,9 @@ __all__ = [
     "error_codes",
     "glob_match",
     "initialize_reply",
+    "is_version_at_least",
     "load_server_specs",
+    "negotiate_version",
     "prompt_text_content",
     "resolve_token",
     "text_content",

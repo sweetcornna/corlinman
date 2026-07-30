@@ -172,7 +172,9 @@ def test_search_reports_unset_by_default(client: TestClient) -> None:
     body = client.get("/admin/models/capabilities").json()
     assert body["search"]["backend"] == ""
     assert body["search"]["api_key_set"] is False
-    assert body["search"]["backends"] == ["ddg", "serpapi"]
+    # Rendered straight into the UI dropdown. A backend the agent accepts
+    # but this list omits is selectable only by hand-editing config.toml.
+    assert body["search"]["backends"] == ["ddg", "freesearch", "serpapi"]
 
 
 def test_get_never_echoes_the_search_key(
@@ -204,6 +206,21 @@ def test_put_search_binding_persists(
     _reload(admin_state)
     on_disk = tomllib.loads(admin_state.config_path.read_text(encoding="utf-8"))
     assert on_disk["web_search"] == {"backend": "serpapi", "api_key": "k-1"}
+
+
+def test_put_accepts_the_bundled_freesearch_backend(
+    client: TestClient, admin_state: AdminState
+) -> None:
+    """The keyless bundled backend has to be settable through the same
+    endpoint the UI uses — otherwise the only way to select a shipped
+    feature is hand-editing config.toml."""
+    resp = client.put(
+        "/admin/models/capabilities/search", json={"backend": "freesearch"}
+    )
+    assert resp.status_code == 200
+    _reload(admin_state)
+    on_disk = tomllib.loads(admin_state.config_path.read_text(encoding="utf-8"))
+    assert on_disk["web_search"]["backend"] == "freesearch"
 
 
 def test_omitting_api_key_preserves_the_stored_one(

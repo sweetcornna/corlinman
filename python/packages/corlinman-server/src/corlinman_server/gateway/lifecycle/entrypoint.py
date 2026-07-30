@@ -1315,6 +1315,34 @@ def build_app(
                     )
 
                     _mcp_store = McpServerStore(resolved_data_dir / "mcp_servers.sqlite")
+
+                    # Factory MCP servers (currently: keyless multi-engine
+                    # search) are seeded into the same store on their first
+                    # boot, so from here down they are indistinguishable from
+                    # a hand-installed server — including being deletable.
+                    # ``[mcp].bundle_enabled = false`` seeds them inert.
+                    try:
+                        from corlinman_server.gateway.lifecycle.bundled_mcp import (
+                            seed_bundled_mcp_servers,
+                        )
+
+                        _bundle_enabled = (
+                            _mcp_cfg.get("bundle_enabled")
+                            if isinstance(_mcp_cfg, dict)
+                            else None
+                        )
+                        seed_bundled_mcp_servers(
+                            _mcp_store,
+                            resolved_data_dir,
+                            enabled_override=(
+                                bool(_bundle_enabled)
+                                if isinstance(_bundle_enabled, bool)
+                                else None
+                            ),
+                        )
+                    except Exception as exc:  # pragma: no cover — never blocks boot
+                        logger.warning("gateway.mcp.bundle_seed_error", error=str(exc))
+
                     for _row in _mcp_store.list():
                         try:
                             _spec = McpServerSpec.from_mapping(
