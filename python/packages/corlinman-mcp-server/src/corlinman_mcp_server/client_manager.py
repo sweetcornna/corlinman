@@ -1165,12 +1165,14 @@ def _outcome_from_call_result(result: Any) -> McpToolCallOutcome:
     twin of ``content``, validated by the server against the tool's
     ``outputSchema``.
 
-    Both halves are kept. Folding only the text blocks (what this did
-    before) silently dropped ``structuredContent`` for exactly the modern,
-    schema-carrying tools whose output is most worth having; folding only
-    the structured half would lose the prose a server wrote for the model.
-    When both are present the structured payload is appended under a marker
-    so the model can tell rendered prose from the machine payload.
+    **Rendered content wins; ``structuredContent`` is the fallback.** The
+    spec has a server that returns structured content SHOULD *also* return
+    its serialisation as a text block, so for a compliant server the two
+    halves carry the same data — emitting both would hand the model the
+    same payload twice and pay for it twice in context. Before this,
+    ``structuredContent`` was simply dropped, so a structured-*only* tool
+    (no prose at all) folded to an empty string; that is the case this
+    rescues.
 
     Non-text blocks — image, audio, ``resource_link``, embedded
     ``resource`` — render to readable placeholders instead of falling
@@ -1194,22 +1196,20 @@ def _outcome_from_call_result(result: Any) -> McpToolCallOutcome:
             if piece is not None:
                 rendered.append(piece)
 
+    if rendered:
+        return McpToolCallOutcome(content="\n".join(rendered), is_error=is_error)
+
     structured = result.get("structuredContent")
     if structured is not None:
+        # Structured-only result (a tool with an outputSchema and no prose).
+        # Handed back unlabelled so it stays parseable by whatever consumes
+        # the tool result.
         try:
             payload = json.dumps(structured, ensure_ascii=False)
         except (TypeError, ValueError):
             payload = str(structured)
-        if rendered:
-            rendered.append(f"[structuredContent] {payload}")
-        else:
-            # Structured-only result (a tool with an outputSchema and no
-            # prose): hand back the payload itself, unlabelled, so it stays
-            # parseable by whatever consumes the tool result.
-            return McpToolCallOutcome(content=payload, is_error=is_error)
+        return McpToolCallOutcome(content=payload, is_error=is_error)
 
-    if rendered:
-        return McpToolCallOutcome(content="\n".join(rendered), is_error=is_error)
     # Nothing renderable at all — hand back the envelope verbatim so the
     # payload is at least inspectable rather than silently empty.
     return McpToolCallOutcome(content=json.dumps(result), is_error=is_error)

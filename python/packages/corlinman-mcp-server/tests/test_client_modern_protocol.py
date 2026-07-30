@@ -279,21 +279,19 @@ async def test_resources_are_discovered_when_advertised(
 
 
 @pytest.mark.asyncio
-async def test_structured_content_survives_the_round_trip(
+async def test_rendered_text_wins_over_structured_content(
     modern_server: Path, tmp_path: Path
 ) -> None:
-    """Prose *and* the machine payload reach the caller. Folding only the
-    text blocks dropped ``structuredContent`` for exactly the schema-
-    carrying tools whose output is most worth having."""
+    """A compliant server sends ``structuredContent`` *and* its
+    serialisation as a text block, so emitting both would hand the model
+    the same payload twice and bill it twice."""
     seen = tmp_path / "seen.txt"
     manager = McpClientManager([_spec(modern_server, seen)])
     try:
         await manager.connect_all()
         outcome = await manager.call_tool("modern", "structured", {})
         assert outcome.is_error is False
-        assert "3 hits" in outcome.content
-        assert '"hits": 3' in outcome.content
-        assert "[structuredContent]" in outcome.content
+        assert outcome.content == "3 hits"
     finally:
         await manager.aclose()
 
@@ -302,8 +300,8 @@ async def test_structured_content_survives_the_round_trip(
 async def test_structured_only_result_is_returned_unlabelled(
     modern_server: Path, tmp_path: Path
 ) -> None:
-    """With no prose to disambiguate, the payload is handed back as-is so
-    it stays parseable."""
+    """…but a tool with an outputSchema and *no* prose used to fold to an
+    empty string. That is the case structuredContent rescues."""
     seen = tmp_path / "seen.txt"
     manager = McpClientManager([_spec(modern_server, seen)])
     try:
