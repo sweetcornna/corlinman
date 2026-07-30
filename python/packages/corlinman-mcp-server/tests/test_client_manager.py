@@ -263,7 +263,8 @@ def test_load_server_specs_from_mcp_section() -> None:
     assert set(specs) == {"files", "web"}
     assert specs["files"].transport == "stdio"
     assert specs["files"].args == ["--root", "/x"]
-    # url present, no explicit transport → inferred as ws.
+    # No explicit transport → inferred from the URL scheme (an https URL
+    # would infer Streamable HTTP; see test_client_modern_protocol.py).
     assert specs["web"].transport == "ws"
     assert specs["web"].url == "ws://localhost:9000/mcp"
 

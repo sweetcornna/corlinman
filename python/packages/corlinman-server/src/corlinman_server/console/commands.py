@@ -534,8 +534,14 @@ def _render_mcp_servers(manager: Any) -> str:
         target = spec.url or " ".join([spec.command, *spec.args]).strip()
         state = s.status + ("" if spec.enabled else " (disabled)")
         extra = f" — {s.error}" if s.error and s.error != "disabled" else ""
+        # The negotiated revision is the first thing to check when a server
+        # is connected but serving less than it should — a peer pinned to
+        # 2024-11-05 sends no structuredContent and no resource links.
+        version = getattr(s, "protocol_version", "") if s.is_ready else ""
+        proto = f" mcp={version}" if version else ""
         lines.append(
-            f"  {spec.name:<20} {state:<10} tools={len(s.tools):<3} {target}{extra}"
+            f"  {spec.name:<20} {state:<10} tools={len(s.tools):<3}"
+            f"{proto} {target}{extra}"
         )
     return "\n".join(lines)
 

@@ -14,7 +14,10 @@ Lifecycle of one managed server
 1. **connect** — spawn (stdio) or dial (ws/http) the server, per its
    :class:`McpServerSpec.transport`.
 2. **handshake** — send ``initialize`` then the
-   ``notifications/initialized`` notification (MCP 2024-11-05).
+   ``notifications/initialized`` notification. The offered revision is
+   :data:`~corlinman_mcp_server.protocol.CLIENT_PROTOCOL_VERSION`; the
+   server's counter-offer, capabilities, ``serverInfo`` and
+   ``instructions`` are recorded on the :class:`McpManagedServer`.
 3. **discover** — call ``tools/list`` and cache the
    :class:`ToolDescriptor`\\ s the server advertises.
 4. **call** — :meth:`McpClientManager.call_tool` routes a
@@ -43,11 +46,16 @@ from typing import Any, Protocol
 import structlog
 
 from .client import McpClient, McpClientError
+from .client_http import McpStreamableHttpClient
 from .client_ws import McpWebSocketClient
+from .protocol import (
+    CLIENT_PROTOCOL_VERSION,
+    OLDEST_SUPPORTED_VERSION,
+    negotiate_version,
+)
 from .sampling import SamplingResponder
 from .session import INITIALIZE_METHOD, INITIALIZED_NOTIFICATION
 from .types import (
-    MCP_PROTOCOL_VERSION,
     TOOLS_LIST_CHANGED_NOTIFICATION,
     Resource,
     ToolDescriptor,
@@ -77,11 +85,18 @@ _CLIENT_VERSION = "1.0.0"
 
 
 class McpClientPeer(Protocol):
-    """Structural contract shared by both client transports.
+    """Structural contract shared by every client transport.
 
-    :class:`~corlinman_mcp_server.client.McpClient` (stdio) and
-    :class:`~corlinman_mcp_server.client_ws.McpWebSocketClient` (ws)
-    both satisfy this, so the manager treats them uniformly.
+    :class:`~corlinman_mcp_server.client.McpClient` (stdio),
+    :class:`~corlinman_mcp_server.client_ws.McpWebSocketClient` (ws) and
+    :class:`~corlinman_mcp_server.client_http.McpStreamableHttpClient`
+    (Streamable HTTP) all satisfy this, so the manager treats them
+    uniformly.
+
+    ``set_protocol_version`` is deliberately *not* part of the contract:
+    only the HTTP transport carries the negotiated revision (in a header),
+    so the manager probes for it with ``getattr`` rather than forcing two
+    transports to grow a no-op method.
     """
 
     async def call(self, method: str, params: Any = None) -> Any: ...
@@ -111,8 +126,12 @@ class McpServerSpec:
 
     * ``"stdio"`` — launch ``command`` + ``args`` as a child process
       (newline-delimited JSON-RPC over its stdio).
-    * ``"ws"`` / ``"http"`` — dial ``url`` (a ``ws://`` / ``wss://``
-      websocket carrying JSON-RPC frames).
+    * ``"ws"`` — dial ``url`` as a ``ws://`` / ``wss://`` websocket
+      carrying JSON-RPC frames. This is what corlinman's own hosted MCP
+      server speaks, so it is the gateway-to-gateway transport.
+    * ``"http"`` — dial ``url`` as an MCP *Streamable HTTP* endpoint
+      (POST + optional SSE), which is what third-party remote MCP
+      servers serve. ``"streamable-http"`` is accepted as an alias.
     """
 
     name: str
@@ -130,16 +149,28 @@ class McpServerSpec:
     def from_mapping(cls, name: str, raw: Any) -> McpServerSpec:
         """Build a spec from a loosely-typed config mapping.
 
-        Accepts both the ``command``/``args`` stdio form and the
-        ``url`` ws/http form; ``transport`` is inferred when absent
-        (``url`` present → ``ws``, else ``stdio``).
+        Accepts both the ``command``/``args`` stdio form and the ``url``
+        ws/http form. ``transport`` is inferred from the URL scheme when
+        absent: ``ws(s)://`` → ``ws``, anything else with a URL → ``http``
+        (Streamable HTTP), no URL → ``stdio``.
+
+        The URL-bearing default used to be ``ws`` unconditionally, which
+        made every ``https://`` MCP server in the wild unreachable — the
+        client dialled a websocket upgrade at an endpoint that only speaks
+        Streamable HTTP. Anyone relying on the old coercion for a
+        websocket server should name ``transport = "ws"`` explicitly.
         """
         if not isinstance(raw, dict):
             raise ValueError(f"mcp server {name!r} config must be a mapping")
         url = str(raw.get("url", "") or "")
         transport = str(raw.get("transport", "") or "").lower()
         if not transport:
-            transport = "ws" if url else "stdio"
+            if not url:
+                transport = "stdio"
+            elif url.startswith(("ws://", "wss://")):
+                transport = "ws"
+            else:
+                transport = "http"
         args_raw = raw.get("args", []) or []
         env_raw = raw.get("env", {}) or {}
         headers_raw = raw.get("headers", {}) or {}
@@ -226,10 +257,46 @@ class McpManagedServer:
     tools: list[ToolDescriptor] = field(default_factory=list)
     resources: list[Resource] = field(default_factory=list)
     error: str | None = None
+    #: Revision this connection actually negotiated. Seeded with the floor
+    #: so a peer that never completed the handshake still reads as "oldest"
+    #: rather than claiming whatever we happened to offer.
+    protocol_version: str = OLDEST_SUPPORTED_VERSION
+    #: Raw ``capabilities`` from the ``initialize`` result. Consulted before
+    #: probing an optional surface — a server that doesn't advertise
+    #: ``resources`` gets no ``resources/list`` round trip at all.
+    capabilities: dict[str, Any] = field(default_factory=dict)
+    #: Raw ``serverInfo`` (name / version / title) for diagnostics.
+    server_info: dict[str, Any] = field(default_factory=dict)
+    #: Optional server ``instructions`` — free-form usage guidance the
+    #: server wants the model to see.
+    instructions: str = ""
 
     @property
     def is_ready(self) -> bool:
         return self.status == "ready" and self.peer is not None
+
+    def supports(self, capability: str) -> bool:
+        """True when the server advertised ``capability`` in its handshake.
+
+        Servers that answered an older revision (or that we could not parse)
+        report ``{}``; treating that as "no capability" would suppress
+        discovery against a legacy peer that does serve resources, so an
+        empty capability map is treated permissively — the probe still runs
+        and its method-not-found is folded away as before.
+        """
+        if not self.capabilities:
+            return True
+        return self.capabilities.get(capability) is not None
+
+
+@dataclass(frozen=True, slots=True)
+class _Handshake:
+    """What one ``initialize`` round trip established."""
+
+    protocol_version: str
+    capabilities: dict[str, Any]
+    server_info: dict[str, Any]
+    instructions: str
 
 
 @dataclass
@@ -407,8 +474,8 @@ class McpClientManager:
         # server can push notifications immediately after initialize.
         self._bind_peer_handlers(peer, spec.name)
         try:
-            await asyncio.wait_for(
-                self._handshake(peer),
+            handshake = await asyncio.wait_for(
+                self._handshake(peer, server_name=spec.name),
                 timeout=spec.handshake_timeout_s,
             )
             tools = await asyncio.wait_for(
@@ -429,28 +496,39 @@ class McpClientManager:
             return
 
         managed.tools = tools
+        managed.protocol_version = handshake.protocol_version
+        managed.capabilities = handshake.capabilities
+        managed.server_info = handshake.server_info
+        managed.instructions = handshake.instructions
         # Dim 5 — resources are best-effort: a server without the
         # ``resources`` capability answers method-not-found, which
         # ``_list_resources`` folds to ``[]``; a discovery failure must
-        # not take down a tools-only server.
-        try:
-            managed.resources = await asyncio.wait_for(
-                self._list_resources(peer),
-                timeout=spec.handshake_timeout_s,
-            )
-        except Exception as exc:  # noqa: BLE001
+        # not take down a tools-only server. Now that the handshake's
+        # capability map is recorded we can skip the probe entirely when the
+        # server said it has none.
+        if not managed.supports("resources"):
             managed.resources = []
-            log.debug(
-                "mcp.client.resources_discovery_failed",
-                server=spec.name,
-                error=str(exc),
-            )
+            log.debug("mcp.client.resources_not_advertised", server=spec.name)
+        else:
+            try:
+                managed.resources = await asyncio.wait_for(
+                    self._list_resources(peer),
+                    timeout=spec.handshake_timeout_s,
+                )
+            except Exception as exc:  # noqa: BLE001
+                managed.resources = []
+                log.debug(
+                    "mcp.client.resources_discovery_failed",
+                    server=spec.name,
+                    error=str(exc),
+                )
         managed.status = "ready"
         managed.error = None
         log.info(
             "mcp.client.server_ready",
             server=spec.name,
             transport=spec.transport,
+            protocol_version=managed.protocol_version,
             tools=len(tools),
             resources=len(managed.resources),
         )
@@ -638,13 +716,23 @@ class McpClientManager:
                     f"mcp server {spec.name!r}: stdio transport needs a command"
                 )
             return await self._connect_stdio(spec)
-        if transport in ("ws", "http", "https", "wss", "websocket"):
+        if transport in ("ws", "wss", "websocket"):
             if not spec.url:
                 raise McpClientError(
                     f"mcp server {spec.name!r}: {transport} transport needs a url"
                 )
             return await McpWebSocketClient.connect(
                 _normalise_ws_url(spec.url),
+                headers=spec.headers or None,
+                open_timeout=spec.handshake_timeout_s,
+            )
+        if transport in ("http", "https", "streamable-http", "streamable_http"):
+            if not spec.url:
+                raise McpClientError(
+                    f"mcp server {spec.name!r}: {transport} transport needs a url"
+                )
+            return await McpStreamableHttpClient.connect(
+                _normalise_http_url(spec.url),
                 headers=spec.headers or None,
                 open_timeout=spec.handshake_timeout_s,
             )
@@ -697,8 +785,16 @@ class McpClientManager:
 
         peer.on_notification = _on_notification
 
-    async def _handshake(self, peer: McpClientPeer) -> None:
+    async def _handshake(
+        self, peer: McpClientPeer, *, server_name: str
+    ) -> _Handshake:
         """Run the MCP ``initialize`` handshake against ``peer``.
+
+        Offers :data:`CLIENT_PROTOCOL_VERSION` — the newest revision this
+        client understands — and adopts whatever the server counters with.
+        Offering the *oldest* revision (which is what this did before) makes
+        a modern server serve its 2024 feature set: no ``structuredContent``,
+        no ``resource_link`` blocks, no ``_meta``.
 
         Advertises the ``sampling`` capability only when a responder is
         wired and enabled (so a server is told the client can sample only
@@ -707,10 +803,10 @@ class McpClientManager:
         capabilities: dict[str, Any] = {}
         if self._sampling is not None and self._sampling.advertises_capability:
             capabilities["sampling"] = {}
-        await peer.call(
+        result = await peer.call(
             INITIALIZE_METHOD,
             {
-                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "protocolVersion": CLIENT_PROTOCOL_VERSION,
                 "capabilities": capabilities,
                 "clientInfo": {
                     "name": _CLIENT_NAME,
@@ -718,10 +814,35 @@ class McpClientManager:
                 },
             },
         )
+        if not isinstance(result, dict):
+            result = {}
+        version, warning = negotiate_version(result.get("protocolVersion"))
+        if warning:
+            log.warning(
+                "mcp.client.version_negotiation",
+                server=server_name,
+                offered=CLIENT_PROTOCOL_VERSION,
+                reason=warning,
+            )
+        # Streamable HTTP carries the negotiated revision in a header on
+        # every subsequent request (2025-06-18); hand it over before the
+        # first post-handshake call goes out.
+        setter = getattr(peer, "set_protocol_version", None)
+        if callable(setter):
+            setter(version)
         try:
             await peer.notify(INITIALIZED_NOTIFICATION, {})
         except Exception as exc:  # notification is best-effort
             log.debug("mcp.client.initialized_notify_failed", error=str(exc))
+        raw_caps = result.get("capabilities")
+        raw_info = result.get("serverInfo")
+        instructions = result.get("instructions")
+        return _Handshake(
+            protocol_version=version,
+            capabilities=raw_caps if isinstance(raw_caps, dict) else {},
+            server_info=raw_info if isinstance(raw_info, dict) else {},
+            instructions=instructions if isinstance(instructions, str) else "",
+        )
 
     async def _list_tools(self, peer: McpClientPeer) -> list[ToolDescriptor]:
         """Discover tools via ``tools/list``, paging until exhausted."""
@@ -963,12 +1084,24 @@ class McpClientManager:
 
 
 def _normalise_ws_url(url: str) -> str:
-    """Map an ``http(s)://`` URL to its ``ws(s)://`` equivalent so a
-    spec authored with an HTTP URL still dials the websocket transport."""
+    """Map an ``http(s)://`` URL to its ``ws(s)://`` equivalent so a spec
+    that explicitly asked for ``transport = "ws"`` still dials the
+    websocket even when its URL was written with an HTTP scheme."""
     if url.startswith("http://"):
         return "ws://" + url[len("http://"):]
     if url.startswith("https://"):
         return "wss://" + url[len("https://"):]
+    return url
+
+
+def _normalise_http_url(url: str) -> str:
+    """The inverse of :func:`_normalise_ws_url` — a spec that explicitly
+    asked for ``transport = "http"`` but wrote a ``ws(s)://`` URL still
+    reaches the Streamable HTTP endpoint."""
+    if url.startswith("ws://"):
+        return "http://" + url[len("ws://"):]
+    if url.startswith("wss://"):
+        return "https://" + url[len("wss://"):]
     return url
 
 
@@ -978,12 +1111,62 @@ def _err_json(code: str, message: str) -> str:
     return json.dumps({"error": code, "message": message})
 
 
+def _render_content_block(block: Any) -> str | None:
+    """Render one MCP content block as text for the reasoning loop.
+
+    Returns ``None`` for a block that carries nothing worth showing, so the
+    caller can tell "no renderable content" from "rendered to empty".
+
+    Binary payloads (image / audio) and resource links become one-line
+    placeholders rather than being inlined: a base64 blob spent on a
+    context window buys the model nothing, whereas knowing *that* a result
+    included an image — and, for a link, the URI it can pass to
+    ``resources/read`` — is actionable.
+    """
+    if not isinstance(block, dict):
+        return None
+    kind = block.get("type")
+    if kind == "text":
+        return str(block.get("text", ""))
+    if kind in ("image", "audio"):
+        mime = block.get("mimeType") or "unknown type"
+        return f"[{kind} content ({mime}) omitted]"
+    if kind == "resource_link":
+        uri = block.get("uri") or "?"
+        label = block.get("title") or block.get("name") or ""
+        described = f" — {label}" if label else ""
+        return f"[resource link: {uri}{described}]"
+    if kind == "resource":
+        embedded = block.get("resource")
+        if isinstance(embedded, dict):
+            text = embedded.get("text")
+            if isinstance(text, str):
+                return text
+            uri = embedded.get("uri") or "?"
+            mime = embedded.get("mimeType") or "unknown type"
+            return f"[binary resource {uri} ({mime}) omitted]"
+        return None
+    return None
+
+
 def _outcome_from_call_result(result: Any) -> McpToolCallOutcome:
     """Fold an MCP ``tools/call`` result into a :class:`McpToolCallOutcome`.
 
-    MCP ``tools/call`` replies are ``{"content": [...], "isError": bool}``.
-    Text content blocks are concatenated; the whole structured payload is
-    serialised when there is no plain-text representation.
+    A reply is ``{"content": [...], "isError": bool}`` plus, from MCP
+    2025-06-18, an optional ``structuredContent`` — the machine-readable
+    twin of ``content``, validated by the server against the tool's
+    ``outputSchema``.
+
+    Both halves are kept. Folding only the text blocks (what this did
+    before) silently dropped ``structuredContent`` for exactly the modern,
+    schema-carrying tools whose output is most worth having; folding only
+    the structured half would lose the prose a server wrote for the model.
+    When both are present the structured payload is appended under a marker
+    so the model can tell rendered prose from the machine payload.
+
+    Non-text blocks — image, audio, ``resource_link``, embedded
+    ``resource`` — render to readable placeholders instead of falling
+    through to a raw ``json.dumps`` of the entire envelope.
     """
     import json
 
@@ -994,15 +1177,31 @@ def _outcome_from_call_result(result: Any) -> McpToolCallOutcome:
         )
 
     is_error = bool(result.get("isError", False))
+
+    rendered: list[str] = []
     content = result.get("content")
     if isinstance(content, list):
-        texts: list[str] = []
         for block in content:
-            if isinstance(block, dict) and block.get("type") == "text":
-                texts.append(str(block.get("text", "")))
-        if texts:
-            return McpToolCallOutcome(
-                content="\n".join(texts), is_error=is_error
-            )
-    # No plain-text content — hand back the structured payload verbatim.
+            piece = _render_content_block(block)
+            if piece is not None:
+                rendered.append(piece)
+
+    structured = result.get("structuredContent")
+    if structured is not None:
+        try:
+            payload = json.dumps(structured, ensure_ascii=False)
+        except (TypeError, ValueError):
+            payload = str(structured)
+        if rendered:
+            rendered.append(f"[structuredContent] {payload}")
+        else:
+            # Structured-only result (a tool with an outputSchema and no
+            # prose): hand back the payload itself, unlabelled, so it stays
+            # parseable by whatever consumes the tool result.
+            return McpToolCallOutcome(content=payload, is_error=is_error)
+
+    if rendered:
+        return McpToolCallOutcome(content="\n".join(rendered), is_error=is_error)
+    # Nothing renderable at all — hand back the envelope verbatim so the
+    # payload is at least inspectable rather than silently empty.
     return McpToolCallOutcome(content=json.dumps(result), is_error=is_error)

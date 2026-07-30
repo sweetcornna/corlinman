@@ -1034,8 +1034,28 @@ autoload = true
 # [mcp] — external MCP servers corlinman connects to as a CLIENT.
 #
 # Servers themselves are usually managed via the marketplace (persisted in
-# mcp_servers.sqlite) or an [mcp.servers] table. This block holds the
-# client-behaviour policy:
+# mcp_servers.sqlite) or an [mcp.servers] table. Each entry picks a
+# transport, inferred from what it carries when left unset:
+#
+#   command + args        → "stdio"  (launch a child process)
+#   url = "ws(s)://…"     → "ws"     (websocket JSON-RPC; this is what
+#                                     corlinman's own hosted /mcp endpoint
+#                                     speaks, i.e. gateway-to-gateway)
+#   url = "http(s)://…"   → "http"   (MCP Streamable HTTP: POST + SSE —
+#                                     what remote third-party MCP servers
+#                                     serve; alias "streamable-http")
+#
+# NOTE: a URL-bearing entry used to be coerced to "ws" regardless of scheme,
+# which made every https:// MCP server unreachable. If you were relying on
+# that coercion to reach a *websocket* server written with an http:// URL,
+# name transport = "ws" explicitly.
+#
+# corlinman negotiates the MCP revision on connect, offering the newest it
+# understands (2025-11-25) and adopting whatever the server counters with;
+# `/mcp` in the console prints the negotiated value per server. A peer that
+# lands on 2024-11-05 sends no structuredContent and no resource links.
+#
+# This block holds the client-behaviour policy:
 #
 #   allowedMcpServers / deniedMcpServers — server allow/deny by name
 #     (deny wins; a non-empty allow-list is exclusive). claude-code parity.

@@ -11,6 +11,9 @@ dependencies = [
     "pydantic>=2.10",
     "websockets>=13",
     "structlog>=25.1",
+    # Streamable HTTP client transport (corlinman_mcp_server.client_http) —
+    # POST + SSE against remote MCP endpoints.
+    "httpx>=0.27",
     "corlinman-skills-registry",
 ]
 

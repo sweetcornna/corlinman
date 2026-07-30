@@ -1,11 +1,25 @@
-"""JSON-RPC 2.0 envelope and MCP 2024-11-05 capability payloads.
+"""JSON-RPC 2.0 envelope and MCP capability payloads.
 
 Wire types only — no transport, no async. Mirrors the Rust ``schema``
 module 1:1: every payload here serialises to the same on-the-wire JSON
 shape as the Rust crate, so a client speaking to either implementation
 sees identical frames.
 
-Reference: <https://spec.modelcontextprotocol.io/specification/2024-11-05/>
+The baseline is MCP ``2024-11-05`` — still the revision corlinman's *hosted*
+server advertises (:data:`MCP_PROTOCOL_VERSION`, used by
+:mod:`corlinman_mcp_server.session`). The payloads additionally carry the
+fields later revisions added, because the *client* half negotiates up to
+:data:`corlinman_mcp_server.protocol.CLIENT_PROTOCOL_VERSION` and must be
+able to represent what a modern peer sends back:
+
+* ``2025-03-26`` — ``ToolAnnotations``, :class:`AudioContent`.
+* ``2025-06-18`` — tool ``outputSchema`` + ``structuredContent``,
+  :class:`ResourceLinkContent`, :class:`EmbeddedResourceContent`, ``_meta``.
+
+Every added field is optional and elided when unset, so a frame addressed to
+a 2024-11-05 peer is byte-identical to what this module produced before.
+
+Reference: <https://modelcontextprotocol.io/specification/>
 """
 
 from __future__ import annotations
@@ -26,7 +40,13 @@ JSONRPC_VERSION: Literal["2.0"] = "2.0"
 """JSON-RPC 2.0 protocol version literal. Required on every frame."""
 
 MCP_PROTOCOL_VERSION: Literal["2024-11-05"] = "2024-11-05"
-"""MCP protocol version we implement."""
+"""MCP protocol version corlinman's **hosted server** advertises.
+
+The *client* half no longer offers this — it negotiates from
+:data:`corlinman_mcp_server.protocol.CLIENT_PROTOCOL_VERSION` down to
+whatever the peer supports. Kept as the server-side constant so bumping the
+client dialect can never silently change what corlinman itself serves.
+"""
 
 # Server -> client ``*/list_changed`` notification method names. The
 # server emits these (id-less JSON-RPC notifications) when a capability's
@@ -484,7 +504,84 @@ class ImageContent(BaseModel):
         return {"type": "image", "data": self.data, "mimeType": self.mime_type}
 
 
-Content = TextContent | ImageContent
+class AudioContent(BaseModel):
+    """``Content`` block of type ``audio`` (MCP 2025-03-26).
+
+    Same base64 + MIME shape as :class:`ImageContent`; a separate block type
+    because clients render (or refuse) audio differently from images.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    type: Literal["audio"] = "audio"
+    data: str
+    mime_type: str = Field(alias="mimeType")
+
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler) -> dict[str, Any]:  # noqa: ARG002
+        return {"type": "audio", "data": self.data, "mimeType": self.mime_type}
+
+
+class ResourceLinkContent(BaseModel):
+    """``Content`` block of type ``resource_link`` (MCP 2025-06-18).
+
+    A *reference* to a resource the server holds rather than its body — the
+    client decides whether to spend a ``resources/read`` on it. Carries the
+    same descriptive fields as :class:`Resource` so a link can be surfaced
+    (and ranked) without a second round trip.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    type: Literal["resource_link"] = "resource_link"
+    uri: str
+    name: str | None = None
+    title: str | None = None
+    description: str | None = None
+    mime_type: str | None = Field(default=None, alias="mimeType")
+
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler) -> dict[str, Any]:  # noqa: ARG002
+        out: dict[str, Any] = {"type": "resource_link", "uri": self.uri}
+        if self.name is not None:
+            out["name"] = self.name
+        if self.title is not None:
+            out["title"] = self.title
+        if self.description is not None:
+            out["description"] = self.description
+        if self.mime_type is not None:
+            out["mimeType"] = self.mime_type
+        return out
+
+
+class EmbeddedResourceContent(BaseModel):
+    """``Content`` block of type ``resource`` — a resource body inlined
+    into a tool result (MCP 2025-06-18).
+
+    ``resource`` stays :data:`JsonValue` rather than the
+    :data:`ResourceContent` union declared further down: the union is
+    defined after this point in the module, and keeping the payload loose
+    also lets an unrecognised future resource shape pass through verbatim
+    instead of being dropped at validation.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    type: Literal["resource"] = "resource"
+    resource: JsonValue = None
+
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler) -> dict[str, Any]:  # noqa: ARG002
+        return {"type": "resource", "resource": self.resource}
+
+
+Content = (
+    TextContent
+    | ImageContent
+    | AudioContent
+    | ResourceLinkContent
+    | EmbeddedResourceContent
+)
 
 
 def text_content(text: str) -> TextContent:
@@ -497,13 +594,28 @@ class ToolsCallResult(BaseModel):
 
     content: list[Content]
     is_error: bool = Field(default=False, alias="isError")
+    # MCP 2025-06-18: the machine-readable twin of ``content``, validated by
+    # the server against the tool's ``outputSchema``. Optional — a tool
+    # without an output schema never sends it, and ``None`` is elided so a
+    # 2024-11-05 peer sees the frame it always saw.
+    structured_content: JsonValue | None = Field(
+        default=None, alias="structuredContent"
+    )
+    # MCP 2025-06-18 ``_meta``: free-form out-of-band annotations. Carried
+    # verbatim; corlinman attaches no meaning to it beyond passthrough.
+    meta: JsonValue | None = Field(default=None, alias="_meta")
 
     @model_serializer(mode="wrap")
-    def _serialize(self, handler) -> dict[str, Any]:
-        return {
+    def _serialize(self, handler) -> dict[str, Any]:  # noqa: ARG002
+        out: dict[str, Any] = {
             "content": [c.model_dump() for c in self.content],
             "isError": self.is_error,
         }
+        if self.structured_content is not None:
+            out["structuredContent"] = self.structured_content
+        if self.meta is not None:
+            out["_meta"] = self.meta
+        return out
 
 
 # ---------------------------------------------------------------------
@@ -531,14 +643,24 @@ class Resource(BaseModel):
     name: str
     description: str | None = None
     mime_type: str | None = Field(default=None, alias="mimeType")
+    # MCP 2025-06-18 additions. ``title`` is the human-facing display name
+    # (``name`` stays the programmatic identifier); ``size`` is the byte
+    # length when the server knows it, which lets a client decide whether a
+    # ``resources/read`` is worth the context before spending it.
+    title: str | None = None
+    size: int | None = None
 
     @model_serializer(mode="wrap")
     def _serialize(self, handler) -> dict[str, Any]:
         out: dict[str, Any] = {"uri": self.uri, "name": self.name}
+        if self.title is not None:
+            out["title"] = self.title
         if self.description is not None:
             out["description"] = self.description
         if self.mime_type is not None:
             out["mimeType"] = self.mime_type
+        if self.size is not None:
+            out["size"] = self.size
         return out
 
 
@@ -724,9 +846,11 @@ __all__ = [
     "PROMPTS_LIST_CHANGED_NOTIFICATION",
     "RESOURCES_LIST_CHANGED_NOTIFICATION",
     "TOOLS_LIST_CHANGED_NOTIFICATION",
+    "AudioContent",
     "BlobResourceContent",
     "ClientCapabilities",
     "Content",
+    "EmbeddedResourceContent",
     "ImageContent",
     "Implementation",
     "InitializeParams",
@@ -749,6 +873,7 @@ __all__ = [
     "PromptsListResult",
     "Resource",
     "ResourceContent",
+    "ResourceLinkContent",
     "ResourcesCapability",
     "ResourcesListParams",
     "ResourcesListResult",
