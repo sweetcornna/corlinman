@@ -238,6 +238,34 @@ secure_root_executed_scripts() {
     done
 }
 
+# ----- Shared launchers for stdio MCP servers --------------------------------
+# Stdio MCP servers are launched through `uvx` / `npx` — corlinman's bundled
+# multi-engine search server runs `uvx free-search-mcp>=0.8.0`. The astral
+# installer puts uv under the *installing* account's ~/.local/bin, i.e. /root
+# when install.sh runs as root, and /root is mode 0700: the unprivileged
+# SERVICE_USER the gateway runs as cannot even traverse it. The gateway then
+# seeds the server successfully and fails every spawn with a bare
+# `No such file or directory: 'uvx'`, while the same command works fine in the
+# operator's shell — a mismatch that is expensive to diagnose.
+#
+# So copy the launchers somewhere every account can execute. Copy, not
+# symlink: a link back into /root is exactly as unreachable as the original.
+ensure_shared_launchers() {
+    [[ "$(uname -s)" == "Linux" ]] || return 0
+    local tool src dst
+    for tool in uv uvx; do
+        src="$(command -v "$tool" 2>/dev/null || true)"
+        [[ -n "$src" ]] || continue
+        dst="/usr/local/bin/$tool"
+        [[ "$src" == "$dst" ]] && continue
+        # Skip when the shared copy is already at least as new as the source.
+        [[ -x "$dst" && ! "$src" -nt "$dst" ]] && continue
+        log "publishing $tool to $dst (readable by $SERVICE_USER)"
+        sudo install -m 0755 "$src" "$dst" \
+            || warn "could not publish $tool to $dst — stdio MCP servers launched with it will fail to spawn"
+    done
+}
+
 # ----- Runtime path ownership model (native Linux) ---------------------------
 # The native gateway runs as the unprivileged SERVICE_USER but must be able to
 # *execute* the venv entrypoint and *read/write* its data + UI export. Three
@@ -1305,6 +1333,9 @@ _apply_native_ref() {
     build_and_place_ui || return 1
     if [[ "$(uname -s)" == "Linux" ]]; then
         ensure_service_user
+        # Runs on every apply, so existing installs pick the launchers up on
+        # their next one-click upgrade rather than only on a fresh install.
+        ensure_shared_launchers
         chown_runtime_paths
         write_systemd_units
         log "restarting corlinman.service"
@@ -1381,6 +1412,7 @@ install_native() {
         # paths the de-privileged gateway needs BEFORE writing the unit that
         # runs as it.
         ensure_service_user
+        ensure_shared_launchers
         chown_runtime_paths
 
         # (Re)write the full systemd unit set from canonical definitions +

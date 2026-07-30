@@ -4,6 +4,25 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.56.2] — 2026-07-31 — 安装器与容器镜像置备 uvx，出厂 MCP 开箱即用
+
+### Fixed
+- **安装器不给运行时置备 `uvx`**：astral 安装脚本把 uv 放进*执行安装的账户*的
+  `~/.local/bin`——以 root 跑就是 `/root/.local/bin`，而 `/root` 是 0700，
+  网关运行所用的非特权 `corlinman` 用户**连穿都穿不过去**（与 PATH 无关）。
+  于是 v1.56.0 的出厂搜索服务种子成功、随即 spawn 失败。新增
+  `ensure_shared_launchers`，把 `uv`/`uvx` 发布到 `/usr/local/bin`（复制而非
+  软链——指回 `/root` 的链接一样不可达）。挂在安装与升级共用的 apply 路径上，
+  **存量安装下次一键升级即自动获得**，无需手工介入。
+- **容器镜像运行阶段缺 `uvx`**：镜像只把 uv 装在 builder 阶段，运行阶段（以
+  非特权 `corlinman` 用户运行）没有，容器部署同样起不来出厂 MCP server。现从
+  builder 拷入 `/usr/local/bin`，并把 `UV_CACHE_DIR` 指向 `/data` 数据卷——
+  运行时用户的 home `/app` 烤在镜像里，缓存放那儿每次启动都要重下。
+
+### Changed
+- 生产 runbook 更正：网关以 `corlinman` (uid 999) 运行，而非旧文档所写的
+  `User=root`；并记下由此导致的"`/root` 下的东西对网关一律不可达"这一后果。
+
 ## [1.56.1] — 2026-07-31 — 修复 systemd 下 stdio MCP server 启动器找不到
 
 ### Fixed

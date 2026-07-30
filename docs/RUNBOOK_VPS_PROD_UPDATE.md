@@ -26,9 +26,17 @@ layout.
 
 Do **not** run the generic `install.sh --upgrade` path on this host until the
 root-owned systemd layout has been deliberately migrated. The generic native
-upgrader rewrites systemd units for the unprivileged service user; on this VPS
-the active gateway unit must remain `User=root` because its venv is under the
-root-owned repo path.
+upgrader rewrites systemd units for the unprivileged service user.
+
+> **The gateway runs as `corlinman` (uid 999), not root** — an earlier
+> revision of this runbook said `User=root`, which is stale and misleading
+> when debugging anything path- or permission-related. Consequence worth
+> remembering: `/root` is mode 0700, so **nothing under `/root` is reachable
+> by the gateway**, PATH notwithstanding. That is why `uv`/`uvx` must live in
+> `/usr/local/bin` for stdio MCP servers to launch (`install.sh` does this via
+> `ensure_shared_launchers` on every apply; it was done by hand here on
+> 2026-07-31 before that shipped). Verify with:
+> `ps -o user= -p $(systemctl show corlinman -p MainPID --value)`.
 
 ## Pre-check
 

@@ -183,6 +183,21 @@ ENV CORLINMAN_VERSION=${CORLINMAN_VERSION}
 ENV PATH=/opt/venv/bin:$PATH
 ENV PYTHONUNBUFFERED=1
 
+# `uvx` for the runtime, not just the build. Stdio MCP servers are launched
+# through it — the bundled multi-engine search server runs
+# `uvx free-search-mcp>=0.8.0` — so without this the gateway seeds the server
+# and then fails every spawn with `No such file or directory: 'uvx'`.
+# /usr/local/bin on both sides: it is where the builder's UV_INSTALL_DIR puts
+# them, it is already on PATH, and it is executable by the unprivileged
+# `corlinman` user this stage switches to.
+COPY --from=py-builder /usr/local/bin/uv /usr/local/bin/uv
+COPY --from=py-builder /usr/local/bin/uvx /usr/local/bin/uvx
+
+# Point uv's cache at the data volume. The runtime user's home is /app, which
+# is baked into the image, so a cache there would be re-downloaded on every
+# container start; /data persists, so a bundled MCP server is fetched once.
+ENV UV_CACHE_DIR=/data/.cache/uv
+
 # UI static export built from this exact source tree.
 COPY --from=ui-builder /build/ui/out /app/ui-static
 
