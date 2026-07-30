@@ -407,3 +407,27 @@ def test_explicit_transport_always_wins() -> None:
         )
     }
     assert specs["forced"].transport == "ws"
+
+
+@pytest.mark.asyncio
+async def test_teardown_clears_the_negotiated_state(
+    modern_server: Path, tmp_path: Path
+) -> None:
+    """A disabled/torn-down server must not keep reporting the capabilities
+    and revision of its previous connection."""
+    seen = tmp_path / "seen.txt"
+    manager = McpClientManager(
+        [_spec(modern_server, seen, caps='{"tools": {}, "resources": {}}')]
+    )
+    try:
+        await manager.connect_all()
+        server = manager.server("modern")
+        assert server is not None and server.capabilities
+        assert await manager.disable_one("modern") is True
+        assert server.capabilities == {}
+        assert server.server_info == {}
+        assert server.instructions == ""
+        assert server.resources == []
+        assert server.protocol_version == OLDEST_SUPPORTED_VERSION
+    finally:
+        await manager.aclose()

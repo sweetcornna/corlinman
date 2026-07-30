@@ -705,6 +705,14 @@ class McpClientManager:
                 await peer.close()
         managed.peer = None
         managed.tools = []
+        # Everything the handshake established dies with the peer. Leaving
+        # it behind would let a server that failed to reconnect keep
+        # reporting the capabilities and revision of its previous life.
+        managed.resources = []
+        managed.protocol_version = OLDEST_SUPPORTED_VERSION
+        managed.capabilities = {}
+        managed.server_info = {}
+        managed.instructions = ""
 
     async def _connect_peer(self, spec: McpServerSpec) -> McpClientPeer:
         """Open the transport for ``spec``. Raises
