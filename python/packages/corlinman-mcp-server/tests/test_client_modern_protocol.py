@@ -254,6 +254,66 @@ async def test_resources_probe_is_skipped_when_not_advertised(
 
 
 @pytest.mark.asyncio
+async def test_a_resources_only_server_comes_up(
+    modern_server: Path, tmp_path: Path
+) -> None:
+    """A server with resources but no tools is a valid MCP server. Probing
+    it for tools earns a method-not-found, and treating that as a fatal
+    discovery failure killed the whole server before its resources were
+    ever listed (raised on #116)."""
+    seen = tmp_path / "seen.txt"
+    manager = McpClientManager(
+        [_spec(modern_server, seen, caps='{"resources": {}}')]
+    )
+    try:
+        await manager.connect_all()
+        server = manager.server("modern")
+        assert server is not None
+        assert server.is_ready, server.error
+        assert server.tools == []
+        assert "tools/list" not in _methods_seen(seen)
+        assert [r.uri for r in server.resources] == ["file:///a.txt"]
+    finally:
+        await manager.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_broken_tools_listing_is_still_fatal(
+    modern_server: Path, tmp_path: Path
+) -> None:
+    """The skip above is capability-driven, not blanket tolerance: a server
+    that *claims* tools and then fails to list them is genuinely broken."""
+    seen = tmp_path / "seen.txt"
+    spec = _spec(modern_server, seen, caps='{"tools": {}}')
+    # Point the child at a script that dies right after the handshake.
+    broken = tmp_path / "broken.py"
+    broken.write_text(
+        "import json,sys\n"
+        "for line in sys.stdin:\n"
+        "    req = json.loads(line)\n"
+        "    if req.get('method') == 'initialize':\n"
+        "        sys.stdout.write(json.dumps({'jsonrpc':'2.0','id':req['id'],"
+        "'result':{'protocolVersion':'2025-11-25','capabilities':{'tools':{}}}})+'\\n')\n"
+        "        sys.stdout.flush()\n"
+        "    elif req.get('method') == 'tools/list':\n"
+        "        sys.stdout.write(json.dumps({'jsonrpc':'2.0','id':req['id'],"
+        "'error':{'code':-32603,'message':'boom'}})+'\\n')\n"
+        "        sys.stdout.flush()\n",
+        encoding="utf-8",
+    )
+    spec.args = [str(broken)]
+    manager = McpClientManager([spec])
+    try:
+        await manager.connect_all()
+        server = manager.server("modern")
+        assert server is not None
+        assert not server.is_ready
+        assert "boom" in (server.error or "")
+    finally:
+        await manager.aclose()
+
+
+@pytest.mark.asyncio
 async def test_resources_are_discovered_when_advertised(
     modern_server: Path, tmp_path: Path
 ) -> None:

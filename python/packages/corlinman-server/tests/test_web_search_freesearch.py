@@ -21,14 +21,17 @@ from corlinman_server.web_search_freesearch import (
     FreeSearchBackend,
     _rows_from_payload,
     install_freesearch_backend,
+    reset_freesearch_backend,
 )
 
 
 @pytest.fixture(autouse=True)
 def _clean_registry():
+    reset_freesearch_backend()
     for name in list(registered_search_backends()):
         unregister_search_backend(name)
     yield
+    reset_freesearch_backend()
     for name in list(registered_search_backends()):
         unregister_search_backend(name)
 
@@ -212,6 +215,37 @@ async def test_tool_level_error_raises(monkeypatch) -> None:
 def test_install_registers_under_the_configured_name() -> None:
     backend = install_freesearch_backend()
     assert backend is not None
+    assert FREESEARCH_BACKEND in registered_search_backends()
+
+
+@pytest.mark.asyncio
+async def test_reinstall_reuses_the_backend_and_its_child(monkeypatch) -> None:
+    """The install path runs on *every* sidecar reload — i.e. every time an
+    operator saves any agent-facing config. Building a fresh backend each
+    time would drop the previous one while its search child was still
+    running, orphaning one process per config save."""
+    _install_stub(monkeypatch, result=_Outcome(json.dumps({"results": []})))
+
+    first = install_freesearch_backend()
+    assert first is not None
+    await first.search("a", 5)  # connects the child
+    assert len(_StubManager.instances) == 1
+
+    second = install_freesearch_backend()
+    assert second is first
+    await second.search("b", 5)
+    assert len(_StubManager.instances) == 1  # no second child
+
+
+def test_reinstall_repairs_a_dropped_registry_entry() -> None:
+    """Reuse must not mean "do nothing": if the registry entry went away,
+    the next install has to put it back."""
+    first = install_freesearch_backend()
+    assert first is not None
+    unregister_search_backend(FREESEARCH_BACKEND)
+
+    second = install_freesearch_backend()
+    assert second is first
     assert FREESEARCH_BACKEND in registered_search_backends()
 
 

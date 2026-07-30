@@ -44,15 +44,24 @@ __all__ = [
     "FREESEARCH_BACKEND",
     "FreeSearchBackend",
     "install_freesearch_backend",
+    "installed_freesearch_backend",
+    "reset_freesearch_backend",
 ]
 
 #: The name an operator selects in ``[web_search].backend``.
 FREESEARCH_BACKEND = "freesearch"
 
-#: How long one search may take before the caller gets a degraded envelope.
-#: Generous because a cold child pays a package resolve on first use.
-_FIRST_CALL_TIMEOUT_S = 180.0
-_CALL_TIMEOUT_S = 60.0
+#: Ceiling on bringing the child up: package resolve + spawn + handshake +
+#: tool discovery. ``McpClientManager`` bounds each of those steps
+#: separately by the spec's ``handshake_timeout_s``, which means a pathological
+#: server can burn that budget several times over; this is the one number that
+#: bounds the whole cold start.
+#:
+#: The per-*search* ceiling is deliberately not here — it is the spec's
+#: ``call_timeout_s``, enforced inside ``call_tool``. A second ``wait_for``
+#: wrapped around that call would just be a competing bound (whichever is
+#: smaller silently wins) for no gain.
+_CONNECT_TIMEOUT_S = 240.0
 
 
 class FreeSearchBackend:
@@ -84,7 +93,17 @@ class FreeSearchBackend:
             from corlinman_mcp_server import McpClientManager
 
             manager = McpClientManager([self._spec])
-            await manager.connect_all()
+            try:
+                await asyncio.wait_for(
+                    manager.connect_all(), timeout=_CONNECT_TIMEOUT_S
+                )
+            except BaseException:
+                # Includes the timeout and task cancellation: a half-connected
+                # manager owns a spawned child, so it has to be closed here or
+                # the process is orphaned with no reference left to reap it.
+                with contextlib.suppress(Exception):
+                    await manager.aclose()
+                raise
             server = manager.server(self._spec.name)
             if server is None or not server.is_ready:
                 reason = (server.error if server else "no such server") or "unknown"
@@ -106,23 +125,23 @@ class FreeSearchBackend:
 _dispatch_external` owns turning that into the degraded envelope, so the
         error text reaches the model instead of being swallowed here.
         """
-        cold = self._manager is None
         manager = await self._ensure_manager()
-        timeout = _FIRST_CALL_TIMEOUT_S if cold else _CALL_TIMEOUT_S
-        outcome = await asyncio.wait_for(
-            manager.call_tool(
-                "search",
-                "search",
-                {
-                    "query": query,
-                    "max_results": max_results,
-                    # The JSON rendering is the parseable one; the default
-                    # markdown is written for a model to read, not for us to
-                    # scrape back apart.
-                    "format": "json",
-                },
-            ),
-            timeout=timeout,
+        # No extra ``wait_for`` here on purpose: ``call_tool`` already bounds
+        # itself by the spec's ``call_timeout_s`` and never raises, returning
+        # a structured ``mcp_call_timeout`` outcome instead. Wrapping it would
+        # add a second, competing deadline whose only effect is to decide
+        # which of the two error messages the model gets.
+        outcome = await manager.call_tool(
+            "search",
+            "search",
+            {
+                "query": query,
+                "max_results": max_results,
+                # The JSON rendering is the parseable one; the default
+                # markdown is written for a model to read, not for us to
+                # scrape back apart.
+                "format": "json",
+            },
         )
         if outcome.is_error:
             raise RuntimeError(f"search tool failed: {outcome.content[:300]}")
@@ -167,6 +186,23 @@ def _rows_from_payload(content: str) -> list[dict[str, str]]:
     return out
 
 
+#: The one backend this process owns. Module-level because the install
+#: path runs repeatedly (see :func:`install_freesearch_backend`) and each
+#: instance can own a live child process.
+_INSTALLED: FreeSearchBackend | None = None
+
+
+def installed_freesearch_backend() -> FreeSearchBackend | None:
+    """The process's backend, if one has been installed."""
+    return _INSTALLED
+
+
+def reset_freesearch_backend() -> None:
+    """Forget the installed backend without closing it (tests only)."""
+    global _INSTALLED
+    _INSTALLED = None
+
+
 def install_freesearch_backend() -> FreeSearchBackend | None:
     """Register the ``freesearch`` backend for this process.
 
@@ -175,10 +211,30 @@ def install_freesearch_backend() -> FreeSearchBackend | None:
     unconditionally means selecting it in the UI takes effect on the next
     sidecar reload rather than needing a restart.
 
+    **Idempotent, and that is load-bearing.** This runs on *every* sidecar
+    reload — i.e. every time an operator saves any agent-facing config in
+    the UI, which since the hot-apply work is a routine, restart-free
+    action. Building a fresh backend each time would drop the previous
+    instance while its ``uvx`` child process was still running, orphaning
+    one search server per config save for the life of the process. So an
+    already-installed backend is reused, and only its registry entry is
+    re-asserted (cheap, and repairs the entry if something unregistered it).
+
     Returns the backend (for teardown / tests), or ``None`` when the pieces
     aren't importable — a build without the MCP package simply has no
     ``freesearch``, which ``web_search`` reports as ``backend_unavailable``.
     """
+    global _INSTALLED
+
+    if _INSTALLED is not None:
+        try:
+            from corlinman_agent.web.search import register_search_backend
+
+            register_search_backend(FREESEARCH_BACKEND, _INSTALLED.search)
+        except Exception as exc:  # noqa: BLE001 — optional wiring, never fatal
+            logger.debug("web_search.freesearch_reassert_failed", error=str(exc))
+        return _INSTALLED
+
     try:
         from corlinman_agent.web.search import register_search_backend
         from corlinman_mcp_server import McpServerSpec
@@ -196,4 +252,5 @@ def install_freesearch_backend() -> FreeSearchBackend | None:
 
     backend = FreeSearchBackend(McpServerSpec.from_mapping(entry.name, entry.spec))
     register_search_backend(FREESEARCH_BACKEND, backend.search)
+    _INSTALLED = backend
     return backend

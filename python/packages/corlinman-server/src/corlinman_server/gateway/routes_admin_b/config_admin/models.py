@@ -109,7 +109,13 @@ class DefaultOnly(BaseModel):
 
 
 #: Backends ``corlinman_agent.web.search`` knows how to drive.
-_SEARCH_BACKENDS: frozenset[str] = frozenset({"ddg", "serpapi"})
+#:
+#: Must stay in step with that module: a backend the agent accepts but this
+#: whitelist rejects is selectable only by hand-editing config.toml, since
+#: this endpoint 400s it and the UI dropdown is rendered from the same list.
+#: That is precisely the "the setting exists but the UI is decorative" failure
+#: #169 was written to eliminate.
+_SEARCH_BACKENDS: frozenset[str] = frozenset({"ddg", "serpapi", "freesearch"})
 
 
 def _secret_present(raw: Any) -> bool:
@@ -460,7 +466,10 @@ def router() -> APIRouter:
                 # value is a SecretRef (``{env = "..."}``), which counts as
                 # configured even though the literal lives elsewhere.
                 "api_key_set": _secret_present(search_cfg.get("api_key")),
-                "backends": ["ddg", "serpapi"],
+                # Rendered straight into the UI dropdown — derived from the
+                # same whitelist the PUT validates against so the two can
+                # never disagree about what is selectable.
+                "backends": sorted(_SEARCH_BACKENDS),
             },
             "aliases": alias_names,
         }

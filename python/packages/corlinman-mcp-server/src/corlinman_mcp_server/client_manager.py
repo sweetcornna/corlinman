@@ -478,10 +478,29 @@ class McpClientManager:
                 self._handshake(peer, server_name=spec.name),
                 timeout=spec.handshake_timeout_s,
             )
-            tools = await asyncio.wait_for(
-                self._list_tools(peer),
-                timeout=spec.handshake_timeout_s,
-            )
+            # Record what the handshake established *before* discovery, so
+            # the capability map can gate the probes below.
+            managed.protocol_version = handshake.protocol_version
+            managed.capabilities = handshake.capabilities
+            managed.server_info = handshake.server_info
+            managed.instructions = handshake.instructions
+
+            # A server that advertises no ``tools`` capability is not
+            # broken — a resources-only or prompts-only server is a valid
+            # MCP server. Calling ``tools/list`` on one earns a
+            # method-not-found, and treating that as a fatal discovery
+            # failure used to kill the whole server before its resources
+            # were ever listed (raised on #116). Skip the probe instead;
+            # a server that *does* claim tools still fails loudly if the
+            # listing breaks, because then something really is wrong.
+            if managed.supports("tools"):
+                tools = await asyncio.wait_for(
+                    self._list_tools(peer),
+                    timeout=spec.handshake_timeout_s,
+                )
+            else:
+                tools = []
+                log.debug("mcp.client.tools_not_advertised", server=spec.name)
         except Exception as exc:
             managed.status = "error"
             managed.error = f"handshake/discovery failed: {exc}"
@@ -496,10 +515,6 @@ class McpClientManager:
             return
 
         managed.tools = tools
-        managed.protocol_version = handshake.protocol_version
-        managed.capabilities = handshake.capabilities
-        managed.server_info = handshake.server_info
-        managed.instructions = handshake.instructions
         # Dim 5 — resources are best-effort: a server without the
         # ``resources`` capability answers method-not-found, which
         # ``_list_resources`` folds to ``[]``; a discovery failure must
