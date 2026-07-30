@@ -4,6 +4,59 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.56.0] — 2026-07-30 — MCP 客户端协议现代化；出厂自带多引擎搜索
+
+### Fixed
+- **MCP 客户端被沉默降级到 2024 能力集**：`initialize` 的
+  `protocolVersion` 硬编码成 `2024-11-05`（已发布 revision 里最老的
+  一个）。现代服务端会原样接受任何它仍支持的版本，于是握手一直
+  "成功"，但每条连接都被锁在 2024 的语义上——`structuredContent`、
+  `resource_link`、`audio`、`_meta`、`serverInfo`、`instructions`
+  全部拿不到，且**没有任何地方报错**，服务端只是少给。现改为提供
+  `2025-11-25` 并采纳服务端回价，协商结果记入 `McpManagedServer`
+  （console `/mcp` 会打印每台 server 协商到的 revision）。回价缺失、
+  非字符串、未知、或属于 2026-07-28 无状态信封时一律保守降到最老
+  revision 并 warn；版本按枚举集排序而非字符串比较（后者会认为
+  `"zzz" > "2025-11-25"`）。（#199）
+- **`transport = "http"` 实际拨的是 WebSocket**：`_connect_peer` 会把
+  URL 改写成 `ws://` 再拨 websocket upgrade，对真实 Streamable HTTP
+  服务端必然握手失败——等于整类远程 MCP server 不可达，却看起来是可
+  配置的。新增真正的 Streamable HTTP 传输（POST + SSE、`Mcp-Session-Id`、
+  `MCP-Protocol-Version` 头、流内 server→client 请求回帖、会话过期 404
+  识别）。（#199）
+- **只提供 resources 的 MCP server 无法完成 bring-up**：`tools/list` 拿到
+  method-not-found 被当作致命发现失败，整台 server 判死，resources 根本
+  没机会列出来。改为按 capability 门控探测；声明了 tools 却列不出来仍是
+  硬失败。（#116 提出，本次修复）
+- **`web_search` 后端在 UI 里不可选**：admin 白名单与 GET 返回的
+  `backends` 列表各写一份，新后端加进运行时却选不了。现由同一份白名单
+  派生，两者不可能再分叉。（#199）
+
+### Added
+- **出厂自带多引擎 MCP 搜索服务**：新装机不再只有无 key 的 DuckDuckGo
+  HTML 抓取。free-search-mcp 首次启动时种进 marketplace 的
+  `mcp_servers.sqlite`，此后即普通已安装记录（可改/可停/可删），模型
+  直接拿到 `search` / `research` / `fetch` / `read_doc` 等 10 个工具。
+  种子"只种一次，永远"而非"缺了就补"——被删掉的服务不会每次重启被
+  网关补回去。版本下限钉 `>=0.8.0`（该版本修掉三处 SSRF guard 绕过，
+  而这些工具抓的正是模型自己选的 URL）；解析不到即可见的启动失败，
+  绝不静默跑有洞的旧版。`[mcp].bundle_enabled = false` 可让它以未启用
+  状态入库。（#199）
+- **`web_search` 新增 `freesearch` 后端**（默认仍为 `ddg`）：把内置工具
+  也接到上述多引擎栈，7 个渠道与所有运行模式一并受益，模型不必学新
+  工具名。外部后端结果同样过 SSRF 过滤、snippet 围栏与 `max_results`
+  上限。保持 opt-in 是因为 `web_search` 跑在 agent 进程、出厂 server 由
+  gateway 拉起，两进程无法共用连接——选它意味着多一个搜索子进程。（#199）
+- MCP 线格式补齐 `audio` / `resource_link` / 内嵌 `resource` 内容块（各
+  渲染成可读占位，base64 不进上下文）、`structuredContent` 兜底、
+  `Resource.title` / `size`。（#199）
+
+### Changed
+- **⚠️ MCP server 传输推断**：带 URL 的条目此前**无条件**推断为 `ws`，
+  现按 scheme 推断（`ws(s)://` → `ws`，其余 → `http`）。靠旧强转去连
+  *WebSocket* 服务端（URL 写成 `http://`）的手写配置需显式写
+  `transport = "ws"`；市场安装的条目带显式 transport，不受影响。（#199）
+
 ## [1.55.0] — 2026-07-29 — QQ 文件发送修复；大段长文合并转发折叠
 
 ### Fixed
