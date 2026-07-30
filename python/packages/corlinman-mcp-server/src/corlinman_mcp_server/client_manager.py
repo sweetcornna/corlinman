@@ -764,18 +764,31 @@ class McpClientManager:
         )
 
     async def _connect_stdio(self, spec: McpServerSpec) -> McpClient:
-        """Spawn a stdio MCP child with the spec's env layered on."""
+        """Spawn a stdio MCP child with the spec's env layered on.
+
+        The command is resolved against a widened PATH first — see
+        :func:`resolve_launcher`. Without that, a gateway running under
+        systemd cannot launch the launchers the MCP ecosystem is built on.
+        """
         import os
 
-        if spec.env:
+        command, extra_dir = resolve_launcher(spec.command)
+        if spec.env or extra_dir:
             # McpClient.connect_stdio inherits the gateway's env wholesale
             # and offers no env hook; spawn the process ourselves so the
             # manifest-style env overlay applies.
             child_env = os.environ.copy()
+            if extra_dir:
+                # The child usually needs its siblings too (``uvx`` shells out
+                # to ``uv``), and it inherited the same threadbare PATH we
+                # just had to work around.
+                child_env["PATH"] = os.pathsep.join(
+                    [extra_dir, child_env.get("PATH", "")]
+                ).rstrip(os.pathsep)
             child_env.update(spec.env)
             try:
                 process = await asyncio.create_subprocess_exec(
-                    spec.command,
+                    command,
                     *spec.args,
                     env=child_env,
                     stdin=asyncio.subprocess.PIPE,
@@ -787,7 +800,7 @@ class McpClientManager:
                     f"failed to spawn mcp server {spec.name!r}: {exc}"
                 ) from exc
             return await McpClient.connect_with_process(process)
-        return await McpClient.connect_stdio(spec.command, spec.args)
+        return await McpClient.connect_stdio(command, spec.args)
 
     def _bind_peer_handlers(self, peer: McpClientPeer, server_name: str) -> None:
         """Wire the server->client request/notification handlers for a peer."""
@@ -1104,6 +1117,99 @@ class McpClientManager:
 # ---------------------------------------------------------------------
 # Helpers.
 # ---------------------------------------------------------------------
+
+
+#: Directories that hold the launchers the MCP ecosystem is built on
+#: (``uvx``, ``npx``, ``bunx``, ``pipx``) but that a service manager's PATH
+#: routinely omits. Searched *after* PATH, so an operator's own copy always
+#: wins.
+_EXTRA_LAUNCHER_DIRS: tuple[str, ...] = (
+    "~/.local/bin",  # uv / pipx default
+    "/usr/local/bin",
+    "/opt/homebrew/bin",  # macOS arm64
+    "/usr/local/opt/node/bin",
+)
+
+
+def _candidate_launcher_dirs() -> list[str]:
+    """Extra directories to search, expanded for the running account.
+
+    ``~`` is resolved twice on purpose. A service unit often overrides
+    ``HOME`` to point at its data directory (corlinman's own gateway unit
+    sets ``HOME=/opt/corlinman/data``), which makes ``expanduser`` miss the
+    account's real ``~/.local/bin`` entirely — so the account home is also
+    looked up from the password database, which no env override can move.
+    """
+    import os
+    import pwd
+
+    homes: list[str] = []
+    env_home = os.environ.get("HOME")
+    if env_home:
+        homes.append(env_home)
+    with contextlib.suppress(Exception):
+        account_home = pwd.getpwuid(os.getuid()).pw_dir
+        if account_home and account_home not in homes:
+            homes.append(account_home)
+
+    out: list[str] = []
+    for raw in _EXTRA_LAUNCHER_DIRS:
+        if raw.startswith("~/"):
+            out.extend(os.path.join(home, raw[2:]) for home in homes)
+        else:
+            out.append(raw)
+    # De-dup, preserving order.
+    seen: set[str] = set()
+    unique: list[str] = []
+    for directory in out:
+        if directory in seen:
+            continue
+        seen.add(directory)
+        unique.append(directory)
+    return unique
+
+
+def resolve_launcher(command: str) -> tuple[str, str | None]:
+    """Resolve a bare launcher name to an absolute path.
+
+    Returns ``(command, extra_dir)`` — ``extra_dir`` is the directory the
+    command was found in when it came from outside PATH (``None`` otherwise),
+    so the caller can hand it to the child too.
+
+    Why this exists: a stdio MCP server is almost always launched through
+    ``uvx`` / ``npx`` / ``bunx``, and those live in per-user directories.
+    A systemd unit gets ``/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:
+    /sbin:/bin`` and nothing else, so the gateway would fail every such spawn
+    with a bare ``No such file or directory: 'uvx'`` while the same command
+    works fine in the operator's shell. Verified on the production VPS, where
+    ``uv`` installs to ``/root/.local/bin``.
+
+    A command that already contains a path separator is returned untouched —
+    an operator who wrote an absolute path meant it.
+    """
+    import os
+    import shutil
+
+    if not command or os.sep in command or (os.altsep and os.altsep in command):
+        return command, None
+
+    found = shutil.which(command)
+    if found:
+        return found, None
+
+    extra = _candidate_launcher_dirs()
+    found = shutil.which(command, path=os.pathsep.join(extra))
+    if not found:
+        # Leave it alone: the spawn will fail with the OS's own message,
+        # which names the command and is what an operator can act on.
+        return command, None
+    log.info(
+        "mcp.client.launcher_resolved",
+        command=command,
+        resolved=found,
+        note="not on PATH; found in a well-known launcher directory",
+    )
+    return found, os.path.dirname(found)
 
 
 def _normalise_ws_url(url: str) -> str:

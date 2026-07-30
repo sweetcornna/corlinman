@@ -4,6 +4,22 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.56.1] — 2026-07-31 — 修复 systemd 下 stdio MCP server 启动器找不到
+
+### Fixed
+- **`uvx` / `npx` 这类启动器在 systemd 下必然 spawn 失败**：service unit 拿到的
+  PATH 只有 `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`，
+  而 MCP 生态赖以启动的 `uvx` / `npx` / `bunx` / `pipx` 普遍装在用户级目录
+  （生产 VPS 上 `uv` 装在 `/root/.local/bin`）。表现是 v1.56.0 的出厂搜索
+  服务种子成功、随即 `No such file or directory: 'uvx'`——而同一条命令在运维
+  自己的 shell 里跑得好好的，这类不一致最难定位。现在 spawn 前先解析命令：
+  PATH 优先（运维自己的副本永远赢），未命中再查若干公认的启动器目录，并把
+  命中目录一并加进子进程 PATH（`uvx` 要能找到同级的 `uv`）。
+  查找 `~/.local/bin` 时同时使用 HOME 与**密码库里的账户 home**——service unit
+  常把 HOME 改到数据目录（corlinman 自己的网关 unit 就设了
+  `HOME=/opt/corlinman/data`），只认 HOME 会整个错过真正的 `~/.local/bin`。
+  写了绝对路径的命令原样放行。此修复对所有 stdio MCP server 生效，不止出厂那台。
+
 ## [1.56.0] — 2026-07-30 — MCP 客户端协议现代化；出厂自带多引擎搜索
 
 ### Fixed
