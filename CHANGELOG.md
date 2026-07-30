@@ -4,6 +4,23 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.56.3] — 2026-07-31 — 修复大工具结果打死整条 MCP 连接（Telegram 空回复）
+
+### Fixed
+- **一条超大 stdio 帧会让 MCP server 永久失联**：MCP 每行一条 JSON-RPC 消息，
+  而一次工具结果就是整个载荷放在这一行上——`fetch_batch` 抓几个页面、
+  `read_doc` 读一份文档，动辄数 MB。asyncio `StreamReader` 的默认上限是
+  **64 KiB**，超出后 `readline()` 抛异常，而 reader loop 直接 `break`：连接
+  看着还"在"，却再也不回任何东西，后续每次工具调用都干等到自己的超时，模型
+  最终无文本输出——用户在 Telegram 上看到的就是「（无回复）」。
+  两处修复：把 stdio 缓冲上限提到 32 MiB（远高于任何合理的工具结果，同时仍
+  为失控的子进程封顶）；更关键的是超限时**丢弃该帧并继续**而不是中断循环——
+  `readline` 已经把它清出缓冲区，流会在下一个换行处重新对齐。代价是那一次
+  调用等满自己的超时（丢弃的帧无法归因到某个 request id），换来的是整台
+  server 不再阵亡。
+
+  这个缺陷 `McpClient` 一直存在，但在出厂 MCP server 之前无从触发。
+
 ## [1.56.2] — 2026-07-31 — 安装器与容器镜像置备 uvx，出厂 MCP 开箱即用
 
 ### Fixed

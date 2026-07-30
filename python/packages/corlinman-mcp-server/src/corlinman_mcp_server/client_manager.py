@@ -45,7 +45,7 @@ from typing import Any, Protocol
 
 import structlog
 
-from .client import McpClient, McpClientError
+from .client import STDIO_STREAM_LIMIT, McpClient, McpClientError
 from .client_http import McpStreamableHttpClient
 from .client_ws import McpWebSocketClient
 from .protocol import (
@@ -794,6 +794,10 @@ class McpClientManager:
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    # Same ceiling as McpClient.connect_stdio — this branch
+                    # builds the process itself, so it must not silently
+                    # inherit asyncio's 64 KiB default.
+                    limit=STDIO_STREAM_LIMIT,
                 )
             except (FileNotFoundError, OSError) as exc:
                 raise McpClientError(

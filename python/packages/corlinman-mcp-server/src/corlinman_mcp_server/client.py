@@ -48,6 +48,20 @@ _DISCONNECTED_MARKER: str = "__mcp_disconnected__:"
 the response queue; :meth:`McpClient.call` strips this and lifts to
 :class:`McpClientError` ``Disconnected``."""
 
+STDIO_STREAM_LIMIT: int = 32 * 1024 * 1024
+"""Per-line buffer ceiling for the child's stdout (bytes).
+
+MCP frames one JSON-RPC message per line, and a tool result is a whole
+payload on that one line — a batch page fetch or a document read is
+routinely megabytes. asyncio's default :class:`~asyncio.StreamReader`
+limit is **64 KiB**, at which point ``readline()`` raises and, before the
+handling below, took the entire connection down with it: one oversized
+result and every later tool call on that server hung until its timeout.
+
+32 MiB is chosen to be far above any plausible tool result while still
+bounding how much a misbehaving child can make the gateway buffer.
+"""
+
 
 class McpClientError(McpError):
     """Common base class for stdio-client errors. Distinct from the
@@ -167,6 +181,7 @@ class McpClient:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                limit=STDIO_STREAM_LIMIT,
             )
         except (FileNotFoundError, OSError) as e:
             raise McpClientSpawnError(f"failed to spawn child: {e}") from e
@@ -413,6 +428,27 @@ class McpClient:
                     line = await self._stdout.readline()
                 except asyncio.CancelledError:
                     raise
+                except ValueError as err:
+                    # A frame larger than STDIO_STREAM_LIMIT. ``readline``
+                    # has already discarded it (up to and including the
+                    # separator when one was buffered), so the stream
+                    # resyncs on the next newline — any straggling tail
+                    # fails the JSON parse below and is skipped.
+                    #
+                    # Dropping one frame beats what this used to do: break
+                    # out of the loop, leaving a peer that is "connected"
+                    # but answers nothing, so every later tool call on that
+                    # server hung until its timeout.
+                    #
+                    # The dropped frame cannot be attributed to a request id
+                    # (it never parsed), so its caller waits out its own
+                    # deadline instead of failing fast. That is one bounded
+                    # slow call rather than an unbounded number of them.
+                    # Deliberately no limit= field: this client can be built
+                    # over a process someone else spawned, so the module
+                    # constant is not necessarily *this* stream's ceiling.
+                    log.warning("mcp client: oversized frame dropped", err=str(err))
+                    continue
                 except Exception as err:
                     log.warning("mcp client: stdout read error", err=str(err))
                     break
