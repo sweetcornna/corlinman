@@ -291,11 +291,26 @@ cheap = "claude-haiku-4-5-20251001"
 # EnvironmentFile, so the older CORLINMAN_WEB_SEARCH_* env vars are not
 # reachable there — config is the only channel that works in a native
 # deployment. Config also outranks those env vars where both exist.
+#
+# backend = "freesearch" points the builtin tool at corlinman's bundled
+# multi-engine MCP search server (see [mcp] below) instead of the DDG
+# scrape: many engines with fallback rather than one scraped endpoint.
+#
+# Opt-in rather than the default, for one honest reason: `web_search` runs
+# in the *agent* process while the bundled server the model's `search_*`
+# tools use is spawned by the *gateway*, and the two processes cannot share
+# a connection. Selecting freesearch therefore runs a second search child.
+# The child is spawned lazily on the first search, so leaving this unset
+# costs nothing. If the backend is selected but nothing registered it, the
+# tool falls back to the keyless default and says so in a `note` field
+# rather than pretending.
 # ---------------------------------------------------------------------------
 # [web_search]
 # backend = "serpapi"           # "ddg" (default, keyless) | "serpapi"
+#                               # | "freesearch" (bundled multi-engine MCP)
 # api_key = "..."               # or { env = "SERPAPI_KEY" } to keep it out
 #                               # of this file — resolved gateway-side.
+#                               # Not used by "ddg" / "freesearch".
 
 # ---------------------------------------------------------------------------
 # [agent_runtime] — the agent process's own limits and capability switches.
@@ -1057,6 +1072,13 @@ autoload = true
 #
 # This block holds the client-behaviour policy:
 #
+#   bundle_enabled — corlinman ships with one factory MCP server, a keyless
+#     multi-engine search/fetch/document stack (free-search-mcp, launched
+#     via `uvx`), seeded into the marketplace store on first boot and
+#     enabled by default. Set false to seed it registered-but-inert so you
+#     can review it before anything spawns. Seeding happens once per name,
+#     ever: delete the server in the UI and it stays deleted — this flag
+#     only decides the state it arrives in.
 #   allowedMcpServers / deniedMcpServers — server allow/deny by name
 #     (deny wins; a non-empty allow-list is exclusive). claude-code parity.
 #   list_changed_debounce_ms — when a server pushes
@@ -1078,6 +1100,7 @@ autoload = true
 #   max_tokens_cap — clamp the server's requested maxTokens (default 2048).
 # ---------------------------------------------------------------------------
 # [mcp]
+# bundle_enabled = true
 # allowedMcpServers = []
 # deniedMcpServers = []
 # list_changed_debounce_ms = 1500
