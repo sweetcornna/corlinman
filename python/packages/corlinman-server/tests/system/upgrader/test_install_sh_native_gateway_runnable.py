@@ -126,7 +126,7 @@ def test_gateway_execstart_does_not_depend_on_root_uv() -> None:
     # (c) Positively: it should launch the venv-resident entrypoint under the
     #     repo prefix (corlinman-gateway console-script, or `python -m`).
     assert re.search(
-        r"ExecStart=\$\{?PREFIX\}?/repo/\.venv/bin/"
+        r"ExecStart=(?:/usr/bin/env\s+\S+\s+)?\$\{?PREFIX\}?/repo/\.venv/bin/"
         r"(corlinman-gateway|python(3)?)\b",
         execstart,
     ), (
@@ -242,6 +242,20 @@ def test_upgrade_native_rolls_back_on_failed_health() -> None:
         "rollback must re-converge via _apply_native_ref so the reverted box is "
         f"fully restored (venv + units + restart), not left half-applied.\n{up}"
     )
+
+
+def test_apply_native_ref_restarts_split_services_in_one_transaction() -> None:
+    body = _extract_function_body(_read_install_sh(), "_apply_native_ref")
+    restart = re.search(r"systemctl restart ([^\n]+)", body)
+
+    assert restart is not None, f"_apply_native_ref has no restart transaction.\n{body}"
+    services = restart.group(1)
+    assert "corlinman-agent.service" in services
+    assert "corlinman.service" in services
+    assert services.index("corlinman-agent.service") < services.index("corlinman.service")
+    assert "restart corlinman-agent.service || true" not in body
+    assert "systemctl restart corlinman.service || return 1" not in body
+    assert "systemctl restart corlinman-agent.service corlinman.service || return 1" in body
 
 
 def test_apply_native_ref_reestablishes_ownership() -> None:

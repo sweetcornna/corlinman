@@ -925,7 +925,7 @@ Type=simple
 User=${SERVICE_USER}
 Group=${SERVICE_USER}
 WorkingDirectory=${PREFIX}/repo
-ExecStart=${PREFIX}/repo/.venv/bin/corlinman-gateway --config ${DATA_DIR}/config.toml --port ${PORT}
+ExecStart=/usr/bin/env CORLINMAN_UDS_PATH=/run/corlinman-agent/gateway.sock ${PREFIX}/repo/.venv/bin/corlinman-gateway --config ${DATA_DIR}/config.toml --port ${PORT}
 Environment=HOME=${DATA_DIR}
 Environment=CORLINMAN_DATA_DIR=${DATA_DIR}
 Environment=CORLINMAN_EXECUTION_STATE_DIR=${EXECUTION_STATE_DIR}
@@ -938,6 +938,7 @@ ${qq_env}
 SupplementaryGroups=${NAPCAT_CLIENT_GROUP} ${AGENT_USER} ${EXECUTION_GROUP}
 EnvironmentFile=-${PREFIX}/.env
 EnvironmentFile=-${DATA_DIR}/.napcat/legacy-secrets.env
+UMask=0007
 Restart=on-failure
 RestartSec=5
 
@@ -963,13 +964,14 @@ User=${AGENT_USER}
 Group=${AGENT_USER}
 SupplementaryGroups=${EXECUTION_GROUP}
 WorkingDirectory=${EXECUTION_STATE_DIR}
-ExecStart=${PREFIX}/repo/.venv/bin/corlinman-python-server
+ExecStart=/usr/bin/env CORLINMAN_UDS_PATH=/run/corlinman-agent/gateway.sock ${PREFIX}/repo/.venv/bin/corlinman-python-server
 Environment=HOME=${EXECUTION_STATE_DIR}
 Environment=CORLINMAN_EXECUTION_STATE_DIR=${EXECUTION_STATE_DIR}
 Environment=CORLINMAN_PY_CONFIG=/run/corlinman-agent/py-config.json
 Environment=CORLINMAN_PY_SOCKET=/run/corlinman-agent/agent.sock
 RuntimeDirectory=corlinman-agent
-RuntimeDirectoryMode=0770
+RuntimeDirectoryMode=2770
+RuntimeDirectoryPreserve=restart
 UMask=0007
 Restart=on-failure
 RestartSec=5
@@ -1338,11 +1340,8 @@ _apply_native_ref() {
         ensure_shared_launchers
         chown_runtime_paths
         write_systemd_units
-        log "restarting corlinman.service"
-        sudo systemctl restart corlinman.service || return 1
-        if [[ -f /etc/systemd/system/corlinman-agent.service ]]; then
-            sudo systemctl restart corlinman-agent.service || true
-        fi
+        log "restarting corlinman-agent.service + corlinman.service"
+        sudo systemctl restart corlinman-agent.service corlinman.service || return 1
         # NapCat / QQ: provision (or tear down) on every apply so the unit +
         # AppImage converge to the current release + WITH_QQ choice. Best-effort
         # — install_native_qq never returns non-zero (QQ is optional), so a QQ
