@@ -44,6 +44,17 @@ def test_native_gateway_uses_manager_socket_not_root_commands() -> None:
     assert "CORLINMAN_PY_SOCKET=/run/corlinman-agent/agent.sock" in agent
     assert "CORLINMAN_PY_CONFIG=/run/corlinman-agent/py-config.json" in text
     assert "CORLINMAN_PY_CONFIG=/run/corlinman-agent/py-config.json" in agent
+    shared_uds = "CORLINMAN_UDS_PATH=/run/corlinman-agent/gateway.sock"
+    gateway_exec = next(line for line in gateway.splitlines() if line.startswith("ExecStart="))
+    agent_exec = next(line for line in agent.splitlines() if line.startswith("ExecStart="))
+    assert f"ExecStart=/usr/bin/env {shared_uds} " in gateway_exec
+    assert f"ExecStart=/usr/bin/env {shared_uds} " in agent_exec
+    assert "CORLINMAN_UDS_PATH=/tmp/" not in gateway
+    assert "CORLINMAN_UDS_PATH=/tmp/" not in agent
+    assert "UMask=0007" in gateway
+    assert "RuntimeDirectoryMode=2770" in agent
+    assert "RuntimeDirectoryPreserve=restart" in agent
+    assert "PrivateTmp=true" in agent
     assert "CORLINMAN_DATA_DIR=" not in agent
     assert "CORLINMAN_EXECUTION_STATE_DIR=${EXECUTION_STATE_DIR}" in gateway
     assert "CORLINMAN_EXECUTION_STATE_DIR=${EXECUTION_STATE_DIR}" in agent
@@ -108,6 +119,9 @@ def test_docker_agent_cannot_open_manager_socket_or_inherit_env_secrets() -> Non
     assert gateway["environment"]["CORLINMAN_PY_SOCKET"] == (
         "/run/corlinman-agent/socket/agent.sock"
     )
+    shared_uds = "/run/corlinman-agent/socket/gateway.sock"
+    assert gateway["environment"]["CORLINMAN_UDS_PATH"] == shared_uds
+    assert agent["environment"]["CORLINMAN_UDS_PATH"] == shared_uds
     assert gateway["environment"]["CORLINMAN_PY_CONFIG"] == (
         "/run/corlinman-agent/config/py-config.json"
     )
@@ -145,7 +159,10 @@ def test_docker_start_has_no_duplicate_unsafe_py_config_writer() -> None:
     assert 'open(py_config_path,"w")' not in start
     assert "json.dump(out" not in start
     assert "gateway boot path owns the only py-config writer" in start
-    assert "umask 0007" in start
+    agent_branch = start.split("    agent)", 1)[1].split("        ;;", 1)[0]
+    gateway_branch = start.split("    gateway)", 1)[1].split("        ;;", 1)[0]
+    assert "umask 0007" in agent_branch
+    assert "umask 0007" in gateway_branch
 
 
 def test_docker_image_prepares_shared_agent_socket_mountpoint() -> None:

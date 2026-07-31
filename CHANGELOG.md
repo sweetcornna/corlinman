@@ -4,6 +4,22 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.56.5] — 2026-07-31 — 修复双进程 placeholder IPC 永久降级
+
+### Fixed
+- **原生双进程的 agent 永远看不到 gateway placeholder socket**：gateway 默认把
+  UDS 绑定在 host `/tmp/corlinman.sock`，而执行面 systemd unit 开启
+  `PrivateTmp=true`，agent 的私有 `/tmp` 里根本没有该文件；每次对话都因此记录
+  `context_assembly_failed`，memory、persona、episodes 等上下文静默降级。现双方
+  显式改用 `/run/corlinman-agent/gateway.sock`，通过 SGID runtime directory 与
+  `UMask=0007` 只向 gateway/agent 组开放；继续保留 `PrivateTmp`、独立 uid 和
+  gateway-only data root，不以放宽沙箱换连通。升级/回滚也改为同一个 systemd
+  transaction 重启双服务，避免 agent 重启删掉 gateway 刚创建的 socket。
+- **QQ 双容器部署存在同源 `/tmp` 隔离**：gateway 与 agent 容器各有自己的
+  `/tmp`。现统一把 placeholder UDS 放入双方已有的窄 IPC volume
+  `/run/corlinman-agent/socket/`，并让 gateway 使用与 agent 相同的 `0007` umask；
+  不新增 Docker socket、manager socket、控制面数据或密钥权限。
+
 ## [1.56.4] — 2026-07-31 — 出厂搜索可下载文件；存量配置安全刷新
 
 ### Added

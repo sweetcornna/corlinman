@@ -20,6 +20,7 @@ case "${CORLINMAN_PROCESS_ROLE:-combined}" in
         exec /opt/venv/bin/corlinman-python-server
         ;;
     gateway)
+        umask 0007
         exec /opt/venv/bin/corlinman-gateway --config /data/config.toml
         ;;
     combined)

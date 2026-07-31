@@ -84,6 +84,7 @@ services:
       CORLINMAN_PROCESS_ROLE: gateway
       CORLINMAN_CHAT_BACKEND: grpc_agent
       CORLINMAN_PY_SOCKET: /run/corlinman-agent/socket/agent.sock
+      CORLINMAN_UDS_PATH: /run/corlinman-agent/socket/gateway.sock
       CORLINMAN_PY_CONFIG: /run/corlinman-agent/config/py-config.json
       CORLINMAN_PY_CONFIG_GID: "10004"
       CORLINMAN_EXECUTION_STATE_DIR: /execution-state
@@ -119,6 +120,7 @@ services:
     environment:
       CORLINMAN_PROCESS_ROLE: agent
       CORLINMAN_PY_SOCKET: /run/corlinman-agent/socket/agent.sock
+      CORLINMAN_UDS_PATH: /run/corlinman-agent/socket/gateway.sock
       CORLINMAN_EXECUTION_STATE_DIR: /execution-state
       CORLINMAN_PY_CONFIG: /run/corlinman-agent/config/py-config.json
     volumes:
