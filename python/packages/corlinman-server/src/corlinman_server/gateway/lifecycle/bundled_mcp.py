@@ -12,24 +12,32 @@ Mechanism
 ---------
 
 The bundle is *seeded*, not hard-wired: each entry is written into the
-marketplace's ``mcp_servers.sqlite`` exactly once, after which it is an
+marketplace's ``mcp_servers.sqlite`` on first boot, after which it is an
 ordinary installed server the operator can reconfigure, disable, or delete
 from the UI like any other.
 
-"Exactly once" is load-bearing and is **not** the same as "insert if
+"Only offer once" is load-bearing and is **not** the same as "insert if
 absent". A server the operator deliberately deleted is absent, and
 re-inserting it on the next restart would be the gateway overruling them
 every boot. So the names that have ever been seeded are recorded in a
-sentinel file (:data:`_SENTINEL_NAME`) beside the store, and a name listed
-there is never seeded again regardless of whether its row still exists.
+sentinel file (:data:`_SENTINEL_NAME`) beside the store, and a deleted name
+listed there stays deleted.
 
-Failure is quiet by construction: a seeding error is logged and the boot
-continues. Worst case the operator installs the server from the marketplace
-by hand.
+Factory-pristine rows are the sole exception: when their complete persisted
+spec and provenance match a known factory revision, they are refreshed to
+the current bundle while preserving the operator's enabled state. This lets
+existing installs receive safe bundle additions without overwriting any row
+the operator edited.
+
+Failure is quiet by construction: a seeding or refresh error is logged and
+the boot continues. Worst case the operator installs or updates the server
+from the marketplace by hand.
 """
 
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -66,6 +74,9 @@ class BundledMcpServer:
     ``spec`` is the mapping :class:`corlinman_mcp_server.McpServerSpec` is
     built from — the same shape the marketplace persists for a hand-installed
     server, so nothing downstream can tell a seeded row from an installed one.
+    ``workspace_env`` maps environment-variable names to paths relative to the
+    agent workspace; those values are materialized before persistence rather
+    than baking one installation's absolute path into the module-level bundle.
     """
 
     name: str
@@ -73,6 +84,7 @@ class BundledMcpServer:
     version: str
     source: str = "bundled"
     enabled: bool = True
+    workspace_env: tuple[tuple[str, str], ...] = ()
 
 
 BUNDLED_MCP_SERVERS: tuple[BundledMcpServer, ...] = (
@@ -92,8 +104,29 @@ BUNDLED_MCP_SERVERS: tuple[BundledMcpServer, ...] = (
             "handshake_timeout_s": 180.0,
             "call_timeout_s": 120.0,
         },
+        workspace_env=(
+            ("SEARCH_MCP_DOWNLOAD_DIR", "downloads/search-mcp"),
+        ),
     ),
 )
+
+# SHA-256 of every complete factory revision that may be refreshed in place.
+# The digest covers source + version + the unmaterialized spec, including
+# ``<workspace>`` placeholders for per-install paths. Current revisions live
+# here too: a CI guard forces future bundle edits to append their digest, so
+# every upgrade path is an explicit decision rather than a broad match.
+_FACTORY_REVISION_SHA256: dict[str, frozenset[str]] = {
+    "search": frozenset(
+        {
+            # Download-enabled factory revision.
+            "c71b5d2390fd01db6f7b599f7162b16ae24ee291cff0a6bc73fc6f45d05371f9",
+            # 5440ae96 (#199) — original bundled search server.
+            "46bffd1648c5f650f0e1a50ed36be7a97dacc419c1de78364c446e51079c6074",
+        }
+    ),
+}
+
+_WORKSPACE_PLACEHOLDER = "<workspace>"
 
 
 def _sentinel_path(data_dir: Path) -> Path:
@@ -134,10 +167,72 @@ def _save_seeded(data_dir: Path, names: set[str]) -> None:
         logger.warning("gateway.mcp.bundle_sentinel_write_failed", error=str(exc))
 
 
+def _materialize_spec(entry: BundledMcpServer, workspace: Path) -> dict[str, Any]:
+    spec = copy.deepcopy(entry.spec)
+    if entry.workspace_env:
+        env = {
+            str(key): str(value)
+            for key, value in dict(spec.get("env") or {}).items()
+        }
+        for key, relative in entry.workspace_env:
+            env[key] = str(workspace / relative)
+        spec["env"] = env
+    return spec
+
+
+def _factory_revision_digest(
+    spec: dict[str, Any],
+    *,
+    source: str | None,
+    version: str | None,
+) -> str:
+    payload = {
+        "source": source,
+        "version": version,
+        "spec": spec,
+    }
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _current_factory_revision_digest(entry: BundledMcpServer) -> str:
+    return _factory_revision_digest(
+        _materialize_spec(entry, Path(_WORKSPACE_PLACEHOLDER)),
+        source=entry.source,
+        version=entry.version,
+    )
+
+
+def _factory_revision_digests(entry: BundledMcpServer) -> frozenset[str]:
+    return _FACTORY_REVISION_SHA256.get(entry.name, frozenset())
+
+
+def _is_factory_pristine(entry: BundledMcpServer, row: Any, workspace: Path) -> bool:
+    normalized = copy.deepcopy(row.spec)
+    if entry.workspace_env:
+        env = normalized.get("env")
+        if isinstance(env, dict):
+            for key, relative in entry.workspace_env:
+                if str(env.get(key, "")) == str(workspace / relative):
+                    env[key] = f"{_WORKSPACE_PLACEHOLDER}/{relative}"
+    digest = _factory_revision_digest(
+        normalized,
+        source=row.source,
+        version=row.version,
+    )
+    return digest in _factory_revision_digests(entry)
+
+
 def seed_bundled_mcp_servers(
     store: Any,
     data_dir: Path,
     *,
+    workspace: Path | None = None,
     bundle: tuple[BundledMcpServer, ...] = BUNDLED_MCP_SERVERS,
     enabled_override: bool | None = None,
 ) -> list[str]:
@@ -150,6 +245,10 @@ def seed_bundled_mcp_servers(
 McpServerStore`.
     data_dir
         Where the sentinel lives — the same directory as the store.
+    workspace
+        Agent-visible shared workspace. Defaults to ``data_dir / "workspace"``
+        for historical flat layouts; split-process boot passes its resolved
+        execution-state workspace explicitly.
     bundle
         Override for tests.
     enabled_override
@@ -163,6 +262,7 @@ McpServerStore`.
     list[str]
         The names seeded by *this* call (empty on a repeat boot).
     """
+    resolved_workspace = workspace or data_dir / "workspace"
     seeded_before = _load_seeded(data_dir)
     newly: list[str] = []
     # Whether the sentinel needs rewriting. Distinct from ``newly``: a
@@ -172,7 +272,50 @@ McpServerStore`.
 
     for entry in bundle:
         if entry.name in seeded_before:
+            try:
+                current = store.get(entry.name)
+            except Exception as exc:  # noqa: BLE001 — refresh never blocks boot
+                logger.debug(
+                    "gateway.mcp.bundle_probe_failed",
+                    server=entry.name,
+                    error=str(exc),
+                )
+                continue
+            # Missing after being offered means the operator deleted it.
+            if current is None:
+                continue
+            if not _is_factory_pristine(entry, current, resolved_workspace):
+                continue
+            current_spec = _materialize_spec(entry, resolved_workspace)
+            if (
+                current.spec == current_spec
+                and current.source == entry.source
+                and current.version == entry.version
+            ):
+                continue
+            try:
+                store.upsert(
+                    entry.name,
+                    current_spec,
+                    source=entry.source,
+                    version=entry.version,
+                    enabled=current.enabled,
+                )
+            except Exception as exc:  # noqa: BLE001 — refresh never blocks boot
+                logger.warning(
+                    "gateway.mcp.bundle_refresh_failed",
+                    server=entry.name,
+                    error=str(exc),
+                )
+                continue
+            logger.info(
+                "gateway.mcp.bundle_refreshed",
+                server=entry.name,
+                version=entry.version,
+                enabled=current.enabled,
+            )
             continue
+
         # A row already under this name is itself evidence the server has
         # been offered — either the sentinel could not be written (read-only
         # data dir) or the operator installed something under the same name
@@ -195,7 +338,7 @@ McpServerStore`.
         try:
             store.upsert(
                 entry.name,
-                dict(entry.spec),
+                _materialize_spec(entry, resolved_workspace),
                 source=entry.source,
                 version=entry.version,
                 enabled=enabled,

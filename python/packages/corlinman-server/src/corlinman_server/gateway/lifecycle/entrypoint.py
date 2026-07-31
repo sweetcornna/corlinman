@@ -70,7 +70,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import structlog
-from corlinman_runtime import resolve_execution_state_dir
+from corlinman_runtime import resolve_agent_workspace, resolve_execution_state_dir
 
 from corlinman_server.gateway.lifecycle.admin_seed import (
     ensure_admin_credentials,
@@ -1334,6 +1334,9 @@ def build_app(
                         seed_bundled_mcp_servers(
                             _mcp_store,
                             resolved_data_dir,
+                            workspace=resolve_agent_workspace(
+                                execution_state_dir=execution_state_dir
+                            ),
                             enabled_override=(
                                 bool(_bundle_enabled)
                                 if isinstance(_bundle_enabled, bool)
