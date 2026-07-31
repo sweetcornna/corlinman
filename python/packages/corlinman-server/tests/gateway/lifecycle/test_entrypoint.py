@@ -213,6 +213,33 @@ def test_build_app_honors_separate_execution_state_dir(
     assert app.state.corlinman_admin_b_state.execution_state_dir == shared_dir
 
 
+def test_mcp_bundle_uses_the_resolved_agent_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from corlinman_server.gateway.lifecycle import bundled_mcp
+
+    private_dir = tmp_path / "private"
+    execution_dir = tmp_path / "execution"
+    workspace = tmp_path / "custom-workspace"
+    captured: dict[str, Path | None] = {}
+
+    def _capture(_store, data_dir: Path, **kwargs) -> list[str]:
+        captured["data_dir"] = data_dir
+        captured["workspace"] = kwargs.get("workspace")
+        return []
+
+    monkeypatch.setenv("CORLINMAN_EXECUTION_STATE_DIR", str(execution_dir))
+    monkeypatch.setenv("CORLINMAN_AGENT_WORKSPACE", str(workspace))
+    monkeypatch.setattr(bundled_mcp, "seed_bundled_mcp_servers", _capture)
+
+    app = build_app(config_path=None, data_dir=private_dir)
+    with TestClient(app):
+        pass
+
+    assert captured == {"data_dir": private_dir, "workspace": workspace}
+
+
 def test_build_app_defaults_py_config_to_resolved_data_dir(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

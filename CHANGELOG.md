@@ -4,6 +4,28 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.56.4] — 2026-07-31 — 出厂搜索可下载文件；存量配置安全刷新
+
+### Added
+- **出厂 `free-search-mcp` 永久启用 `download` 工具**：文件写入 agent 的共享
+  workspace 下 `downloads/search-mcp/`，下载完成后可直接交给 `read_file`、
+  `send_attachment` 或其他文件工具继续处理。沿用上游安全边界：单文件默认上限
+  100 MiB、24 小时自动清理、文件名清洗与目录越界复核；SSRF 防护没有放宽，
+  loopback/private/reserved 地址仍默认拒绝。
+
+### Fixed
+- **已经种过出厂搜索的存量安装拿不到新配置**：原先 sentinel 的“只种一次”
+  同时意味着 bundle 后续新增 env 也永远不会落进旧行。现仅当持久化的
+  `source + version + 完整 spec` 精确匹配已知出厂 SHA-256 时才刷新到当前版本；
+  用户改过 command、env、额外字段、source 或 version 的行全部保持原样，
+  disabled 状态保持 disabled，已删除的 server 也不会复活。CI 会强制每次修改
+  出厂 spec 时登记当前摘要，避免升级路径再次静默断裂。
+- **原生双进程部署会把下载写进 agent 看不到的控制面目录**：gateway 的
+  `data_dir` 与 agent 的 `execution_state_dir` 在原生安装、QQ 双容器部署里是两个
+  不同挂载。现统一经 `resolve_agent_workspace()` 解析，正确覆盖原生
+  `${PREFIX}/execution-state/workspace`、普通 Compose `/data/workspace`、QQ split
+  `/execution-state/workspace`，并尊重 `CORLINMAN_AGENT_WORKSPACE` 自定义覆盖。
+
 ## [1.56.3] — 2026-07-31 — 修复大工具结果打死整条 MCP 连接（Telegram 空回复）
 
 ### Fixed

@@ -12,9 +12,11 @@ import json
 from pathlib import Path
 
 from corlinman_server.gateway.lifecycle.bundled_mcp import (
+    _FACTORY_REVISION_SHA256,
     BUNDLED_MCP_SERVERS,
     FREE_SEARCH_MIN_VERSION,
     BundledMcpServer,
+    _current_factory_revision_digest,
     seed_bundled_mcp_servers,
 )
 from corlinman_server.system.marketplace.mcp_store import McpServerStore
@@ -34,6 +36,24 @@ def test_bundle_pins_a_minimum_free_search_version() -> None:
     assert entry.spec["command"] == "uvx"
     assert entry.spec["args"] == [f"free-search-mcp>={FREE_SEARCH_MIN_VERSION}"]
     assert FREE_SEARCH_MIN_VERSION == "0.8.0"
+
+
+def test_bundle_enables_downloads_inside_the_shared_workspace() -> None:
+    entry = next(e for e in BUNDLED_MCP_SERVERS if e.name == "search")
+    assert entry.workspace_env == (
+        ("SEARCH_MCP_DOWNLOAD_DIR", "downloads/search-mcp"),
+    )
+
+
+def test_current_factory_revisions_are_registered() -> None:
+    """Changing a bundled spec without extending the allowlist would strand
+    factory-pristine existing installs on the old revision."""
+    for entry in BUNDLED_MCP_SERVERS:
+        digest = _current_factory_revision_digest(entry)
+        assert digest in _FACTORY_REVISION_SHA256.get(entry.name, frozenset()), (
+            f"current {entry.name!r} bundle digest {digest} is missing from "
+            "_FACTORY_REVISION_SHA256"
+        )
 
 
 def test_bundled_spec_parses_as_a_server_spec() -> None:
@@ -58,6 +78,22 @@ def test_seeds_on_first_boot(tmp_path: Path) -> None:
     assert row is not None
     assert row.enabled is True
     assert row.source == "bundled"
+    assert row.spec["env"] == {
+        "SEARCH_MCP_DOWNLOAD_DIR": str(tmp_path / "workspace/downloads/search-mcp")
+    }
+
+
+def test_split_layout_uses_explicit_agent_workspace(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    workspace = tmp_path / "execution-state/workspace"
+
+    seed_bundled_mcp_servers(store, tmp_path, workspace=workspace)
+
+    row = store.get("search")
+    assert row is not None
+    assert row.spec["env"] == {
+        "SEARCH_MCP_DOWNLOAD_DIR": str(workspace / "downloads/search-mcp")
+    }
 
 
 def test_second_boot_seeds_nothing(tmp_path: Path) -> None:
@@ -87,6 +123,62 @@ def test_operator_edits_are_not_overwritten(tmp_path: Path) -> None:
     assert row is not None
     assert row.spec["command"] == "my-fork"
     assert row.enabled is False
+
+
+def test_operator_env_edits_are_not_overwritten(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    seed_bundled_mcp_servers(store, tmp_path)
+    row = store.get("search")
+    assert row is not None
+    edited = {**row.spec, "env": {"SEARCH_MCP_DOWNLOAD_DIR": "/srv/downloads"}}
+    store.upsert(
+        "search",
+        edited,
+        source=row.source,
+        version=row.version,
+        enabled=row.enabled,
+    )
+
+    seed_bundled_mcp_servers(store, tmp_path)
+    refreshed = store.get("search")
+    assert refreshed is not None
+    assert refreshed.spec["env"] == {"SEARCH_MCP_DOWNLOAD_DIR": "/srv/downloads"}
+
+
+def test_factory_pristine_previous_revision_is_refreshed(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    entry = next(e for e in BUNDLED_MCP_SERVERS if e.name == "search")
+    store.upsert(
+        "search",
+        dict(entry.spec),
+        source=entry.source,
+        version=entry.version,
+        enabled=False,
+    )
+    (tmp_path / ".mcp_bundled_seeded.json").write_text(
+        json.dumps({"seeded": ["search"]}),
+        encoding="utf-8",
+    )
+
+    assert seed_bundled_mcp_servers(store, tmp_path) == []
+    row = store.get("search")
+    assert row is not None
+    assert row.spec["env"] == {
+        "SEARCH_MCP_DOWNLOAD_DIR": str(tmp_path / "workspace/downloads/search-mcp")
+    }
+    assert row.enabled is False
+
+
+def test_current_factory_revision_is_idempotent(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    seed_bundled_mcp_servers(store, tmp_path)
+    before = store.get("search")
+    assert before is not None
+
+    seed_bundled_mcp_servers(store, tmp_path)
+    after = store.get("search")
+    assert after is not None
+    assert after.updated_at == before.updated_at
 
 
 def test_an_existing_row_is_never_overwritten(tmp_path: Path) -> None:
